@@ -1,0 +1,430 @@
+use crate::item::{ItemId, ItemKind};
+use crate::scene::Scene;
+use crate::spaces::CanvasVector;
+use crate::transform::Transform;
+
+/// 命令 trait。
+///
+/// `skip_first_redo` 用于交互预览模式：当 UI 在按下时已经把变更直接应用到 item
+/// （比如拖拽中实时修改 `transform.pos`），释放时调用 [`UndoStack::push`] 应当
+/// 跳过首次 `redo()`，否则会把同一变更应用两次。AGENTS.md Gotcha #5。
+pub trait Command {
+    fn redo(&mut self, scene: &mut Scene);
+    fn undo(&mut self, scene: &mut Scene);
+    fn skip_first_redo(&self) -> bool {
+        false
+    }
+}
+
+// ─────────────────────────── Transform ───────────────────────────
+
+/// 单个 item 的整体 transform 变更（scale + rotate + move + flip 的任意组合）。
+/// 用于变换手柄拖拽释放时把"预览态"固化到 undo 栈。
+pub struct TransformItem {
+    item_id: ItemId,
+    old_transform: Transform,
+    new_transform: Transform,
+    /// 拖拽预览已经直接改到 item 上，push 时跳过首次 redo。
+    preview_already_applied: bool,
+}
+
+impl TransformItem {
+    pub fn new(item_id: ItemId, old_transform: Transform, new_transform: Transform) -> Self {
+        Self {
+            item_id,
+            old_transform,
+            new_transform,
+            preview_already_applied: true,
+        }
+    }
+
+    /// 显式声明是否为预览模式（默认 true，因为该命令几乎只在交互释放时使用）。
+    pub fn with_preview_applied(mut self, applied: bool) -> Self {
+        self.preview_already_applied = applied;
+        self
+    }
+}
+
+impl Command for TransformItem {
+    fn redo(&mut self, scene: &mut Scene) {
+        if let Some(item) = scene.get_item_mut(&self.item_id) {
+            item.transform = self.new_transform;
+        }
+    }
+
+    fn undo(&mut self, scene: &mut Scene) {
+        if let Some(item) = scene.get_item_mut(&self.item_id) {
+            item.transform = self.old_transform;
+        }
+    }
+
+    fn skip_first_redo(&self) -> bool {
+        self.preview_already_applied
+    }
+}
+
+// ─────────────────────────── Move ───────────────────────────
+
+/// 平移多个 item（拖拽移动的命令）。
+pub struct MoveItems {
+    item_ids: Vec<ItemId>,
+    delta: CanvasVector,
+    preview_already_applied: bool,
+}
+
+impl MoveItems {
+    pub fn new(item_ids: Vec<ItemId>, delta: CanvasVector) -> Self {
+        Self {
+            item_ids,
+            delta,
+            preview_already_applied: true,
+        }
+    }
+
+    pub fn with_preview_applied(mut self, applied: bool) -> Self {
+        self.preview_already_applied = applied;
+        self
+    }
+}
+
+impl Command for MoveItems {
+    fn redo(&mut self, scene: &mut Scene) {
+        for id in &self.item_ids {
+            if let Some(item) = scene.get_item_mut(id) {
+                item.transform.pos += self.delta;
+            }
+        }
+    }
+
+    fn undo(&mut self, scene: &mut Scene) {
+        for id in &self.item_ids {
+            if let Some(item) = scene.get_item_mut(id) {
+                item.transform.pos -= self.delta;
+            }
+        }
+    }
+
+    fn skip_first_redo(&self) -> bool {
+        self.preview_already_applied
+    }
+}
+
+// ─────────────────────────── Scale ───────────────────────────
+
+// 注意：ScaleItems/RotateItems 用统一的 factor/angle，对"以锚点缩放/旋转"场景
+// 不够精确。交互层应优先使用 TransformItem（带 old/new transform）。
+// 这两个命令保留给键盘快捷键等"无锚点"批量操作。
+
+pub struct ScaleItems {
+    item_ids: Vec<ItemId>,
+    factor: f32,
+}
+
+impl ScaleItems {
+    pub fn new(item_ids: Vec<ItemId>, factor: f32) -> Self {
+        Self { item_ids, factor }
+    }
+}
+
+impl Command for ScaleItems {
+    fn redo(&mut self, scene: &mut Scene) {
+        for id in &self.item_ids {
+            if let Some(item) = scene.get_item_mut(id) {
+                item.transform.scale.x *= self.factor;
+                item.transform.scale.y *= self.factor;
+            }
+        }
+    }
+
+    fn undo(&mut self, scene: &mut Scene) {
+        for id in &self.item_ids {
+            if let Some(item) = scene.get_item_mut(id) {
+                item.transform.scale.x /= self.factor;
+                item.transform.scale.y /= self.factor;
+            }
+        }
+    }
+}
+
+// ─────────────────────────── Rotate ───────────────────────────
+
+pub struct RotateItems {
+    item_ids: Vec<ItemId>,
+    angle: f32,
+}
+
+impl RotateItems {
+    pub fn new(item_ids: Vec<ItemId>, angle: f32) -> Self {
+        Self { item_ids, angle }
+    }
+}
+
+impl Command for RotateItems {
+    fn redo(&mut self, scene: &mut Scene) {
+        for id in &self.item_ids {
+            if let Some(item) = scene.get_item_mut(id) {
+                item.transform.rotation += self.angle;
+            }
+        }
+    }
+
+    fn undo(&mut self, scene: &mut Scene) {
+        for id in &self.item_ids {
+            if let Some(item) = scene.get_item_mut(id) {
+                item.transform.rotation -= self.angle;
+            }
+        }
+    }
+}
+
+// ─────────────────────────── Flip ───────────────────────────
+
+/// 翻转多个 item（边手柄触发，spec L239「翻转边」）。
+pub struct FlipItems {
+    item_ids: Vec<ItemId>,
+    horizontal: bool, // true=flip_h, false=flip_v
+}
+
+impl FlipItems {
+    pub fn new(item_ids: Vec<ItemId>, horizontal: bool) -> Self {
+        Self { item_ids, horizontal }
+    }
+}
+
+impl Command for FlipItems {
+    fn redo(&mut self, scene: &mut Scene) {
+        for id in &self.item_ids {
+            if let Some(item) = scene.get_item_mut(id) {
+                if self.horizontal {
+                    item.transform.flip_h = !item.transform.flip_h;
+                } else {
+                    item.transform.flip_v = !item.transform.flip_v;
+                }
+            }
+        }
+    }
+
+    fn undo(&mut self, scene: &mut Scene) {
+        // 翻转自反
+        self.redo(scene);
+    }
+}
+
+// ─────────────────────────── Delete ───────────────────────────
+
+/// 删除多个 item。`undo` 会按原 Z 序与位置还原（存了完整快照）。
+pub struct DeleteItems {
+    item_ids: Vec<ItemId>,
+    /// 第一次 redo 时填入被删 item 的快照（按删除前的 items 顺序），
+    /// 用于 undo 恢复。Vec<Option<...>> 是因为 redo 后 item 已不在 scene。
+    snapshots: std::cell::RefCell<Vec<Option<crate::item::Item>>>,
+}
+
+impl DeleteItems {
+    pub fn new(item_ids: Vec<ItemId>) -> Self {
+        Self {
+            item_ids,
+            snapshots: std::cell::RefCell::new(Vec::new()),
+        }
+    }
+}
+
+impl Command for DeleteItems {
+    fn redo(&mut self, scene: &mut Scene) {
+        // 第一次 redo 时抓快照（snapshots 为空），之后 redo（重做）时清空再删
+        let mut snaps = self.snapshots.borrow_mut();
+        if snaps.is_empty() {
+            for id in &self.item_ids {
+                let snap = scene.get_item(id).cloned();
+                snaps.push(snap);
+            }
+        }
+        for id in &self.item_ids {
+            scene.remove_item(id);
+        }
+    }
+
+    fn undo(&mut self, scene: &mut Scene) {
+        let snaps = self.snapshots.borrow();
+        // 用 preserve_z 恢复，保留 item 原本的 z 值
+        for snap in snaps.iter() {
+            if let Some(item) = snap {
+                scene.add_item_preserve_z(item.clone());
+            }
+        }
+        // 保留 snapshots 以便下次 redo 复用（不必重新抓）
+    }
+}
+
+// ─────────────────────────── Add ───────────────────────────
+
+pub struct AddItem {
+    item: crate::item::Item,
+}
+
+impl AddItem {
+    pub fn new(item: crate::item::Item) -> Self {
+        Self { item }
+    }
+
+    pub fn item_id(&self) -> ItemId {
+        self.item.id
+    }
+}
+
+impl Command for AddItem {
+    fn redo(&mut self, scene: &mut Scene) {
+        scene.add_item(self.item.clone());
+    }
+
+    fn undo(&mut self, scene: &mut Scene) {
+        scene.remove_item(&self.item.id);
+    }
+}
+
+// ─────────────────────────── Reorder ───────────────────────────
+
+/// 置顶/置底多个 item。
+pub struct ReorderItems {
+    item_ids: Vec<ItemId>,
+    to_front: bool,
+    /// 旧 z 值，按 item_ids 顺序记录。
+    old_z: Vec<(ItemId, i32)>,
+    /// 新 z 值（redo 时填入）。
+    new_z: Vec<(ItemId, i32)>,
+}
+
+impl ReorderItems {
+    pub fn new(item_ids: Vec<ItemId>, to_front: bool) -> Self {
+        Self {
+            item_ids,
+            to_front,
+            old_z: Vec::new(),
+            new_z: Vec::new(),
+        }
+    }
+}
+
+impl Command for ReorderItems {
+    fn redo(&mut self, scene: &mut Scene) {
+        // 第一次 redo：记录 old_z，计算 new_z
+        if self.old_z.is_empty() {
+            for id in &self.item_ids {
+                if let Some(item) = scene.get_item(id) {
+                    self.old_z.push((*id, item.z));
+                }
+            }
+            if self.to_front {
+                let base = scene.next_z;
+                for (i, id) in self.item_ids.iter().enumerate() {
+                    self.new_z.push((*id, base + i as i32));
+                }
+            } else {
+                let min_z = scene.items.iter().map(|i| i.z).min().unwrap_or(0);
+                let n = self.item_ids.len() as i32;
+                for (i, id) in self.item_ids.iter().enumerate() {
+                    self.new_z.push((*id, min_z - (n - i as i32)));
+                }
+            }
+        }
+        for (id, z) in &self.new_z {
+            if let Some(item) = scene.get_item_mut(id) {
+                item.z = *z;
+            }
+        }
+        if self.to_front {
+            // next_z 推进
+            if let Some((_, z)) = self.new_z.last() {
+                scene.next_z = scene.next_z.max(*z + 1);
+            }
+        }
+    }
+
+    fn undo(&mut self, scene: &mut Scene) {
+        for (id, z) in &self.old_z {
+            if let Some(item) = scene.get_item_mut(id) {
+                item.z = *z;
+            }
+        }
+    }
+}
+
+// ─────────────────────────── Arrange ───────────────────────────
+
+/// 排列多个 item（Linear / Grid 等）。存储 (id, old_pos, new_pos)。
+pub struct ArrangeItems {
+    moves: Vec<(ItemId, CanvasVector, CanvasVector)>, // id, old_pos, new_pos
+    preview_already_applied: bool,
+}
+
+impl ArrangeItems {
+    pub fn new(moves: Vec<(ItemId, CanvasVector, CanvasVector)>) -> Self {
+        Self {
+            moves,
+            preview_already_applied: false,
+        }
+    }
+
+    pub fn with_preview_applied(mut self, applied: bool) -> Self {
+        self.preview_already_applied = applied;
+        self
+    }
+}
+
+impl Command for ArrangeItems {
+    fn redo(&mut self, scene: &mut Scene) {
+        for (id, _old, new) in &self.moves {
+            if let Some(item) = scene.get_item_mut(id) {
+                item.transform.pos = *new;
+            }
+        }
+    }
+
+    fn undo(&mut self, scene: &mut Scene) {
+        for (id, old, _new) in &self.moves {
+            if let Some(item) = scene.get_item_mut(id) {
+                item.transform.pos = *old;
+            }
+        }
+    }
+
+    fn skip_first_redo(&self) -> bool {
+        self.preview_already_applied
+    }
+}
+
+// ─────────────────────────── EditTextContent ───────────────────────────
+
+/// 修改 Text item 的 content（双击编辑，spec L243 P2-5）。
+/// redo/undo 都会清空 `measured_size`，强制 UI 层重新测量，确保变换边框与新内容一致（修 B6）。
+pub struct EditTextContent {
+    item_id: ItemId,
+    old_content: String,
+    new_content: String,
+}
+
+impl EditTextContent {
+    pub fn new(item_id: ItemId, old_content: String, new_content: String) -> Self {
+        Self { item_id, old_content, new_content }
+    }
+}
+
+impl Command for EditTextContent {
+    fn redo(&mut self, scene: &mut Scene) {
+        if let Some(item) = scene.get_item_mut(&self.item_id) {
+            if let ItemKind::Text { content, measured_size, .. } = &mut item.kind {
+                *content = self.new_content.clone();
+                *measured_size = None; // 强制重新测量
+            }
+        }
+    }
+
+    fn undo(&mut self, scene: &mut Scene) {
+        if let Some(item) = scene.get_item_mut(&self.item_id) {
+            if let ItemKind::Text { content, measured_size, .. } = &mut item.kind {
+                *content = self.old_content.clone();
+                *measured_size = None;
+            }
+        }
+    }
+}

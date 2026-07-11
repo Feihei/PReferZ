@@ -1,0 +1,28 @@
+[package]
+name = "preferz"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description.workspace = true
+
+[[bin]]
+name = "preferz"
+path = "src/main.rs"
+
+[dependencies]
+preferz-core = { path = "../preferz-core" }
+preferz-fileio = { path = "../preferz-fileio" }
+
+# GUI
+eframe = { workspace = true }
+egui = { workspace = true }
+
+# Utilities
+serde = { workspace = true }
+log = { workspace = true }
+env_logger = "0.11"
+rfd = { workspace = true }
+arboard = { workspace = true }
+
+# Image
+image = { workspace = true }

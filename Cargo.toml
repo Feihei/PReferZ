@@ -1,0 +1,37 @@
+[workspace]
+members = [
+    "crates/preferz",
+    "crates/preferz-core",
+    "crates/preferz-fileio",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Picture Reference Zoomer — a minimal reference image board"
+repository = "https://github.com/YOUR_USERNAME/preferz"
+
+[workspace.dependencies]
+# Core
+euclid = { version = "0.22", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+undo = "0.4"
+
+# GUI
+eframe = "0.29"
+egui = "0.29"
+
+# File I/O
+rusqlite = { version = "0.31", features = ["bundled"] }
+image = "0.25"
+rayon = "1.10"
+
+# Utilities
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+log = "0.4"
+rfd = "0.14"
+arboard = "3"
