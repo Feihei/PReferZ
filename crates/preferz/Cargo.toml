@@ -30,3 +30,7 @@ arboard = { workspace = true }
 
 # Image
 image = { workspace = true }
+
+# Windows exe 资源图标（编译期嵌入 .res 到 exe）
+[target.'cfg(windows)'.build-dependencies]
+embed-resource = "2.4"

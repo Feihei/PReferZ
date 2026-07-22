@@ -1,3 +1,7 @@
+// Release 构建用 windows 子系统（不弹黑色 cmd 窗口）；
+// debug 构建保留 console 子系统（方便看 panic 输出和 env_logger 日志）。
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod viewport;
 mod interaction;
 mod preferz_app;
