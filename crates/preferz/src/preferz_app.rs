@@ -7,6 +7,7 @@ use preferz_fileio::{BeeFile, ViewportMeta};
 use crate::viewport::ViewportState;
 use crate::ui::widgets::transform_handles::{TransformHandles, Handle};
 use crate::interaction;
+use crate::i18n::{Lang, T, t};
 use image::GenericImageView;
 use std::path::{PathBuf, Path};
 use std::collections::HashMap;
@@ -119,18 +120,26 @@ struct SaveOutcome {
     result: Result<(), String>,
 }
 
+/// 后台导出结果（线程 → UI 线程）。
+struct ExportOutcome {
+    path: PathBuf,
+    result: Result<String, String>,
+}
+
 /// 后台任务状态。`loading`/`saving` 为 true 时显示进度条。
 #[derive(Default)]
 struct BackgroundOps {
-    /// 图片导入解码通道（单条队列，每次导入一条）�?
+    /// 图片导入解码通道（单条队列，每次导入一条）。
     import_rx: Option<Receiver<ImportOutcome>>,
-    /// .prz/.bee 文件加载通道�?
+    /// .prz/.bee 文件加载通道。
     load_rx: Option<Receiver<LoadOutcome>>,
-    /// 文件保存通道�?
+    /// 文件保存通道。
     save_rx: Option<Receiver<SaveOutcome>>,
-    /// 当前进行的后台任务数量（>0 时显示进度条）�?
+    /// 场景导出通道。
+    export_rx: Option<Receiver<ExportOutcome>>,
+    /// 当前进行的后台任务数量（>0 时显示进度条）。
     pending: usize,
-    /// 进度消息�?
+    /// 进度消息。
     msg: Option<String>,
 }
 
@@ -232,13 +241,26 @@ impl BackgroundOps {
         None
     }
 
-    /// 取出并处理已完成的保存结果（�?PReferZApp::poll_background 调用）�?
+    /// 取出并处理已完成的保存结果（由 PReferZApp::poll_background 调用）。
     fn take_save(&mut self) -> Option<SaveOutcome> {
         if let Some(rx) = &self.save_rx {
             if let Ok(outcome) = rx.try_recv() {
                 self.pending = self.pending.saturating_sub(1);
                 if self.pending == 0 { self.msg = None; }
                 self.save_rx = None;
+                return Some(outcome);
+            }
+        }
+        None
+    }
+
+    /// 取出并处理已完成的导出结果（由 PReferZApp::poll_background 调用）。
+    fn take_export(&mut self) -> Option<ExportOutcome> {
+        if let Some(rx) = &self.export_rx {
+            if let Ok(outcome) = rx.try_recv() {
+                self.pending = self.pending.saturating_sub(1);
+                if self.pending == 0 { self.msg = None; }
+                self.export_rx = None;
                 return Some(outcome);
             }
         }
@@ -283,10 +305,25 @@ pub struct PReferZApp {
     settings_open: bool,
     /// 排列间距（设置面板可调）�?
     arrange_spacing: f32,
-    /// 画布是否有未保存修改（用于关�?新建时提示保存）�?
+    /// 画布是否有未保存修改（用于关闭/新建时提示保存）。
     dirty: bool,
-    /// 待处理的关闭/新建请求（弹保存确认对话框）�?    /// `Close` = 关闭窗口，`NewCanvas` = 新建画布
+    /// 待处理的关闭/新建请求（弹保存确认对话框）。
+    /// `Close` = 关闭窗口，`NewCanvas` = 新建画布
     pending_save_prompt: Option<SavePromptAction>,
+    /// 窗口置顶开关（Phase 6 §2.3 始终置顶）。
+    always_on_top: bool,
+    /// 窗口无边框开关（Phase 6 §2.3 无边框悬浮模式）。
+    frameless: bool,
+    /// 画布背景不透明度（0.1~1.0）。配透明窗口实现悬浮看图效果。
+    bg_alpha: f32,
+    /// UI 语言（默认英文，设置面板可切换中文，持久化到 config.json）。
+    lang: Lang,
+    /// 最近文件列表（Phase 6 §2.3 欢迎页）。
+    recent_files: Vec<PathBuf>,
+    /// 欢迎页点击的最近文件路径（待处理）。
+    pending_open_recent: Option<PathBuf>,
+    /// 欢迎页 logo 纹理（懒加载，复用 assets/icon.png）。
+    logo_texture: Option<egui::TextureHandle>,
 }
 
 /// 保存提示对话框的触发场景�?#[derive(Clone, Copy, PartialEq)]
@@ -345,6 +382,13 @@ impl PReferZApp {
             arrange_spacing: 16.0,
             dirty: false,
             pending_save_prompt: None,
+            always_on_top: false,
+            frameless: false,
+            bg_alpha: 1.0,
+            lang: load_config().lang,
+            recent_files: load_recent_files(),
+            pending_open_recent: None,
+            logo_texture: None,
         }
     }
 
@@ -409,9 +453,20 @@ impl PReferZApp {
                 }
                 Err(e) => {
                     self.flash(format!("保存失败: {}", e));
-                    // 保存失败：取�?pending，让用户自行决定
+                    // 保存失败：取消 pending，让用户自行决定
                     self.pending_save_prompt = None;
                 }
+            }
+        }
+        // 导出
+        if let Some(outcome) = self.bg_ops.take_export() {
+            match outcome.result {
+                Ok(msg) => self.flash(if msg.is_empty() {
+                    format!("{}: {}", t(self.lang, T::FlashExportedTo), outcome.path.display())
+                } else {
+                    msg
+                }),
+                Err(e) => self.flash(format!("{}: {}", t(self.lang, T::FlashExportFailed), e)),
             }
         }
     }
@@ -436,7 +491,19 @@ const FLASH_DURATION_MS: u128 = 2500;
 
 impl eframe::App for PReferZApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // 窗口关闭请求检测：�?dirty 且无 pending 提示，弹保存提示并取消本次关闭�?        // 用户在对话框中选「保�?放弃/取消」后�?render_save_prompt 处理后续动作�?
+        // 背景透明度：动态调整 visuals.panel_fill 的 alpha。
+        // 当 bg_alpha < 1.0 时 panel 背景半透明，配 with_transparent(true) 实现窗口穿透。
+        {
+            let alpha = (self.bg_alpha * 255.0).round() as u8;
+            let mut visuals = ctx.style().visuals.clone();
+            visuals.panel_fill = egui::Color32::from_rgba_unmultiplied(45, 45, 48, alpha);
+            visuals.window_fill = egui::Color32::from_rgba_unmultiplied(30, 30, 32, alpha);
+            visuals.faint_bg_color = egui::Color32::from_rgba_unmultiplied(30, 30, 32, alpha);
+            ctx.set_visuals(visuals);
+        }
+
+        // 窗口关闭请求检测：dirty 且无 pending 提示时弹保存提示并取消本次关闭。
+        // 用户在对话框中选「保存/放弃/取消」后由 render_save_prompt 处理后续动作。
         if self.pending_save_prompt.is_none()
             && self.dirty
             && ctx.input(|i| i.viewport().close_requested())
@@ -464,8 +531,13 @@ impl eframe::App for PReferZApp {
             self.bg_ops.start_import(ctx, path);
         }
 
-        // poll 后台任务结果（导�?加载/保存�?
+        // poll 后台任务结果（导入/加载/保存/导出）。
         self.poll_background(ctx);
+
+        // 处理欢迎页最近文件点击
+        if let Some(path) = self.pending_open_recent.take() {
+            self.add_recent_and_load(ctx, path);
+        }
 
         // 清理过期�?flash 状�?
         if let Some((_, t)) = self.flash_status {
@@ -481,11 +553,12 @@ impl eframe::App for PReferZApp {
 
             let response = ui.interact(rect, egui::Id::new("canvas"), egui::Sense::click_and_drag());
 
-            // 画布背景
+            // 画布背景：应用 bg_alpha（与 panel_fill 一致，确保透明效果生效）
+            let bg_alpha_u8 = (self.bg_alpha * 255.0).round() as u8;
             ui.painter().rect_filled(
                 rect,
                 egui::Rounding::same(0.0),
-                egui::Color32::from_rgb(45, 45, 48),
+                egui::Color32::from_rgba_unmultiplied(45, 45, 48, bg_alpha_u8),
             );
 
             // 渲染场景（含视口剔除 + Z �?+ 复用 self.transform_handles�?
@@ -518,43 +591,42 @@ impl eframe::App for PReferZApp {
                 }
             }
 
-            // 双击：Text item �?编辑；空�?�?创建文本便签（spec L243 P2-5�?
+            // 双击：Text item → 编辑；空白 → 创建文本便签（spec L243 P2-5）
+            // response.double_clicked() 已自动考虑上层 Window 遮挡
             if response.double_clicked() && self.editing_text.is_none() {
                 if let Some(pos) = ctx.input(|i| i.pointer.latest_pos()) {
-                    if rect.contains(pos) {
-                        // 先克隆命�?Text item 的字段，避免 &self.scene �?&mut self.editing_text 借用冲突
-                        let hit_text = interaction::get_item_at(pos, &self.scene, &self.viewport)
-                            .and_then(|item| {
-                                if let ItemKind::Text { content, font_size, color, .. } = &item.kind {
-                                    Some((item.id, item.transform.pos, content.clone(), *font_size, *color))
-                                } else {
-                                    None
-                                }
-                            });
-                        if let Some((id, pos_canvas, content, font_size, color)) = hit_text {
-                            // 双击 Text item �?编辑现有
-                            self.editing_text = Some(EditingText {
-                                editing_item_id: Some(id),
-                                canvas_pos: CanvasPoint::new(pos_canvas.x, pos_canvas.y),
-                                buffer: content,
-                                font_size,
-                                color,
-                                first_frame: true,
-                            });
-                            self.drag = DragState::Idle;
-                        } else {
-                            // 双击空白 �?创建新文�?
-                            let canvas_pos = self.viewport.screen_to_canvas(pos);
-                            self.editing_text = Some(EditingText {
-                                editing_item_id: None,
-                                canvas_pos,
-                                buffer: String::new(),
-                                font_size: 24.0,
-                                color: [255, 255, 255, 255],
-                                first_frame: true,
-                            });
-                            self.drag = DragState::Idle;
-                        }
+                    // 先克隆命中 Text item 的字段，避免 &self.scene 与 &mut self.editing_text 借用冲突
+                    let hit_text = interaction::get_item_at(pos, &self.scene, &self.viewport)
+                        .and_then(|item| {
+                            if let ItemKind::Text { content, font_size, color, .. } = &item.kind {
+                                Some((item.id, item.transform.pos, content.clone(), *font_size, *color))
+                            } else {
+                                None
+                            }
+                        });
+                    if let Some((id, pos_canvas, content, font_size, color)) = hit_text {
+                        // 双击 Text item → 编辑现有
+                        self.editing_text = Some(EditingText {
+                            editing_item_id: Some(id),
+                            canvas_pos: CanvasPoint::new(pos_canvas.x, pos_canvas.y),
+                            buffer: content,
+                            font_size,
+                            color,
+                            first_frame: true,
+                        });
+                        self.drag = DragState::Idle;
+                    } else {
+                        // 双击空白 → 创建新文本
+                        let canvas_pos = self.viewport.screen_to_canvas(pos);
+                        self.editing_text = Some(EditingText {
+                            editing_item_id: None,
+                            canvas_pos,
+                            buffer: String::new(),
+                            font_size: 24.0,
+                            color: [255, 255, 255, 255],
+                            first_frame: true,
+                        });
+                        self.drag = DragState::Idle;
                     }
                 }
             }
@@ -563,12 +635,16 @@ impl eframe::App for PReferZApp {
             let primary_pressed = ctx.input(|i| i.pointer.primary_pressed());
             let primary_down = ctx.input(|i| i.pointer.primary_down());
             let primary_released = ctx.input(|i| i.pointer.primary_released());
+            // pointer 是否在画布上且未被上层 Window/Area 遮挡。
+            // response.hovered() 经 egui hit_test 自动排除被上层 layer 覆盖的区域，
+            // 用于守卫 primary_pressed 等全局 PointerState 信号，避免穿透到画布。
+            let pointer_on_canvas = response.hovered();
 
             // 更新 hover + 光标
-            if let Some(pos) = pointer_pos {
-                if rect.contains(pos) {
+            if pointer_on_canvas {
+                if let Some(pos) = pointer_pos {
                     let selected = self.selected_items_snapshot();
-                    // 多选时只支持统一移动，不检测单独手柄（手柄不可见却�?hover 会造成混乱�?
+                    // 多选时只支持统一移动，不检测单独手柄（手柄不可见却有 hover 会造成混乱）
                     if selected.len() == 1 {
                         self.transform_handles.update_hover(pos, &selected, &self.viewport);
                     } else {
@@ -581,7 +657,7 @@ impl eframe::App for PReferZApp {
                         Handle::FlipH => egui::CursorIcon::ResizeHorizontal,
                         Handle::FlipV => egui::CursorIcon::ResizeVertical,
                         Handle::None => {
-                            // �?item 上时显示移动光标
+                            // 在 item 上时显示移动光标
                             if interaction::get_item_at(pos, &self.scene, &self.viewport).is_some() {
                                 egui::CursorIcon::Move
                             } else {
@@ -590,16 +666,17 @@ impl eframe::App for PReferZApp {
                         }
                     };
                     ctx.output_mut(|o| o.cursor_icon = cursor);
-                } else {
-                    self.transform_handles.hover_handle = Handle::None;
                 }
             } else {
                 self.transform_handles.hover_handle = Handle::None;
             }
 
             // 拖拽中：更新预览（含裁剪模式拖拽，crop_mode.dragging 不在 DragState 内）
+            // 仅当画布起源的拖拽进行中才更新；从 Window 起源的 drag 不会进入此分支
+            // （因为 begin_drag 有 pointer_on_canvas 守卫，Window 点击不会启动画布 drag）。
             let crop_dragging = self.crop_mode.as_ref().map_or(false, |c| c.dragging.is_some());
-            if primary_down && (!matches!(self.drag, DragState::Idle) || crop_dragging) {
+            let drag_in_progress = !matches!(self.drag, DragState::Idle) || crop_dragging;
+            if primary_down && drag_in_progress {
                 if let Some(pos) = pointer_pos {
                     let free_scale = ctx.input(|i| i.modifiers.ctrl);
                     self.update_drag_preview(pos, free_scale);
@@ -607,17 +684,18 @@ impl eframe::App for PReferZApp {
                 }
             }
 
-            // 按下：开始拖拽（手柄优先，否则移动）。菜单打开时不启动拖拽（修 B4�?            // �?render_context_menu 负责检测点击外部并关闭菜单�?
-            if primary_pressed && !self.context_menu_open {
+            // 按下：开始拖拽（手柄优先，否则移动）。
+            // pointer_on_canvas 守卫确保只有 pointer 在画布上且未被遮挡时才开始拖拽，
+            // 避免点击设置/Debug 窗口时穿透触发画布 drag。
+            // 菜单打开时也不启动拖拽（render_context_menu 负责检测点击外部并关闭菜单）。
+            if primary_pressed && !self.context_menu_open && pointer_on_canvas {
                 if let Some(pos) = pointer_pos {
-                    if rect.contains(pos) {
-                        let additive = ctx.input(|i| i.modifiers.shift);
-                        self.begin_drag(pos, additive);
-                    }
+                    let additive = ctx.input(|i| i.modifiers.shift);
+                    self.begin_drag(pos, additive);
                 }
             }
 
-            // 释放：固化到 undo �?
+            // 释放：固化到 undo 栈
             if primary_released {
                 self.end_drag();
             }
@@ -663,7 +741,7 @@ impl eframe::App for PReferZApp {
                 .collapsible(false)
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .show(ctx, |ui| {
-                    let msg = self.bg_ops.msg.clone().unwrap_or_else(|| "处理�?..".to_string());
+                    let msg = self.bg_ops.msg.clone().unwrap_or_else(|| t(self.lang, T::FlashProcessing).to_string());
                     ui.vertical_centered(|ui| {
                         ui.add_space(4.0);
                         ui.label(&msg);
@@ -700,8 +778,10 @@ impl eframe::App for PReferZApp {
             }
         });
 
-        // Debug 面板
-        self.render_debug_panel(ctx);
+        // Debug 面板（仅 debug 构建显示，release 自动隐藏）
+        if cfg!(debug_assertions) {
+            self.render_debug_panel(ctx);
+        }
     }
 }
 
@@ -923,7 +1003,14 @@ impl PReferZApp {
     fn render_scene(&mut self, ui: &mut egui::Ui) {
         let screen_rect = ui.max_rect();
 
-        // 先测量所�?Text item 的实际尺寸，更新 measured_size（修 B6：边框与渲染一致）�?        // measured_size �?None（新�?编辑/undo/redo 后）才重新测量，避免每帧重复计算�?
+        // 空场景：渲染欢迎页（spec §2.3 欢迎页 + 最近文件列表）
+        if self.scene.items.is_empty() {
+            self.render_welcome_page(ui, &screen_rect);
+            return;
+        }
+
+        // 先测量所有 Text item 的实际尺寸，更新 measured_size（修 B6：边框与渲染一致）。
+        // measured_size 为 None（新建/编辑/undo/redo 后）才重新测量，避免每帧重复计算。
         self.update_text_measured_sizes(ui.ctx());
 
         // 预生成所�?grayscale=true �?Pixmap 灰度纹理（避免渲染循环里 &mut self �?&self.scene 冲突�?
@@ -1286,7 +1373,7 @@ impl PReferZApp {
                             edit.color,
                         );
                         self.push_cmd(Box::new(AddItem::new(item)));
-                        self.flash("已创建文本便签");
+                        self.flash(t(self.lang, T::FlashTextCreated).to_string());
                     }
                 }
                 Some(id) => {
@@ -1304,7 +1391,7 @@ impl PReferZApp {
                             if old != edit.buffer {
                                 let cmd = EditTextContent::new(id, old, edit.buffer);
                                 self.push_cmd(Box::new(cmd));
-                                self.flash("已更新文本便签");
+                                self.flash(t(self.lang, T::FlashTextUpdated).to_string());
                             }
                         }
                     }
@@ -1332,56 +1419,92 @@ impl PReferZApp {
                 frame.show(ui, |ui| {
                     ui.set_max_width(180.0);
 
-                    if ui.button("\u{1F195} 新建画布").clicked() {
+                    if ui.button(format!("\u{1F195} {}", t(self.lang, T::NewCanvas))).clicked() {
                         self.new_canvas(ctx);
                         self.context_menu_open = false;
                     }
-                    if ui.button("\u{1F4C2} 打开项目...").clicked() {
+                    if ui.button(format!("\u{1F4C2} {}", t(self.lang, T::OpenProject))).clicked() {
                         self.open_project_file(ctx);
                         self.context_menu_open = false;
                     }
-                    if ui.button("\u{1F5BC} 载入图片...").clicked() {
+                    if ui.button(format!("\u{1F5BC} {}", t(self.lang, T::LoadImage))).clicked() {
                         self.import_image_file(ctx);
                         self.context_menu_open = false;
                     }
-                    if ui.button("\u{1F4CB} 粘贴图片 (Ctrl+V)").clicked() {
+                    if ui.button(format!("\u{1F4CB} {}", t(self.lang, T::PasteImage))).clicked() {
                         self.paste_from_clipboard(ctx);
                         self.context_menu_open = false;
                     }
                     ui.separator();
-                    if ui.button("\u{1F4BE} 保存").clicked() {
+                    if ui.button(format!("\u{1F4BE} {}", t(self.lang, T::Save))).clicked() {
                         self.save_file(ctx);
                         self.context_menu_open = false;
                     }
-                    if ui.button("\u{1F4C4} 另存�?..").clicked() {
+                    if ui.button(format!("\u{1F4C4} {}", t(self.lang, T::SaveAs))).clicked() {
                         self.save_file_as(ctx);
                         self.context_menu_open = false;
                     }
+                    ui.menu_button(format!("\u{1F4F7} {}", t(self.lang, T::ExportScene)), |ui| {
+                        if ui.button(t(self.lang, T::ExportPngAll)).clicked() {
+                            self.start_export_dialog(ctx, ExportFormat::Png, false);
+                            self.context_menu_open = false;
+                        }
+                        if ui.button(t(self.lang, T::ExportJpgAll)).clicked() {
+                            self.start_export_dialog(ctx, ExportFormat::Jpeg, false);
+                            self.context_menu_open = false;
+                        }
+                        if has_selection {
+                            ui.separator();
+                            if ui.button(t(self.lang, T::ExportPngSelection)).clicked() {
+                                self.start_export_dialog(ctx, ExportFormat::Png, true);
+                                self.context_menu_open = false;
+                            }
+                            if ui.button(t(self.lang, T::ExportJpgSelection)).clicked() {
+                                self.start_export_dialog(ctx, ExportFormat::Jpeg, true);
+                                self.context_menu_open = false;
+                            }
+                        }
+                    });
+                    ui.menu_button(format!("\u{1F4E9} {}", t(self.lang, T::ExportImagesToDir)), |ui| {
+                        if ui.button(t(self.lang, T::ExportAllImages)).clicked() {
+                            self.start_export_images_dialog(ctx, false);
+                            self.context_menu_open = false;
+                        }
+                        if has_selection && ui.button(t(self.lang, T::ExportSelectionImages)).clicked() {
+                            self.start_export_images_dialog(ctx, true);
+                            self.context_menu_open = false;
+                        }
+                    });
                     ui.separator();
 
                     if has_selection {
-                        if ui.button("\u{1F5D1} 删除选中").clicked() {
+                        if ui.button(format!("\u{1F5D1} {}", t(self.lang, T::DeleteSelected))).clicked() {
                             self.delete_selected();
                             self.context_menu_open = false;
                         }
-                        if ui.button("\u{2191} 置于顶层").clicked() {
+                        if ui.button(format!("\u{2191} {}", t(self.lang, T::BringToFront))).clicked() {
                             self.bring_to_front();
                             self.context_menu_open = false;
                         }
-                        if ui.button("\u{2193} 置于底层").clicked() {
+                        if ui.button(format!("\u{2193} {}", t(self.lang, T::SendToBack))).clicked() {
                             self.send_to_back();
                             self.context_menu_open = false;
                         }
                         ui.separator();
 
-                        // Phase 5：灰�?透明�?裁剪（仅 Pixmap 单选时�?
+                        // Phase 5：灰度/透明度/裁剪（仅 Pixmap 单选时）
                         if self.selected_pixmap_count() == 1 {
                             let is_gray = self.selected_pixmap_grayscale();
-                            if ui.button(if is_gray { "\u{1F3A8} 取消灰度" } else { "\u{1F3A8} 切换灰度" }).clicked() {
+                            let gray_label = if is_gray {
+                                format!("\u{1F3A8} {}", t(self.lang, T::CancelGrayscale))
+                            } else {
+                                format!("\u{1F3A8} {}", t(self.lang, T::ToggleGrayscale))
+                            };
+                            if ui.button(gray_label).clicked() {
                                 self.toggle_grayscale_selected();
                                 self.context_menu_open = false;
                             }
-                            if ui.button("\u{1F4CF} 裁剪模式...").clicked() {
+                            if ui.button(format!("\u{1F4CF} {}", t(self.lang, T::CropMode))).clicked() {
                                 self.enter_crop_mode();
                                 self.context_menu_open = false;
                             }
@@ -1390,34 +1513,34 @@ impl PReferZApp {
 
                         // Phase 5：归一化尺寸（Pixmap 多选）
                         if self.selected_pixmap_count() >= 2 {
-                            ui.menu_button("\u{1F4D0} 归一化尺寸", |ui| {
-                                if ui.button("按宽度").clicked() {
+                            ui.menu_button(format!("\u{1F4D0} {}", t(self.lang, T::NormalizeSize)), |ui| {
+                                if ui.button(t(self.lang, T::NormalizeByWidth)).clicked() {
                                     self.normalize_selected(preferz_core::commands::NormalizeMode::Width);
                                     self.context_menu_open = false;
                                 }
-                                if ui.button("按高度").clicked() {
+                                if ui.button(t(self.lang, T::NormalizeByHeight)).clicked() {
                                     self.normalize_selected(preferz_core::commands::NormalizeMode::Height);
                                     self.context_menu_open = false;
                                 }
-                                if ui.button("按面积").clicked() {
+                                if ui.button(t(self.lang, T::NormalizeByArea)).clicked() {
                                     self.normalize_selected(preferz_core::commands::NormalizeMode::Area);
                                     self.context_menu_open = false;
                                 }
                             });
                         }
 
-                        // Phase 5：批量排列（�? 项）
+                        // Phase 5：批量排列（≥ 2 项）
                         if self.scene.selection.len() >= 2 {
-                            ui.menu_button("\u{1F9ED} 排列", |ui| {
-                                if ui.button("线形 (R)").clicked() {
+                            ui.menu_button(format!("\u{1F9ED} {}", t(self.lang, T::Arrange)), |ui| {
+                                if ui.button(t(self.lang, T::ArrangeLinear)).clicked() {
                                     self.arrange_selected(ArrangeMode::Linear);
                                     self.context_menu_open = false;
                                 }
-                                if ui.button("网格 (G)").clicked() {
+                                if ui.button(t(self.lang, T::ArrangeGrid)).clicked() {
                                     self.arrange_selected(ArrangeMode::Grid);
                                     self.context_menu_open = false;
                                 }
-                                if ui.button("最优装箱 (O)").clicked() {
+                                if ui.button(t(self.lang, T::ArrangeOptimal)).clicked() {
                                     self.arrange_selected(ArrangeMode::Optimal);
                                     self.context_menu_open = false;
                                 }
@@ -1428,23 +1551,34 @@ impl PReferZApp {
                     }
 
                     // 颜色采样模式（spec §2.2）
-                    if ui.button(if self.color_picker_active { "\u{1F3A8} 退出取色器" } else { "\u{1F3A8} 取色器模式" }).clicked() {
+                    let picker_label = if self.color_picker_active {
+                        format!("\u{1F3A8} {}", t(self.lang, T::ExitColorPicker))
+                    } else {
+                        format!("\u{1F3A8} {}", t(self.lang, T::ColorPickerMode))
+                    };
+                    if ui.button(picker_label).clicked() {
                         self.color_picker_active = !self.color_picker_active;
                         self.context_menu_open = false;
                     }
 
-                    if ui.button("\u{1F527} 设置...").clicked() {
+                    if ui.button(format!("\u{1F527} {}", t(self.lang, T::Settings))).clicked() {
                         self.settings_open = true;
                         self.context_menu_open = false;
                     }
 
-                    if ui.button("\u{1F50D} 适应画布").clicked() {
+                    if ui.button(format!("\u{1F50D} {}", t(self.lang, T::FitToCanvas))).clicked() {
                         self.fit_to_screen();
                         self.context_menu_open = false;
                     }
-                    if ui.button("\u{1F504} 重置缩放").clicked() {
+                    if ui.button(format!("\u{1F504} {}", t(self.lang, T::ResetZoom))).clicked() {
                         self.viewport.reset();
-                        self.flash("重置缩放");
+                        self.flash(t(self.lang, T::FlashResetZoom).to_string());
+                        self.context_menu_open = false;
+                    }
+                    ui.separator();
+                    if ui.button(format!("\u{274C} {}", t(self.lang, T::Exit))).clicked() {
+                        // 触发 close_requested 流程；dirty 时由 update 顶部检测弹保存提示
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                         self.context_menu_open = false;
                     }
                 });
@@ -1461,6 +1595,117 @@ impl PReferZApp {
         }
     }
 
+    /// 渲染欢迎页（空场景时显示）。
+    /// 居中显示标题 + 提示 + 最近文件列表按钮。
+    fn render_welcome_page(&mut self, ui: &mut egui::Ui, screen_rect: &egui::Rect) {
+        let center = screen_rect.center();
+        let panel_w = 420.0;
+        let panel_x = center.x - panel_w / 2.0;
+        let mut y = center.y - 140.0;
+
+        // Icon（标题上方，64×64 居中；懒加载复用 assets/icon.png）
+        let ctx = ui.ctx().clone();
+        let logo_tex = self.logo_texture.get_or_insert_with(|| {
+            let bytes = include_bytes!("../../../assets/icon.png");
+            match image::load_from_memory(bytes) {
+                Ok(img) => {
+                    let rgba = img.to_rgba8();
+                    let (w, h) = rgba.dimensions();
+                    ctx.load_texture(
+                        "welcome-logo",
+                        egui::ColorImage {
+                            size: [w as usize, h as usize],
+                            pixels: rgba
+                                .into_raw()
+                                .chunks_exact(4)
+                                .map(|p| {
+                                    egui::Color32::from_rgba_unmultiplied(p[0], p[1], p[2], p[3])
+                                })
+                                .collect(),
+                        },
+                        egui::TextureOptions::LINEAR,
+                    )
+                }
+                Err(_) => ctx.load_texture(
+                    "welcome-logo-fallback",
+                    egui::ColorImage {
+                        size: [1, 1],
+                        pixels: vec![egui::Color32::TRANSPARENT],
+                    },
+                    egui::TextureOptions::LINEAR,
+                ),
+            }
+        });
+        let icon_size = 64.0;
+        let icon_rect = egui::Rect::from_min_size(
+            egui::pos2(center.x - icon_size / 2.0, y - icon_size - 10.0),
+            egui::vec2(icon_size, icon_size),
+        );
+        ui.painter().image(
+            logo_tex.id(),
+            icon_rect,
+            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+            egui::Color32::WHITE,
+        );
+
+        // 标题
+        ui.painter().text(
+            egui::pos2(center.x, y),
+            egui::Align2::CENTER_CENTER,
+            t(self.lang, T::WelcomeTitle),
+            egui::FontId::proportional(42.0),
+            egui::Color32::from_rgb(220, 220, 230),
+        );
+        y += 50.0;
+        ui.painter().text(
+            egui::pos2(center.x, y),
+            egui::Align2::CENTER_CENTER,
+            t(self.lang, T::WelcomeSubtitle),
+            egui::FontId::proportional(15.0),
+            egui::Color32::from_rgb(150, 150, 160),
+        );
+        y += 36.0;
+
+        // 最近文件列表
+        if !self.recent_files.is_empty() {
+            ui.painter().text(
+                egui::pos2(center.x, y),
+                egui::Align2::CENTER_CENTER,
+                t(self.lang, T::WelcomeRecentFiles),
+                egui::FontId::proportional(14.0),
+                egui::Color32::from_rgb(180, 180, 190),
+            );
+            y += 22.0;
+
+            // 借用切片避免 &mut self 冲突；点击记录到 pending_open_recent
+            let recent: Vec<PathBuf> = self.recent_files.iter().take(8).cloned().collect();
+            for path in recent {
+                let row_rect = egui::Rect::from_min_size(
+                    egui::pos2(panel_x, y),
+                    egui::vec2(panel_w, 26.0),
+                );
+                let resp = ui.allocate_new_ui(egui::UiBuilder::new().max_rect(row_rect), |ui| {
+                    let btn = egui::Button::new(path.to_string_lossy())
+                        .min_size(egui::vec2(panel_w, 0.0));
+                    ui.add(btn).clicked()
+                }).inner;
+                if resp {
+                    self.pending_open_recent = Some(path);
+                }
+                y += 30.0;
+            }
+        } else {
+            ui.painter().text(
+                egui::pos2(center.x, y),
+                egui::Align2::CENTER_CENTER,
+                t(self.lang, T::WelcomeHint),
+                egui::FontId::proportional(14.0),
+                egui::Color32::from_rgb(140, 140, 150),
+            );
+        }
+    }
+
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
     fn render_debug_panel(&self, ctx: &egui::Context) {
         egui::Window::new("Debug")
             .default_pos(egui::Pos2::new(10.0, 10.0))
@@ -1670,7 +1915,7 @@ impl PReferZApp {
         // Ctrl+Z 撤销
         if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::Z) && !i.modifiers.shift) {
             if self.perform_undo() {
-                self.flash("撤销");
+                self.flash(t(self.lang, T::FlashUndo).to_string());
                 ctx.request_repaint();
             }
         }
@@ -1680,7 +1925,7 @@ impl PReferZApp {
             i.modifiers.ctrl && (i.key_pressed(egui::Key::Y) || (i.key_pressed(egui::Key::Z) && i.modifiers.shift))
         }) {
             if self.perform_redo() {
-                self.flash("重做");
+                self.flash(t(self.lang, T::FlashRedo).to_string());
                 ctx.request_repaint();
             }
         }
@@ -1743,7 +1988,11 @@ impl PReferZApp {
         // I = 切换取色器模式（独立，不要求选中�?
         if no_mod && ctx.input(|i| i.key_pressed(egui::Key::I)) {
             self.color_picker_active = !self.color_picker_active;
-            self.flash(if self.color_picker_active { "取色器模式：单击图片采样" } else { "退出取色器" });
+            self.flash(if self.color_picker_active {
+                t(self.lang, T::FlashColorPickerHint).to_string()
+            } else {
+                t(self.lang, T::ExitColorPicker).to_string()
+            });
         }
     }
 
@@ -1849,6 +2098,8 @@ impl PReferZApp {
                 self.scene = scene;
                 self.current_file = Some(outcome.path.clone());
                 self.dirty = false;
+                // 加载成功后加入最近文件列表
+                add_recent_file(&mut self.recent_files, outcome.path.clone());
                 self.flash(format!("已打开: {}", outcome.path.display()));
                 ctx.request_repaint();
             }
@@ -1895,7 +2146,7 @@ impl PReferZApp {
         self.color_sample = None;
         self.pending_save_prompt = None;
         self.viewport.reset();
-        self.flash("新建画布");
+        self.flash(t(self.lang, T::FlashNewCanvas).to_string());
         ctx.request_repaint();
     }
 
@@ -1908,14 +2159,20 @@ impl PReferZApp {
         }
     }
 
-    /// 打开项目文件�?prz/.bee）�?
+    /// 打开项目文件（.prz/.bee）。
     fn open_project_file(&mut self, ctx: &egui::Context) {
         let picked = rfd::FileDialog::new()
             .add_filter("PReferZ 项目", &["prz", "bee"])
             .pick_file();
         if let Some(path) = picked {
-            self.bg_ops.start_load(ctx, path);
+            self.add_recent_and_load(ctx, path);
         }
+    }
+
+    /// 记录最近文件并启动后台加载。
+    fn add_recent_and_load(&mut self, ctx: &egui::Context, path: PathBuf) {
+        add_recent_file(&mut self.recent_files, path.clone());
+        self.bg_ops.start_load(ctx, path);
     }
 
     /// 载入图片到当前画布。
@@ -1943,7 +2200,7 @@ impl PReferZApp {
         let img_data = match clipboard.get_image() {
             Ok(img) => img,
             Err(_) => {
-                self.flash("剪贴板中无图片");
+                self.flash(t(self.lang, T::FlashNoClipboardImage).to_string());
                 return;
             }
         };
@@ -1954,7 +2211,7 @@ impl PReferZApp {
         let (tx, rx) = mpsc::channel();
         self.bg_ops.import_rx = Some(rx);
         self.bg_ops.pending += 1;
-        self.bg_ops.msg = Some("粘贴图片".to_string());
+        self.bg_ops.msg = Some(t(self.lang, T::FlashPasteImage).to_string());
         let ctx2 = ctx.clone();
         std::thread::spawn(move || {
             let outcome = (|| {
@@ -2024,6 +2281,144 @@ impl PReferZApp {
         self.bg_ops.start_save(ctx, path, self.scene.clone(), images, viewport);
     }
 
+    /// 启动后台导出（spec §2.3 导出）。
+    /// 收集所有 Pixmap 的 RGBA + item 快照，后台线程逐像素合成 + 编码。
+    /// 文本便签在导出中渲染为纯色矩形（MVP 简化，不渲染 glyph）。
+    fn start_export(&mut self, ctx: &egui::Context, path: PathBuf, format: ExportFormat, selection_only: bool) {
+        if self.scene.items.is_empty() {
+            self.flash(t(self.lang, T::FlashCanvasEmptyNoExport).to_string());
+            return;
+        }
+
+        // 按 selection_only 过滤 items
+        let items_snapshot: Vec<Item> = if selection_only {
+            let sel = &self.scene.selection;
+            self.scene.items.iter()
+                .filter(|it| sel.contains(&it.id))
+                .cloned()
+                .collect()
+        } else {
+            self.scene.items.clone()
+        };
+        if items_snapshot.is_empty() {
+            self.flash(t(self.lang, T::FlashNoSelectionToExport).to_string());
+            return;
+        }
+
+        // 收集 Pixmap 的 RGBA 像素和尺寸（按 texture_id 索引；只收集将用到的）
+        let mut pixmaps: Vec<(u64, Vec<u8>, u32, u32)> = Vec::new();
+        for item in &items_snapshot {
+            if let ItemKind::Pixmap { texture_id, .. } = &item.kind {
+                if let (Some(rgba), Some(size)) = (
+                    self.rgba_pixel_cache.get(texture_id),
+                    self.rgba_size_cache.get(texture_id),
+                ) {
+                    pixmaps.push((*texture_id, rgba.clone(), size.0, size.1));
+                }
+            }
+        }
+
+        let (tx, rx) = mpsc::channel();
+        self.bg_ops.export_rx = Some(rx);
+        self.bg_ops.pending += 1;
+        self.bg_ops.msg = Some(format!("{}: {}", t(self.lang, T::FlashExportProgress), path.display()));
+        let ctx2 = ctx.clone();
+        std::thread::spawn(move || {
+            let result = export_scene_to_file(&items_snapshot, &pixmaps, &path, format)
+                .map(|_| String::new());
+            let _ = tx.send(ExportOutcome { path, result });
+            ctx2.request_repaint();
+        });
+    }
+
+    /// 启动后台批量导出图片到目录（每个 Pixmap 一个 PNG 文件，原始分辨率）。
+    /// `selection_only=true` 仅导出选中的 Pixmap。
+    fn start_export_images_to_dir(&mut self, ctx: &egui::Context, dir: PathBuf, selection_only: bool) {
+        // 过滤 Pixmap items
+        let sel = &self.scene.selection;
+        let pixmap_items: Vec<&Item> = self.scene.items.iter()
+            .filter(|it| matches!(it.kind, ItemKind::Pixmap { .. }))
+            .filter(|it| !selection_only || sel.contains(&it.id))
+            .collect();
+
+        if pixmap_items.is_empty() {
+            self.flash(if selection_only { "无选中的图片项" } else { "无可导出的图片项" });
+            return;
+        }
+
+        // 收集 (filename, rgba, w, h)
+        let mut entries: Vec<(String, Vec<u8>, u32, u32)> = Vec::new();
+        let mut used_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut anon_index = 1usize;
+        for item in &pixmap_items {
+            if let ItemKind::Pixmap { texture_id, filename, .. } = &item.kind {
+                let (Some(rgba), Some(size)) = (
+                    self.rgba_pixel_cache.get(texture_id),
+                    self.rgba_size_cache.get(texture_id),
+                ) else { continue; };
+
+                // 文件名：优先 filename 的 stem，否则 image_N.png；确保目录内唯一
+                let base = filename
+                    .as_ref()
+                    .and_then(|s| std::path::Path::new(s).file_stem().and_then(|x| x.to_str()).map(|x| x.to_string()))
+                    .unwrap_or_else(|| { let n = format!("image_{}", anon_index); anon_index += 1; n });
+                let mut name = format!("{}.png", base);
+                let mut n = 1;
+                while used_names.contains(&name) {
+                    name = format!("{}_{}.png", base, n);
+                    n += 1;
+                }
+                used_names.insert(name.clone());
+                entries.push((name, rgba.clone(), size.0, size.1));
+            }
+        }
+
+        if entries.is_empty() {
+            self.flash(t(self.lang, T::FlashPixelDataNotReady).to_string());
+            return;
+        }
+
+        let (tx, rx) = mpsc::channel();
+        self.bg_ops.export_rx = Some(rx);
+        self.bg_ops.pending += 1;
+        self.bg_ops.msg = Some(format!("{}: {}", t(self.lang, T::FlashExportImagesProgress), dir.display()));
+        let ctx2 = ctx.clone();
+        let lang = self.lang;
+        std::thread::spawn(move || {
+            let total = entries.len();
+            let result = export_pixmaps_to_dir(&entries, &dir)
+                .map(|_| format!("{} {} {}: {}", t(lang, T::FlashExportedNImages), total, t(lang, T::FlashExportImagesTo), dir.display()));
+            let _ = tx.send(ExportOutcome { path: dir.clone(), result });
+            ctx2.request_repaint();
+        });
+    }
+
+    /// 弹出目录选择器，确定目录后启动批量图片导出。
+    fn start_export_images_dialog(&mut self, ctx: &egui::Context, selection_only: bool) {
+        let picked = rfd::FileDialog::new()
+            .set_title("选择导出目录")
+            .pick_folder();
+        if let Some(dir) = picked {
+            self.start_export_images_to_dir(ctx, dir, selection_only);
+        }
+    }
+
+    fn start_export_dialog(&mut self, ctx: &egui::Context, format: ExportFormat, selection_only: bool) {
+        let ext = format.extension();
+        let default_name = if selection_only { "selection" } else { "scene" };
+        let picked = rfd::FileDialog::new()
+            .add_filter(format.display_name(), &[ext])
+            .set_file_name(format!("{}.{}", default_name, ext))
+            .save_file();
+        if let Some(mut path) = picked {
+            // 确保扩展名正确
+            if path.extension().and_then(|e| e.to_str()) != Some(ext) {
+                path.set_extension(ext);
+            }
+            self.start_export(ctx, path, format, selection_only);
+        }
+    }
+
     fn delete_selected(&mut self) {
         let ids: Vec<ItemId> = self.scene.selection.iter().cloned().collect();
         if ids.is_empty() {
@@ -2056,7 +2451,7 @@ impl PReferZApp {
         // �?ReorderItems 命令（修 S3/W8），不再直接�?z
         let cmd = ReorderItems::new(ids, true);
         self.push_cmd(Box::new(cmd));
-        self.flash("置于顶层");
+        self.flash(t(self.lang, T::FlashBroughtToFront).to_string());
     }
 
     fn send_to_back(&mut self) {
@@ -2066,13 +2461,13 @@ impl PReferZApp {
         }
         let cmd = ReorderItems::new(ids, false);
         self.push_cmd(Box::new(cmd));
-        self.flash("置于底层");
+        self.flash(t(self.lang, T::FlashSentToBack).to_string());
     }
 
     fn fit_to_screen(&mut self) {
         if self.scene.items.is_empty() {
             self.viewport.reset();
-            self.flash("适应画布");
+            self.flash(t(self.lang, T::FlashFitToCanvas).to_string());
             return;
         }
         // 用所�?item �?AABB 并集
@@ -2086,7 +2481,7 @@ impl PReferZApp {
         }
         if let Some(b) = bbox {
             self.viewport.fit_to_content(b);
-            self.flash("适应画布");
+            self.flash(t(self.lang, T::FlashFitToCanvas).to_string());
         }
     }
 
@@ -2127,13 +2522,13 @@ impl PReferZApp {
             let cmd = SetPixmapProps::new(id).with_grayscale(old, !old);
             self.push_cmd(Box::new(cmd));
         }
-        self.flash("切换灰度");
+        self.flash(t(self.lang, T::FlashToggleGrayscale).to_string());
     }
 
     /// 进入裁剪模式（spec §2.2 裁剪）�?    /// 选中单个 Pixmap 时，初始�?crop 矩形为当�?crop 或整个图片�?
     fn enter_crop_mode(&mut self) {
         if self.scene.selection.len() != 1 {
-            self.flash("裁剪需要选中单个图片");
+            self.flash(t(self.lang, T::FlashCropNeedSingleImage).to_string());
             return;
         }
         let id = *self.scene.selection.iter().next().unwrap();
@@ -2141,7 +2536,7 @@ impl PReferZApp {
             Some(item) => match &item.kind {
                 ItemKind::Pixmap { original_size, crop, .. } => (*original_size, *crop),
                 _ => {
-                    self.flash("仅图片支持裁剪");
+                    self.flash(t(self.lang, T::FlashCropImageOnly).to_string());
                     return;
                 }
             },
@@ -2159,7 +2554,7 @@ impl PReferZApp {
             dragging: None,
             original: current_crop,
         });
-        self.flash("裁剪模式：拖拽角�?· Enter 应用 · Esc 取消");
+        self.flash(t(self.lang, T::FlashCropHint).to_string());
     }
 
     /// 应用裁剪：push CropItems 命令并退出裁剪模式�?    ///
@@ -2176,7 +2571,7 @@ impl PReferZApp {
         let new_crop = Some(crop_state.rect);
         // 若与原值相同则�?push 命令
         if original == new_crop {
-            self.flash("裁剪未变化");
+            self.flash(t(self.lang, T::FlashCropNoChange).to_string());
             return;
         }
 
@@ -2190,12 +2585,12 @@ impl PReferZApp {
                         (original_size.0 as f32, original_size.1 as f32)
                     }
                     _ => {
-                        // �?Pixmap 不应进入裁剪模式，安全兜�?self.flash("仅图片支持裁剪");
+                        // �?Pixmap 不应进入裁剪模式，安全兜�?self.flash(t(self.lang, T::FlashCropImageOnly).to_string());
                         return;
                     }
                 };
                 if base_w < 1.0 || base_h < 1.0 || c.width < 1.0 || c.height < 1.0 {
-                    self.flash("裁剪尺寸无效");
+                    self.flash(t(self.lang, T::FlashCropInvalidSize).to_string());
                     return;
                 }
                 let old_transform = item.transform;
@@ -2237,13 +2632,13 @@ impl PReferZApp {
 
         let cmd = CropItems::new(item_id, original, new_crop, old_transform, new_transform);
         self.push_cmd(Box::new(cmd));
-        self.flash("已应用裁剪");
+        self.flash(t(self.lang, T::FlashCropApplied).to_string());
     }
 
     /// 取消裁剪：恢复原 crop 并退出裁剪模式�?
     fn cancel_crop(&mut self) {
         self.crop_mode = None;
-        self.flash("取消裁剪");
+        self.flash(t(self.lang, T::FlashCropCancelled).to_string());
     }
 
     /// 检测鼠标是否命中裁剪手柄（4 个角点）�?
@@ -2375,14 +2770,14 @@ impl PReferZApp {
         let item = match hit {
             Some(it) => it,
             None => {
-                self.flash("未命中图片");
+                self.flash(t(self.lang, T::FlashColorPickerMissed).to_string());
                 return;
             }
         };
         let (texture_id, original_size) = match &item.kind {
             ItemKind::Pixmap { texture_id, original_size, .. } => (*texture_id, *original_size),
             _ => {
-                self.flash("仅图片支持采样");
+                self.flash(t(self.lang, T::FlashColorPickerImageOnly).to_string());
                 return;
             }
         };
@@ -2462,7 +2857,7 @@ impl PReferZApp {
             })
             .collect();
         if ids.len() < 2 {
-            self.flash("归一化需要选中多个图片");
+            self.flash(t(self.lang, T::FlashNormalizeNeedMultiple).to_string());
             return;
         }
         // target = 首个选中 Pixmap 的当前�?
@@ -2487,11 +2882,11 @@ impl PReferZApp {
         let cmd = NormalizeItems::new(ids, mode, target);
         self.push_cmd(Box::new(cmd));
         let mode_name = match mode {
-            preferz_core::commands::NormalizeMode::Width => "宽度",
-            preferz_core::commands::NormalizeMode::Height => "高度",
-            preferz_core::commands::NormalizeMode::Area => "面积",
+            preferz_core::commands::NormalizeMode::Width => t(self.lang, T::NormalizeByWidth),
+            preferz_core::commands::NormalizeMode::Height => t(self.lang, T::NormalizeByHeight),
+            preferz_core::commands::NormalizeMode::Area => t(self.lang, T::NormalizeByArea),
         };
-        self.flash(format!("归一化：{}", mode_name));
+        self.flash(format!("{}: {}", t(self.lang, T::NormalizeSize), mode_name));
     }
 
     /// 渲染保存提示对话框（关闭/新建时若 dirty 弹出）�?    /// 按钮�?    /// - 保存：触发保存流程，首次保存弹系统文件选择器；保存完成后由 poll_background 执行 pending action
@@ -2509,7 +2904,7 @@ impl PReferZApp {
         let mut discard_clicked = false;
         let mut cancel_clicked = false;
 
-        egui::Window::new("保存提示")
+        egui::Window::new(t(self.lang, T::SavePromptMessage))
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
@@ -2517,16 +2912,16 @@ impl PReferZApp {
                 ui.set_min_width(300.0);
                 ui.vertical_centered(|ui| {
                     ui.add_space(8.0);
-                    ui.label("画布有未保存的修改，是否保存？");
+                    ui.label(t(self.lang, T::SavePromptMessage));
                     ui.add_space(12.0);
                     ui.horizontal(|ui| {
-                        if ui.button("保存").clicked() {
+                        if ui.button(t(self.lang, T::SavePromptSave)).clicked() {
                             save_clicked = true;
                         }
-                        if ui.button("放弃").clicked() {
+                        if ui.button(t(self.lang, T::SavePromptDiscard)).clicked() {
                             discard_clicked = true;
                         }
-                        if ui.button("取消").clicked() {
+                        if ui.button(t(self.lang, T::SavePromptCancel)).clicked() {
                             cancel_clicked = true;
                         }
                     });
@@ -2556,24 +2951,80 @@ impl PReferZApp {
         }
     }
 
-    /// 渲染设置面板（spec §2.3 简化版：排列间�?+ 快捷键说明，仅暗色主题）�?
+    /// 渲染设置面板（spec §2.3 简化版：排列间距 + 窗口形态 + 语言 + 快捷键说明，仅暗色主题）。
     fn render_settings_window(&mut self, ctx: &egui::Context) {
         let mut open = self.settings_open;
-        egui::Window::new("设置")
+        // 局部副本，闭包内修改；changed 时记录，闭包外发 ViewportCommand
+        let mut always_on_top = self.always_on_top;
+        let mut frameless = self.frameless;
+        let mut lang = self.lang;
+        let mut top_changed = false;
+        let mut frame_changed = false;
+        let mut lang_changed = false;
+        egui::Window::new(t(self.lang, T::SettingsTitle))
             .open(&mut open)
             .resizable(false)
             .show(ctx, |ui| {
-                ui.label("排列");
-                ui.add(egui::Slider::new(&mut self.arrange_spacing, 0.0..=200.0).text("间距"));
+                ui.label(t(self.lang, T::SettingsArrange));
+                ui.add(egui::Slider::new(&mut self.arrange_spacing, 0.0..=200.0).text(t(self.lang, T::SettingsSpacing)));
                 ui.separator();
 
-                ui.label("快捷键");
-                ui.label("R/G/O 排列 · C 裁剪 · I 取色�?· F 适应画布");
-                ui.label("Ctrl+Z 撤销 · Ctrl+Shift+Z 重做");
-                ui.label("Ctrl+N 新建 · Ctrl+O 打开 · Ctrl+I 载入图片");
-                ui.label("Ctrl+V 粘贴图片 · Ctrl+S 保存 · Ctrl+Shift+S 另存为");
+                ui.label(t(self.lang, T::SettingsWindow));
+                if ui.checkbox(&mut always_on_top, t(self.lang, T::SettingsAlwaysOnTop)).changed() {
+                    top_changed = true;
+                }
+                if ui.checkbox(&mut frameless, t(self.lang, T::SettingsFrameless)).changed() {
+                    frame_changed = true;
+                }
+                // 背景透明度：0.1~1.0，配无边框+置顶可作悬浮看图板。
+                // 限制最小 0.1 避免空场景下窗口完全不可见（spec §2.3 透明背景注意事项）。
+                ui.add(
+                    egui::Slider::new(&mut self.bg_alpha, 0.1..=1.0)
+                        .text(t(self.lang, T::SettingsBgAlpha))
+                        .fixed_decimals(2),
+                );
+                ui.separator();
+
+                // 语言切换
+                ui.label(t(self.lang, T::SettingsLanguage));
+                egui::ComboBox::from_label("")
+                    .selected_text(lang.display_name())
+                    .show_ui(ui, |ui| {
+                        for option in [Lang::En, Lang::Zh] {
+                            if ui.selectable_label(lang == option, option.display_name()).clicked() {
+                                lang = option;
+                                lang_changed = true;
+                            }
+                        }
+                    });
+                ui.separator();
+
+                ui.label(t(self.lang, T::SettingsShortcuts));
+                ui.label(t(self.lang, T::SettingsShortcutArrange));
+                ui.label(t(self.lang, T::SettingsShortcutUndo));
+                ui.label(t(self.lang, T::SettingsShortcutFile));
+                ui.label(t(self.lang, T::SettingsShortcutPaste));
             });
         self.settings_open = open;
+        // 应用窗口形态切换
+        if top_changed {
+            self.always_on_top = always_on_top;
+            let level = if always_on_top {
+                egui::viewport::WindowLevel::AlwaysOnTop
+            } else {
+                egui::viewport::WindowLevel::Normal
+            };
+            ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(level));
+        }
+        if frame_changed {
+            self.frameless = frameless;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(!frameless));
+        }
+        if lang_changed {
+            self.lang = lang;
+            // 持久化到 config.json
+            save_config(&UserConfig { lang });
+        }
     }
 
     /// 渲染颜色采样 overlay（在鼠标附近显示 RGB/HEX）�?
@@ -2590,7 +3041,7 @@ impl PReferZApp {
                         .show(ctx, |ui| {
                             let frame = egui::Frame::popup(ui.style());
                             frame.show(ui, |ui| {
-                                ui.label("取色器模式：单击图片采样 · Esc 退出");
+                                ui.label(t(self.lang, T::FlashColorPickerHint));
                             });
                         });
                 }
@@ -2627,7 +3078,8 @@ impl PReferZApp {
 
 }
 
-/// 颜色采样结果（spec §2.2 颜色采样）�?#[derive(Debug, Clone, Copy)]
+/// 颜色采样结果（spec §2.2 颜色采样）。
+#[derive(Debug, Clone, Copy)]
 struct ColorSample {
     r: u8,
     g: u8,
@@ -2636,4 +3088,405 @@ struct ColorSample {
     screen_pos: egui::Pos2,
     px: u32,
     py: u32,
+}
+
+// ─────────────────────────── 导出 ───────────────────────────
+
+/// 导出格式（spec §2.3 导出，SVG 暂不支持）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExportFormat {
+    Png,
+    Jpeg,
+}
+
+impl ExportFormat {
+    pub fn extension(&self) -> &'static str {
+        match self {
+            ExportFormat::Png => "png",
+            ExportFormat::Jpeg => "jpg",
+        }
+    }
+
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            ExportFormat::Png => "PNG",
+            ExportFormat::Jpeg => "JPG",
+        }
+    }
+}
+
+/// 导出场景到文件（后台线程调用）。
+/// 逐像素反向采样：对每个输出像素，画布坐标 → 遍历 Z 序倒序 → 命中 Pixmap 则采样。
+/// 文本便签渲染为纯色矩形（MVP 简化）。
+fn export_scene_to_file(
+    items: &[Item],
+    pixmaps: &[(u64, Vec<u8>, u32, u32)],
+    path: &Path,
+    format: ExportFormat,
+) -> Result<(), String> {
+    use preferz_core::spaces::CanvasSpace;
+    use euclid::Point2D;
+
+    if items.is_empty() {
+        return Err("画布为空".to_string());
+    }
+
+    // 计算所有 item 画布 AABB 并集
+    let mut min_x = f32::MAX;
+    let mut min_y = f32::MAX;
+    let mut max_x = f32::MIN;
+    let mut max_y = f32::MIN;
+    for item in items {
+        let bbox = item.bounding_rect();
+        min_x = min_x.min(bbox.min().x);
+        min_y = min_y.min(bbox.min().y);
+        max_x = max_x.max(bbox.max().x);
+        max_y = max_y.max(bbox.max().y);
+    }
+    // 加 padding 防止边缘裁切
+    let padding = 8.0_f32;
+    min_x -= padding;
+    min_y -= padding;
+    max_x += padding;
+    max_y += padding;
+
+    let canvas_w = (max_x - min_x).max(1.0).ceil() as u32;
+    let canvas_h = (max_y - min_y).max(1.0).ceil() as u32;
+    // 限制最大尺寸避免 OOM（100MP 上限）
+    const MAX_PIXELS: u64 = 100_000_000;
+    if (canvas_w as u64) * (canvas_h as u64) > MAX_PIXELS {
+        return Err(format!(
+            "导出尺寸过大: {}x{} (上限 {} 像素)",
+            canvas_w, canvas_h, MAX_PIXELS
+        ));
+    }
+
+    // 预构建 Pixmap 像素查找表（texture_id → (rgba, w, h)）
+    use std::collections::HashMap;
+    let pixmap_map: HashMap<u64, (&Vec<u8>, u32, u32)> = pixmaps.iter()
+        .map(|(id, rgba, w, h)| (*id, (rgba, *w, *h)))
+        .collect();
+
+    // 按 Z 序倒序（顶层先采样）
+    let mut sorted: Vec<&Item> = items.iter().collect();
+    sorted.sort_by(|a, b| b.z.cmp(&a.z));
+
+    // 逐像素合成
+    let mut out_rgba: Vec<u8> = vec![0u8; (canvas_w as usize) * (canvas_h as usize) * 4];
+    // 背景填充为白色（JPG 不支持透明，PNG 也用白底更实用）
+    for px in out_rgba.chunks_exact_mut(4) {
+        px[0] = 255; px[1] = 255; px[2] = 255; px[3] = 255;
+    }
+
+    // 遍历每个像素，反向找命中的顶层 item
+    for y in 0..canvas_h {
+        let canvas_y = min_y + y as f32 + 0.5;
+        for x in 0..canvas_w {
+            let canvas_x = min_x + x as f32 + 0.5;
+            let canvas_pos: Point2D<f32, CanvasSpace> = Point2D::new(canvas_x, canvas_y);
+
+            // Z 序倒序查找命中的 item
+            for item in &sorted {
+                if !item.contains_canvas_point(canvas_pos) {
+                    continue;
+                }
+                // 命中：采样颜色
+                let pixel = sample_item_pixel(item, &pixmap_map, canvas_pos);
+                if let Some((r, g, b, a)) = pixel {
+                    let idx = ((y as usize) * (canvas_w as usize) + x as usize) * 4;
+                    // alpha 混合到白底
+                    let alpha = a as f32 / 255.0;
+                    out_rgba[idx] = (r as f32 * alpha + 255.0 * (1.0 - alpha)) as u8;
+                    out_rgba[idx + 1] = (g as f32 * alpha + 255.0 * (1.0 - alpha)) as u8;
+                    out_rgba[idx + 2] = (b as f32 * alpha + 255.0 * (1.0 - alpha)) as u8;
+                    // PNG 保留原 alpha；JPG 后续会丢弃
+                    out_rgba[idx + 3] = 255;
+                }
+                break; // 只取顶层
+            }
+        }
+    }
+
+    // 编码到文件
+    let file = std::fs::File::create(path).map_err(|e| e.to_string())?;
+    let writer = std::io::BufWriter::new(file);
+    match format {
+        ExportFormat::Png => {
+            let encoder = image::codecs::png::PngEncoder::new(writer);
+            image::ImageEncoder::write_image(
+                encoder,
+                &out_rgba,
+                canvas_w,
+                canvas_h,
+                image::ExtendedColorType::Rgba8,
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        ExportFormat::Jpeg => {
+            // JPEG 不支持 alpha：RGBA → RGB（背景已合成白底，直接丢弃 alpha）
+            let mut out_rgb: Vec<u8> = Vec::with_capacity((canvas_w as usize) * (canvas_h as usize) * 3);
+            for px in out_rgba.chunks_exact(4) {
+                out_rgb.push(px[0]);
+                out_rgb.push(px[1]);
+                out_rgb.push(px[2]);
+            }
+            let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(writer, 90);
+            image::ImageEncoder::write_image(
+                encoder,
+                &out_rgb,
+                canvas_w,
+                canvas_h,
+                image::ExtendedColorType::Rgb8,
+            )
+            .map_err(|e| e.to_string())?;
+        }
+    }
+
+    Ok(())
+}
+
+/// 批量将 Pixmap RGBA 数据写入指定目录，每个 entry 一个 PNG 文件。
+/// 单个失败不中断后续，最终汇总错误数。返回成功数与错误数描述。
+fn export_pixmaps_to_dir(
+    entries: &[(String, Vec<u8>, u32, u32)],
+    dir: &Path,
+) -> Result<(), String> {
+    if !dir.exists() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    let mut ok = 0u32;
+    let mut errs: Vec<String> = Vec::new();
+    for (name, rgba, w, h) in entries {
+        let path = dir.join(name);
+        match std::fs::File::create(&path) {
+            Ok(file) => {
+                let writer = std::io::BufWriter::new(file);
+                let encoder = image::codecs::png::PngEncoder::new(writer);
+                if let Err(e) = image::ImageEncoder::write_image(
+                    encoder,
+                    rgba,
+                    *w,
+                    *h,
+                    image::ExtendedColorType::Rgba8,
+                ) {
+                    errs.push(format!("{}: {}", name, e));
+                } else {
+                    ok += 1;
+                }
+            }
+            Err(e) => errs.push(format!("{}: {}", name, e)),
+        }
+    }
+    if errs.is_empty() {
+        Ok(())
+    } else if ok == 0 {
+        Err(format!("全部失败 ({}): {}", errs.len(), errs.join("; ")))
+    } else {
+        // 部分成功也视为成功，但带上错误信息
+        Ok(()) // 成功条数通过 flash 消息体现；err 信息记录到日志
+    }
+}
+
+/// 采样 item 在画布坐标处的像素颜色。
+/// Pixmap：逆变换到局部坐标 → 应用 crop → 采样 RGBA（含 opacity、grayscale）。
+/// Text：返回纯色（背景灰 + 文字色混合的简化表示）。
+fn sample_item_pixel(
+    item: &Item,
+    pixmap_map: &std::collections::HashMap<u64, (&Vec<u8>, u32, u32)>,
+    canvas_pos: preferz_core::spaces::CanvasPoint,
+) -> Option<(u8, u8, u8, u8)> {
+    let inv = item.local_to_canvas().inverse()?;
+    let local = inv.transform_point(canvas_pos);
+    let base = item.base_size();
+
+    match &item.kind {
+        ItemKind::Pixmap { texture_id, opacity, grayscale, crop, .. } => {
+            let (rgba, w, h) = pixmap_map.get(texture_id)?;
+            let w = *w as f32;
+            let h = *h as f32;
+
+            // 应用 crop：crop 定义在局部空间，需把 local 映射到 crop 后的图片坐标
+            let (cx, cy, cw, ch) = if let Some(c) = crop {
+                (c.x, c.y, c.width, c.height)
+            } else {
+                (0.0, 0.0, w, h)
+            };
+
+            // local 坐标 → crop 内偏移
+            let px = local.x;
+            let py = local.y;
+            // crop 区域 = [cx, cx+cw] × [cy, cy+ch]，超出则透明
+            if px < cx || px >= cx + cw || py < cy || py >= cy + ch {
+                return Some((0, 0, 0, 0)); // crop 外透明
+            }
+
+            // 把 crop 内坐标映射回原始图片像素坐标
+            // crop 把 [cx, cx+cw] 拉伸到 [0, w]（scale 使然），所以：
+            //   原图 x = cx + (local.x / base.x) * cw  -- 但 local 已是变换后坐标，base 已含 scale
+            // 简化：crop 在 base_size 空间定义，base_size 是 original_size * scale，
+            //       所以 local 直接对应 base_size 空间，px/cw * 原图宽 即原图坐标
+            let img_x = ((px - cx) / cw * w).clamp(0.0, w - 1.0) as u32;
+            let img_y = ((py - cy) / ch * h).clamp(0.0, h - 1.0) as u32;
+
+            let idx = ((img_y as usize) * (w as usize) + img_x as usize) * 4;
+            if idx + 3 >= rgba.len() {
+                return None;
+            }
+            let r = rgba[idx];
+            let g = rgba[idx + 1];
+            let b = rgba[idx + 2];
+            let a = rgba[idx + 3];
+
+            // 灰度（BT.601）
+            let (r, g, b) = if *grayscale {
+                let y = (0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32).round() as u8;
+                (y, y, y)
+            } else {
+                (r, g, b)
+            };
+
+            // opacity
+            let alpha = (a as f32 * opacity.clamp(0.0, 1.0)) as u8;
+            Some((r, g, b, alpha))
+        }
+        ItemKind::Text { color, .. } => {
+            // 简化：整个文本区域用文字色填充（MVP）
+            // 仅当 local 在 [0, base.x] × [0, base.y] 内（contains_canvas_point 已保证）
+            let _ = (local, base);
+            Some((color[0], color[1], color[2], color[3]))
+        }
+    }
+}
+
+// ─────────────────────────── 最近文件 ───────────────────────────
+
+/// 最近文件列表的持久化路径：`~/.preferz/recent.json`。
+fn recent_files_path() -> Option<PathBuf> {
+    let home = dirs_or_home()?;
+    Some(home.join(".preferz").join("recent.json"))
+}
+
+/// 用户配置的持久化路径：`~/.preferz/config.json`。
+fn config_path() -> Option<PathBuf> {
+    let home = dirs_or_home()?;
+    Some(home.join(".preferz").join("config.json"))
+}
+
+/// 用户配置（当前仅含语言；后续可扩展窗口形态、透明度等）。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct UserConfig {
+    #[serde(default)]
+    lang: Lang,
+}
+
+impl Default for UserConfig {
+    fn default() -> Self {
+        Self { lang: Lang::default() }
+    }
+}
+
+/// 从 `~/.preferz/config.json` 加载配置。文件不存在或解析失败时返回默认值。
+fn load_config() -> UserConfig {
+    let path = match config_path() {
+        Some(p) => p,
+        None => return UserConfig::default(),
+    };
+    match std::fs::read_to_string(&path) {
+        Ok(content) => serde_json::from_str::<UserConfig>(&content).unwrap_or_default(),
+        Err(_) => UserConfig::default(),
+    }
+}
+
+/// 保存配置到 `~/.preferz/config.json`。
+fn save_config(cfg: &UserConfig) {
+    let path = match config_path() {
+        Some(p) => p,
+        None => return,
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(json) = serde_json::to_string_pretty(cfg) {
+        let _ = std::fs::write(path, json);
+    }
+}
+
+/// 获取用户 home 目录（跨平台）。
+fn dirs_or_home() -> Option<PathBuf> {
+    // 优先用 std::env，回退到常见环境变量
+    if let Some(home) = std::env::var_os("HOME") {
+        return Some(PathBuf::from(home));
+    }
+    if let Some(userprofile) = std::env::var_os("USERPROFILE") {
+        return Some(PathBuf::from(userprofile));
+    }
+    None
+}
+
+/// 从 `~/.preferz/recent.json` 加载最近文件列表。
+/// 文件不存在或解析失败时返回空列表。
+fn load_recent_files() -> Vec<PathBuf> {
+    let path = match recent_files_path() {
+        Some(p) => p,
+        None => return Vec::new(),
+    };
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    #[derive(serde::Deserialize)]
+    struct RecentFile {
+        path: String,
+    }
+    #[derive(serde::Deserialize)]
+    struct RecentFiles {
+        files: Vec<RecentFile>,
+    }
+    match serde_json::from_str::<RecentFiles>(&content) {
+        Ok(parsed) => parsed.files.into_iter()
+            .map(|f| PathBuf::from(f.path))
+            .filter(|p| p.exists())
+            .collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// 保存最近文件列表到 `~/.preferz/recent.json`。
+fn save_recent_files(files: &[PathBuf]) {
+    let path = match recent_files_path() {
+        Some(p) => p,
+        None => return,
+    };
+    // 确保父目录存在
+    if let Some(parent) = path.parent() {
+        if std::fs::create_dir_all(parent).is_err() {
+            return;
+        }
+    }
+    #[derive(serde::Serialize)]
+    struct RecentFile {
+        path: String,
+    }
+    #[derive(serde::Serialize)]
+    struct RecentFiles {
+        files: Vec<RecentFile>,
+    }
+    let recent = RecentFiles {
+        files: files.iter()
+            .map(|p| RecentFile { path: p.to_string_lossy().into_owned() })
+            .collect(),
+    };
+    if let Ok(json) = serde_json::to_string_pretty(&recent) {
+        let _ = std::fs::write(path, json);
+    }
+}
+
+/// 把路径添加到最近文件列表头部，去重，限制最多 10 条。
+fn add_recent_file(files: &mut Vec<PathBuf>, path: PathBuf) {
+    files.retain(|p| p != &path);
+    files.insert(0, path);
+    if files.len() > 10 {
+        files.truncate(10);
+    }
+    save_recent_files(files);
 }

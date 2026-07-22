@@ -321,12 +321,14 @@ impl UndoStack {
 
 ### Phase 6 · 打磨（预计 2 周）
 
-- [ ] 导出：场景 → PNG/JPG/SVG（resvg）
-- [ ] 始终置顶 + 无边框模式
-- [ ] 欢迎页 + 最近文件列表
+- [x] 导出：场景 → PNG/JPG（SVG 未实现；后台线程逐像素反向采样 + image crate 编码）
+- [x] 始终置顶 + 无边框模式（`ViewportCommand::WindowLevel` + `Decorations`，运行时切换）
+- [x] 欢迎页 + 最近文件列表（`~/.preferz/recent.json`，最多 10 条，加载时过滤不存在路径）
 - [x] 设置面板（简化版：排列间距 + 快捷键说明；存储格式/内存上限未实现）
 - [ ] 键鼠映射可配置（confy 持久化）
 - [x] 主题：仅暗色（用户要求去掉亮色选项，`main.rs` 中固定 `egui::Visuals::dark()`）
+- [x] i18n：默认英文可选中文（`Lang` 枚举 + `T` 翻译 key 枚举 + `t(lang, key)` 查表；零新增依赖；持久化到 `~/.preferz/config.json`）
+- [x] 应用图标：`assets/icon.png` 经 `include_bytes!` 编译期内联，`image` crate 解码为 RGBA 后传入 `egui::IconData`（SVG 源文件 `assets/icon.svg` 仅作设计源不编译）
 
 **可交付**：面向用户发布的首个 alpha 版本。
 

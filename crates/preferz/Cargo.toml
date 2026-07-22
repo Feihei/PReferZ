@@ -22,6 +22,7 @@ euclid = { workspace = true }
 
 # Utilities
 serde = { workspace = true }
+serde_json = { workspace = true }
 log = { workspace = true }
 env_logger = "0.11"
 rfd = { workspace = true }

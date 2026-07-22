@@ -79,8 +79,9 @@ impl ViewportState {
     /// `(1/old_zoom - 1/new_zoom)` 是 1/zoom，乘积为画布空间，与 `pan` 同空间。
     /// （修 W4 的量纲错误。）
     pub fn zoom_at(&mut self, delta: f32, screen_pos: egui::Pos2) {
-        let normalized_delta = delta.clamp(-1.0, 1.0);
-        let zoom_factor = 1.02_f32.powf(normalized_delta);
+        // delta 钳制防止 NaN/爆炸；基数 1.05 每单位 delta 缩放 5%（原 1.02 太慢）。
+        let normalized_delta = delta.clamp(-2.0, 2.0);
+        let zoom_factor = 1.05_f32.powf(normalized_delta);
         let new_zoom = (self.zoom * zoom_factor).clamp(self.min_zoom, self.max_zoom);
         if (new_zoom - self.zoom).abs() < 1e-9 {
             return;
