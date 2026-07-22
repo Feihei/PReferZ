@@ -26,13 +26,13 @@
 | 功能 | 状态 | 说明 | BeeRef 对应 |
 |------|------|------|------------|
 | 无限画布 | ✅ | 鼠标中键平移、滚轮缩放、F 键 fit | QGraphicsView 缩放/平移 |
-| 图片导入 | ✅ | 拖放文件、菜单打开（剪贴板粘贴 ❌） | `view.do_insert_images()` |
+| 图片导入 | ✅ | 拖放文件、菜单打开、剪贴板粘贴（Ctrl+V） | `view.do_insert_images()` |
 | 图片项 | ✅ | 在画布上自由移动、缩放、旋转 | BeePixmapItem |
 | 文本便签 | ✅ | 双击空白创建，TextEdit overlay 编辑，Enter/失焦提交，Esc 取消 | BeeTextItem |
 | 选中与手柄 | ✅ | 单击选中 + 四角缩放 + 旋转手柄 + 翻转边 + 框选 | SelectableMixin |
 | 撤销/重做 | ✅ | Ctrl+Z / Ctrl+Shift+Z（自定义 Command trait） | QUndoStack |
 | 图层 | ✅ | 置顶/置底，Z 序管理（ReorderItems） | `max_z`/`min_z` + `Z_STEP` |
-| 保存/加载 | ❌ | BeeFile 有骨架但 load_scene 返回空场景，save_file 未序列化 | SQLiteIO |
+| 保存/加载 | ✅ | `.prz`/`.bee` SQLite 持久化（items + sqlar 图片 + metadata 视口），后台线程加载/保存 | SQLiteIO |
 
 ### 2.2 扩展功能（Phase 5）
 
@@ -41,7 +41,7 @@
 | 反转/翻转 | 水平/垂直翻转（变换矩阵 m11/m22） |
 | 裁剪 | Crop 模式，保留临时裁剪状态 |
 | 透明度 | 图片整体透明度滑块 |
-| 灰度 | 实时灰度滤镜（palette crate 直出） |
+| 灰度 | 实时灰度滤镜（自实现 BT.601 亮度矩阵，未引入 palette crate） |
 | 颜色采样 | 取色器模式，显示 RGB/HEX |
 | 批量操作 | 归一化尺寸（宽/高/面积）、批量排列（线形/最优/方形） |
 
@@ -53,7 +53,7 @@
 | 始终置顶 | 窗口置顶 + 无边框悬浮模式 |
 | 欢迎页 | 空场景时的最近文件列表 |
 | 键鼠映射 | 可自定义快捷键/鼠标行为 |
-| 暗色主题 | 默认暗色，支持亮色切换 |
+| 暗色主题 | 默认暗色，仅暗色（用户要求取消亮色选项） |
 
 ---
 
@@ -73,16 +73,16 @@ PReferZ (binary)
 ├── preferz-fileio  —— 文件读写
 │   ├── rusqlite    —— SQLite .bee/.prz 读写
 │   ├── image       —— 图片编解码
-│   ├── rayon       —— Cargo.toml 声明但代码未使用（后台解码为 Phase 4+ 任务）
+│   ├── rayon       —— Cargo.toml 声明但代码未使用（后台解码用 std::thread 实现）
 │   ├── thiserror/log —— 错误处理/日志
 │   └── serde(+serde_json) —— 序列化
 ├── rfd             —— 原生文件对话框
-├── arboard         —— Cargo.toml 声明但代码未使用（剪贴板粘贴为后续功能）
+├── arboard         —— 剪贴板读取（Ctrl+V 粘贴图片）
 ├── image           —— 图片解码（PReferZApp 直接调用，同步）
 └── env_logger/log  —— 日志
 ```
 
-> **未引入的依赖**（spec 原列但 Cargo.toml 实际没有）：`palette`（灰度滤镜）、`exif`（EXIF 方向）、`resvg+usvg`（SVG 导出）、`confy`（配置持久化）、`rect_packer`（矩形装箱）。这些为 Phase 5/6 计划依赖。
+> **未引入的依赖**（spec 原列但 Cargo.toml 实际没有）：`palette`（灰度滤镜，已自实现 BT.601 矩阵替代）、`exif`（EXIF 方向）、`resvg+usvg`（SVG 导出）、`confy`（配置持久化）、`rect_packer`（矩形装箱，已自实现 MaxRects 替代）。Phase 5 灰度与装箱均改为自实现，未引入对应 crate。
 
 ### 3.2 核心模块架构
 
@@ -290,33 +290,43 @@ impl UndoStack {
 
 ### Phase 4 · 持久化（预计 2–3 周）
 
-- [ ] `preferz-fileio` crate：`BeeFile` struct
-- [ ] 读取 .bee：`rusqlite` 解析 sqlar 表，按 `items` 数据重建 scene
-- [ ] 保存 .bee：增量更新（已存 item update，新 item insert，删除的 delete），最后 VACUUM
-- [ ] 图片加载器：`image` + `rayon` 并行解码，后台线程不阻塞 UI
-- [ ] 进度条对话框
+- [x] `preferz-fileio` crate：`BeeFile` struct
+- [x] 读取 .bee/.prz：`rusqlite` 解析 items + sqlar 表，按 `items` 数据重建 scene，sqlar 返回图片字节映射
+- [x] 保存 .bee/.prz：事务内全量替换 items + 增量同步 sqlar（写入新图 + 清理孤儿），最后 VACUUM
+- [x] 图片加载器：`std::thread::spawn` 后台解码（导入 + 加载均不阻塞 UI），`ctx.request_repaint()` 通信
+- [x] 进度条对话框：`BackgroundOps` 管理导入/加载/保存三类后台任务，pending>0 时显示 Spinner
+- [x] 视口状态持久化：`.prz` metadata 表存 pan/zoom，加载时恢复
 
-**可交付**：能打开展示 BeeRef 创建的 .bee 文件，也能保存回 .bee。
+**可交付**：能保存/加载 `.prz` 项目文件（含图片 + 文本 + 视口），后台线程不阻塞 UI。
+
+**完成时间**：2026-07-11
 
 ### Phase 5 · 撤销与高级操作（预计 2–3 周）
 
-- [x] 集成自定义 Command trait + UndoStack（`MoveItems`/`TransformItem`/`ScaleItems`/`RotateItems`/`FlipItems`/`DeleteItems`/`AddItem`/`ReorderItems`/`ArrangeItems`）
+- [x] 集成自定义 Command trait + UndoStack（`MoveItems`/`TransformItem`/`ScaleItems`/`RotateItems`/`FlipItems`/`DeleteItems`/`AddItem`/`ReorderItems`/`ArrangeItems`/`SetPixmapProps`/`CropItems`/`NormalizeItems`）
 - [x] 交互过程：拖拽/缩放时为"预览模式"（直接改 item），松手时 push undo command
 - [x] Ctrl+Z / Ctrl+Shift+Z 绑定
-- [ ] 灰度、透明度、裁剪（Crop）
-- [x] 批量操作：排布算法 `plan_arrange`（Linear/Grid/Optimal 简化贪心），UI 未接
-- [ ] 排布算法：最大矩形装箱（`rect_packer` 或自写 maxrects，当前 Optimal 为简化贪心）
+- [x] 灰度、透明度、裁剪（Crop）
+  - 灰度：懒生成灰度纹理缓存，BT.601 亮度矩阵 `Y = 0.299R + 0.587G + 0.114B`（自实现，未引入 palette crate）
+  - 透明度：egui `painter().image()` 的 `tint_color` alpha 通道
+  - 裁剪：UV 坐标叠加 crop 子矩形 + 交互式 4 角手柄拖拽（CropMode 状态机，Enter 应用 / Esc 取消），`CropItems` 命令支持 undo
+- [x] 批量操作：排布算法 `plan_arrange`（Linear/Grid/Optimal），UI 已接入右键菜单（R/G/O 快捷键）
+- [x] 排布算法：最大矩形装箱（自实现 MaxRects + BSSF 启发式 + split + prune，未引入 rect_packer）
+- [x] 颜色采样：取色器模式（I 键切换），local_to_canvas 逆变换 → 像素索引 → RGBA 读取，overlay 显示 RGB/HEX/位置
+- [x] 归一化尺寸：`NormalizeItems` 命令（Width/Height/Area 三模式，保持宽高比的等比 factor）+ 右键菜单
 
-**可交付**：完整的撤销栈 + 高级变换功能。
+**可交付**：完整的撤销栈 + 高级变换功能 + 图片属性编辑（灰度/透明度/裁剪）+ 批量排布与归一化 + 颜色采样。
+
+**完成时间**：2026-07-20
 
 ### Phase 6 · 打磨（预计 2 周）
 
 - [ ] 导出：场景 → PNG/JPG/SVG（resvg）
 - [ ] 始终置顶 + 无边框模式
 - [ ] 欢迎页 + 最近文件列表
-- [ ] 设置面板（存储格式、内存上限、排列间距）
+- [x] 设置面板（简化版：排列间距 + 快捷键说明；存储格式/内存上限未实现）
 - [ ] 键鼠映射可配置（confy 持久化）
-- [ ] 亮色主题切换
+- [x] 主题：仅暗色（用户要求去掉亮色选项，`main.rs` 中固定 `egui::Visuals::dark()`）
 
 **可交付**：面向用户发布的首个 alpha 版本。
 
@@ -337,7 +347,7 @@ impl UndoStack {
 
 1. **所有 Item 变换走 undo 栈**，不直接改 item 属性。
 2. **Item ID 用 `uuid::Uuid`**，不依赖 BeeRef 的整数自增 id（uuid 更安全，且 Rust 生态习惯）。
-3. **图片解码进后台线程**：当前 `PReferZApp::process_import` 仍是同步 `image::open`（阻塞 UI）。计划用 `std::thread::spawn` + `eframe::Context::request_repaint()` 通信，或 `tokio`/`pollster`。`preferz-fileio::ImageLoader` 有同步缓存实现但未被二进制引用。
+3. **图片解码进后台线程**：`PReferZApp::BackgroundOps` 用 `std::thread::spawn` + `mpsc::channel` + `ctx.request_repaint()` 实现导入解码 / 文件加载 / 文件保存三类后台任务，UI 线程在 `update` 开头 `poll_background` 取结果。`preferz-fileio::ImageLoader` 有同步缓存实现但未被二进制引用（后台逻辑直接在 app 层实现）。
 4. **单测覆盖核心逻辑**：transform 数学、hit test、scene 操作、bee 文件读写。
 5. **Dependency 尽量少**：Rust 生态优势之一就是依赖树浅，别引入不必要的重量级框架。
 
@@ -565,12 +575,12 @@ serde_json = "1"
 thiserror = "1"
 log = "0.4"
 rfd = "0.14"
-arboard = "3"                   # 声明但未使用（剪贴板为后续功能）
+arboard = "3"                   # 剪贴板粘贴图片（Ctrl+V）
 ```
 
 各子 crate 用 `dependency.workspace = true` 引用。`preferz` 二进制额外有 `env_logger = "0.11"`。
 
-> **未引入的依赖**（Phase 5/6 计划）：`palette`（灰度）、`exif`（EXIF 方向）、`resvg+usvg`（SVG 导出）、`confy`（配置持久化）、`rect_packer`（矩形装箱）。
+> **未引入的依赖**（Phase 5/6 计划）：`palette`（灰度，已自实现 BT.601 矩阵替代）、`exif`（EXIF 方向）、`resvg+usvg`（SVG 导出）、`confy`（配置持久化）、`rect_packer`（矩形装箱，已自实现 MaxRects 替代）。
 
 ---
 

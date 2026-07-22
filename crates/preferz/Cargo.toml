@@ -17,6 +17,9 @@ preferz-fileio = { path = "../preferz-fileio" }
 eframe = { workspace = true }
 egui = { workspace = true }
 
+# Geometry
+euclid = { workspace = true }
+
 # Utilities
 serde = { workspace = true }
 log = { workspace = true }

@@ -25,6 +25,8 @@ fn main() -> eframe::Result<()> {
         native_options,
         Box::new(move |cc| {
             cc.egui_ctx.set_fonts(font_definitions.clone());
+            // 仅暗色主题（用户要求去掉亮色选项）
+            cc.egui_ctx.set_visuals(egui::Visuals::dark());
             Ok(Box::new(preferz_app::PReferZApp::new()))
         }),
     )

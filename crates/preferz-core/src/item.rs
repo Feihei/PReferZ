@@ -53,12 +53,29 @@ impl ItemKind {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub struct CropRect {
     pub x: f32,
     pub y: f32,
     pub width: f32,
     pub height: f32,
+}
+
+impl CropRect {
+    pub fn new(x: f32, y: f32, width: f32, height: f32) -> Self {
+        Self { x, y, width, height }
+    }
+
+    /// 限制 crop 在 [0, w] × [0, h] 范围内并保证 width/height > 0。
+    pub fn clamp_to(self, w: f32, h: f32) -> Self {
+        let x = self.x.clamp(0.0, w.max(0.0));
+        let y = self.y.clamp(0.0, h.max(0.0));
+        let max_w = (w - x).max(0.0);
+        let max_h = (h - y).max(0.0);
+        let width = self.width.min(max_w).max(1.0);
+        let height = self.height.min(max_h).max(1.0);
+        Self { x, y, width, height }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

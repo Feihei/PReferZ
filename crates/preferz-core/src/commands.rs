@@ -1,4 +1,4 @@
-use crate::item::{ItemId, ItemKind};
+use crate::item::{ItemId, ItemKind, CropRect};
 use crate::scene::Scene;
 use crate::spaces::CanvasVector;
 use crate::transform::Transform;
@@ -424,6 +424,216 @@ impl Command for EditTextContent {
             if let ItemKind::Text { content, measured_size, .. } = &mut item.kind {
                 *content = self.old_content.clone();
                 *measured_size = None;
+            }
+        }
+    }
+}
+
+// ─────────────────────────── SetPixmapProps ───────────────────────────
+
+/// 修改 Pixmap item 的 opacity / grayscale / crop 任意组合（spec §2.2 灰度/透明度/裁剪）。
+/// `old_opacity / new_opacity`、`old_grayscale / new_grayscale`、`old_crop / new_crop`
+/// 任一对为 `None` 表示不修改该字段。
+pub struct SetPixmapProps {
+    item_id: ItemId,
+    old_opacity: Option<f32>,
+    new_opacity: Option<f32>,
+    old_grayscale: Option<bool>,
+    new_grayscale: Option<bool>,
+    old_crop: Option<Option<CropRect>>,
+    new_crop: Option<Option<CropRect>>,
+}
+
+impl SetPixmapProps {
+    pub fn new(item_id: ItemId) -> Self {
+        Self {
+            item_id,
+            old_opacity: None,
+            new_opacity: None,
+            old_grayscale: None,
+            new_grayscale: None,
+            old_crop: None,
+            new_crop: None,
+        }
+    }
+
+    pub fn with_opacity(mut self, old: f32, new: f32) -> Self {
+        self.old_opacity = Some(old);
+        self.new_opacity = Some(new);
+        self
+    }
+
+    pub fn with_grayscale(mut self, old: bool, new: bool) -> Self {
+        self.old_grayscale = Some(old);
+        self.new_grayscale = Some(new);
+        self
+    }
+
+    pub fn with_crop(mut self, old: Option<CropRect>, new: Option<CropRect>) -> Self {
+        self.old_crop = Some(old);
+        self.new_crop = Some(new);
+        self
+    }
+}
+
+impl Command for SetPixmapProps {
+    fn redo(&mut self, scene: &mut Scene) {
+        if let Some(item) = scene.get_item_mut(&self.item_id) {
+            if let ItemKind::Pixmap { opacity, grayscale, crop, .. } = &mut item.kind {
+                if let Some(v) = self.new_opacity { *opacity = v; }
+                if let Some(v) = self.new_grayscale { *grayscale = v; }
+                if let Some(v) = &self.new_crop { *crop = *v; }
+            }
+        }
+    }
+
+    fn undo(&mut self, scene: &mut Scene) {
+        if let Some(item) = scene.get_item_mut(&self.item_id) {
+            if let ItemKind::Pixmap { opacity, grayscale, crop, .. } = &mut item.kind {
+                if let Some(v) = self.old_opacity { *opacity = v; }
+                if let Some(v) = self.old_grayscale { *grayscale = v; }
+                if let Some(v) = &self.old_crop { *crop = *v; }
+            }
+        }
+    }
+}
+
+// ─────────────────────────── CropItems ───────────────────────────
+
+/// 修改 Pixmap item 的 crop（spec §2.2 裁剪）。
+///
+/// 同时记录 transform 变化：裁剪确认后 item 的边框（canvas_corners）应等于裁剪框
+/// 在画布上的位置和尺寸，因此 apply_crop 会同时调整 transform.pos 和 transform.scale。
+/// 用一条命令同时改 crop + transform，使 undo 一次回滚到裁剪前状态。
+pub struct CropItems {
+    inner: SetPixmapProps,
+    item_id: ItemId,
+    old_transform: Transform,
+    new_transform: Transform,
+    transform_applied: bool,
+}
+
+impl CropItems {
+    pub fn new(
+        item_id: ItemId,
+        old_crop: Option<CropRect>,
+        new_crop: Option<CropRect>,
+        old_transform: Transform,
+        new_transform: Transform,
+    ) -> Self {
+        Self {
+            inner: SetPixmapProps::new(item_id).with_crop(old_crop, new_crop),
+            item_id,
+            old_transform,
+            new_transform,
+            transform_applied: false,
+        }
+    }
+}
+
+impl Command for CropItems {
+    fn redo(&mut self, scene: &mut Scene) {
+        self.inner.redo(scene);
+        if let Some(item) = scene.get_item_mut(&self.item_id) {
+            item.transform = self.new_transform;
+        }
+        self.transform_applied = true;
+    }
+
+    fn undo(&mut self, scene: &mut Scene) {
+        if self.transform_applied {
+            if let Some(item) = scene.get_item_mut(&self.item_id) {
+                item.transform = self.old_transform;
+            }
+            self.transform_applied = false;
+        }
+        self.inner.undo(scene);
+    }
+}
+
+// ─────────────────────────── NormalizeItems ───────────────────────────
+
+/// 归一化选中 Pixmap item 的尺寸（spec §2.2 批量操作：归一化尺寸）。
+///
+/// - `Width`：所有 item 渲染宽度统一（scale.x = target_width / original_width）
+/// - `Height`：所有 item 渲染高度统一
+/// - `Area`：所有 item 渲染面积统一（scale.x * scale.y = target_area / (original_w * original_h)，
+///   保持各自宽高比，取统一 factor）
+///
+/// 存储 (id, old_transform, new_transform) 以支持完整 undo。
+pub struct NormalizeItems {
+    item_ids: Vec<ItemId>,
+    mode: NormalizeMode,
+    /// 记录原始 transform，undo 时恢复。
+    old_transforms: Vec<(ItemId, Transform)>,
+    /// 计算 new_transform 所需的目标值（redo 时计算并缓存）。
+    target: Option<f32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum NormalizeMode {
+    Width,
+    Height,
+    Area,
+}
+
+impl NormalizeItems {
+    /// 创建归一化命令。target 由调用方根据选中 item 决定（通常取首个 item 的当前值）。
+    pub fn new(item_ids: Vec<ItemId>, mode: NormalizeMode, target: f32) -> Self {
+        Self {
+            item_ids,
+            mode,
+            old_transforms: Vec::new(),
+            target: Some(target),
+        }
+    }
+}
+
+impl Command for NormalizeItems {
+    fn redo(&mut self, scene: &mut Scene) {
+        // 首次 redo：记录 old_transforms 并计算 new_transforms
+        if self.old_transforms.is_empty() {
+            for id in &self.item_ids {
+                if let Some(item) = scene.get_item(id) {
+                    self.old_transforms.push((*id, item.transform));
+                }
+            }
+        }
+        let target = self.target.unwrap_or(0.0);
+        for (id, _old) in &self.old_transforms {
+            if let Some(item) = scene.get_item_mut(id) {
+                if let ItemKind::Pixmap { original_size, .. } = &item.kind {
+                    let ow = original_size.0 as f32;
+                    let oh = original_size.1 as f32;
+                    match self.mode {
+                        NormalizeMode::Width => {
+                            if ow > 0.0 {
+                                item.transform.scale.x = target / ow;
+                            }
+                        }
+                        NormalizeMode::Height => {
+                            if oh > 0.0 {
+                                item.transform.scale.y = target / oh;
+                            }
+                        }
+                        NormalizeMode::Area => {
+                            // 保持宽高比：factor = sqrt(target / (ow * oh * old_sx * old_sy))
+                            // 但用 base area = ow * oh，则 factor^2 * ow * oh = target
+                            let base_area = (ow * oh).max(1e-6);
+                            let factor = (target / base_area).sqrt();
+                            item.transform.scale.x = factor;
+                            item.transform.scale.y = factor;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn undo(&mut self, scene: &mut Scene) {
+        for (id, old_tf) in &self.old_transforms {
+            if let Some(item) = scene.get_item_mut(id) {
+                item.transform = *old_tf;
             }
         }
     }

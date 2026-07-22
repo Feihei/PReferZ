@@ -5,7 +5,7 @@ pub mod arrange;
 pub mod transform;
 pub mod spaces;
 
-pub use item::{Item, ItemId, ItemKind};
+pub use item::{Item, ItemId, ItemKind, CropRect};
 pub use scene::Scene;
 pub use commands::Command;
 pub use transform::Transform;

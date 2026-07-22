@@ -100,7 +100,9 @@ impl TransformHandles {
         // 从顶层（最后一个）往底层查
         for item in selected_items.iter().rev() {
             let show_flip = matches!(item.kind, ItemKind::Pixmap { .. });
-            let h = self.hit_test(screen_pos, item, viewport, show_flip);
+            // 文字元素不需要旋转，去掉旋转手柄
+            let show_rotate = matches!(item.kind, ItemKind::Pixmap { .. });
+            let h = self.hit_test(screen_pos, item, viewport, show_flip, show_rotate);
             if h != Handle::None {
                 found = h;
                 break;
@@ -116,6 +118,7 @@ impl TransformHandles {
         item: &Item,
         viewport: &ViewportState,
         show_flip: bool,
+        show_rotate: bool,
     ) -> Handle {
         let positions = Self::handle_screen_positions(item, viewport);
         let handle_size = Self::handle_size() * 2.0;
@@ -133,10 +136,12 @@ impl TransformHandles {
                 return *handle;
             }
         }
-        // 旋转手柄
-        let rotate_r = egui::Rect::from_center_size(positions[4], egui::Vec2::splat(handle_size));
-        if rotate_r.contains(screen_pos) {
-            return Handle::Rotate;
+        // 旋转手柄（仅在 show_rotate 时检测，文本元素不旋转）
+        if show_rotate {
+            let rotate_r = egui::Rect::from_center_size(positions[4], egui::Vec2::splat(handle_size));
+            if rotate_r.contains(screen_pos) {
+                return Handle::Rotate;
+            }
         }
         // 翻转边手柄（仅在 show_flip 时检测，文本元素无翻转）
         if show_flip {
@@ -165,6 +170,7 @@ impl TransformHandles {
         painter: &egui::Painter,
         viewport: &ViewportState,
         show_flip: bool,
+        show_rotate: bool,
     ) {
         let positions = Self::handle_screen_positions(item, viewport);
         let [tl, tr, bl, br, rotate, top_mid, bottom_mid, left_mid, right_mid] = positions;
@@ -176,9 +182,11 @@ impl TransformHandles {
         painter.line_segment([br, bl], stroke);
         painter.line_segment([bl, tl], stroke);
 
-        // 旋转手柄连线（从视觉顶边中点到旋转手柄）
+        // 旋转手柄连线（从视觉顶边中点到旋转手柄），仅 Pixmap 显示
         let visual_top = Self::visual_top_mid(tl, tr, bl, br);
-        painter.line_segment([visual_top, rotate], stroke);
+        if show_rotate {
+            painter.line_segment([visual_top, rotate], stroke);
+        }
 
         // 4 个角点方块（缩放）
         let handle_size = Self::handle_size();
@@ -187,8 +195,10 @@ impl TransformHandles {
             let r = egui::Rect::from_center_size(p, egui::Vec2::splat(handle_size));
             painter.rect_filled(r, egui::Rounding::same(1.0), fill);
         }
-        // 旋转手柄圆
-        painter.circle_filled(rotate, handle_size / 2.0, fill);
+        // 旋转手柄圆（仅 Pixmap 显示）
+        if show_rotate {
+            painter.circle_filled(rotate, handle_size / 2.0, fill);
+        }
 
         // 翻转边手柄（青色方块 + H/V 标识，区别于缩放角点）
         if show_flip {
