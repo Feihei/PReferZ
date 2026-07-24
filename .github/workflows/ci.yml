@@ -1,0 +1,32 @@
+name: CI
+
+# push 到任意分支或 PR 时触发，跑类型检查 + 测试（不构建产物）
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux deps
+        # eframe/glow 编译需要 OpenGL headers；egui-winit 需要 X11/Wayland dev 包
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libxcb1-dev libxkbcommon-dev libx11-dev \
+            libgl1-mesa-dev libegl1-mesa-dev \
+            libfontconfig-dev libfreetype6-dev \
+            pkg-config
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Check
+        run: cargo check --workspace --all-targets
+      - name: Test
+        run: cargo test --workspace
+      # TODO: 后续可加 cargo clippy 和 cargo fmt --check

@@ -1,0 +1,101 @@
+name: Release
+
+# 打 v 开头的 tag（如 v0.1.0-alpha）触发构建并创建 GitHub Release
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write  # 创建 Release 需要
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ─────────────────────────── Windows x64 ───────────────────────────
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --release -p preferz
+      - name: Package
+        shell: pwsh
+        run: |
+          Compress-Archive -Path target/release/preferz.exe -DestinationPath preferz-${{ github.ref_name }}-windows-x64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64
+          path: preferz-*.zip
+
+  # ──────────────────────────── Linux x64 ────────────────────────────
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux deps
+        # eframe/glow 编译需要 OpenGL headers；egui-winit 需要 X11/Wayland dev 包
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libxcb1-dev libxkbcommon-dev libx11-dev \
+            libgl1-mesa-dev libegl1-mesa-dev \
+            libfontconfig-dev libfreetype6-dev \
+            pkg-config
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --release -p preferz
+      - name: Package
+        run: |
+          tar -czf preferz-${{ github.ref_name }}-linux-x64.tar.gz -C target/release preferz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-x64
+          path: preferz-*.tar.gz
+
+  # ──────────────────────── macOS universal binary ───────────────────
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin,aarch64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - name: Build x86_64
+        run: cargo build --release -p preferz --target x86_64-apple-darwin
+      - name: Build aarch64
+        run: cargo build --release -p preferz --target aarch64-apple-darwin
+      - name: Create universal binary
+        # lipo 合并 Intel + Apple Silicon 成单一二进制
+        run: |
+          mkdir -p dist
+          lipo -create -output dist/preferz \
+            target/x86_64-apple-darwin/release/preferz \
+            target/aarch64-apple-darwin/release/preferz
+          tar -czf preferz-${{ github.ref_name }}-macos-universal.tar.gz -C dist preferz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-universal
+          path: preferz-*.tar.gz
+
+  # ──────────────────────── 创建 GitHub Release ──────────────────────
+  release:
+    needs: [build-windows, build-linux, build-macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/windows-x64/*.zip
+            dist/linux-x64/*.tar.gz
+            dist/macos-universal/*.tar.gz
+          generate_release_notes: true
