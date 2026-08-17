@@ -69,8 +69,6 @@ impl ViewportState {
     }
 
     /// 构造 Canvas → Screen 的仿射矩阵（与 [`canvas_to_screen`] 严格一致）。
-    /// 暂未被调用（A6 render_scene 使用），临时屏蔽 dead_code。
-    #[allow(dead_code)]
     pub fn canvas_to_screen_transform(&self) -> CanvasToScreen {
         let center = self.screen_center();
         CanvasToScreen::identity()

@@ -1,5 +1,6 @@
 use crate::i18n::{t, Lang, T};
 use crate::interaction;
+use crate::ui::stylers::{item_local_to_screen, CleanStyler, ShapeData, ShapeStyler};
 use crate::ui::widgets::transform_handles::{
     should_show_flip, should_show_rotate, Handle, TransformHandles,
 };
@@ -8,10 +9,10 @@ use eframe::egui;
 use image::GenericImageView;
 use preferz_core::arrange::{plan_arrange, ArrangeMode};
 use preferz_core::commands::{
-    AddItem, ArrangeItems, CropItems, DeleteItems, EditTextContent, FlipItems, MoveItems,
-    NormalizeItems, ReorderItems, SetPixmapProps, TransformItem,
+    AddItem, ArrangeItems, CropItems, DeleteItems, EditShapePoints, EditTextContent, FlipItems,
+    MoveItems, NormalizeItems, ReorderItems, SetPixmapProps, TransformItem,
 };
-use preferz_core::shape::{ShapeType, StrokeStyle};
+use preferz_core::shape::{DashStyle, ShapeType, StrokeStyle};
 use preferz_core::spaces::{CanvasPoint, CanvasRect, CanvasSize, CanvasVector};
 use preferz_core::{Command, CropRect, Item, ItemId, ItemKind, Scene};
 use preferz_fileio::{BeeFile, ViewportMeta};
@@ -68,7 +69,7 @@ impl UndoStack {
 }
 
 /// 当前激活工具。Select = 现有选择/框选行为。
-/// Shape 变体由 A5 绘制流程使用，Frame 由 Phase D 使用（此前临时屏蔽 dead_code）。
+/// Frame 由 Phase D 启用，此前不构造（保留 allow + 注释，D 期移除）。
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tool {
@@ -104,6 +105,14 @@ enum DragState {
         start: CanvasPoint,
         current: CanvasPoint,
         shift: bool,
+    },
+    /// 拖拽线类端点控制点（起点/终点），预览直接改 points。
+    LineEndpoint {
+        item_id: ItemId,
+        /// 0 = 起点，1 = 终点
+        endpoint: usize,
+        start_canvas: CanvasPoint,
+        start_points: Vec<(f32, f32)>,
     },
 }
 
@@ -620,6 +629,37 @@ impl eframe::App for PReferZApp {
             }
         }
 
+        // 左侧工具条（spec §5.1：绘制工具切换）
+        egui::SidePanel::left("tool_panel")
+            .exact_width(44.0)
+            .resizable(false)
+            .show(ctx, |ui| {
+                ui.add_space(6.0);
+                let tools = [
+                    (Tool::Select, "↖", T::ToolSelect),
+                    (Tool::Shape(ShapeType::Rectangle), "▭", T::ToolRectangle),
+                    (Tool::Shape(ShapeType::Ellipse), "◯", T::ToolEllipse),
+                    (Tool::Shape(ShapeType::Diamond), "◇", T::ToolDiamond),
+                    (Tool::Shape(ShapeType::Line), "╱", T::ToolLine),
+                    (Tool::Shape(ShapeType::Arrow), "➤", T::ToolArrow),
+                ];
+                for (tool, icon, key) in tools {
+                    let is_active = self.tool == tool;
+                    let btn = egui::Button::new(icon)
+                        .min_size(egui::vec2(30.0, 30.0))
+                        .fill(if is_active {
+                            ui.visuals().selection.bg_fill
+                        } else {
+                            ui.visuals().widgets.inactive.bg_fill
+                        });
+                    if ui.add(btn).on_hover_text(t(self.lang, key)).clicked() {
+                        self.tool = tool;
+                        self.drag = DragState::Idle;
+                    }
+                    ui.add_space(4.0);
+                }
+            });
+
         // 中央画布
         egui::CentralPanel::default().show(ctx, |ui| {
             let rect = ui.max_rect();
@@ -670,22 +710,72 @@ impl eframe::App for PReferZApp {
                 let min_y = start.y.min(current.y);
                 let w = (current.x - start.x).abs();
                 let h = (current.y - start.y).abs();
-                let rect = CanvasRect::new(CanvasPoint::new(min_x, min_y), CanvasSize::new(w, h));
-                let screen_rect = self.viewport.canvas_to_screen_rect(rect);
+                let min_canvas = CanvasPoint::new(min_x, min_y);
+                let rect_canvas = CanvasRect::new(min_canvas, CanvasSize::new(w, h));
+                let screen_rect = self.viewport.canvas_to_screen_rect(rect_canvas);
                 let stroke = egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(100, 200, 255));
                 match shape_type {
-                    ShapeType::Rectangle | ShapeType::Diamond => {
+                    ShapeType::Rectangle => {
                         ui.painter().rect_stroke(screen_rect, 0.0, stroke);
                     }
-                    ShapeType::Ellipse => {
-                        ui.painter().circle_stroke(
-                            screen_rect.center(),
-                            screen_rect.width() / 2.0,
+                    ShapeType::Diamond => {
+                        // 绘制实际菱形轮廓：四个顶点坐标
+                        let cx = min_x + w / 2.0;
+                        let cy = min_y + h / 2.0;
+                        let corners_canvas = [
+                            CanvasPoint::new(cx, min_y),
+                            CanvasPoint::new(min_x + w, cy),
+                            CanvasPoint::new(cx, min_y + h),
+                            CanvasPoint::new(min_x, cy),
+                        ];
+                        let corners_screen: Vec<egui::Pos2> = corners_canvas
+                            .iter()
+                            .map(|p| self.viewport.canvas_to_screen(*p))
+                            .collect();
+                        ui.painter().add(egui::Shape::convex_polygon(
+                            corners_screen,
+                            egui::Color32::TRANSPARENT,
                             stroke,
-                        );
+                        ));
                     }
-                    // Phase B 启用
-                    ShapeType::Line | ShapeType::Arrow => {}
+                    ShapeType::Ellipse => {
+                        // 绘制精确椭圆：多边形近似（64段，与 CleanStyler 渲染一致）
+                        let cx_canvas = min_x + w / 2.0;
+                        let cy_canvas = min_y + h / 2.0;
+                        let rx_canvas = w / 2.0;
+                        let ry_canvas = h / 2.0;
+                        let segments = 64usize;
+                        let mut pts: Vec<egui::Pos2> = (0..segments)
+                            .map(|i| {
+                                let a = i as f32 / segments as f32 * std::f32::consts::TAU;
+                                let px = cx_canvas + rx_canvas * a.cos();
+                                let py = cy_canvas + ry_canvas * a.sin();
+                                self.viewport.canvas_to_screen(CanvasPoint::new(px, py))
+                            })
+                            .collect();
+                        pts.push(pts[0]); // 闭合路径
+                        ui.painter().add(egui::Shape::line(pts, stroke));
+                    }
+                    // 线类：画 start → current 线段；箭头另画头部（与 CleanStyler 一致）
+                    ShapeType::Line | ShapeType::Arrow => {
+                        let s0 = self.viewport.canvas_to_screen(*start);
+                        let s1 = self.viewport.canvas_to_screen(*current);
+                        ui.painter().line_segment([s0, s1], stroke);
+                        if *shape_type == ShapeType::Arrow {
+                            let dir = s1 - s0;
+                            let len = dir.length();
+                            if len > 1e-3 {
+                                let dir = dir / len;
+                                let head_len = 12.0;
+                                let half = std::f32::consts::FRAC_PI_2 * (5.0 / 9.0); // ≈50°
+                                let (s, c) = half.sin_cos();
+                                let a1 = egui::vec2(dir.x * c - dir.y * s, dir.x * s + dir.y * c);
+                                let a2 = egui::vec2(dir.x * c + dir.y * s, -dir.x * s + dir.y * c);
+                                ui.painter().line_segment([s1, s1 + a1 * head_len], stroke);
+                                ui.painter().line_segment([s1, s1 + a2 * head_len], stroke);
+                            }
+                        }
+                    }
                 }
             }
 
@@ -782,6 +872,7 @@ impl eframe::App for PReferZApp {
                             egui::CursorIcon::ResizeNorthWest
                         }
                         Handle::Rotate => egui::CursorIcon::Grab,
+                        Handle::LineEndpoint0 | Handle::LineEndpoint1 => egui::CursorIcon::Grab,
                         Handle::FlipH => egui::CursorIcon::ResizeHorizontal,
                         Handle::FlipV => egui::CursorIcon::ResizeVertical,
                         Handle::None => {
@@ -888,6 +979,53 @@ impl eframe::App for PReferZApp {
                 });
         }
 
+        // 样式面板：仅绘制工具激活时显示（spec §5.1）
+        if self.tool != Tool::Select {
+            egui::TopBottomPanel::bottom("style_panel").show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(t(self.lang, T::StyleStrokeColor));
+                    let mut col = egui::Color32::from_rgba_unmultiplied(
+                        self.default_stroke.color[0],
+                        self.default_stroke.color[1],
+                        self.default_stroke.color[2],
+                        self.default_stroke.color[3],
+                    );
+                    if ui.color_edit_button_srgba(&mut col).changed() {
+                        self.default_stroke.color = [col.r(), col.g(), col.b(), col.a()];
+                    }
+                    ui.separator();
+                    ui.label(t(self.lang, T::StyleStrokeWidth));
+                    ui.add(
+                        egui::Slider::new(&mut self.default_stroke.width, 0.5..=12.0)
+                            .logarithmic(true),
+                    );
+                    ui.separator();
+                    for (dash, label) in [
+                        (DashStyle::Solid, T::StyleDashSolid),
+                        (DashStyle::Dashed, T::StyleDashDashed),
+                        (DashStyle::Dotted, T::StyleDashDotted),
+                    ] {
+                        let active = self.default_stroke.dash == dash;
+                        if ui.selectable_label(active, t(self.lang, label)).clicked() {
+                            self.default_stroke.dash = dash;
+                        }
+                    }
+                    ui.separator();
+                    let mut fill_checked = self.default_fill.is_some();
+                    if ui
+                        .checkbox(&mut fill_checked, t(self.lang, T::StyleFillNone))
+                        .changed()
+                    {
+                        self.default_fill = if fill_checked {
+                            Some([100, 180, 255, 60])
+                        } else {
+                            None
+                        };
+                    }
+                });
+            });
+        }
+
         // 状态栏（持续状�?+ flash 消息�?
         egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
             let file_name = self
@@ -979,6 +1117,24 @@ impl PReferZApp {
                     show_rotate,
                 );
                 if h != Handle::None {
+                    // 线类端点控制点：进入端点拖拽（预览直接改 points）
+                    if h == Handle::LineEndpoint0 || h == Handle::LineEndpoint1 {
+                        let endpoint = if h == Handle::LineEndpoint0 { 0 } else { 1 };
+                        let start_points = match &item.kind {
+                            ItemKind::Shape { points, .. } => points.clone(),
+                            _ => Vec::new(),
+                        };
+                        let start_canvas = self.viewport.screen_to_canvas(screen_pos);
+                        self.drag = DragState::LineEndpoint {
+                            item_id: item.id,
+                            endpoint,
+                            start_canvas,
+                            start_points,
+                        };
+                        self.transform_handles.active_handle = h;
+                        self.transform_handles.is_dragging = true;
+                        return;
+                    }
                     // 翻转边手柄：点击即触发翻转，不进入拖拽（spec L239「翻转边」）
                     if h == Handle::FlipH || h == Handle::FlipV {
                         let ids: Vec<ItemId> = self.scene.selection.iter().cloned().collect();
@@ -1095,6 +1251,8 @@ impl PReferZApp {
                         }
                         // 翻转手柄�?begin_drag 中已即时处理，不会进入拖拽预�?
                         Handle::FlipH | Handle::FlipV | Handle::None => {}
+                        // 线类端点�?begin_drag 中已进入 LineEndpoint 拖拽，不会到达这里
+                        Handle::LineEndpoint0 | Handle::LineEndpoint1 => {}
                     }
                 }
             }
@@ -1112,6 +1270,36 @@ impl PReferZApp {
             }
             DragState::CreatingShape { current, .. } => {
                 let _ = current; // 由 match 后更新（需单独 &mut self.drag）
+            }
+            DragState::LineEndpoint {
+                item_id,
+                endpoint,
+                start_canvas,
+                start_points,
+            } => {
+                let item_id = *item_id;
+                let endpoint = *endpoint;
+                let start_canvas = *start_canvas;
+                let start_points = start_points.clone();
+                let current_canvas = self.viewport.screen_to_canvas(screen_pos);
+                let delta_canvas = current_canvas - start_canvas;
+                if let Some(item) = self.scene.get_item_mut(&item_id) {
+                    // 画布位移 → 局部位移（逆变换向量的平移部分自动抵消）
+                    let delta_local = item
+                        .local_to_canvas()
+                        .inverse()
+                        .map(|inv| inv.transform_vector(delta_canvas));
+                    if let Some(delta_local) = delta_local {
+                        if let ItemKind::Shape { points, .. } = &mut item.kind {
+                            if let Some(p) = points.get_mut(endpoint) {
+                                *p = (
+                                    start_points[endpoint].0 + delta_local.x,
+                                    start_points[endpoint].1 + delta_local.y,
+                                );
+                            }
+                        }
+                    }
+                }
             }
             DragState::BoxSelect { .. } => {} // 由 match 后更新（需单独 &mut self.drag）
             DragState::Idle => {}
@@ -1215,12 +1403,32 @@ impl PReferZApp {
             } => {
                 self.finish_create_shape(shape_type, start, current, shift);
             }
+            DragState::LineEndpoint {
+                item_id,
+                endpoint: _,
+                start_canvas: _,
+                start_points,
+            } => {
+                // 预览已直接改 points；释放时若有变化则固化到 undo 栈
+                let new_points = match self.scene.get_item(&item_id) {
+                    Some(item) => match &item.kind {
+                        ItemKind::Shape { points, .. } => points.clone(),
+                        _ => Vec::new(),
+                    },
+                    None => Vec::new(),
+                };
+                if !new_points.is_empty() && new_points != start_points {
+                    let cmd = EditShapePoints::new(item_id, start_points, new_points);
+                    self.push_cmd(Box::new(cmd));
+                }
+                self.transform_handles.end_drag();
+            }
             DragState::Idle => {}
         }
     }
 
     /// 用绘制工具完成 shape 创建：计算矩形 → AddItem → 回 Select。
-    /// shift = 锁定正方形（用宽高较大者作边长）。
+    /// shift = 锁定正方形（用宽高较大者作边长）；线类 = 锁定 45° 方向。
     fn finish_create_shape(
         &mut self,
         shape_type: ShapeType,
@@ -1228,6 +1436,49 @@ impl PReferZApp {
         current: CanvasPoint,
         shift: bool,
     ) {
+        // 线类：两点式（start → current），Shift 锁 45°，最小长度 3 画布像素。
+        if matches!(shape_type, ShapeType::Line | ShapeType::Arrow) {
+            let mut dx = current.x - start.x;
+            let mut dy = current.y - start.y;
+            if shift {
+                let len = (dx * dx + dy * dy).sqrt();
+                if len < 1e-3 {
+                    return;
+                }
+                // 方向吸附到 45° 整数倍
+                let angle = (dy.atan2(dx) / std::f32::consts::FRAC_PI_4).round()
+                    * std::f32::consts::FRAC_PI_4;
+                dx = len * angle.cos();
+                dy = len * angle.sin();
+            }
+            if (dx * dx + dy * dy).sqrt() < 3.0 {
+                return;
+            }
+            let min_x = start.x.min(start.x + dx);
+            let min_y = start.y.min(start.y + dy);
+            // 局部坐标：起点对齐 AABB 左上角
+            let p0 = (start.x - min_x, start.y - min_y);
+            let p1 = (start.x + dx - min_x, start.y + dy - min_y);
+            let item = Item::new_shape_line(
+                shape_type,
+                vec![p0, p1],
+                (dx.abs(), dy.abs()),
+                min_x,
+                min_y,
+                self.default_stroke,
+            );
+            let cmd = AddItem::new(item);
+            self.push_cmd(Box::new(cmd));
+            self.flash(if shape_type == ShapeType::Arrow {
+                "已创建箭头"
+            } else {
+                "已创建直线"
+            });
+            // 默认回 Select
+            self.tool = Tool::Select;
+            return;
+        }
+
         let w = (current.x - start.x).abs();
         let h = (current.y - start.y).abs();
         // 误触：小于 3 画布像素丢弃
@@ -1400,8 +1651,32 @@ impl PReferZApp {
                         );
                     }
                 }
-                // A1 数据模型先行，渲染实现见 Phase A6
-                ItemKind::Shape { .. } => {}
+                // Shape：经 ShapeStyler（CleanStyler）构建 egui 形状并绘制。
+                ItemKind::Shape {
+                    shape_type,
+                    base_size,
+                    points,
+                    stroke,
+                    fill,
+                    seed: _,
+                } => {
+                    let data = ShapeData {
+                        shape_type: *shape_type,
+                        base_size: *base_size,
+                        points: points.clone(),
+                    };
+                    let to_screen = item_local_to_screen(item, &self.viewport);
+                    let fill_color =
+                        fill.map(|c| egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]));
+                    let shapes = CleanStyler.build_shapes(
+                        &data,
+                        stroke,
+                        fill_color,
+                        &to_screen,
+                        self.viewport.zoom,
+                    );
+                    ui.painter().extend(shapes);
+                }
             }
 
             // 选中�?+ 手柄：单选时画单独手柄；多选时画统一外框（循环后�?            // 裁剪模式下手柄隐藏（避免与裁剪框冲突�?
@@ -2159,6 +2434,7 @@ fn drag_state_name(d: &DragState) -> &'static str {
         DragState::MoveItems { .. } => "MoveItems",
         DragState::BoxSelect { .. } => "BoxSelect",
         DragState::CreatingShape { .. } => "CreatingShape",
+        DragState::LineEndpoint { .. } => "LineEndpoint",
     }
 }
 
@@ -2324,6 +2600,25 @@ impl PReferZApp {
             return;
         }
 
+        // 工具切换快捷键（始终生效，即使当前工具非 Select）
+        let tool_switch = self.tool_switch_shortcut(ctx);
+        if let Some(new_tool) = tool_switch {
+            self.drag = DragState::Idle; // 取消进行中的绘制
+            if self.tool != new_tool {
+                self.tool = new_tool;
+            } else {
+                self.tool = Tool::Select; // 再次按同键回 Select
+            }
+            return;
+        }
+        // 绘制工具激活：屏蔽其它场景快捷键，Esc 回 Select
+        if self.tool != Tool::Select {
+            if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                self.tool = Tool::Select;
+            }
+            return;
+        }
+
         // 裁剪模式快捷键：Enter 应用 / Esc 取消
         if self.crop_mode.is_some() {
             if ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
@@ -2418,18 +2713,6 @@ impl PReferZApp {
         // Phase 5 快捷键（�?Ctrl/Shift 修饰�?
         let no_mod = ctx.input(|i| !i.modifiers.ctrl && !i.modifiers.shift && !i.modifiers.alt);
         if no_mod && !self.scene.selection.is_empty() {
-            // R = 线形排列
-            if ctx.input(|i| i.key_pressed(egui::Key::R)) && self.scene.selection.len() >= 2 {
-                self.arrange_selected(ArrangeMode::Linear);
-            }
-            // G = 网格排列
-            if ctx.input(|i| i.key_pressed(egui::Key::G)) && self.scene.selection.len() >= 2 {
-                self.arrange_selected(ArrangeMode::Grid);
-            }
-            // O = 最优装�?
-            if ctx.input(|i| i.key_pressed(egui::Key::O)) && self.scene.selection.len() >= 2 {
-                self.arrange_selected(ArrangeMode::Optimal);
-            }
             // C = 进入裁剪模式
             if ctx.input(|i| i.key_pressed(egui::Key::C)) && self.selected_pixmap_count() == 1 {
                 self.enter_crop_mode();
@@ -2444,6 +2727,30 @@ impl PReferZApp {
             } else {
                 t(self.lang, T::ExitColorPicker).to_string()
             });
+        }
+    }
+
+    /// 工具切换快捷键：V/R/O/D（无修饰键）。再次按同键在 handle_shortcuts 里回 Select。
+    fn tool_switch_shortcut(&self, ctx: &egui::Context) -> Option<Tool> {
+        let no_mod = ctx.input(|i| !i.modifiers.ctrl && !i.modifiers.shift && !i.modifiers.alt);
+        if !no_mod {
+            return None;
+        }
+        let pressed = |key| ctx.input(|i| i.key_pressed(key));
+        if pressed(egui::Key::V) {
+            Some(Tool::Select)
+        } else if pressed(egui::Key::R) {
+            Some(Tool::Shape(ShapeType::Rectangle))
+        } else if pressed(egui::Key::O) {
+            Some(Tool::Shape(ShapeType::Ellipse))
+        } else if pressed(egui::Key::D) {
+            Some(Tool::Shape(ShapeType::Diamond))
+        } else if pressed(egui::Key::L) {
+            Some(Tool::Shape(ShapeType::Line))
+        } else if pressed(egui::Key::A) {
+            Some(Tool::Shape(ShapeType::Arrow))
+        } else {
+            None
         }
     }
 

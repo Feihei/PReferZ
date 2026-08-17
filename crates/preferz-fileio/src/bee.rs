@@ -337,6 +337,7 @@ pub struct TextData {
 mod tests {
     use super::*;
     use preferz_core::item::{Item, ItemKind};
+    use preferz_core::shape::{ShapeType, StrokeStyle};
     use preferz_core::spaces::CanvasVector;
     use std::path::PathBuf;
 
@@ -456,6 +457,53 @@ mod tests {
         // 验证 next_z
         assert_eq!(loaded_scene.next_z, scene.next_z);
 
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn prz_save_load_line_roundtrip() {
+        let path = tmp_path("line_roundtrip.prz");
+        // 构造场景：一个线类 Shape（Arrow）
+        let mut scene = Scene::new();
+        scene.add_item(Item::new_shape_line(
+            ShapeType::Arrow,
+            vec![(0.0, 0.0), (80.0, 40.0)],
+            (80.0, 40.0),
+            30.0,
+            40.0,
+            StrokeStyle::default(),
+        ));
+
+        let viewport = ViewportMeta {
+            pan_x: 0.0,
+            pan_y: 0.0,
+            zoom: 1.0,
+        };
+        {
+            let mut bee = BeeFile::create(&path).unwrap();
+            bee.save_scene(&scene, &HashMap::new(), Some(viewport))
+                .unwrap();
+        }
+
+        // 加载
+        let bee = BeeFile::open(&path).unwrap();
+        let (loaded_scene, _, _) = bee.load_scene().unwrap();
+        assert_eq!(loaded_scene.items.len(), 1);
+        let line = &loaded_scene.items[0];
+        match &line.kind {
+            ItemKind::Shape {
+                shape_type,
+                base_size,
+                points,
+                ..
+            } => {
+                assert_eq!(*shape_type, ShapeType::Arrow);
+                assert_eq!(*base_size, (80.0, 40.0));
+                assert_eq!(points, &vec![(0.0, 0.0), (80.0, 40.0)]);
+            }
+            _ => panic!("expected Shape kind"),
+        }
+        assert_eq!(line.transform.pos, CanvasVector::new(30.0, 40.0));
         let _ = std::fs::remove_file(&path);
     }
 

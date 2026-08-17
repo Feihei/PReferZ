@@ -119,6 +119,24 @@ pub enum T {
     SavePromptSave,
     SavePromptDiscard,
     SavePromptCancel,
+    // ── 绘制工具/样式面板 ──
+    ToolSelect,
+    ToolRectangle,
+    ToolEllipse,
+    ToolDiamond,
+    /// 以下变体为后续 Phase 预留（B：线类；D：Frame），本期未使用。
+    #[allow(dead_code)]
+    ToolLine,
+    #[allow(dead_code)]
+    ToolArrow,
+    #[allow(dead_code)]
+    ToolFrame,
+    StyleStrokeColor,
+    StyleStrokeWidth,
+    StyleDashSolid,
+    StyleDashDashed,
+    StyleDashDotted,
+    StyleFillNone,
 }
 
 /// 查表翻译。未命中的 key 返回 debug 字符串（开发期易发现遗漏）。
@@ -216,7 +234,7 @@ fn translate_en(key: T) -> &'static str {
         T::SettingsBgAlpha => "Background Opacity",
         T::SettingsLanguage => "Language",
         T::SettingsShortcuts => "Shortcuts",
-        T::SettingsShortcutArrange => "R/G/O arrange · C crop · I color picker · F fit",
+        T::SettingsShortcutArrange => "V/R/O/D tool switch · C crop · I color picker · F fit",
         T::SettingsShortcutUndo => "Ctrl+Z undo · Ctrl+Shift+Z redo",
         T::SettingsShortcutFile => "Ctrl+N new · Ctrl+O open · Ctrl+I load image",
         T::SettingsShortcutPaste => "Ctrl+V paste · Ctrl+S save · Ctrl+Shift+S save as",
@@ -225,6 +243,20 @@ fn translate_en(key: T) -> &'static str {
         T::SavePromptSave => "Save",
         T::SavePromptDiscard => "Discard",
         T::SavePromptCancel => "Cancel",
+        // 绘制工具/样式面板
+        T::ToolSelect => "Select",
+        T::ToolRectangle => "Rectangle",
+        T::ToolEllipse => "Ellipse",
+        T::ToolDiamond => "Diamond",
+        T::ToolLine => "Line",
+        T::ToolArrow => "Arrow",
+        T::ToolFrame => "Frame",
+        T::StyleStrokeColor => "Stroke color",
+        T::StyleStrokeWidth => "Stroke width",
+        T::StyleDashSolid => "Solid",
+        T::StyleDashDashed => "Dashed",
+        T::StyleDashDotted => "Dotted",
+        T::StyleFillNone => "No fill",
     }
 }
 
@@ -315,7 +347,7 @@ fn translate_zh(key: T) -> &'static str {
         T::SettingsBgAlpha => "背景透明度",
         T::SettingsLanguage => "语言",
         T::SettingsShortcuts => "快捷键",
-        T::SettingsShortcutArrange => "R/G/O 排列 · C 裁剪 · I 取色器 · F 适应画布",
+        T::SettingsShortcutArrange => "V/R/O/D 工具切换 · C 裁剪 · I 取色器 · F 适应画布",
         T::SettingsShortcutUndo => "Ctrl+Z 撤销 · Ctrl+Shift+Z 重做",
         T::SettingsShortcutFile => "Ctrl+N 新建 · Ctrl+O 打开 · Ctrl+I 载入图片",
         T::SettingsShortcutPaste => "Ctrl+V 粘贴图片 · Ctrl+S 保存 · Ctrl+Shift+S 另存为",
@@ -324,5 +356,19 @@ fn translate_zh(key: T) -> &'static str {
         T::SavePromptSave => "保存",
         T::SavePromptDiscard => "放弃",
         T::SavePromptCancel => "取消",
+        // 绘制工具/样式面板
+        T::ToolSelect => "选择",
+        T::ToolRectangle => "矩形",
+        T::ToolEllipse => "椭圆",
+        T::ToolDiamond => "菱形",
+        T::ToolLine => "直线",
+        T::ToolArrow => "箭头",
+        T::ToolFrame => "画框",
+        T::StyleStrokeColor => "描边颜色",
+        T::StyleStrokeWidth => "描边宽度",
+        T::StyleDashSolid => "实线",
+        T::StyleDashDashed => "虚线",
+        T::StyleDashDotted => "点线",
+        T::StyleFillNone => "无填充",
     }
 }

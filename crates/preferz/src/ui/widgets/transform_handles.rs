@@ -1,16 +1,18 @@
 use eframe::egui;
+use preferz_core::shape::ShapeType;
 use preferz_core::{Item, ItemKind};
 
+use crate::ui::stylers::item_local_to_screen;
 use crate::viewport::ViewportState;
 
-/// 是否显示翻转手柄（Pixmap 与 Shape 支持，Text/Frame 不显示）。
+/// 是否显示翻转手柄（仅 Pixmap 支持；Shape 无镜像、Frame 无翻转）。
 pub fn should_show_flip(item: &Item) -> bool {
-    matches!(item.kind, ItemKind::Pixmap { .. } | ItemKind::Shape { .. })
+    matches!(item.kind, ItemKind::Pixmap { .. })
 }
 
-/// 是否显示旋转手柄（同上）。
+/// 是否显示旋转手柄（仅 Pixmap 支持；Shape 无旋转、Frame 无旋转）。
 pub fn should_show_rotate(item: &Item) -> bool {
-    matches!(item.kind, ItemKind::Pixmap { .. } | ItemKind::Shape { .. })
+    matches!(item.kind, ItemKind::Pixmap { .. })
 }
 
 /// 变换手柄种类。命中优先级：角点 > 旋转 > 翻转边。
@@ -26,6 +28,21 @@ pub enum Handle {
     FlipH,
     /// 垂直翻转手柄（上/下边中点）。
     FlipV,
+    /// 线类端点 0（起点）控制点。
+    LineEndpoint0,
+    /// 线类端点 1（终点）控制点。
+    LineEndpoint1,
+}
+
+/// 是否为两点式线类（Line/Arrow）：选中态用两端点控制点，而非变换边框。
+fn is_line(item: &Item) -> bool {
+    matches!(
+        item.kind,
+        ItemKind::Shape {
+            shape_type: ShapeType::Line | ShapeType::Arrow,
+            ..
+        }
+    )
 }
 
 #[derive(Debug, Clone)]
@@ -104,6 +121,19 @@ impl TransformHandles {
         )
     }
 
+    /// 线类两端点的屏幕位置（points[0] / points[1] 经局部→画布→屏幕变换）。
+    fn line_endpoint_screen_positions(item: &Item, viewport: &ViewportState) -> [egui::Pos2; 2] {
+        let to_screen = item_local_to_screen(item, viewport);
+        let mut out = [egui::Pos2::ZERO; 2];
+        if let ItemKind::Shape { points, .. } = &item.kind {
+            for (i, (x, y)) in points.iter().take(2).enumerate() {
+                let p = to_screen.transform_point(euclid::Point2D::new(*x, *y));
+                out[i] = egui::pos2(p.x, p.y);
+            }
+        }
+        out
+    }
+
     /// 仅更新 hover_handle。**不**改 active_handle / drag_start_*（修 B6：
     /// 旧实现 hover 时就改写 active_handle 把状态机拆散了）。active_handle
     /// 由 click 处理逻辑在按下时设置。
@@ -137,6 +167,19 @@ impl TransformHandles {
         show_flip: bool,
         show_rotate: bool,
     ) -> Handle {
+        // 线类：只有两个端点控制点
+        if is_line(item) {
+            let eps = Self::line_endpoint_screen_positions(item, viewport);
+            let handle_size = Self::handle_size() * 2.0;
+            for (i, h) in [(0, Handle::LineEndpoint0), (1, Handle::LineEndpoint1)] {
+                let r = egui::Rect::from_center_size(eps[i], egui::Vec2::splat(handle_size));
+                if r.contains(screen_pos) {
+                    return h;
+                }
+            }
+            return Handle::None;
+        }
+
         let positions = Self::handle_screen_positions(item, viewport);
         let handle_size = Self::handle_size() * 2.0;
 
@@ -190,6 +233,18 @@ impl TransformHandles {
         show_flip: bool,
         show_rotate: bool,
     ) {
+        // 线类：仅绘制两个端点控制点（不显示变换边框）
+        if is_line(item) {
+            let eps = Self::line_endpoint_screen_positions(item, viewport);
+            let handle_size = Self::handle_size();
+            let fill = egui::Color32::YELLOW;
+            for p in eps {
+                let r = egui::Rect::from_center_size(p, egui::Vec2::splat(handle_size));
+                painter.rect_filled(r, egui::Rounding::same(1.0), fill);
+            }
+            return;
+        }
+
         let positions = Self::handle_screen_positions(item, viewport);
         let [tl, tr, bl, br, rotate, top_mid, bottom_mid, left_mid, right_mid] = positions;
 

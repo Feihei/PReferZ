@@ -63,6 +63,44 @@ impl Command for TransformItem {
     }
 }
 
+// ─────────────────────────── Shape points ───────────────────────────
+
+/// 线类（Line/Arrow）端点编辑命令：修改 `points` 并同步 `base_size`（AABB）。
+/// 拖拽端点时 UI 已直接改到 item 上，push 时跳过首次 redo。
+pub struct EditShapePoints {
+    item_id: ItemId,
+    old_points: Vec<(f32, f32)>,
+    new_points: Vec<(f32, f32)>,
+}
+
+impl EditShapePoints {
+    pub fn new(item_id: ItemId, old_points: Vec<(f32, f32)>, new_points: Vec<(f32, f32)>) -> Self {
+        Self {
+            item_id,
+            old_points,
+            new_points,
+        }
+    }
+}
+
+impl Command for EditShapePoints {
+    fn redo(&mut self, scene: &mut Scene) {
+        if let Some(item) = scene.get_item_mut(&self.item_id) {
+            item.kind.set_line_points(self.new_points.clone());
+        }
+    }
+
+    fn undo(&mut self, scene: &mut Scene) {
+        if let Some(item) = scene.get_item_mut(&self.item_id) {
+            item.kind.set_line_points(self.old_points.clone());
+        }
+    }
+
+    fn skip_first_redo(&self) -> bool {
+        true
+    }
+}
+
 // ─────────────────────────── Move ───────────────────────────
 
 /// 平移多个 item（拖拽移动的命令）。

@@ -65,6 +65,33 @@ impl ItemKind {
             _ => None,
         }
     }
+
+    /// 更新线类（Line/Arrow）端点，并把 `base_size` 同步为 points 的 AABB，
+    /// 保证持久化与 `base_size()` 推导一致。非线类调用无副作用。
+    pub fn set_line_points(&mut self, points: Vec<(f32, f32)>) {
+        if let ItemKind::Shape {
+            shape_type,
+            base_size,
+            points: pts,
+            ..
+        } = self
+        {
+            *pts = points;
+            if matches!(shape_type, ShapeType::Line | ShapeType::Arrow) && !pts.is_empty() {
+                let mut min_x = f32::MAX;
+                let mut min_y = f32::MAX;
+                let mut max_x = f32::MIN;
+                let mut max_y = f32::MIN;
+                for (x, y) in pts.iter() {
+                    min_x = min_x.min(*x);
+                    min_y = min_y.min(*y);
+                    max_x = max_x.max(*x);
+                    max_y = max_y.max(*y);
+                }
+                *base_size = (max_x - min_x, max_y - min_y);
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -179,6 +206,31 @@ impl Item {
         }
     }
 
+    /// 线类（Line/Arrow）构造器：points 为局部坐标（已对齐左上角 AABB），
+    /// base_size 即 AABB 宽高；线类无填充。
+    pub fn new_shape_line(
+        shape_type: ShapeType,
+        points: Vec<(f32, f32)>,
+        base_size: (f32, f32),
+        pos_x: f32,
+        pos_y: f32,
+        stroke: StrokeStyle,
+    ) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            kind: ItemKind::Shape {
+                shape_type,
+                base_size,
+                points,
+                stroke,
+                fill: None,
+                seed: 0,
+            },
+            transform: Transform::new(pos_x, pos_y, 1.0, 1.0),
+            z: 0,
+        }
+    }
+
     /// Item 未旋转/缩放前的原始尺寸（item 局部空间的宽高，单位：画布空间像素）。
     ///
     /// 注意：返回的是"未应用 scale"的尺寸；`scale` 由调用方通过
@@ -215,7 +267,27 @@ impl Item {
                 let height = *font_size * 1.2;
                 CanvasVector::new(width.max(1.0), height.max(1.0))
             }
-            ItemKind::Shape { base_size, .. } => {
+            ItemKind::Shape {
+                shape_type,
+                base_size,
+                points,
+                ..
+            } => {
+                // 线类：base_size 取 points 的 AABB（局部坐标已对齐左上角），
+                // 保证 local_to_canvas / 变换手柄正确。
+                if matches!(shape_type, ShapeType::Line | ShapeType::Arrow) && !points.is_empty() {
+                    let mut min_x = f32::MAX;
+                    let mut min_y = f32::MAX;
+                    let mut max_x = f32::MIN;
+                    let mut max_y = f32::MIN;
+                    for (x, y) in points.iter() {
+                        min_x = min_x.min(*x);
+                        min_y = min_y.min(*y);
+                        max_x = max_x.max(*x);
+                        max_y = max_y.max(*y);
+                    }
+                    return CanvasVector::new((max_x - min_x).max(1.0), (max_y - min_y).max(1.0));
+                }
                 CanvasVector::new(base_size.0.max(1.0), base_size.1.max(1.0))
             }
         }
@@ -259,13 +331,30 @@ impl Item {
         t
     }
 
-    /// 画布点是否落在 item 内（OBB 命中，正确处理旋转/翻转/缩放）。
+    /// 画布点是否落在 item 内（OBB 命中，正确处理旋转/翻转/缩放；
+    /// 线类改为点到线段距离命中）。
     pub fn contains_canvas_point(&self, canvas_pos: CanvasPoint) -> bool {
         let inv = match self.local_to_canvas().inverse() {
             Some(inv) => inv,
             None => return false,
         };
         let local = inv.transform_point(canvas_pos);
+        if let ItemKind::Shape {
+            shape_type,
+            points,
+            stroke,
+            ..
+        } = &self.kind
+        {
+            if matches!(shape_type, ShapeType::Line | ShapeType::Arrow) {
+                // 线类：点到任一线段距离 ≤ max(线宽, 6.0) 视为命中
+                // （局部单位；旋转/缩放由逆变换处理）
+                let threshold = stroke.width.max(6.0);
+                return points
+                    .windows(2)
+                    .any(|seg| dist_point_segment(local, seg[0], seg[1]) <= threshold);
+            }
+        }
         let size = self.base_size();
         // 局部空间下的命中矩形：[0, size.x] x [0, size.y]
         local.x >= 0.0 && local.x <= size.x && local.y >= 0.0 && local.y <= size.y
@@ -311,5 +400,111 @@ impl Item {
             to_canvas.transform_point(euclid::Point2D::new(0.0, size.y)),
             to_canvas.transform_point(euclid::Point2D::new(size.x, size.y)),
         ]
+    }
+}
+
+/// 点到线段的最短距离（局部空间，供线类命中使用）。
+fn dist_point_segment(
+    p: euclid::Point2D<f32, ItemLocalSpace>,
+    a: (f32, f32),
+    b: (f32, f32),
+) -> f32 {
+    let a = euclid::Point2D::<_, ItemLocalSpace>::new(a.0, a.1);
+    let b = euclid::Point2D::<_, ItemLocalSpace>::new(b.0, b.1);
+    let ab = b - a;
+    let ap = p - a;
+    let len2 = ab.x * ab.x + ab.y * ab.y;
+    if len2 <= f32::EPSILON {
+        return ap.length();
+    }
+    let t = ((ap.x * ab.x + ap.y * ab.y) / len2).clamp(0.0, 1.0);
+    let closest = a + ab * t;
+    (p - closest).length()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_line(points: Vec<(f32, f32)>, pos_x: f32, pos_y: f32) -> Item {
+        let mut min_x = f32::MAX;
+        let mut min_y = f32::MAX;
+        let mut max_x = f32::MIN;
+        let mut max_y = f32::MIN;
+        for (x, y) in points.iter() {
+            min_x = min_x.min(*x);
+            min_y = min_y.min(*y);
+            max_x = max_x.max(*x);
+            max_y = max_y.max(*y);
+        }
+        Item::new_shape_line(
+            ShapeType::Arrow,
+            points,
+            (max_x - min_x, max_y - min_y),
+            pos_x,
+            pos_y,
+            StrokeStyle::default(),
+        )
+    }
+
+    #[test]
+    fn line_base_size_is_points_aabb() {
+        let item = make_line(vec![(0.0, 0.0), (80.0, 40.0)], 100.0, 100.0);
+        let size = item.base_size();
+        assert!((size.x - 80.0).abs() < 1e-3);
+        assert!((size.y - 40.0).abs() < 1e-3);
+        // 负方向也归一化到 AABB
+        let item = make_line(vec![(0.0, 0.0), (-60.0, -30.0)], 0.0, 0.0);
+        let size = item.base_size();
+        assert!((size.x - 60.0).abs() < 1e-3);
+        assert!((size.y - 30.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn line_hit_uses_point_to_segment_distance() {
+        // 水平线 (0,0)→(80,0)，阈值 max(线宽 2, 6) = 6
+        let item = make_line(vec![(0.0, 0.0), (80.0, 0.0)], 0.0, 0.0);
+        // 距线段 3 像素 → 命中
+        assert!(item.contains_canvas_point(CanvasPoint::new(40.0, 3.0)));
+        // 端点附近 2 像素 → 命中
+        assert!(item.contains_canvas_point(CanvasPoint::new(-2.0, 0.0)));
+        // 距线段 10 像素 → 未命中
+        assert!(!item.contains_canvas_point(CanvasPoint::new(40.0, 10.0)));
+        // 端点延长线上 100 像素 → 未命中
+        assert!(!item.contains_canvas_point(CanvasPoint::new(180.0, 0.0)));
+    }
+
+    #[test]
+    fn line_hit_with_rotation() {
+        // 水平线旋转 90° → 变成竖线 (0,0)→(0,100)
+        let mut item = make_line(vec![(0.0, 0.0), (100.0, 0.0)], 0.0, 0.0);
+        item.transform.rotate_by(std::f32::consts::FRAC_PI_2);
+        // 距竖线 2 像素 → 命中
+        assert!(item.contains_canvas_point(CanvasPoint::new(2.0, 50.0)));
+        // 距竖线 50 像素 → 未命中
+        assert!(!item.contains_canvas_point(CanvasPoint::new(50.0, 50.0)));
+    }
+
+    #[test]
+    fn line_shape_serde_roundtrip() {
+        let item = make_line(vec![(0.0, 0.0), (80.0, 40.0)], 10.0, 20.0);
+        let json = serde_json::to_string(&item).unwrap();
+        let back: Item = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.id, item.id);
+        match &back.kind {
+            ItemKind::Shape {
+                shape_type,
+                base_size,
+                points,
+                stroke,
+                ..
+            } => {
+                assert_eq!(*shape_type, ShapeType::Arrow);
+                assert_eq!(*base_size, (80.0, 40.0));
+                assert_eq!(points, &vec![(0.0, 0.0), (80.0, 40.0)]);
+                assert_eq!(stroke.color, StrokeStyle::default().color);
+            }
+            _ => panic!("expected Shape kind"),
+        }
     }
 }

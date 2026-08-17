@@ -1,6 +1,3 @@
-// A3 阶段 styler 尚未被 render_scene 接入，临时屏蔽 dead_code（A6 接入后移除）。
-#![allow(dead_code)]
-
 use eframe::egui::{self, Color32, Pos2, Shape};
 use preferz_core::shape::{DashStyle, ShapeType, StrokeStyle};
 use preferz_core::spaces::ScreenSpace;
@@ -9,6 +6,7 @@ use preferz_core::spaces::ScreenSpace;
 pub struct ShapeData {
     pub shape_type: ShapeType,
     pub base_size: (f32, f32),
+    /// 线类两点（局部坐标，Phase B 启用）。
     pub points: Vec<(f32, f32)>,
 }
 
@@ -35,6 +33,64 @@ impl CleanStyler {
 
     fn to_pos2(p: euclid::Point2D<f32, ScreenSpace>) -> Pos2 {
         egui::pos2(p.x, p.y)
+    }
+
+    /// 顺时针旋转屏幕向量 angle（弧度）。
+    fn rotate_vec2(v: egui::Vec2, angle: f32) -> egui::Vec2 {
+        let (s, c) = angle.sin_cos();
+        egui::vec2(v.x * c - v.y * s, v.x * s + v.y * c)
+    }
+
+    /// 线类渲染：直线（支持虚线）与箭头（终点 ±50° 两短线段）。
+    /// 线宽按 zoom 缩放；箭头头长 = 线宽 × 4。
+    fn build_line_shapes(
+        shape: &ShapeData,
+        stroke: &StrokeStyle,
+        to_screen: &euclid::Transform2D<f32, preferz_core::item::ItemLocalSpace, ScreenSpace>,
+        zoom: f32,
+    ) -> Vec<Shape> {
+        let (base_w, base_h) = shape.base_size;
+        let p0 = shape.points.first().copied().unwrap_or((0.0, 0.0));
+        let p1 = shape.points.get(1).copied().unwrap_or((base_w, base_h));
+        let s0 = Self::to_pos2(to_screen.transform_point(euclid::Point2D::new(p0.0, p0.1)));
+        let s1 = Self::to_pos2(to_screen.transform_point(euclid::Point2D::new(p1.0, p1.1)));
+        let stroke_color = Self::color(stroke.color);
+        let line_width = stroke.width * zoom;
+        let egui_stroke = egui::Stroke::new(line_width, stroke_color);
+
+        let mut out = Vec::new();
+        match stroke.dash {
+            DashStyle::Solid => {
+                out.push(Shape::line(vec![s0, s1], egui_stroke));
+            }
+            DashStyle::Dashed | DashStyle::Dotted => {
+                let (dash_len, gap_len) = match stroke.dash {
+                    DashStyle::Dotted => (1.5 * zoom, line_width * 2.0),
+                    _ => (line_width * 4.0, line_width * 2.0),
+                };
+                out.extend(Shape::dashed_line(
+                    &[s0, s1],
+                    egui_stroke,
+                    dash_len,
+                    gap_len,
+                ));
+            }
+        }
+
+        if shape.shape_type == ShapeType::Arrow {
+            let dir = s1 - s0;
+            let len = dir.length();
+            if len > 1e-3 {
+                let dir = dir / len;
+                let head_len = line_width * 4.0;
+                let half = std::f32::consts::FRAC_PI_2 * (5.0 / 9.0); // ≈50°
+                let a1 = Self::rotate_vec2(dir, half);
+                let a2 = Self::rotate_vec2(dir, -half);
+                out.push(Shape::line(vec![s1, s1 + a1 * head_len], egui_stroke));
+                out.push(Shape::line(vec![s1, s1 + a2 * head_len], egui_stroke));
+            }
+        }
+        out
     }
 }
 
@@ -84,8 +140,10 @@ impl ShapeStyler for CleanStyler {
                     })
                     .collect()
             }
-            // Phase B 启用
-            ShapeType::Line | ShapeType::Arrow => return Vec::new(),
+            // 线类：两点式（局部空间 points[0]→points[1]），含箭头
+            ShapeType::Line | ShapeType::Arrow => {
+                return Self::build_line_shapes(shape, stroke, to_screen, zoom);
+            }
         };
 
         let stroke_color = Self::color(stroke.color);
