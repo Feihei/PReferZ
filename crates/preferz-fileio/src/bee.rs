@@ -337,7 +337,7 @@ pub struct TextData {
 mod tests {
     use super::*;
     use preferz_core::item::{Item, ItemKind};
-    use preferz_core::shape::{ShapeType, StrokeStyle};
+    use preferz_core::shape::{ArrowHeadStyle, ShapeType, StrokeStyle};
     use preferz_core::spaces::CanvasVector;
     use std::path::PathBuf;
 
@@ -463,12 +463,13 @@ mod tests {
     #[test]
     fn prz_save_load_line_roundtrip() {
         let path = tmp_path("line_roundtrip.prz");
-        // 构造场景：一个线类 Shape（Arrow）
+        // 构造场景：一个线性对象 Polyline（终点箭头）
         let mut scene = Scene::new();
-        scene.add_item(Item::new_shape_line(
-            ShapeType::Arrow,
+        scene.add_item(Item::new_polyline(
             vec![(0.0, 0.0), (80.0, 40.0)],
             (80.0, 40.0),
+            None,
+            Some(ArrowHeadStyle::Arrow),
             30.0,
             40.0,
             StrokeStyle::default(),
@@ -495,11 +496,15 @@ mod tests {
                 shape_type,
                 base_size,
                 points,
+                start_arrow,
+                end_arrow,
                 ..
             } => {
-                assert_eq!(*shape_type, ShapeType::Arrow);
+                assert_eq!(*shape_type, ShapeType::Polyline);
                 assert_eq!(*base_size, (80.0, 40.0));
                 assert_eq!(points, &vec![(0.0, 0.0), (80.0, 40.0)]);
+                assert_eq!(*start_arrow, None);
+                assert_eq!(*end_arrow, Some(ArrowHeadStyle::Arrow));
             }
             _ => panic!("expected Shape kind"),
         }

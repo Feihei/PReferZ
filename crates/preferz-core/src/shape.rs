@@ -1,13 +1,18 @@
 use serde::{Deserialize, Serialize};
 
-/// 图形类型。Line/Arrow 为 Phase B 启用，本文件先定义枚举保证序列化稳定。
+/// 图形类型。Polyline 为线性对象：直线 = 2 顶点，未来多段线 / 曲线同用此类。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ShapeType {
     Rectangle,
     Ellipse,
     Diamond,
-    Line,
-    Arrow,
+    Polyline,
+}
+
+/// 端点箭头样式。`Option<ArrowHeadStyle>` 表示"该端无箭头"。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ArrowHeadStyle {
+    Arrow, // 标准三角箭头
 }
 
 /// 描边线型。
@@ -55,10 +60,23 @@ mod tests {
 
     #[test]
     fn shape_type_serde_roundtrip() {
-        for st in [ShapeType::Rectangle, ShapeType::Ellipse, ShapeType::Diamond] {
+        for st in [
+            ShapeType::Rectangle,
+            ShapeType::Ellipse,
+            ShapeType::Diamond,
+            ShapeType::Polyline,
+        ] {
             let json = serde_json::to_string(&st).unwrap();
             let back: ShapeType = serde_json::from_str(&json).unwrap();
             assert_eq!(st, back);
         }
+    }
+
+    #[test]
+    fn arrow_head_style_serde_roundtrip() {
+        let a = ArrowHeadStyle::Arrow;
+        let json = serde_json::to_string(&a).unwrap();
+        let back: ArrowHeadStyle = serde_json::from_str(&json).unwrap();
+        assert_eq!(a, back);
     }
 }

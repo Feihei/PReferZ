@@ -34,12 +34,12 @@ pub enum Handle {
     LineEndpoint1,
 }
 
-/// 是否为两点式线类（Line/Arrow）：选中态用两端点控制点，而非变换边框。
+/// 是否为线性对象（Polyline）：选中态用两端点控制点，而非变换边框。
 fn is_line(item: &Item) -> bool {
     matches!(
         item.kind,
         ItemKind::Shape {
-            shape_type: ShapeType::Line | ShapeType::Arrow,
+            shape_type: ShapeType::Polyline,
             ..
         }
     )

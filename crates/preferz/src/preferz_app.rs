@@ -10,9 +10,9 @@ use image::GenericImageView;
 use preferz_core::arrange::{plan_arrange, ArrangeMode};
 use preferz_core::commands::{
     AddItem, ArrangeItems, CropItems, DeleteItems, EditShapePoints, EditTextContent, FlipItems,
-    MoveItems, NormalizeItems, ReorderItems, SetPixmapProps, TransformItem,
+    MoveItems, NormalizeItems, ReorderItems, SetArrowHeads, SetPixmapProps, TransformItem,
 };
-use preferz_core::shape::{DashStyle, ShapeType, StrokeStyle};
+use preferz_core::shape::{ArrowHeadStyle, DashStyle, ShapeType, StrokeStyle};
 use preferz_core::spaces::{CanvasPoint, CanvasRect, CanvasSize, CanvasVector};
 use preferz_core::{Command, CropRect, Item, ItemId, ItemKind, Scene};
 use preferz_fileio::{BeeFile, ViewportMeta};
@@ -75,6 +75,10 @@ impl UndoStack {
 enum Tool {
     Select,
     Shape(ShapeType),
+    /// 线性对象工具：携带默认终点箭头（Line = None，Arrow = Some(Arrow)）。
+    Linear {
+        end_arrow: Option<ArrowHeadStyle>,
+    },
     /// Phase D 启用
     Frame,
 }
@@ -102,6 +106,8 @@ enum DragState {
     /// 用绘制工具拖拽创建 shape（两点式：start → current）。
     CreatingShape {
         shape_type: ShapeType,
+        /// 线性对象工具的默认终点箭头（矩形族忽略）。
+        end_arrow: Option<ArrowHeadStyle>,
         start: CanvasPoint,
         current: CanvasPoint,
         shift: bool,
@@ -560,6 +566,27 @@ impl PReferZApp {
         items.sort_by_key(|b| std::cmp::Reverse(b.z));
         items
     }
+
+    /// 选中线性对象（Polyline）的箭头状态：(item_id, start_arrow, end_arrow)。
+    /// 从选中项中找第一个线性对象；无则返回 None。
+    fn selected_linear_arrows(
+        &self,
+    ) -> Option<(ItemId, Option<ArrowHeadStyle>, Option<ArrowHeadStyle>)> {
+        for id in self.scene.selection.iter() {
+            if let Some(item) = self.scene.get_item(id) {
+                if let ItemKind::Shape {
+                    shape_type: ShapeType::Polyline,
+                    start_arrow,
+                    end_arrow,
+                    ..
+                } = &item.kind
+                {
+                    return Some((item.id, *start_arrow, *end_arrow));
+                }
+            }
+        }
+        None
+    }
 }
 
 impl Default for PReferZApp {
@@ -640,8 +667,14 @@ impl eframe::App for PReferZApp {
                     (Tool::Shape(ShapeType::Rectangle), "▭", T::ToolRectangle),
                     (Tool::Shape(ShapeType::Ellipse), "◯", T::ToolEllipse),
                     (Tool::Shape(ShapeType::Diamond), "◇", T::ToolDiamond),
-                    (Tool::Shape(ShapeType::Line), "╱", T::ToolLine),
-                    (Tool::Shape(ShapeType::Arrow), "➤", T::ToolArrow),
+                    (Tool::Linear { end_arrow: None }, "╱", T::ToolLine),
+                    (
+                        Tool::Linear {
+                            end_arrow: Some(ArrowHeadStyle::Arrow),
+                        },
+                        "➤",
+                        T::ToolArrow,
+                    ),
                 ];
                 for (tool, icon, key) in tools {
                     let is_active = self.tool == tool;
@@ -701,6 +734,7 @@ impl eframe::App for PReferZApp {
             // 绘制工具拖拽预览（两点式：start → current）
             if let DragState::CreatingShape {
                 shape_type,
+                end_arrow,
                 start,
                 current,
                 ..
@@ -756,12 +790,12 @@ impl eframe::App for PReferZApp {
                         pts.push(pts[0]); // 闭合路径
                         ui.painter().add(egui::Shape::line(pts, stroke));
                     }
-                    // 线类：画 start → current 线段；箭头另画头部（与 CleanStyler 一致）
-                    ShapeType::Line | ShapeType::Arrow => {
+                    // 线性对象：画 start → current 线段；箭头另画头部（与 CleanStyler 一致）
+                    ShapeType::Polyline => {
                         let s0 = self.viewport.canvas_to_screen(*start);
                         let s1 = self.viewport.canvas_to_screen(*current);
                         ui.painter().line_segment([s0, s1], stroke);
-                        if *shape_type == ShapeType::Arrow {
+                        if let Some(ArrowHeadStyle::Arrow) = end_arrow {
                             let dir = s1 - s0;
                             let len = dir.length();
                             if len > 1e-3 {
@@ -979,50 +1013,90 @@ impl eframe::App for PReferZApp {
                 });
         }
 
-        // 样式面板：仅绘制工具激活时显示（spec §5.1）
-        if self.tool != Tool::Select {
+        // 样式面板：绘制工具激活时显示新建默认样式（spec §5.1）；
+        // 选中线性对象时也显示，用于编辑起点/终点箭头（per-item）。
+        let selected_linear = self.selected_linear_arrows();
+        if self.tool != Tool::Select || selected_linear.is_some() {
             egui::TopBottomPanel::bottom("style_panel").show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(t(self.lang, T::StyleStrokeColor));
-                    let mut col = egui::Color32::from_rgba_unmultiplied(
-                        self.default_stroke.color[0],
-                        self.default_stroke.color[1],
-                        self.default_stroke.color[2],
-                        self.default_stroke.color[3],
-                    );
-                    if ui.color_edit_button_srgba(&mut col).changed() {
-                        self.default_stroke.color = [col.r(), col.g(), col.b(), col.a()];
-                    }
-                    ui.separator();
-                    ui.label(t(self.lang, T::StyleStrokeWidth));
-                    ui.add(
-                        egui::Slider::new(&mut self.default_stroke.width, 0.5..=12.0)
-                            .logarithmic(true),
-                    );
-                    ui.separator();
-                    for (dash, label) in [
-                        (DashStyle::Solid, T::StyleDashSolid),
-                        (DashStyle::Dashed, T::StyleDashDashed),
-                        (DashStyle::Dotted, T::StyleDashDotted),
-                    ] {
-                        let active = self.default_stroke.dash == dash;
-                        if ui.selectable_label(active, t(self.lang, label)).clicked() {
-                            self.default_stroke.dash = dash;
+                if self.tool != Tool::Select {
+                    ui.horizontal(|ui| {
+                        ui.label(t(self.lang, T::StyleStrokeColor));
+                        let mut col = egui::Color32::from_rgba_unmultiplied(
+                            self.default_stroke.color[0],
+                            self.default_stroke.color[1],
+                            self.default_stroke.color[2],
+                            self.default_stroke.color[3],
+                        );
+                        if ui.color_edit_button_srgba(&mut col).changed() {
+                            self.default_stroke.color = [col.r(), col.g(), col.b(), col.a()];
                         }
-                    }
+                        ui.separator();
+                        ui.label(t(self.lang, T::StyleStrokeWidth));
+                        ui.add(
+                            egui::Slider::new(&mut self.default_stroke.width, 0.5..=12.0)
+                                .logarithmic(true),
+                        );
+                        ui.separator();
+                        for (dash, label) in [
+                            (DashStyle::Solid, T::StyleDashSolid),
+                            (DashStyle::Dashed, T::StyleDashDashed),
+                            (DashStyle::Dotted, T::StyleDashDotted),
+                        ] {
+                            let active = self.default_stroke.dash == dash;
+                            if ui.selectable_label(active, t(self.lang, label)).clicked() {
+                                self.default_stroke.dash = dash;
+                            }
+                        }
+                        ui.separator();
+                        let mut fill_checked = self.default_fill.is_some();
+                        if ui
+                            .checkbox(&mut fill_checked, t(self.lang, T::StyleFillNone))
+                            .changed()
+                        {
+                            self.default_fill = if fill_checked {
+                                Some([100, 180, 255, 60])
+                            } else {
+                                None
+                            };
+                        }
+                    });
+                }
+                // 编辑选中线性对象：起点/终点箭头开关（undo 走 SetArrowHeads）
+                if let Some((item_id, start_arrow, end_arrow)) = selected_linear {
                     ui.separator();
-                    let mut fill_checked = self.default_fill.is_some();
-                    if ui
-                        .checkbox(&mut fill_checked, t(self.lang, T::StyleFillNone))
-                        .changed()
-                    {
-                        self.default_fill = if fill_checked {
-                            Some([100, 180, 255, 60])
-                        } else {
-                            None
-                        };
-                    }
-                });
+                    ui.horizontal(|ui| {
+                        ui.label(t(self.lang, T::StyleArrowStart));
+                        let mut checked = start_arrow.is_some();
+                        if ui.checkbox(&mut checked, "").changed() {
+                            let new = if checked {
+                                Some(ArrowHeadStyle::Arrow)
+                            } else {
+                                None
+                            };
+                            let cmd =
+                                SetArrowHeads::new(item_id, start_arrow, end_arrow, new, end_arrow);
+                            self.push_cmd(Box::new(cmd));
+                        }
+                        ui.separator();
+                        ui.label(t(self.lang, T::StyleArrowEnd));
+                        let mut checked = end_arrow.is_some();
+                        if ui.checkbox(&mut checked, "").changed() {
+                            let new = if checked {
+                                Some(ArrowHeadStyle::Arrow)
+                            } else {
+                                None
+                            };
+                            let cmd = SetArrowHeads::new(
+                                item_id,
+                                start_arrow,
+                                end_arrow,
+                                start_arrow,
+                                new,
+                            );
+                            self.push_cmd(Box::new(cmd));
+                        }
+                    });
+                }
             });
         }
 
@@ -1072,15 +1146,30 @@ impl PReferZApp {
 
         // 绘制工具激活：直接进入创建拖拽（不处理手柄/命中/框选）。
         // additive（=Shift 按住）用于正方形锁定，随状态存入。
-        if let Tool::Shape(shape_type) = self.tool {
-            let start_canvas = self.viewport.screen_to_canvas(screen_pos);
-            self.drag = DragState::CreatingShape {
-                shape_type,
-                start: start_canvas,
-                current: start_canvas,
-                shift: additive,
-            };
-            return;
+        match self.tool {
+            Tool::Shape(shape_type) => {
+                let start_canvas = self.viewport.screen_to_canvas(screen_pos);
+                self.drag = DragState::CreatingShape {
+                    shape_type,
+                    end_arrow: None,
+                    start: start_canvas,
+                    current: start_canvas,
+                    shift: additive,
+                };
+                return;
+            }
+            Tool::Linear { end_arrow } => {
+                let start_canvas = self.viewport.screen_to_canvas(screen_pos);
+                self.drag = DragState::CreatingShape {
+                    shape_type: ShapeType::Polyline,
+                    end_arrow,
+                    start: start_canvas,
+                    current: start_canvas,
+                    shift: additive,
+                };
+                return;
+            }
+            _ => {}
         }
 
         // 裁剪模式：优先检测裁剪手�?
@@ -1397,11 +1486,12 @@ impl PReferZApp {
             }
             DragState::CreatingShape {
                 shape_type,
+                end_arrow,
                 start,
                 current,
                 shift,
             } => {
-                self.finish_create_shape(shape_type, start, current, shift);
+                self.finish_create_shape(shape_type, end_arrow, start, current, shift);
             }
             DragState::LineEndpoint {
                 item_id,
@@ -1428,16 +1518,17 @@ impl PReferZApp {
     }
 
     /// 用绘制工具完成 shape 创建：计算矩形 → AddItem → 回 Select。
-    /// shift = 锁定正方形（用宽高较大者作边长）；线类 = 锁定 45° 方向。
+    /// shift = 锁定正方形（用宽高较大者作边长）；线性对象 = 锁定 45° 方向。
     fn finish_create_shape(
         &mut self,
         shape_type: ShapeType,
+        end_arrow: Option<ArrowHeadStyle>,
         start: CanvasPoint,
         current: CanvasPoint,
         shift: bool,
     ) {
-        // 线类：两点式（start → current），Shift 锁 45°，最小长度 3 画布像素。
-        if matches!(shape_type, ShapeType::Line | ShapeType::Arrow) {
+        // 线性对象：两点式（start → current），Shift 锁 45°，最小长度 3 画布像素。
+        if shape_type == ShapeType::Polyline {
             let mut dx = current.x - start.x;
             let mut dy = current.y - start.y;
             if shift {
@@ -1459,17 +1550,18 @@ impl PReferZApp {
             // 局部坐标：起点对齐 AABB 左上角
             let p0 = (start.x - min_x, start.y - min_y);
             let p1 = (start.x + dx - min_x, start.y + dy - min_y);
-            let item = Item::new_shape_line(
-                shape_type,
+            let item = Item::new_polyline(
                 vec![p0, p1],
                 (dx.abs(), dy.abs()),
+                None,
+                end_arrow,
                 min_x,
                 min_y,
                 self.default_stroke,
             );
             let cmd = AddItem::new(item);
             self.push_cmd(Box::new(cmd));
-            self.flash(if shape_type == ShapeType::Arrow {
+            self.flash(if end_arrow.is_some() {
                 "已创建箭头"
             } else {
                 "已创建直线"
@@ -1658,12 +1750,16 @@ impl PReferZApp {
                     points,
                     stroke,
                     fill,
+                    start_arrow,
+                    end_arrow,
                     seed: _,
                 } => {
                     let data = ShapeData {
                         shape_type: *shape_type,
                         base_size: *base_size,
                         points: points.clone(),
+                        start_arrow: *start_arrow,
+                        end_arrow: *end_arrow,
                     };
                     let to_screen = item_local_to_screen(item, &self.viewport);
                     let fill_color =
@@ -2746,9 +2842,11 @@ impl PReferZApp {
         } else if pressed(egui::Key::D) {
             Some(Tool::Shape(ShapeType::Diamond))
         } else if pressed(egui::Key::L) {
-            Some(Tool::Shape(ShapeType::Line))
+            Some(Tool::Linear { end_arrow: None })
         } else if pressed(egui::Key::A) {
-            Some(Tool::Shape(ShapeType::Arrow))
+            Some(Tool::Linear {
+                end_arrow: Some(ArrowHeadStyle::Arrow),
+            })
         } else {
             None
         }

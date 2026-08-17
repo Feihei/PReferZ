@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::shape::{ShapeType, StrokeStyle};
+use crate::shape::{ArrowHeadStyle, ShapeType, StrokeStyle};
 use crate::spaces::{CanvasPoint, CanvasRect, CanvasVector};
 use crate::transform::Transform;
 
@@ -42,10 +42,14 @@ pub enum ItemKind {
         shape_type: ShapeType,
         /// 局部空间尺寸（矩形族 = w×h；线类 = points 包围盒）。
         base_size: (f32, f32),
-        /// 线类专用，局部坐标（A 期为空 Vec；B 期启用）。
+        /// 线性对象顶点，局部坐标（矩形族为空 Vec；N ≥ 2）。
         points: Vec<(f32, f32)>,
         stroke: StrokeStyle,
         fill: Option<[u8; 4]>, // RGBA；None = 透明
+        /// 起点箭头样式（仅 Polyline 使用；矩形族忽略）。
+        start_arrow: Option<ArrowHeadStyle>,
+        /// 终点箭头样式（仅 Polyline 使用；矩形族忽略）。
+        end_arrow: Option<ArrowHeadStyle>,
         /// 手绘风确定性噪声预留（Phase F 用），A 期固定 0。
         seed: u64,
     },
@@ -66,7 +70,7 @@ impl ItemKind {
         }
     }
 
-    /// 更新线类（Line/Arrow）端点，并把 `base_size` 同步为 points 的 AABB，
+    /// 更新线性对象（Polyline）端点，并把 `base_size` 同步为 points 的 AABB，
     /// 保证持久化与 `base_size()` 推导一致。非线类调用无副作用。
     pub fn set_line_points(&mut self, points: Vec<(f32, f32)>) {
         if let ItemKind::Shape {
@@ -77,7 +81,7 @@ impl ItemKind {
         } = self
         {
             *pts = points;
-            if matches!(shape_type, ShapeType::Line | ShapeType::Arrow) && !pts.is_empty() {
+            if matches!(shape_type, ShapeType::Polyline) && !pts.is_empty() {
                 let mut min_x = f32::MAX;
                 let mut min_y = f32::MAX;
                 let mut max_x = f32::MIN;
@@ -199,6 +203,8 @@ impl Item {
                 points: Vec::new(),
                 stroke,
                 fill,
+                start_arrow: None,
+                end_arrow: None,
                 seed: 0,
             },
             transform: Transform::new(pos_x, pos_y, 1.0, 1.0),
@@ -206,12 +212,13 @@ impl Item {
         }
     }
 
-    /// 线类（Line/Arrow）构造器：points 为局部坐标（已对齐左上角 AABB），
-    /// base_size 即 AABB 宽高；线类无填充。
-    pub fn new_shape_line(
-        shape_type: ShapeType,
+    /// 线性对象（Polyline）构造器：points 为局部坐标（已对齐左上角 AABB），
+    /// base_size 即 AABB 宽高；起点/终点箭头独立可配；线类无填充。
+    pub fn new_polyline(
         points: Vec<(f32, f32)>,
         base_size: (f32, f32),
+        start_arrow: Option<ArrowHeadStyle>,
+        end_arrow: Option<ArrowHeadStyle>,
         pos_x: f32,
         pos_y: f32,
         stroke: StrokeStyle,
@@ -219,11 +226,13 @@ impl Item {
         Self {
             id: Uuid::new_v4(),
             kind: ItemKind::Shape {
-                shape_type,
+                shape_type: ShapeType::Polyline,
                 base_size,
                 points,
                 stroke,
                 fill: None,
+                start_arrow,
+                end_arrow,
                 seed: 0,
             },
             transform: Transform::new(pos_x, pos_y, 1.0, 1.0),
@@ -275,7 +284,7 @@ impl Item {
             } => {
                 // 线类：base_size 取 points 的 AABB（局部坐标已对齐左上角），
                 // 保证 local_to_canvas / 变换手柄正确。
-                if matches!(shape_type, ShapeType::Line | ShapeType::Arrow) && !points.is_empty() {
+                if matches!(shape_type, ShapeType::Polyline) && !points.is_empty() {
                     let mut min_x = f32::MAX;
                     let mut min_y = f32::MAX;
                     let mut max_x = f32::MIN;
@@ -346,7 +355,7 @@ impl Item {
             ..
         } = &self.kind
         {
-            if matches!(shape_type, ShapeType::Line | ShapeType::Arrow) {
+            if matches!(shape_type, ShapeType::Polyline) {
                 // 线类：点到任一线段距离 ≤ max(线宽, 6.0) 视为命中
                 // （局部单位；旋转/缩放由逆变换处理）
                 let threshold = stroke.width.max(6.0);
@@ -437,14 +446,63 @@ mod tests {
             max_x = max_x.max(*x);
             max_y = max_y.max(*y);
         }
-        Item::new_shape_line(
-            ShapeType::Arrow,
+        Item::new_polyline(
             points,
             (max_x - min_x, max_y - min_y),
+            None,
+            Some(ArrowHeadStyle::Arrow),
             pos_x,
             pos_y,
             StrokeStyle::default(),
         )
+    }
+
+    #[test]
+    fn polyline_arrow_constructors() {
+        // 无箭头
+        let line = Item::new_polyline(
+            vec![(0.0, 0.0), (80.0, 0.0)],
+            (80.0, 0.0),
+            None,
+            None,
+            0.0,
+            0.0,
+            StrokeStyle::default(),
+        );
+        match &line.kind {
+            ItemKind::Shape {
+                shape_type,
+                start_arrow,
+                end_arrow,
+                ..
+            } => {
+                assert_eq!(*shape_type, ShapeType::Polyline);
+                assert_eq!(*start_arrow, None);
+                assert_eq!(*end_arrow, None);
+            }
+            _ => panic!("expected Shape kind"),
+        }
+        // 双向箭头
+        let both = Item::new_polyline(
+            vec![(0.0, 0.0), (80.0, 0.0)],
+            (80.0, 0.0),
+            Some(ArrowHeadStyle::Arrow),
+            Some(ArrowHeadStyle::Arrow),
+            0.0,
+            0.0,
+            StrokeStyle::default(),
+        );
+        match &both.kind {
+            ItemKind::Shape {
+                start_arrow,
+                end_arrow,
+                ..
+            } => {
+                assert_eq!(*start_arrow, Some(ArrowHeadStyle::Arrow));
+                assert_eq!(*end_arrow, Some(ArrowHeadStyle::Arrow));
+            }
+            _ => panic!("expected Shape kind"),
+        }
     }
 
     #[test]
@@ -497,12 +555,16 @@ mod tests {
                 base_size,
                 points,
                 stroke,
+                start_arrow,
+                end_arrow,
                 ..
             } => {
-                assert_eq!(*shape_type, ShapeType::Arrow);
+                assert_eq!(*shape_type, ShapeType::Polyline);
                 assert_eq!(*base_size, (80.0, 40.0));
                 assert_eq!(points, &vec![(0.0, 0.0), (80.0, 40.0)]);
                 assert_eq!(stroke.color, StrokeStyle::default().color);
+                assert_eq!(*start_arrow, None);
+                assert_eq!(*end_arrow, Some(ArrowHeadStyle::Arrow));
             }
             _ => panic!("expected Shape kind"),
         }

@@ -9,6 +9,6 @@ pub mod transform;
 pub use commands::Command;
 pub use item::{CropRect, Item, ItemId, ItemKind};
 pub use scene::Scene;
-pub use shape::{DashStyle, ShapeType, StrokeStyle};
+pub use shape::{ArrowHeadStyle, DashStyle, ShapeType, StrokeStyle};
 pub use spaces::{CanvasPoint, CanvasRect, CanvasSize, CanvasSpace, CanvasVector, ScreenSpace};
 pub use transform::Transform;

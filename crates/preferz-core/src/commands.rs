@@ -1,5 +1,6 @@
 use crate::item::{CropRect, ItemId, ItemKind};
 use crate::scene::Scene;
+use crate::shape::ArrowHeadStyle;
 use crate::spaces::CanvasVector;
 use crate::transform::Transform;
 
@@ -98,6 +99,66 @@ impl Command for EditShapePoints {
 
     fn skip_first_redo(&self) -> bool {
         true
+    }
+}
+
+// ─────────────────────────── Set arrow heads ───────────────────────────
+
+/// 设置线性对象（Polyline）起/终点箭头样式命令。
+/// 样式面板开关触发：UI 未直接改 item，push 时正常 redo 应用（skip_first_redo = false）。
+pub struct SetArrowHeads {
+    item_id: ItemId,
+    old_start: Option<ArrowHeadStyle>,
+    old_end: Option<ArrowHeadStyle>,
+    new_start: Option<ArrowHeadStyle>,
+    new_end: Option<ArrowHeadStyle>,
+}
+
+impl SetArrowHeads {
+    pub fn new(
+        item_id: ItemId,
+        old_start: Option<ArrowHeadStyle>,
+        old_end: Option<ArrowHeadStyle>,
+        new_start: Option<ArrowHeadStyle>,
+        new_end: Option<ArrowHeadStyle>,
+    ) -> Self {
+        Self {
+            item_id,
+            old_start,
+            old_end,
+            new_start,
+            new_end,
+        }
+    }
+}
+
+impl Command for SetArrowHeads {
+    fn redo(&mut self, scene: &mut Scene) {
+        if let Some(item) = scene.get_item_mut(&self.item_id) {
+            if let ItemKind::Shape {
+                start_arrow,
+                end_arrow,
+                ..
+            } = &mut item.kind
+            {
+                *start_arrow = self.new_start;
+                *end_arrow = self.new_end;
+            }
+        }
+    }
+
+    fn undo(&mut self, scene: &mut Scene) {
+        if let Some(item) = scene.get_item_mut(&self.item_id) {
+            if let ItemKind::Shape {
+                start_arrow,
+                end_arrow,
+                ..
+            } = &mut item.kind
+            {
+                *start_arrow = self.old_start;
+                *end_arrow = self.old_end;
+            }
+        }
     }
 }
 

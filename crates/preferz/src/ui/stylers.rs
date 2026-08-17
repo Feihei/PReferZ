@@ -1,13 +1,17 @@
 use eframe::egui::{self, Color32, Pos2, Shape};
-use preferz_core::shape::{DashStyle, ShapeType, StrokeStyle};
+use preferz_core::shape::{ArrowHeadStyle, DashStyle, ShapeType, StrokeStyle};
 use preferz_core::spaces::ScreenSpace;
 
 /// 风格器输入：shape 的局部空间几何。
 pub struct ShapeData {
     pub shape_type: ShapeType,
     pub base_size: (f32, f32),
-    /// 线类两点（局部坐标，Phase B 启用）。
+    /// 线性对象顶点（局部坐标，N ≥ 2）。
     pub points: Vec<(f32, f32)>,
+    /// 起点箭头样式（仅 Polyline 使用）。
+    pub start_arrow: Option<ArrowHeadStyle>,
+    /// 终点箭头样式（仅 Polyline 使用）。
+    pub end_arrow: Option<ArrowHeadStyle>,
 }
 
 /// 将 shape 局部几何转换为屏幕空间的 egui::Shape 列表。
@@ -41,44 +45,47 @@ impl CleanStyler {
         egui::vec2(v.x * c - v.y * s, v.x * s + v.y * c)
     }
 
-    /// 线类渲染：直线（支持虚线）与箭头（终点 ±50° 两短线段）。
-    /// 线宽按 zoom 缩放；箭头头长 = 线宽 × 4。
+    /// 线性对象渲染：折线（支持虚线）与起/终点箭头。
+    /// 线宽按 zoom 缩放；箭头头长 = 线宽 × 4，张角 ≈ ±50°。
     fn build_line_shapes(
         shape: &ShapeData,
         stroke: &StrokeStyle,
+        start_arrow: Option<ArrowHeadStyle>,
+        end_arrow: Option<ArrowHeadStyle>,
         to_screen: &euclid::Transform2D<f32, preferz_core::item::ItemLocalSpace, ScreenSpace>,
         zoom: f32,
     ) -> Vec<Shape> {
-        let (base_w, base_h) = shape.base_size;
-        let p0 = shape.points.first().copied().unwrap_or((0.0, 0.0));
-        let p1 = shape.points.get(1).copied().unwrap_or((base_w, base_h));
-        let s0 = Self::to_pos2(to_screen.transform_point(euclid::Point2D::new(p0.0, p0.1)));
-        let s1 = Self::to_pos2(to_screen.transform_point(euclid::Point2D::new(p1.0, p1.1)));
         let stroke_color = Self::color(stroke.color);
         let line_width = stroke.width * zoom;
         let egui_stroke = egui::Stroke::new(line_width, stroke_color);
 
+        // 折线：所有顶点依次连接（N-1 段）
+        let pts: Vec<Pos2> = shape
+            .points
+            .iter()
+            .map(|(x, y)| Self::to_pos2(to_screen.transform_point(euclid::Point2D::new(*x, *y))))
+            .collect();
+        if pts.len() < 2 {
+            return Vec::new();
+        }
+
         let mut out = Vec::new();
         match stroke.dash {
             DashStyle::Solid => {
-                out.push(Shape::line(vec![s0, s1], egui_stroke));
+                out.push(Shape::line(pts.clone(), egui_stroke));
             }
             DashStyle::Dashed | DashStyle::Dotted => {
                 let (dash_len, gap_len) = match stroke.dash {
                     DashStyle::Dotted => (1.5 * zoom, line_width * 2.0),
                     _ => (line_width * 4.0, line_width * 2.0),
                 };
-                out.extend(Shape::dashed_line(
-                    &[s0, s1],
-                    egui_stroke,
-                    dash_len,
-                    gap_len,
-                ));
+                out.extend(Shape::dashed_line(&pts, egui_stroke, dash_len, gap_len));
             }
         }
 
-        if shape.shape_type == ShapeType::Arrow {
-            let dir = s1 - s0;
+        // 起点箭头：沿首段方向反向后退（倒 V 指向起点）。
+        if let Some(ArrowHeadStyle::Arrow) = start_arrow {
+            let dir = pts[1] - pts[0];
             let len = dir.length();
             if len > 1e-3 {
                 let dir = dir / len;
@@ -86,8 +93,30 @@ impl CleanStyler {
                 let half = std::f32::consts::FRAC_PI_2 * (5.0 / 9.0); // ≈50°
                 let a1 = Self::rotate_vec2(dir, half);
                 let a2 = Self::rotate_vec2(dir, -half);
-                out.push(Shape::line(vec![s1, s1 + a1 * head_len], egui_stroke));
-                out.push(Shape::line(vec![s1, s1 + a2 * head_len], egui_stroke));
+                out.push(Shape::line(
+                    vec![pts[0], pts[0] - a1 * head_len],
+                    egui_stroke,
+                ));
+                out.push(Shape::line(
+                    vec![pts[0], pts[0] - a2 * head_len],
+                    egui_stroke,
+                ));
+            }
+        }
+
+        // 终点箭头：沿末段方向正向前进（V 指向终点）。
+        if let Some(ArrowHeadStyle::Arrow) = end_arrow {
+            let last = pts[pts.len() - 1];
+            let dir = last - pts[pts.len() - 2];
+            let len = dir.length();
+            if len > 1e-3 {
+                let dir = dir / len;
+                let head_len = line_width * 4.0;
+                let half = std::f32::consts::FRAC_PI_2 * (5.0 / 9.0); // ≈50°
+                let a1 = Self::rotate_vec2(dir, half);
+                let a2 = Self::rotate_vec2(dir, -half);
+                out.push(Shape::line(vec![last, last + a1 * head_len], egui_stroke));
+                out.push(Shape::line(vec![last, last + a2 * head_len], egui_stroke));
             }
         }
         out
@@ -140,9 +169,16 @@ impl ShapeStyler for CleanStyler {
                     })
                     .collect()
             }
-            // 线类：两点式（局部空间 points[0]→points[1]），含箭头
-            ShapeType::Line | ShapeType::Arrow => {
-                return Self::build_line_shapes(shape, stroke, to_screen, zoom);
+            // 线性对象：折线 + 起/终点箭头
+            ShapeType::Polyline => {
+                return Self::build_line_shapes(
+                    shape,
+                    stroke,
+                    shape.start_arrow,
+                    shape.end_arrow,
+                    to_screen,
+                    zoom,
+                );
             }
         };
 

@@ -124,10 +124,7 @@ pub enum T {
     ToolRectangle,
     ToolEllipse,
     ToolDiamond,
-    /// 以下变体为后续 Phase 预留（B：线类；D：Frame），本期未使用。
-    #[allow(dead_code)]
     ToolLine,
-    #[allow(dead_code)]
     ToolArrow,
     #[allow(dead_code)]
     ToolFrame,
@@ -137,6 +134,9 @@ pub enum T {
     StyleDashDashed,
     StyleDashDotted,
     StyleFillNone,
+    // ── 箭头样式 ──
+    StyleArrowStart,
+    StyleArrowEnd,
 }
 
 /// 查表翻译。未命中的 key 返回 debug 字符串（开发期易发现遗漏）。
@@ -257,6 +257,8 @@ fn translate_en(key: T) -> &'static str {
         T::StyleDashDashed => "Dashed",
         T::StyleDashDotted => "Dotted",
         T::StyleFillNone => "No fill",
+        T::StyleArrowStart => "Start arrow",
+        T::StyleArrowEnd => "End arrow",
     }
 }
 
@@ -370,5 +372,7 @@ fn translate_zh(key: T) -> &'static str {
         T::StyleDashDashed => "虚线",
         T::StyleDashDotted => "点线",
         T::StyleFillNone => "无填充",
+        T::StyleArrowStart => "起点箭头",
+        T::StyleArrowEnd => "终点箭头",
     }
 }
