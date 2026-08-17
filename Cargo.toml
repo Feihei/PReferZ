@@ -11,7 +11,29 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 description = "Picture Reference Zoomer — a minimal reference image board"
-repository = "https://github.com/YOUR_USERNAME/preferz"
+repository = "https://github.com/Feihei/PReferZ"
+
+[workspace.metadata.release]
+# 所有 crate 共用 workspace 版本，发布时同步 bump
+shared-version = true
+# 只允许从 main 分支发布
+allow-branch = ["main"]
+# workspace 版本同步，一次 bump 提交搞定
+consolidate-commits = true
+# 版本 bump 的提交信息
+pre-release-commit-message = "chore: Release v{{version}}"
+# tag 名称：v0.1.0（与 release.yml 的 v* 触发规则一致）
+tag-name = "v{{version}}"
+# 轻量 tag（不写注释）
+tag-message = ""
+# 二进制应用，不发布到 crates.io（发布由 GitHub Actions 构建产物）
+publish = false
+# 发布时自动提交版本改动并推送到远程
+push-remote = "origin"
+push = true
+sign-commit = false
+sign-tag = false
+pre-release-replacements = []
 
 [workspace.dependencies]
 # Core
