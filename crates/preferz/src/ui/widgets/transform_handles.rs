@@ -3,6 +3,16 @@ use preferz_core::{Item, ItemKind};
 
 use crate::viewport::ViewportState;
 
+/// 是否显示翻转手柄（Pixmap 与 Shape 支持，Text/Frame 不显示）。
+pub fn should_show_flip(item: &Item) -> bool {
+    matches!(item.kind, ItemKind::Pixmap { .. } | ItemKind::Shape { .. })
+}
+
+/// 是否显示旋转手柄（同上）。
+pub fn should_show_rotate(item: &Item) -> bool {
+    matches!(item.kind, ItemKind::Pixmap { .. } | ItemKind::Shape { .. })
+}
+
 /// 变换手柄种类。命中优先级：角点 > 旋转 > 翻转边。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Handle {
@@ -106,9 +116,9 @@ impl TransformHandles {
         let mut found = Handle::None;
         // 从顶层（最后一个）往底层查
         for item in selected_items.iter().rev() {
-            let show_flip = matches!(item.kind, ItemKind::Pixmap { .. });
+            let show_flip = should_show_flip(item);
             // 文字元素不需要旋转，去掉旋转手柄
-            let show_rotate = matches!(item.kind, ItemKind::Pixmap { .. });
+            let show_rotate = should_show_rotate(item);
             let h = self.hit_test(screen_pos, item, viewport, show_flip, show_rotate);
             if h != Handle::None {
                 found = h;

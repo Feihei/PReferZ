@@ -1,6 +1,8 @@
 use crate::i18n::{t, Lang, T};
 use crate::interaction;
-use crate::ui::widgets::transform_handles::{Handle, TransformHandles};
+use crate::ui::widgets::transform_handles::{
+    should_show_flip, should_show_rotate, Handle, TransformHandles,
+};
 use crate::viewport::ViewportState;
 use eframe::egui;
 use image::GenericImageView;
@@ -9,6 +11,7 @@ use preferz_core::commands::{
     AddItem, ArrangeItems, CropItems, DeleteItems, EditTextContent, FlipItems, MoveItems,
     NormalizeItems, ReorderItems, SetPixmapProps, TransformItem,
 };
+use preferz_core::shape::{ShapeType, StrokeStyle};
 use preferz_core::spaces::{CanvasPoint, CanvasRect, CanvasSize, CanvasVector};
 use preferz_core::{Command, CropRect, Item, ItemId, ItemKind, Scene};
 use preferz_fileio::{BeeFile, ViewportMeta};
@@ -64,7 +67,18 @@ impl UndoStack {
     }
 }
 
-/// 拖拽状态机。Idle / 手柄变换 / 移动�?item / 框选�?
+/// 当前激活工具。Select = 现有选择/框选行为。
+/// Shape 变体由 A5 绘制流程使用，Frame 由 Phase D 使用（此前临时屏蔽 dead_code）。
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Tool {
+    Select,
+    Shape(ShapeType),
+    /// Phase D 启用
+    Frame,
+}
+
+/// 拖拽状态机。
 enum DragState {
     Idle,
     HandleTransform {
@@ -323,6 +337,15 @@ pub struct PReferZApp {
     next_texture_id: u64,
     pending_import: Vec<PathBuf>,
     transform_handles: TransformHandles,
+    /// 当前激活工具（A5 起被绘制流程读取，此前临时屏蔽 dead_code）。
+    #[allow(dead_code)]
+    tool: Tool,
+    /// 绘制形状默认描边样式（样式面板 A8 使用，此前临时屏蔽 dead_code）。
+    #[allow(dead_code)]
+    default_stroke: StrokeStyle,
+    /// 绘制形状默认填充色（None = 透明；样式面板 A8 使用，此前临时屏蔽 dead_code）。
+    #[allow(dead_code)]
+    default_fill: Option<[u8; 4]>,
     drag: DragState,
     /// 文本便签编辑状态（None = 无编辑）�?
     editing_text: Option<EditingText>,
@@ -406,6 +429,9 @@ impl PReferZApp {
             next_texture_id: 1,
             pending_import: Vec::new(),
             transform_handles: TransformHandles::new(),
+            tool: Tool::Select,
+            default_stroke: StrokeStyle::default(),
+            default_fill: None,
             drag: DragState::Idle,
             editing_text: None,
             current_file: None,
@@ -895,8 +921,8 @@ impl PReferZApp {
             // 找到手柄所属的 item
             let selected = self.selected_items_snapshot();
             for item in selected.iter().rev() {
-                let show_flip = matches!(item.kind, ItemKind::Pixmap { .. });
-                let show_rotate = matches!(item.kind, ItemKind::Pixmap { .. });
+                let show_flip = should_show_flip(item);
+                let show_rotate = should_show_rotate(item);
                 let h = self.transform_handles.hit_test(
                     screen_pos,
                     item,
@@ -1280,8 +1306,8 @@ impl PReferZApp {
 
             // 选中�?+ 手柄：单选时画单独手柄；多选时画统一外框（循环后�?            // 裁剪模式下手柄隐藏（避免与裁剪框冲突�?
             if is_selected && selection_count == 1 && crop_item_id != Some(item.id) {
-                let show_flip = matches!(item.kind, ItemKind::Pixmap { .. });
-                let show_rotate = matches!(item.kind, ItemKind::Pixmap { .. });
+                let show_flip = should_show_flip(item);
+                let show_rotate = should_show_rotate(item);
                 self.transform_handles.render(
                     item,
                     ui.painter(),
