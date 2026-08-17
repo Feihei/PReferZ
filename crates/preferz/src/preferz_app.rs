@@ -1274,6 +1274,8 @@ impl PReferZApp {
                         );
                     }
                 }
+                // A1 数据模型先行，渲染实现见 Phase A6
+                ItemKind::Shape { .. } => {}
             }
 
             // 选中�?+ 手柄：单选时画单独手柄；多选时画统一外框（循环后�?            // 裁剪模式下手柄隐藏（避免与裁剪框冲突�?
@@ -3833,6 +3835,8 @@ fn sample_item_pixel(
             let _ = (local, base);
             Some((color[0], color[1], color[2], color[3]))
         }
+        // A1 数据模型先行，取色采样在 Phase A6 后补充
+        ItemKind::Shape { .. } => None,
     }
 }
 

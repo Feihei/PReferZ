@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::shape::{ShapeType, StrokeStyle};
 use crate::spaces::{CanvasPoint, CanvasRect, CanvasVector};
 use crate::transform::Transform;
 
@@ -34,6 +35,17 @@ pub enum ItemKind {
         /// `base_size()` 优先用此值，使变换边框与实际渲染一致（修 B6）。
         /// None 时退回到字符宽度估算。
         measured_size: Option<(f32, f32)>,
+    },
+    Shape {
+        shape_type: ShapeType,
+        /// 局部空间尺寸（矩形族 = w×h；线类 = points 包围盒）。
+        base_size: (f32, f32),
+        /// 线类专用，局部坐标（A 期为空 Vec；B 期启用）。
+        points: Vec<(f32, f32)>,
+        stroke: StrokeStyle,
+        fill: Option<[u8; 4]>, // RGBA；None = 透明
+        /// 手绘风确定性噪声预留（Phase F 用），A 期固定 0。
+        seed: u64,
     },
 }
 
@@ -142,6 +154,29 @@ impl Item {
         }
     }
 
+    pub fn new_shape(
+        shape_type: ShapeType,
+        base_size: (f32, f32),
+        pos_x: f32,
+        pos_y: f32,
+        stroke: StrokeStyle,
+        fill: Option<[u8; 4]>,
+    ) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            kind: ItemKind::Shape {
+                shape_type,
+                base_size,
+                points: Vec::new(),
+                stroke,
+                fill,
+                seed: 0,
+            },
+            transform: Transform::new(pos_x, pos_y, 1.0, 1.0),
+            z: 0,
+        }
+    }
+
     /// Item 未旋转/缩放前的原始尺寸（item 局部空间的宽高，单位：画布空间像素）。
     ///
     /// 注意：返回的是"未应用 scale"的尺寸；`scale` 由调用方通过
@@ -177,6 +212,9 @@ impl Item {
                     * font_size;
                 let height = *font_size * 1.2;
                 CanvasVector::new(width.max(1.0), height.max(1.0))
+            }
+            ItemKind::Shape { base_size, .. } => {
+                CanvasVector::new(base_size.0.max(1.0), base_size.1.max(1.0))
             }
         }
     }

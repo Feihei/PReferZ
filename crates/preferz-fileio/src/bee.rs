@@ -321,6 +321,7 @@ fn item_kind_str(kind: &ItemKind) -> &'static str {
     match kind {
         ItemKind::Pixmap { .. } => "pixmap",
         ItemKind::Text { .. } => "text",
+        ItemKind::Shape { .. } => "shape",
     }
 }
 
