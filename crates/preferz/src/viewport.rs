@@ -1,5 +1,5 @@
 use eframe::egui;
-use preferz_core::spaces::{CanvasPoint, CanvasRect, CanvasVector};
+use preferz_core::spaces::{CanvasPoint, CanvasRect, CanvasToScreen, CanvasVector};
 
 /// 视口状态：把画布世界坐标 (`CanvasSpace`) 映射到屏幕像素 (`ScreenSpace`)。
 ///
@@ -66,6 +66,19 @@ impl ViewportState {
         let min = self.canvas_to_screen(canvas_rect.origin);
         let max = self.canvas_to_screen(canvas_rect.origin + canvas_rect.size);
         egui::Rect::from_min_max(min, max)
+    }
+
+    /// 构造 Canvas → Screen 的仿射矩阵（与 [`canvas_to_screen`] 严格一致）。
+    /// 暂未被调用（A3 的 `item_local_to_screen` 使用），临时屏蔽 dead_code。
+    #[allow(dead_code)]
+    pub fn canvas_to_screen_transform(&self) -> CanvasToScreen {
+        let center = self.screen_center();
+        CanvasToScreen::identity()
+            .then_scale(self.zoom, self.zoom)
+            .then_translate(euclid::Vector2D::new(
+                center.x - self.pan.x * self.zoom,
+                center.y - self.pan.y * self.zoom,
+            ))
     }
 
     // ─────────────── 视口操作 ───────────────

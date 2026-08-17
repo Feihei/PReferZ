@@ -15,6 +15,8 @@ pub struct ItemLocalSpace;
 pub type ItemLocalToCanvas = euclid::Transform2D<f32, ItemLocalSpace, crate::spaces::CanvasSpace>;
 /// 画布 → Item 局部 变换矩阵（用于 hit-test）。
 pub type CanvasToItemLocal = euclid::Transform2D<f32, crate::spaces::CanvasSpace, ItemLocalSpace>;
+/// Item 局部 → 屏幕 变换矩阵（画布 → 屏幕 再叠加 ItemLocal → Canvas）。
+pub type ItemLocalToScreen = euclid::Transform2D<f32, ItemLocalSpace, crate::spaces::ScreenSpace>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ItemKind {
