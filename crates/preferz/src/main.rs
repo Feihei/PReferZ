@@ -2,18 +2,20 @@
 // debug 构建保留 console 子系统（方便看 panic 输出和 env_logger 日志）。
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod viewport;
+mod i18n;
 mod interaction;
 mod preferz_app;
 mod ui;
-mod i18n;
+mod viewport;
 
 fn main() -> eframe::Result<()> {
     let mut font_definitions = egui::FontDefinitions::default();
     // 思源黑体（Source Han Sans CN）— OFL-1.1 许可，支持中英文且字形美观
     font_definitions.font_data.insert(
         "SourceHanSansCN".to_string(),
-        egui::FontData::from_static(include_bytes!("../../../assets/SourceHanSansCN-Regular.ttf")).into()
+        egui::FontData::from_static(include_bytes!(
+            "../../../assets/SourceHanSansCN-Regular.ttf"
+        )),
     );
     // Proportional 和 Monospace 都插入，保证任何字体族下中文都不回落到系统默认
     for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
@@ -64,4 +66,3 @@ fn load_icon() -> egui::IconData {
         }
     }
 }
-

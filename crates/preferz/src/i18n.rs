@@ -85,18 +85,18 @@ pub enum T {
     FlashCropCancelled,
     FlashColorPickerMissed,
     FlashColorPickerImageOnly,
-    FlashColorPickerHint,        // 取色器模式：单击图片采样 · Esc 退出
+    FlashColorPickerHint, // 取色器模式：单击图片采样 · Esc 退出
     FlashNormalizeNeedMultiple,
-    FlashExportedTo,        // 已导出到 {path}
-    FlashExportImagesTo,    // 导出图片到 {path}
-    FlashPasteImage,        // 粘贴图片（进度条）
-    FlashExportProgress,    // 导出: {path}（进度条）
+    FlashExportedTo,           // 已导出到 {path}
+    FlashExportImagesTo,       // 导出图片到 {path}
+    FlashPasteImage,           // 粘贴图片（进度条）
+    FlashExportProgress,       // 导出: {path}（进度条）
     FlashExportImagesProgress, // 导出图片到: {path}（进度条）
-    FlashExportedNImages,   // 已导出 {n} 个图片到 {path}
-    FlashExportFailed,      // 导出失败: {err}
-    FlashProcessing,        // 处理中...（进度条默认）
+    FlashExportedNImages,      // 已导出 {n} 个图片到 {path}
+    FlashExportFailed,         // 导出失败: {err}
+    FlashProcessing,           // 处理中...（进度条默认）
     // ── 欢迎页 ──
-    WelcomeTitle,          // PReferZ（固定不翻译）
+    WelcomeTitle, // PReferZ（固定不翻译）
     WelcomeSubtitle,
     WelcomeRecentFiles,
     WelcomeHint,
@@ -193,13 +193,13 @@ fn translate_en(key: T) -> &'static str {
         T::FlashColorPickerImageOnly => "Only images support sampling",
         T::FlashColorPickerHint => "Color picker: click image to sample · Esc to exit",
         T::FlashNormalizeNeedMultiple => "Normalize requires multiple selected images",
-        T::FlashExportedTo => "Exported to",        // 后接路径
+        T::FlashExportedTo => "Exported to",          // 后接路径
         T::FlashExportImagesTo => "Export images to", // 后接路径
         T::FlashPasteImage => "Pasting image",
-        T::FlashExportProgress => "Export",          // 后接路径
+        T::FlashExportProgress => "Export", // 后接路径
         T::FlashExportImagesProgress => "Export images to", // 后接路径
-        T::FlashExportedNImages => "Exported",       // 后接数量+路径
-        T::FlashExportFailed => "Export failed",     // 后接错误
+        T::FlashExportedNImages => "Exported", // 后接数量+路径
+        T::FlashExportFailed => "Export failed", // 后接错误
         T::FlashProcessing => "Processing...",
         // 欢迎页
         T::WelcomeTitle => "PReferZ",

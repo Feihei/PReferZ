@@ -1,6 +1,6 @@
+use image::DynamicImage;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use image::DynamicImage;
 
 #[derive(Debug)]
 pub struct ImageLoader {
@@ -16,7 +16,7 @@ impl ImageLoader {
 
     pub fn load(&self, path: &PathBuf) -> Result<DynamicImage, Box<dyn std::error::Error>> {
         let mut cache = self.cache.lock().unwrap();
-        
+
         if let Some(img) = cache.get(path) {
             return Ok(img.clone());
         }

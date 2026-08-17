@@ -13,7 +13,11 @@ pub enum ArrangeMode {
 /// UI 层应将其包装为 [`crate::commands::ArrangeItems`] 命令 push 到 undo 栈，
 /// 而不是直接改 item.transform.pos（AGENTS.md: "All item mutations go through
 /// the undo stack"）。
-pub fn plan_arrange(scene: &Scene, mode: ArrangeMode, spacing: f32) -> Vec<(ItemId, CanvasVector, CanvasVector)> {
+pub fn plan_arrange(
+    scene: &Scene,
+    mode: ArrangeMode,
+    spacing: f32,
+) -> Vec<(ItemId, CanvasVector, CanvasVector)> {
     // 按 z 序排列，保证顺序稳定
     let items: Vec<&Item> = scene.items_by_z_order();
     match mode {
@@ -52,7 +56,8 @@ fn arrange_optimal(items: &[&Item], spacing: f32) -> Vec<(ItemId, CanvasVector, 
 
     // 用画布空间实际占用尺寸（应用 scale/rotation 后的 AABB），
     // 而非 base_size（未应用 scale 的原始尺寸），否则缩放过的 item 装箱会留出大量空隙。
-    let item_sizes: Vec<(f32, f32)> = items.iter()
+    let item_sizes: Vec<(f32, f32)> = items
+        .iter()
         .map(|it| {
             let b = it.bounding_rect();
             (b.size.width, b.size.height)
@@ -60,7 +65,8 @@ fn arrange_optimal(items: &[&Item], spacing: f32) -> Vec<(ItemId, CanvasVector, 
         .collect();
 
     // 容器宽度：取所有 item 的最大宽度 + spacing
-    let container_w = item_sizes.iter()
+    let container_w = item_sizes
+        .iter()
         .map(|(w, _)| *w + spacing)
         .fold(0.0_f32, f32::max)
         .max(64.0);
@@ -95,7 +101,8 @@ fn arrange_optimal(items: &[&Item], spacing: f32) -> Vec<(ItemId, CanvasVector, 
             }
             None => {
                 // 装不下：在容器底部新开一行（高度扩张）
-                let max_y = free_rects.iter()
+                let max_y = free_rects
+                    .iter()
                     .filter(|fr| fr.h.is_finite())
                     .map(|fr| fr.y + fr.h)
                     .fold(0.0_f32, f32::max);
@@ -176,10 +183,7 @@ fn prune_contained(rects: &mut Vec<FreeRect>) {
             let a = &rects[i];
             let b = &rects[j];
             // a 被 b 包含 → 移除 a
-            if b.x <= a.x && b.y <= a.y
-                && b.x + b.w >= a.x + a.w
-                && b.y + b.h >= a.y + a.h
-            {
+            if b.x <= a.x && b.y <= a.y && b.x + b.w >= a.x + a.w && b.y + b.h >= a.y + a.h {
                 to_remove.push(i);
                 break;
             }
@@ -208,15 +212,17 @@ struct PlacedRect {
 }
 
 fn rects_intersect(fr: &FreeRect, pr: &PlacedRect) -> bool {
-    fr.x < pr.x + pr.w
-        && fr.x + fr.w > pr.x
-        && fr.y < pr.y + pr.h
-        && fr.y + fr.h > pr.y
+    fr.x < pr.x + pr.w && fr.x + fr.w > pr.x && fr.y < pr.y + pr.h && fr.y + fr.h > pr.y
 }
 
 /// BSSF（Best Short Side Fit）：在所有空闲矩形中找最适合放置 (w, h) 的，
 /// 返回 (空闲矩形索引, 是否旋转)。允许旋转 90° 以更紧凑装箱。
-fn choose_best_free_rect(free_rects: &[FreeRect], w: f32, h: f32, spacing: f32) -> Option<(usize, bool)> {
+fn choose_best_free_rect(
+    free_rects: &[FreeRect],
+    w: f32,
+    h: f32,
+    spacing: f32,
+) -> Option<(usize, bool)> {
     let pw = w + spacing;
     let ph = h + spacing;
     let mut best: Option<(usize, bool, f32, f32)> = None;
@@ -229,7 +235,9 @@ fn choose_best_free_rect(free_rects: &[FreeRect], w: f32, h: f32, spacing: f32) 
             let long = leftover_w.max(leftover_h);
             match best {
                 None => best = Some((i, false, short, long)),
-                Some((_, _, bs, bl)) if (short, long) < (bs, bl) => best = Some((i, false, short, long)),
+                Some((_, _, bs, bl)) if (short, long) < (bs, bl) => {
+                    best = Some((i, false, short, long))
+                }
                 _ => {}
             }
         }
@@ -241,7 +249,9 @@ fn choose_best_free_rect(free_rects: &[FreeRect], w: f32, h: f32, spacing: f32) 
             let long = leftover_w.max(leftover_h);
             match best {
                 None => best = Some((i, true, short, long)),
-                Some((_, _, bs, bl)) if (short, long) < (bs, bl) => best = Some((i, true, short, long)),
+                Some((_, _, bs, bl)) if (short, long) < (bs, bl) => {
+                    best = Some((i, true, short, long))
+                }
                 _ => {}
             }
         }
@@ -261,10 +271,7 @@ fn arrange_grid(items: &[&Item], spacing: f32) -> Vec<(ItemId, CanvasVector, Can
         let bbox = item.bounding_rect();
         let w = bbox.size.width;
         let h = bbox.size.height;
-        let new_pos = CanvasVector::new(
-            col as f32 * (w + spacing),
-            row as f32 * (h + spacing),
-        );
+        let new_pos = CanvasVector::new(col as f32 * (w + spacing), row as f32 * (h + spacing));
         moves.push((item.id, item.transform.pos, new_pos));
     }
     moves

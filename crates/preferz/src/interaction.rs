@@ -1,6 +1,6 @@
-use eframe::egui;
-use preferz_core::{Scene, Item};
 use crate::viewport::ViewportState;
+use eframe::egui;
+use preferz_core::{Item, Scene};
 
 /// 在场景中从顶到底查找命中的最顶层 item（按 Z 序倒序）。
 ///
@@ -13,10 +13,10 @@ pub fn get_item_at<'a>(
 ) -> Option<&'a Item> {
     let canvas_pos = viewport.screen_to_canvas(screen_pos);
     // items_by_z_order 升序，倒序遍历 = 从顶层到底层
-    for item in scene.items_by_z_order().iter().rev() {
-        if item.contains_canvas_point(canvas_pos) {
-            return Some(item);
-        }
-    }
-    None
+    scene
+        .items_by_z_order()
+        .iter()
+        .rev()
+        .find(|&item| item.contains_canvas_point(canvas_pos))
+        .map(|v| v as _)
 }

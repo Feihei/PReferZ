@@ -74,11 +74,18 @@ impl TransformHandles {
         );
         let rotate = visual_top_mid + egui::Vec2::new(0.0, -20.0);
 
-        [tl, tr, bl, br, rotate, top_mid, bottom_mid, left_mid, right_mid]
+        [
+            tl, tr, bl, br, rotate, top_mid, bottom_mid, left_mid, right_mid,
+        ]
     }
 
     /// 视觉顶边中点（屏幕空间 y 最小的两角点中点），用于旋转手柄连线。
-    fn visual_top_mid(tl: egui::Pos2, tr: egui::Pos2, bl: egui::Pos2, br: egui::Pos2) -> egui::Pos2 {
+    fn visual_top_mid(
+        tl: egui::Pos2,
+        tr: egui::Pos2,
+        bl: egui::Pos2,
+        br: egui::Pos2,
+    ) -> egui::Pos2 {
         let mut sorted = [tl, tr, bl, br];
         sorted.sort_by(|a, b| a.y.partial_cmp(&b.y).unwrap());
         egui::pos2(
@@ -138,7 +145,8 @@ impl TransformHandles {
         }
         // 旋转手柄（仅在 show_rotate 时检测，文本元素不旋转）
         if show_rotate {
-            let rotate_r = egui::Rect::from_center_size(positions[4], egui::Vec2::splat(handle_size));
+            let rotate_r =
+                egui::Rect::from_center_size(positions[4], egui::Vec2::splat(handle_size));
             if rotate_r.contains(screen_pos) {
                 return Handle::Rotate;
             }
@@ -176,7 +184,7 @@ impl TransformHandles {
         let [tl, tr, bl, br, rotate, top_mid, bottom_mid, left_mid, right_mid] = positions;
 
         // 选中框：用 4 个真实角点画 polygon
-        let stroke = egui::Stroke::new(1.5, egui::Color32::YELLOW);
+        let stroke = egui::Stroke::new(1.5_f32, egui::Color32::YELLOW);
         painter.line_segment([tl, tr], stroke);
         painter.line_segment([tr, br], stroke);
         painter.line_segment([br, bl], stroke);

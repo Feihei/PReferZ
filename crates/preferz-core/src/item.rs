@@ -63,7 +63,12 @@ pub struct CropRect {
 
 impl CropRect {
     pub fn new(x: f32, y: f32, width: f32, height: f32) -> Self {
-        Self { x, y, width, height }
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
     }
 
     /// 限制 crop 在 [0, w] × [0, h] 范围内并保证 width/height > 0。
@@ -74,7 +79,12 @@ impl CropRect {
         let max_h = (h - y).max(0.0);
         let width = self.width.min(max_w).max(1.0);
         let height = self.height.min(max_h).max(1.0);
-        Self { x, y, width, height }
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
     }
 }
 
@@ -111,7 +121,13 @@ impl Item {
         }
     }
 
-    pub fn new_text(content: String, pos_x: f32, pos_y: f32, font_size: f32, color: [u8; 4]) -> Self {
+    pub fn new_text(
+        content: String,
+        pos_x: f32,
+        pos_y: f32,
+        font_size: f32,
+        color: [u8; 4],
+    ) -> Self {
         Self {
             id: Uuid::new_v4(),
             kind: ItemKind::Text {
@@ -137,15 +153,28 @@ impl Item {
             ItemKind::Pixmap { original_size, .. } => {
                 CanvasVector::new(original_size.0 as f32, original_size.1 as f32)
             }
-            ItemKind::Text { content, font_size, measured_size, .. } => {
+            ItemKind::Text {
+                content,
+                font_size,
+                measured_size,
+                ..
+            } => {
                 // 优先用 UI 层 egui 实际测量的尺寸（修 B6：边框与渲染内容一致）
                 if let Some((w, h)) = measured_size {
                     return CanvasVector::new(w.max(1.0), h.max(1.0));
                 }
                 // 估算文本宽度：CJK 字符约 1.0 * font_size，ASCII 约 0.6 * font_size。
-                let width: f32 = content.chars().map(|c| {
-                    if c.is_ascii() && !c.is_ascii_control() { 0.6 } else { 1.0 }
-                }).sum::<f32>() * font_size;
+                let width: f32 = content
+                    .chars()
+                    .map(|c| {
+                        if c.is_ascii() && !c.is_ascii_control() {
+                            0.6
+                        } else {
+                            1.0
+                        }
+                    })
+                    .sum::<f32>()
+                    * font_size;
                 let height = *font_size * 1.2;
                 CanvasVector::new(width.max(1.0), height.max(1.0))
             }

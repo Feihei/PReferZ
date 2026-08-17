@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 
+use preferz_core::item::{Item, ItemId, ItemKind};
 use preferz_core::scene::Scene;
-use preferz_core::item::{Item, ItemKind, ItemId};
 use preferz_core::transform::Transform;
 
 use crate::schema::*;
@@ -53,8 +53,12 @@ impl BeeFile {
     /// 创建新文件并初始化 schema。按扩展名决定 .bee / .prz。
     pub fn create(path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
         let conn = Connection::open(path)?;
-        let is_prz = path.extension().map_or(false, |e| e == "prz");
-        let schema = if is_prz { Self::prz_schema() } else { Self::bee_schema() };
+        let is_prz = path.extension().is_some_and(|e| e == "prz");
+        let schema = if is_prz {
+            Self::prz_schema()
+        } else {
+            Self::bee_schema()
+        };
         conn.execute_batch(schema)?;
         Ok(Self {
             path: path.to_path_buf(),
@@ -147,7 +151,8 @@ impl BeeFile {
 
         // 3) 写入 images 中提供的图片字节（INSERT OR REPLACE）
         {
-            let mut stmt = tx.prepare("INSERT OR REPLACE INTO sqlar (name, sz, data) VALUES (?, ?, ?)")?;
+            let mut stmt =
+                tx.prepare("INSERT OR REPLACE INTO sqlar (name, sz, data) VALUES (?, ?, ?)")?;
             for (name, bytes) in images {
                 stmt.execute(params![name, bytes.len() as i64, bytes])?;
             }
@@ -175,11 +180,23 @@ impl BeeFile {
         // 5) 视口元数据（仅 .prz）
         if self.is_prz {
             if let Some(v) = viewport {
-                tx.execute(insert_metadata_query(), params!["viewport_pan_x", v.pan_x.to_string()])?;
-                tx.execute(insert_metadata_query(), params!["viewport_pan_y", v.pan_y.to_string()])?;
-                tx.execute(insert_metadata_query(), params!["viewport_zoom", v.zoom.to_string()])?;
+                tx.execute(
+                    insert_metadata_query(),
+                    params!["viewport_pan_x", v.pan_x.to_string()],
+                )?;
+                tx.execute(
+                    insert_metadata_query(),
+                    params!["viewport_pan_y", v.pan_y.to_string()],
+                )?;
+                tx.execute(
+                    insert_metadata_query(),
+                    params!["viewport_zoom", v.zoom.to_string()],
+                )?;
             }
-            tx.execute(insert_metadata_query(), params!["next_z", scene.next_z.to_string()])?;
+            tx.execute(
+                insert_metadata_query(),
+                params!["next_z", scene.next_z.to_string()],
+            )?;
         }
 
         tx.commit()?;
@@ -219,7 +236,12 @@ impl BeeFile {
 
                 // 反序列化 ItemKind，清空运行时字段
                 let mut kind: ItemKind = serde_json::from_slice(&data_blob)?;
-                if let ItemKind::Text { editing, measured_size, .. } = &mut kind {
+                if let ItemKind::Text {
+                    editing,
+                    measured_size,
+                    ..
+                } = &mut kind
+                {
                     *editing = false;
                     *measured_size = None;
                 }
@@ -274,7 +296,11 @@ impl BeeFile {
             map.insert(k, v);
         }
 
-        match (map.get("viewport_pan_x"), map.get("viewport_pan_y"), map.get("viewport_zoom")) {
+        match (
+            map.get("viewport_pan_x"),
+            map.get("viewport_pan_y"),
+            map.get("viewport_zoom"),
+        ) {
             (Some(x), Some(y), Some(z)) => {
                 let pan_x: f32 = x.parse().unwrap_or(0.0);
                 let pan_y: f32 = y.parse().unwrap_or(0.0);
@@ -338,10 +364,17 @@ mod tests {
             tex_id,
             Some("test.png".to_string()),
             (100, 80),
-            10.0, 20.0, 1.5, 1.5,
+            10.0,
+            20.0,
+            1.5,
+            1.5,
         ));
         scene.add_item(Item::new_text(
-            "你好".to_string(), 5.0, 6.0, 24.0, [255, 255, 255, 255],
+            "你好".to_string(),
+            5.0,
+            6.0,
+            24.0,
+            [255, 255, 255, 255],
         ));
         // 给 text item 设置 measured_size（加载后应被清空）
         if let Some(item) = scene.items.last_mut() {
@@ -352,7 +385,11 @@ mod tests {
 
         let mut images = HashMap::new();
         images.insert(tex_id.to_string(), vec![1u8, 2, 3, 4, 5]);
-        let viewport = ViewportMeta { pan_x: 100.0, pan_y: 200.0, zoom: 1.5 };
+        let viewport = ViewportMeta {
+            pan_x: 100.0,
+            pan_y: 200.0,
+            zoom: 1.5,
+        };
 
         // 保存
         {
@@ -368,8 +405,18 @@ mod tests {
         // 验证 items 数量
         assert_eq!(loaded_scene.items.len(), 2);
         // 验证 Pixmap
-        let pixmap = loaded_scene.items.iter().find(|i| matches!(i.kind, ItemKind::Pixmap { .. })).unwrap();
-        if let ItemKind::Pixmap { texture_id, filename, original_size, .. } = &pixmap.kind {
+        let pixmap = loaded_scene
+            .items
+            .iter()
+            .find(|i| matches!(i.kind, ItemKind::Pixmap { .. }))
+            .unwrap();
+        if let ItemKind::Pixmap {
+            texture_id,
+            filename,
+            original_size,
+            ..
+        } = &pixmap.kind
+        {
             assert_eq!(*texture_id, tex_id);
             assert_eq!(filename.as_deref(), Some("test.png"));
             assert_eq!(*original_size, (100, 80));
@@ -377,15 +424,29 @@ mod tests {
         assert_eq!(pixmap.transform.pos, CanvasVector::new(10.0, 20.0));
         assert_eq!(pixmap.transform.scale, CanvasVector::new(1.5, 1.5));
         // 验证 Text + measured_size 被清空
-        let text = loaded_scene.items.iter().find(|i| matches!(i.kind, ItemKind::Text { .. })).unwrap();
-        if let ItemKind::Text { content, font_size, measured_size, editing, .. } = &text.kind {
+        let text = loaded_scene
+            .items
+            .iter()
+            .find(|i| matches!(i.kind, ItemKind::Text { .. }))
+            .unwrap();
+        if let ItemKind::Text {
+            content,
+            font_size,
+            measured_size,
+            editing,
+            ..
+        } = &text.kind
+        {
             assert_eq!(content, "你好");
             assert_eq_float(*font_size, 24.0);
             assert!(measured_size.is_none(), "measured_size 应被清空");
             assert!(!*editing, "editing 应为 false");
         }
         // 验证图片字节
-        assert_eq!(loaded_images.get(&tex_id.to_string()), Some(&vec![1u8, 2, 3, 4, 5]));
+        assert_eq!(
+            loaded_images.get(&tex_id.to_string()),
+            Some(&vec![1u8, 2, 3, 4, 5])
+        );
         // 验证视口元数据
         let vp = loaded_vp.expect("应有视口元数据");
         assert_eq_float(vp.pan_x, 100.0);
@@ -428,7 +489,13 @@ mod tests {
         }
         // 第二次保存：删除 Pixmap，只留 Text（sqlar 应被清空）
         let mut scene2 = Scene::new();
-        scene2.add_item(Item::new_text("x".to_string(), 0.0, 0.0, 16.0, [255, 255, 255, 255]));
+        scene2.add_item(Item::new_text(
+            "x".to_string(),
+            0.0,
+            0.0,
+            16.0,
+            [255, 255, 255, 255],
+        ));
         {
             let mut bee = BeeFile::open(&path).unwrap();
             bee.save_scene(&scene2, &HashMap::new(), None).unwrap();
@@ -443,4 +510,3 @@ mod tests {
         assert!((a - b).abs() < 1e-5, "float mismatch: {} vs {}", a, b);
     }
 }
-

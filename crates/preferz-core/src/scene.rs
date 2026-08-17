@@ -83,7 +83,7 @@ impl Scene {
     /// 按 Z 序返回 items（升序：底层在前，顶层在后）。
     pub fn items_by_z_order(&self) -> Vec<&Item> {
         let mut items: Vec<&Item> = self.items.iter().collect();
-        items.sort_by(|a, b| a.z.cmp(&b.z));
+        items.sort_by_key(|a| a.z);
         items
     }
 

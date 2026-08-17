@@ -1,16 +1,19 @@
-use eframe::egui;
-use preferz_core::{Scene, Item, ItemKind, ItemId, Command, CropRect};
-use preferz_core::commands::{TransformItem, MoveItems, DeleteItems, AddItem, ReorderItems, FlipItems, EditTextContent, SetPixmapProps, CropItems, NormalizeItems, ArrangeItems};
-use preferz_core::arrange::{plan_arrange, ArrangeMode};
-use preferz_core::spaces::{CanvasPoint, CanvasVector, CanvasRect, CanvasSize};
-use preferz_fileio::{BeeFile, ViewportMeta};
-use crate::viewport::ViewportState;
-use crate::ui::widgets::transform_handles::{TransformHandles, Handle};
+use crate::i18n::{t, Lang, T};
 use crate::interaction;
-use crate::i18n::{Lang, T, t};
+use crate::ui::widgets::transform_handles::{Handle, TransformHandles};
+use crate::viewport::ViewportState;
+use eframe::egui;
 use image::GenericImageView;
-use std::path::{PathBuf, Path};
+use preferz_core::arrange::{plan_arrange, ArrangeMode};
+use preferz_core::commands::{
+    AddItem, ArrangeItems, CropItems, DeleteItems, EditTextContent, FlipItems, MoveItems,
+    NormalizeItems, ReorderItems, SetPixmapProps, TransformItem,
+};
+use preferz_core::spaces::{CanvasPoint, CanvasRect, CanvasSize, CanvasVector};
+use preferz_core::{Command, CropRect, Item, ItemId, ItemKind, Scene};
+use preferz_fileio::{BeeFile, ViewportMeta};
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
 
 /// Undo 栈。`push` 会读�?`Command::skip_first_redo()`�?
@@ -25,7 +28,10 @@ struct UndoStack {
 
 impl UndoStack {
     fn new() -> Self {
-        Self { undo: Vec::new(), redo: Vec::new() }
+        Self {
+            undo: Vec::new(),
+            redo: Vec::new(),
+        }
     }
 
     fn push(&mut self, mut cmd: Box<dyn Command>, scene: &mut Scene) {
@@ -155,10 +161,31 @@ impl BackgroundOps {
                 (Ok(bytes), Ok(img)) => {
                     let (w, h) = img.dimensions();
                     let rgba = img.to_rgba8().into_vec();
-                    ImportOutcome { path, bytes, width: w, height: h, rgba, error: None }
+                    ImportOutcome {
+                        path,
+                        bytes,
+                        width: w,
+                        height: h,
+                        rgba,
+                        error: None,
+                    }
                 }
-                (Err(e), _) => ImportOutcome { path, bytes: Vec::new(), width: 0, height: 0, rgba: Vec::new(), error: Some(format!("读取失败: {}", e)) },
-                (_, Err(e)) => ImportOutcome { path, bytes: Vec::new(), width: 0, height: 0, rgba: Vec::new(), error: Some(format!("解码失败: {}", e)) },
+                (Err(e), _) => ImportOutcome {
+                    path,
+                    bytes: Vec::new(),
+                    width: 0,
+                    height: 0,
+                    rgba: Vec::new(),
+                    error: Some(format!("读取失败: {}", e)),
+                },
+                (_, Err(e)) => ImportOutcome {
+                    path,
+                    bytes: Vec::new(),
+                    width: 0,
+                    height: 0,
+                    rgba: Vec::new(),
+                    error: Some(format!("解码失败: {}", e)),
+                },
             };
             let _ = tx.send(outcome);
             ctx2.request_repaint();
@@ -220,7 +247,9 @@ impl BackgroundOps {
         if let Some(rx) = &self.import_rx {
             if let Ok(outcome) = rx.try_recv() {
                 self.pending = self.pending.saturating_sub(1);
-                if self.pending == 0 { self.msg = None; }
+                if self.pending == 0 {
+                    self.msg = None;
+                }
                 self.import_rx = None;
                 return Some(outcome);
             }
@@ -233,7 +262,9 @@ impl BackgroundOps {
         if let Some(rx) = &self.load_rx {
             if let Ok(outcome) = rx.try_recv() {
                 self.pending = self.pending.saturating_sub(1);
-                if self.pending == 0 { self.msg = None; }
+                if self.pending == 0 {
+                    self.msg = None;
+                }
                 self.load_rx = None;
                 return Some(outcome);
             }
@@ -246,7 +277,9 @@ impl BackgroundOps {
         if let Some(rx) = &self.save_rx {
             if let Ok(outcome) = rx.try_recv() {
                 self.pending = self.pending.saturating_sub(1);
-                if self.pending == 0 { self.msg = None; }
+                if self.pending == 0 {
+                    self.msg = None;
+                }
                 self.save_rx = None;
                 return Some(outcome);
             }
@@ -259,7 +292,9 @@ impl BackgroundOps {
         if let Some(rx) = &self.export_rx {
             if let Ok(outcome) = rx.try_recv() {
                 self.pending = self.pending.saturating_sub(1);
-                if self.pending == 0 { self.msg = None; }
+                if self.pending == 0 {
+                    self.msg = None;
+                }
                 self.export_rx = None;
                 return Some(outcome);
             }
@@ -462,7 +497,11 @@ impl PReferZApp {
         if let Some(outcome) = self.bg_ops.take_export() {
             match outcome.result {
                 Ok(msg) => self.flash(if msg.is_empty() {
-                    format!("{}: {}", t(self.lang, T::FlashExportedTo), outcome.path.display())
+                    format!(
+                        "{}: {}",
+                        t(self.lang, T::FlashExportedTo),
+                        outcome.path.display()
+                    )
                 } else {
                     msg
                 }),
@@ -473,10 +512,13 @@ impl PReferZApp {
 
     /// 选中 item 的快照（�?Z 序倒序，顶层在前）�?
     fn selected_items_snapshot(&self) -> Vec<Item> {
-        let mut items: Vec<Item> = self.scene.selection.iter()
+        let mut items: Vec<Item> = self
+            .scene
+            .selection
+            .iter()
             .filter_map(|id| self.scene.get_item(id).cloned())
             .collect();
-        items.sort_by(|a, b| b.z.cmp(&a.z));
+        items.sort_by_key(|b| std::cmp::Reverse(b.z));
         items
     }
 }
@@ -514,7 +556,9 @@ impl eframe::App for PReferZApp {
 
         // 拖放导入（spec L228，P3-1）�?prz/.bee �?加载项目文件；其�?�?图片导入
         let dropped: Vec<PathBuf> = ctx.input(|i| {
-            i.raw.dropped_files.iter()
+            i.raw
+                .dropped_files
+                .iter()
                 .filter_map(|f| f.path.clone())
                 .collect()
         });
@@ -551,7 +595,8 @@ impl eframe::App for PReferZApp {
             let rect = ui.max_rect();
             self.viewport.set_screen_rect(rect);
 
-            let response = ui.interact(rect, egui::Id::new("canvas"), egui::Sense::click_and_drag());
+            let response =
+                ui.interact(rect, egui::Id::new("canvas"), egui::Sense::click_and_drag());
 
             // 画布背景：应用 bg_alpha（与 panel_fill 一致，确保透明效果生效）
             let bg_alpha_u8 = (self.bg_alpha * 255.0).round() as u8;
@@ -565,7 +610,12 @@ impl eframe::App for PReferZApp {
             self.render_scene(ui);
 
             // 框选矩形（spec L240�?
-            if let DragState::BoxSelect { start_canvas, current_canvas, .. } = &self.drag {
+            if let DragState::BoxSelect {
+                start_canvas,
+                current_canvas,
+                ..
+            } = &self.drag
+            {
                 let min = self.viewport.canvas_to_screen(*start_canvas);
                 let max = self.viewport.canvas_to_screen(*current_canvas);
                 let rect = egui::Rect::from_min_max(min, max);
@@ -574,7 +624,7 @@ impl eframe::App for PReferZApp {
                     0.0,
                     egui::Color32::from_rgba_unmultiplied(100, 200, 255, 30),
                 );
-                let stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(100, 200, 255));
+                let stroke = egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(100, 200, 255));
                 ui.painter().rect_stroke(rect, 0.0, stroke);
             }
 
@@ -598,8 +648,20 @@ impl eframe::App for PReferZApp {
                     // 先克隆命中 Text item 的字段，避免 &self.scene 与 &mut self.editing_text 借用冲突
                     let hit_text = interaction::get_item_at(pos, &self.scene, &self.viewport)
                         .and_then(|item| {
-                            if let ItemKind::Text { content, font_size, color, .. } = &item.kind {
-                                Some((item.id, item.transform.pos, content.clone(), *font_size, *color))
+                            if let ItemKind::Text {
+                                content,
+                                font_size,
+                                color,
+                                ..
+                            } = &item.kind
+                            {
+                                Some((
+                                    item.id,
+                                    item.transform.pos,
+                                    content.clone(),
+                                    *font_size,
+                                    *color,
+                                ))
                             } else {
                                 None
                             }
@@ -646,19 +708,25 @@ impl eframe::App for PReferZApp {
                     let selected = self.selected_items_snapshot();
                     // 多选时只支持统一移动，不检测单独手柄（手柄不可见却有 hover 会造成混乱）
                     if selected.len() == 1 {
-                        self.transform_handles.update_hover(pos, &selected, &self.viewport);
+                        self.transform_handles
+                            .update_hover(pos, &selected, &self.viewport);
                     } else {
                         self.transform_handles.hover_handle = Handle::None;
                     }
                     let cursor = match self.transform_handles.hover_handle {
-                        Handle::ResizeTopLeft | Handle::ResizeBottomRight => egui::CursorIcon::ResizeNorthEast,
-                        Handle::ResizeTopRight | Handle::ResizeBottomLeft => egui::CursorIcon::ResizeNorthWest,
+                        Handle::ResizeTopLeft | Handle::ResizeBottomRight => {
+                            egui::CursorIcon::ResizeNorthEast
+                        }
+                        Handle::ResizeTopRight | Handle::ResizeBottomLeft => {
+                            egui::CursorIcon::ResizeNorthWest
+                        }
                         Handle::Rotate => egui::CursorIcon::Grab,
                         Handle::FlipH => egui::CursorIcon::ResizeHorizontal,
                         Handle::FlipV => egui::CursorIcon::ResizeVertical,
                         Handle::None => {
                             // 在 item 上时显示移动光标
-                            if interaction::get_item_at(pos, &self.scene, &self.viewport).is_some() {
+                            if interaction::get_item_at(pos, &self.scene, &self.viewport).is_some()
+                            {
                                 egui::CursorIcon::Move
                             } else {
                                 egui::CursorIcon::Default
@@ -674,7 +742,10 @@ impl eframe::App for PReferZApp {
             // 拖拽中：更新预览（含裁剪模式拖拽，crop_mode.dragging 不在 DragState 内）
             // 仅当画布起源的拖拽进行中才更新；从 Window 起源的 drag 不会进入此分支
             // （因为 begin_drag 有 pointer_on_canvas 守卫，Window 点击不会启动画布 drag）。
-            let crop_dragging = self.crop_mode.as_ref().map_or(false, |c| c.dragging.is_some());
+            let crop_dragging = self
+                .crop_mode
+                .as_ref()
+                .is_some_and(|c| c.dragging.is_some());
             let drag_in_progress = !matches!(self.drag, DragState::Idle) || crop_dragging;
             if primary_down && drag_in_progress {
                 if let Some(pos) = pointer_pos {
@@ -741,7 +812,11 @@ impl eframe::App for PReferZApp {
                 .collapsible(false)
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .show(ctx, |ui| {
-                    let msg = self.bg_ops.msg.clone().unwrap_or_else(|| t(self.lang, T::FlashProcessing).to_string());
+                    let msg = self
+                        .bg_ops
+                        .msg
+                        .clone()
+                        .unwrap_or_else(|| t(self.lang, T::FlashProcessing).to_string());
                     ui.vertical_centered(|ui| {
                         ui.add_space(4.0);
                         ui.label(&msg);
@@ -754,7 +829,9 @@ impl eframe::App for PReferZApp {
 
         // 状态栏（持续状�?+ flash 消息�?
         egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
-            let file_name = self.current_file.as_ref()
+            let file_name = self
+                .current_file
+                .as_ref()
                 .and_then(|p| p.file_name())
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_else(|| "未保存".to_string());
@@ -820,7 +897,13 @@ impl PReferZApp {
             for item in selected.iter().rev() {
                 let show_flip = matches!(item.kind, ItemKind::Pixmap { .. });
                 let show_rotate = matches!(item.kind, ItemKind::Pixmap { .. });
-                let h = self.transform_handles.hit_test(screen_pos, item, &self.viewport, show_flip, show_rotate);
+                let h = self.transform_handles.hit_test(
+                    screen_pos,
+                    item,
+                    &self.viewport,
+                    show_flip,
+                    show_rotate,
+                );
                 if h != Handle::None {
                     // 翻转边手柄：点击即触发翻转，不进入拖拽（spec L239「翻转边」）
                     if h == Handle::FlipH || h == Handle::FlipV {
@@ -828,7 +911,11 @@ impl PReferZApp {
                         let horizontal = h == Handle::FlipH;
                         let cmd = FlipItems::new(ids, horizontal);
                         self.push_cmd(Box::new(cmd));
-                        self.flash(if horizontal { "水平翻转" } else { "垂直翻转" });
+                        self.flash(if horizontal {
+                            "水平翻转"
+                        } else {
+                            "垂直翻转"
+                        });
                         return;
                     }
                     let start_corners = item.canvas_corners();
@@ -861,11 +948,17 @@ impl PReferZApp {
                 self.scene.select(id);
             }
             // 收集所有选中 item �?transform 快照
-            let start_transforms: Vec<(ItemId, preferz_core::Transform)> = self.scene.selection.iter()
+            let start_transforms: Vec<(ItemId, preferz_core::Transform)> = self
+                .scene
+                .selection
+                .iter()
                 .filter_map(|sid| self.scene.get_item(sid).map(|it| (*sid, it.transform)))
                 .collect();
             let start_canvas = self.viewport.screen_to_canvas(screen_pos);
-            self.drag = DragState::MoveItems { start_canvas, start_transforms };
+            self.drag = DragState::MoveItems {
+                start_canvas,
+                start_transforms,
+            };
             return;
         }
 
@@ -888,7 +981,13 @@ impl PReferZApp {
         }
 
         match &self.drag {
-            DragState::HandleTransform { item_id, handle, start_screen, start_transform, start_corners } => {
+            DragState::HandleTransform {
+                item_id,
+                handle,
+                start_screen,
+                start_transform,
+                start_corners,
+            } => {
                 let item_id = *item_id;
                 let handle = *handle;
                 let start_screen = *start_screen;
@@ -898,18 +997,37 @@ impl PReferZApp {
                 if let Some(item) = self.scene.get_item_mut(&item_id) {
                     match handle {
                         Handle::Rotate => {
-                            apply_rotate_drag(&self.viewport, item, start_transform, start_corners, start_screen, screen_pos);
+                            apply_rotate_drag(
+                                &self.viewport,
+                                item,
+                                start_transform,
+                                start_corners,
+                                start_screen,
+                                screen_pos,
+                            );
                         }
-                        Handle::ResizeTopLeft | Handle::ResizeTopRight
-                        | Handle::ResizeBottomLeft | Handle::ResizeBottomRight => {
-                            apply_scale_drag(item, handle, start_transform, start_corners, mouse_canvas, free_scale);
+                        Handle::ResizeTopLeft
+                        | Handle::ResizeTopRight
+                        | Handle::ResizeBottomLeft
+                        | Handle::ResizeBottomRight => {
+                            apply_scale_drag(
+                                item,
+                                handle,
+                                start_transform,
+                                start_corners,
+                                mouse_canvas,
+                                free_scale,
+                            );
                         }
                         // 翻转手柄�?begin_drag 中已即时处理，不会进入拖拽预�?
                         Handle::FlipH | Handle::FlipV | Handle::None => {}
                     }
                 }
             }
-            DragState::MoveItems { start_canvas, start_transforms } => {
+            DragState::MoveItems {
+                start_canvas,
+                start_transforms,
+            } => {
                 let current_canvas = self.viewport.screen_to_canvas(screen_pos);
                 let delta = current_canvas - *start_canvas;
                 for (id, start_tf) in start_transforms {
@@ -938,7 +1056,11 @@ impl PReferZApp {
 
         let prev = std::mem::replace(&mut self.drag, DragState::Idle);
         match prev {
-            DragState::HandleTransform { item_id, start_transform, .. } => {
+            DragState::HandleTransform {
+                item_id,
+                start_transform,
+                ..
+            } => {
                 // �?clone �?new_transform，避免与 undo_stack.push �?&mut self.scene 冲突
                 let new_transform = self.scene.get_item(&item_id).map(|it| it.transform);
                 if let Some(new_tf) = new_transform {
@@ -948,17 +1070,23 @@ impl PReferZApp {
                         self.push_cmd(Box::new(cmd));
                         self.flash(format!(
                             "变换: 缩放=({:.2},{:.2}) 旋转={:.1}°",
-                            new_tf.scale.x, new_tf.scale.y,
+                            new_tf.scale.x,
+                            new_tf.scale.y,
                             new_tf.rotation.to_degrees()
                         ));
                     }
                 }
                 self.transform_handles.end_drag();
             }
-            DragState::MoveItems { start_canvas, start_transforms } => {
+            DragState::MoveItems {
+                start_canvas,
+                start_transforms,
+            } => {
                 // 用第一�?item 的当前位置反�?delta
                 let delta_opt = start_transforms.first().and_then(|(id, start_tf)| {
-                    self.scene.get_item(id).map(|it| it.transform.pos - start_tf.pos)
+                    self.scene
+                        .get_item(id)
+                        .map(|it| it.transform.pos - start_tf.pos)
                 });
                 if let Some(delta) = delta_opt {
                     if delta.x.abs() > 1e-4 || delta.y.abs() > 1e-4 {
@@ -970,7 +1098,11 @@ impl PReferZApp {
                 }
                 let _ = start_canvas;
             }
-            DragState::BoxSelect { start_canvas, current_canvas, additive } => {
+            DragState::BoxSelect {
+                start_canvas,
+                current_canvas,
+                additive,
+            } => {
                 // 选中框内所�?item（bounding_rect 相交即选中�?
                 let min_x = start_canvas.x.min(current_canvas.x);
                 let max_x = start_canvas.x.max(current_canvas.x);
@@ -984,7 +1116,10 @@ impl PReferZApp {
                     self.scene.deselect_all();
                 }
                 // 先收集命中 id，再 select（避免同时 &self.items 和 &mut self.selection）
-                let hits: Vec<ItemId> = self.scene.items.iter()
+                let hits: Vec<ItemId> = self
+                    .scene
+                    .items
+                    .iter()
                     .filter(|item| item.bounding_rect().intersects(&sel_rect))
                     .map(|item| item.id)
                     .collect();
@@ -1040,13 +1175,20 @@ impl PReferZApp {
             let is_selected = self.scene.selection_contains(&item.id);
 
             match &item.kind {
-                ItemKind::Pixmap { texture_id, opacity, grayscale, crop, .. } => {
+                ItemKind::Pixmap {
+                    texture_id,
+                    opacity,
+                    grayscale,
+                    crop,
+                    ..
+                } => {
                     let tex_id = *texture_id;
                     let opacity = *opacity;
                     let grayscale = *grayscale;
                     // 灰度选用灰度纹理，否则原纹理
                     let handle_opt = if grayscale {
-                        self.grayscale_texture_cache.get(&tex_id)
+                        self.grayscale_texture_cache
+                            .get(&tex_id)
                             .or_else(|| self.texture_cache.get(&tex_id))
                     } else {
                         self.texture_cache.get(&tex_id)
@@ -1077,8 +1219,10 @@ impl PReferZApp {
                             ([br.x, br.y], [u_max, v_max]),
                             ([bl.x, bl.y], [u_min, v_max]),
                         ];
-                        let mut mesh = egui::epaint::Mesh::default();
-                        mesh.texture_id = handle.id();
+                        let mut mesh = egui::epaint::Mesh {
+                            texture_id: handle.id(),
+                            ..Default::default()
+                        };
                         for ([px, py], [u, v]) in verts {
                             mesh.vertices.push(egui::epaint::Vertex {
                                 pos: [px, py].into(),
@@ -1092,11 +1236,20 @@ impl PReferZApp {
                         ui.painter().rect_filled(
                             item_screen_rect,
                             egui::Rounding::same(0.0),
-                            if is_selected { egui::Color32::from_rgb(80, 80, 40) } else { egui::Color32::from_rgb(70, 70, 70) },
+                            if is_selected {
+                                egui::Color32::from_rgb(80, 80, 40)
+                            } else {
+                                egui::Color32::from_rgb(70, 70, 70)
+                            },
                         );
                     }
                 }
-                ItemKind::Text { content, font_size, color, .. } => {
+                ItemKind::Text {
+                    content,
+                    font_size,
+                    color,
+                    ..
+                } => {
                     // 编辑期间跳过�?item 的内容渲染（overlay 接管，避免原文字与编辑框重叠�?
                     let is_being_edited = editing_id == Some(item.id);
                     if !is_being_edited {
@@ -1110,7 +1263,8 @@ impl PReferZApp {
                         );
                         let origin = self.viewport.canvas_to_screen(corners[0]);
                         // 文字渲染应用 scale �?zoom（修 B6：与变换边框一致）�?                        // �?scale.x（等比缩放场景下�?scale.y 相同；非等比�?egui text 不支持非均匀缩放�?
-                        let effective_font_size = *font_size * item.transform.scale.x.abs() * self.viewport.zoom;
+                        let effective_font_size =
+                            *font_size * item.transform.scale.x.abs() * self.viewport.zoom;
                         ui.painter().text(
                             origin,
                             egui::Align2::LEFT_TOP,
@@ -1126,7 +1280,13 @@ impl PReferZApp {
             if is_selected && selection_count == 1 && crop_item_id != Some(item.id) {
                 let show_flip = matches!(item.kind, ItemKind::Pixmap { .. });
                 let show_rotate = matches!(item.kind, ItemKind::Pixmap { .. });
-                self.transform_handles.render(item, ui.painter(), &self.viewport, show_flip, show_rotate);
+                self.transform_handles.render(
+                    item,
+                    ui.painter(),
+                    &self.viewport,
+                    show_flip,
+                    show_rotate,
+                );
             }
         }
 
@@ -1134,7 +1294,7 @@ impl PReferZApp {
         if selection_count > 1 {
             if let Some(bbox) = self.scene.selection_bounding_rect() {
                 let screen_bbox = self.viewport.canvas_to_screen_rect(bbox);
-                let stroke = egui::Stroke::new(1.5, egui::Color32::YELLOW);
+                let stroke = egui::Stroke::new(1.5_f32, egui::Color32::YELLOW);
                 ui.painter().rect_stroke(screen_bbox, 0.0, stroke);
                 // 4 角小方块标识
                 let handle_size = TransformHandles::handle_size();
@@ -1160,7 +1320,13 @@ impl PReferZApp {
         // 收集需要生成的 (texture_id, original_size) 列表
         let mut to_generate: Vec<(u64, (u32, u32))> = Vec::new();
         for item in &self.scene.items {
-            if let ItemKind::Pixmap { texture_id, original_size, grayscale, .. } = &item.kind {
+            if let ItemKind::Pixmap {
+                texture_id,
+                original_size,
+                grayscale,
+                ..
+            } = &item.kind
+            {
                 if *grayscale && !self.grayscale_texture_cache.contains_key(texture_id) {
                     to_generate.push((*texture_id, *original_size));
                 }
@@ -1176,15 +1342,15 @@ impl PReferZApp {
                 let r = chunk[0] as f32;
                 let g = chunk[1] as f32;
                 let b = chunk[2] as f32;
-                let lum = (0.299 * r + 0.587 * g + 0.114 * b).round().clamp(0.0, 255.0) as u8;
+                let lum = (0.299 * r + 0.587 * g + 0.114 * b)
+                    .round()
+                    .clamp(0.0, 255.0) as u8;
                 chunk[0] = lum;
                 chunk[1] = lum;
                 chunk[2] = lum;
             }
-            let color_image = egui::ColorImage::from_rgba_unmultiplied(
-                [w as usize, h as usize],
-                &gray,
-            );
+            let color_image =
+                egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &gray);
             let handle = ctx.load_texture(
                 format!("img_gray_{}", tex_id),
                 color_image,
@@ -1210,7 +1376,11 @@ impl PReferZApp {
         };
         // �?Pixmap 支持裁剪
         let (texture_id, original_size) = match &item.kind {
-            ItemKind::Pixmap { texture_id, original_size, .. } => (*texture_id, *original_size),
+            ItemKind::Pixmap {
+                texture_id,
+                original_size,
+                ..
+            } => (*texture_id, *original_size),
             _ => {
                 self.crop_mode = None;
                 return;
@@ -1228,11 +1398,24 @@ impl PReferZApp {
         ];
 
         // 计算 item 在屏幕空间的轴对齐包围盒（含旋转：用 4 角点 min/max�?
-        let min_x = screen_corners.iter().map(|p| p.x).fold(f32::INFINITY, f32::min);
-        let max_x = screen_corners.iter().map(|p| p.x).fold(f32::NEG_INFINITY, f32::max);
-        let min_y = screen_corners.iter().map(|p| p.y).fold(f32::INFINITY, f32::min);
-        let max_y = screen_corners.iter().map(|p| p.y).fold(f32::NEG_INFINITY, f32::max);
-        let item_screen_rect = egui::Rect::from_min_max(egui::pos2(min_x, min_y), egui::pos2(max_x, max_y));
+        let min_x = screen_corners
+            .iter()
+            .map(|p| p.x)
+            .fold(f32::INFINITY, f32::min);
+        let max_x = screen_corners
+            .iter()
+            .map(|p| p.x)
+            .fold(f32::NEG_INFINITY, f32::max);
+        let min_y = screen_corners
+            .iter()
+            .map(|p| p.y)
+            .fold(f32::INFINITY, f32::min);
+        let max_y = screen_corners
+            .iter()
+            .map(|p| p.y)
+            .fold(f32::NEG_INFINITY, f32::max);
+        let item_screen_rect =
+            egui::Rect::from_min_max(egui::pos2(min_x, min_y), egui::pos2(max_x, max_y));
 
         // 裁剪矩形（item 局部空间像�?�?屏幕空间�?        // 简化：�?item �?TL→BR 屏幕对角作为线性映射（旋转下有误差，但 MVP 够用�?
         let base_w = original_size.0 as f32;
@@ -1255,17 +1438,29 @@ impl PReferZApp {
         // 遮罩�? 个矩形包围裁剪区
         let mask_color = egui::Color32::from_rgba_premultiplied(0, 0, 0, 120);
         // �?/ �?/ �?/ �?
-        let above = egui::Rect::from_min_max(item_screen_rect.min, egui::pos2(item_screen_rect.max.x, crop_screen_rect.min.y));
-        let below = egui::Rect::from_min_max(egui::pos2(item_screen_rect.min.x, crop_screen_rect.max.y), item_screen_rect.max);
-        let left = egui::Rect::from_min_max(egui::pos2(item_screen_rect.min.x, crop_screen_rect.min.y), egui::pos2(crop_screen_rect.min.x, crop_screen_rect.max.y));
-        let right = egui::Rect::from_min_max(egui::pos2(crop_screen_rect.max.x, crop_screen_rect.min.y), egui::pos2(item_screen_rect.max.x, crop_screen_rect.max.y));
+        let above = egui::Rect::from_min_max(
+            item_screen_rect.min,
+            egui::pos2(item_screen_rect.max.x, crop_screen_rect.min.y),
+        );
+        let below = egui::Rect::from_min_max(
+            egui::pos2(item_screen_rect.min.x, crop_screen_rect.max.y),
+            item_screen_rect.max,
+        );
+        let left = egui::Rect::from_min_max(
+            egui::pos2(item_screen_rect.min.x, crop_screen_rect.min.y),
+            egui::pos2(crop_screen_rect.min.x, crop_screen_rect.max.y),
+        );
+        let right = egui::Rect::from_min_max(
+            egui::pos2(crop_screen_rect.max.x, crop_screen_rect.min.y),
+            egui::pos2(item_screen_rect.max.x, crop_screen_rect.max.y),
+        );
         for r in [above, below, left, right] {
             if r.is_positive() {
                 ui.painter().rect_filled(r, 0.0, mask_color);
             }
         }
         // 裁剪框边�?
-        let stroke = egui::Stroke::new(1.5, egui::Color32::from_rgb(100, 200, 255));
+        let stroke = egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(100, 200, 255));
         ui.painter().rect_stroke(crop_screen_rect, 0.0, stroke);
         // 4 角手�?
         let handle_size = TransformHandles::handle_size();
@@ -1294,7 +1489,13 @@ impl PReferZApp {
     fn update_text_measured_sizes(&mut self, ctx: &egui::Context) {
         let mut updates: Vec<(ItemId, (f32, f32))> = Vec::new();
         for item in &self.scene.items {
-            if let ItemKind::Text { content, font_size, measured_size, .. } = &item.kind {
+            if let ItemKind::Text {
+                content,
+                font_size,
+                measured_size,
+                ..
+            } = &item.kind
+            {
                 if measured_size.is_none() {
                     let gal = ctx.fonts(|fonts| {
                         fonts.layout_no_wrap(
@@ -1332,7 +1533,10 @@ impl PReferZApp {
             .show(ctx, |ui| {
                 let frame = egui::Frame::popup(ui.style())
                     .fill(egui::Color32::from_rgb(50, 50, 50))
-                    .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(100, 200, 255)));
+                    .stroke(egui::Stroke::new(
+                        1.0_f32,
+                        egui::Color32::from_rgb(100, 200, 255),
+                    ));
                 frame.show(ui, |ui| {
                     ui.set_min_width(120.0);
                     let response = ui.add(
@@ -1341,7 +1545,10 @@ impl PReferZApp {
                             .hint_text("输入文本...")
                             .font(egui::FontId::proportional(edit.font_size))
                             .text_color(egui::Color32::from_rgba_premultiplied(
-                                edit.color[0], edit.color[1], edit.color[2], edit.color[3],
+                                edit.color[0],
+                                edit.color[1],
+                                edit.color[2],
+                                edit.color[3],
                             )),
                     );
                     if edit.first_frame {
@@ -1379,14 +1586,13 @@ impl PReferZApp {
                 Some(id) => {
                     // 编辑模式：空内容不修改原 item（避免误删）；非空且变化�?push EditTextContent
                     if !edit.buffer.trim().is_empty() {
-                        let old_content = self.scene.get_item(&id)
-                            .and_then(|item| {
-                                if let ItemKind::Text { content, .. } = &item.kind {
-                                    Some(content.clone())
-                                } else {
-                                    None
-                                }
-                            });
+                        let old_content = self.scene.get_item(&id).and_then(|item| {
+                            if let ItemKind::Text { content, .. } = &item.kind {
+                                Some(content.clone())
+                            } else {
+                                None
+                            }
+                        });
                         if let Some(old) = old_content {
                             if old != edit.buffer {
                                 let cmd = EditTextContent::new(id, old, edit.buffer);
@@ -1415,78 +1621,113 @@ impl PReferZApp {
             .order(egui::Order::Foreground)
             .fixed_pos(pos)
             .show(ctx, |ui| {
-                let frame = egui::Frame::popup(&ui.style());
+                let frame = egui::Frame::popup(ui.style());
                 frame.show(ui, |ui| {
                     ui.set_max_width(180.0);
 
-                    if ui.button(format!("\u{1F195} {}", t(self.lang, T::NewCanvas))).clicked() {
+                    if ui
+                        .button(format!("\u{1F195} {}", t(self.lang, T::NewCanvas)))
+                        .clicked()
+                    {
                         self.new_canvas(ctx);
                         self.context_menu_open = false;
                     }
-                    if ui.button(format!("\u{1F4C2} {}", t(self.lang, T::OpenProject))).clicked() {
+                    if ui
+                        .button(format!("\u{1F4C2} {}", t(self.lang, T::OpenProject)))
+                        .clicked()
+                    {
                         self.open_project_file(ctx);
                         self.context_menu_open = false;
                     }
-                    if ui.button(format!("\u{1F5BC} {}", t(self.lang, T::LoadImage))).clicked() {
+                    if ui
+                        .button(format!("\u{1F5BC} {}", t(self.lang, T::LoadImage)))
+                        .clicked()
+                    {
                         self.import_image_file(ctx);
                         self.context_menu_open = false;
                     }
-                    if ui.button(format!("\u{1F4CB} {}", t(self.lang, T::PasteImage))).clicked() {
+                    if ui
+                        .button(format!("\u{1F4CB} {}", t(self.lang, T::PasteImage)))
+                        .clicked()
+                    {
                         self.paste_from_clipboard(ctx);
                         self.context_menu_open = false;
                     }
                     ui.separator();
-                    if ui.button(format!("\u{1F4BE} {}", t(self.lang, T::Save))).clicked() {
+                    if ui
+                        .button(format!("\u{1F4BE} {}", t(self.lang, T::Save)))
+                        .clicked()
+                    {
                         self.save_file(ctx);
                         self.context_menu_open = false;
                     }
-                    if ui.button(format!("\u{1F4C4} {}", t(self.lang, T::SaveAs))).clicked() {
+                    if ui
+                        .button(format!("\u{1F4C4} {}", t(self.lang, T::SaveAs)))
+                        .clicked()
+                    {
                         self.save_file_as(ctx);
                         self.context_menu_open = false;
                     }
-                    ui.menu_button(format!("\u{1F4F7} {}", t(self.lang, T::ExportScene)), |ui| {
-                        if ui.button(t(self.lang, T::ExportPngAll)).clicked() {
-                            self.start_export_dialog(ctx, ExportFormat::Png, false);
-                            self.context_menu_open = false;
-                        }
-                        if ui.button(t(self.lang, T::ExportJpgAll)).clicked() {
-                            self.start_export_dialog(ctx, ExportFormat::Jpeg, false);
-                            self.context_menu_open = false;
-                        }
-                        if has_selection {
-                            ui.separator();
-                            if ui.button(t(self.lang, T::ExportPngSelection)).clicked() {
-                                self.start_export_dialog(ctx, ExportFormat::Png, true);
+                    ui.menu_button(
+                        format!("\u{1F4F7} {}", t(self.lang, T::ExportScene)),
+                        |ui| {
+                            if ui.button(t(self.lang, T::ExportPngAll)).clicked() {
+                                self.start_export_dialog(ctx, ExportFormat::Png, false);
                                 self.context_menu_open = false;
                             }
-                            if ui.button(t(self.lang, T::ExportJpgSelection)).clicked() {
-                                self.start_export_dialog(ctx, ExportFormat::Jpeg, true);
+                            if ui.button(t(self.lang, T::ExportJpgAll)).clicked() {
+                                self.start_export_dialog(ctx, ExportFormat::Jpeg, false);
                                 self.context_menu_open = false;
                             }
-                        }
-                    });
-                    ui.menu_button(format!("\u{1F4E9} {}", t(self.lang, T::ExportImagesToDir)), |ui| {
-                        if ui.button(t(self.lang, T::ExportAllImages)).clicked() {
-                            self.start_export_images_dialog(ctx, false);
-                            self.context_menu_open = false;
-                        }
-                        if has_selection && ui.button(t(self.lang, T::ExportSelectionImages)).clicked() {
-                            self.start_export_images_dialog(ctx, true);
-                            self.context_menu_open = false;
-                        }
-                    });
+                            if has_selection {
+                                ui.separator();
+                                if ui.button(t(self.lang, T::ExportPngSelection)).clicked() {
+                                    self.start_export_dialog(ctx, ExportFormat::Png, true);
+                                    self.context_menu_open = false;
+                                }
+                                if ui.button(t(self.lang, T::ExportJpgSelection)).clicked() {
+                                    self.start_export_dialog(ctx, ExportFormat::Jpeg, true);
+                                    self.context_menu_open = false;
+                                }
+                            }
+                        },
+                    );
+                    ui.menu_button(
+                        format!("\u{1F4E9} {}", t(self.lang, T::ExportImagesToDir)),
+                        |ui| {
+                            if ui.button(t(self.lang, T::ExportAllImages)).clicked() {
+                                self.start_export_images_dialog(ctx, false);
+                                self.context_menu_open = false;
+                            }
+                            if has_selection
+                                && ui.button(t(self.lang, T::ExportSelectionImages)).clicked()
+                            {
+                                self.start_export_images_dialog(ctx, true);
+                                self.context_menu_open = false;
+                            }
+                        },
+                    );
                     ui.separator();
 
                     if has_selection {
-                        if ui.button(format!("\u{1F5D1} {}", t(self.lang, T::DeleteSelected))).clicked() {
+                        if ui
+                            .button(format!("\u{1F5D1} {}", t(self.lang, T::DeleteSelected)))
+                            .clicked()
+                        {
                             self.delete_selected();
                             self.context_menu_open = false;
                         }
-                        if ui.button(format!("\u{2191} {}", t(self.lang, T::BringToFront))).clicked() {
+                        if ui
+                            .button(format!("\u{2191} {}", t(self.lang, T::BringToFront)))
+                            .clicked()
+                        {
                             self.bring_to_front();
                             self.context_menu_open = false;
                         }
-                        if ui.button(format!("\u{2193} {}", t(self.lang, T::SendToBack))).clicked() {
+                        if ui
+                            .button(format!("\u{2193} {}", t(self.lang, T::SendToBack)))
+                            .clicked()
+                        {
                             self.send_to_back();
                             self.context_menu_open = false;
                         }
@@ -1504,7 +1745,10 @@ impl PReferZApp {
                                 self.toggle_grayscale_selected();
                                 self.context_menu_open = false;
                             }
-                            if ui.button(format!("\u{1F4CF} {}", t(self.lang, T::CropMode))).clicked() {
+                            if ui
+                                .button(format!("\u{1F4CF} {}", t(self.lang, T::CropMode)))
+                                .clicked()
+                            {
                                 self.enter_crop_mode();
                                 self.context_menu_open = false;
                             }
@@ -1513,38 +1757,50 @@ impl PReferZApp {
 
                         // Phase 5：归一化尺寸（Pixmap 多选）
                         if self.selected_pixmap_count() >= 2 {
-                            ui.menu_button(format!("\u{1F4D0} {}", t(self.lang, T::NormalizeSize)), |ui| {
-                                if ui.button(t(self.lang, T::NormalizeByWidth)).clicked() {
-                                    self.normalize_selected(preferz_core::commands::NormalizeMode::Width);
-                                    self.context_menu_open = false;
-                                }
-                                if ui.button(t(self.lang, T::NormalizeByHeight)).clicked() {
-                                    self.normalize_selected(preferz_core::commands::NormalizeMode::Height);
-                                    self.context_menu_open = false;
-                                }
-                                if ui.button(t(self.lang, T::NormalizeByArea)).clicked() {
-                                    self.normalize_selected(preferz_core::commands::NormalizeMode::Area);
-                                    self.context_menu_open = false;
-                                }
-                            });
+                            ui.menu_button(
+                                format!("\u{1F4D0} {}", t(self.lang, T::NormalizeSize)),
+                                |ui| {
+                                    if ui.button(t(self.lang, T::NormalizeByWidth)).clicked() {
+                                        self.normalize_selected(
+                                            preferz_core::commands::NormalizeMode::Width,
+                                        );
+                                        self.context_menu_open = false;
+                                    }
+                                    if ui.button(t(self.lang, T::NormalizeByHeight)).clicked() {
+                                        self.normalize_selected(
+                                            preferz_core::commands::NormalizeMode::Height,
+                                        );
+                                        self.context_menu_open = false;
+                                    }
+                                    if ui.button(t(self.lang, T::NormalizeByArea)).clicked() {
+                                        self.normalize_selected(
+                                            preferz_core::commands::NormalizeMode::Area,
+                                        );
+                                        self.context_menu_open = false;
+                                    }
+                                },
+                            );
                         }
 
                         // Phase 5：批量排列（≥ 2 项）
                         if self.scene.selection.len() >= 2 {
-                            ui.menu_button(format!("\u{1F9ED} {}", t(self.lang, T::Arrange)), |ui| {
-                                if ui.button(t(self.lang, T::ArrangeLinear)).clicked() {
-                                    self.arrange_selected(ArrangeMode::Linear);
-                                    self.context_menu_open = false;
-                                }
-                                if ui.button(t(self.lang, T::ArrangeGrid)).clicked() {
-                                    self.arrange_selected(ArrangeMode::Grid);
-                                    self.context_menu_open = false;
-                                }
-                                if ui.button(t(self.lang, T::ArrangeOptimal)).clicked() {
-                                    self.arrange_selected(ArrangeMode::Optimal);
-                                    self.context_menu_open = false;
-                                }
-                            });
+                            ui.menu_button(
+                                format!("\u{1F9ED} {}", t(self.lang, T::Arrange)),
+                                |ui| {
+                                    if ui.button(t(self.lang, T::ArrangeLinear)).clicked() {
+                                        self.arrange_selected(ArrangeMode::Linear);
+                                        self.context_menu_open = false;
+                                    }
+                                    if ui.button(t(self.lang, T::ArrangeGrid)).clicked() {
+                                        self.arrange_selected(ArrangeMode::Grid);
+                                        self.context_menu_open = false;
+                                    }
+                                    if ui.button(t(self.lang, T::ArrangeOptimal)).clicked() {
+                                        self.arrange_selected(ArrangeMode::Optimal);
+                                        self.context_menu_open = false;
+                                    }
+                                },
+                            );
                         }
 
                         ui.separator();
@@ -1561,22 +1817,34 @@ impl PReferZApp {
                         self.context_menu_open = false;
                     }
 
-                    if ui.button(format!("\u{1F527} {}", t(self.lang, T::Settings))).clicked() {
+                    if ui
+                        .button(format!("\u{1F527} {}", t(self.lang, T::Settings)))
+                        .clicked()
+                    {
                         self.settings_open = true;
                         self.context_menu_open = false;
                     }
 
-                    if ui.button(format!("\u{1F50D} {}", t(self.lang, T::FitToCanvas))).clicked() {
+                    if ui
+                        .button(format!("\u{1F50D} {}", t(self.lang, T::FitToCanvas)))
+                        .clicked()
+                    {
                         self.fit_to_screen();
                         self.context_menu_open = false;
                     }
-                    if ui.button(format!("\u{1F504} {}", t(self.lang, T::ResetZoom))).clicked() {
+                    if ui
+                        .button(format!("\u{1F504} {}", t(self.lang, T::ResetZoom)))
+                        .clicked()
+                    {
                         self.viewport.reset();
                         self.flash(t(self.lang, T::FlashResetZoom).to_string());
                         self.context_menu_open = false;
                     }
                     ui.separator();
-                    if ui.button(format!("\u{274C} {}", t(self.lang, T::Exit))).clicked() {
+                    if ui
+                        .button(format!("\u{274C} {}", t(self.lang, T::Exit)))
+                        .clicked()
+                    {
                         // 触发 close_requested 流程；dirty 时由 update 顶部检测弹保存提示
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                         self.context_menu_open = false;
@@ -1680,15 +1948,15 @@ impl PReferZApp {
             // 借用切片避免 &mut self 冲突；点击记录到 pending_open_recent
             let recent: Vec<PathBuf> = self.recent_files.iter().take(8).cloned().collect();
             for path in recent {
-                let row_rect = egui::Rect::from_min_size(
-                    egui::pos2(panel_x, y),
-                    egui::vec2(panel_w, 26.0),
-                );
-                let resp = ui.allocate_new_ui(egui::UiBuilder::new().max_rect(row_rect), |ui| {
-                    let btn = egui::Button::new(path.to_string_lossy())
-                        .min_size(egui::vec2(panel_w, 0.0));
-                    ui.add(btn).clicked()
-                }).inner;
+                let row_rect =
+                    egui::Rect::from_min_size(egui::pos2(panel_x, y), egui::vec2(panel_w, 26.0));
+                let resp = ui
+                    .allocate_new_ui(egui::UiBuilder::new().max_rect(row_rect), |ui| {
+                        let btn = egui::Button::new(path.to_string_lossy())
+                            .min_size(egui::vec2(panel_w, 0.0));
+                        ui.add(btn).clicked()
+                    })
+                    .inner;
                 if resp {
                     self.pending_open_recent = Some(path);
                 }
@@ -1711,21 +1979,44 @@ impl PReferZApp {
             .default_pos(egui::Pos2::new(10.0, 10.0))
             .default_size(egui::Vec2::new(320.0, 220.0))
             .show(ctx, |ui| {
-                ui.label(format!("Pointer: {:?}", ctx.input(|i| i.pointer.latest_pos())));
-                ui.label(format!("Hover handle: {:?}", self.transform_handles.hover_handle));
-                ui.label(format!("Active handle: {:?}", self.transform_handles.active_handle));
-                ui.label(format!("Is dragging: {}", self.transform_handles.is_dragging));
+                ui.label(format!(
+                    "Pointer: {:?}",
+                    ctx.input(|i| i.pointer.latest_pos())
+                ));
+                ui.label(format!(
+                    "Hover handle: {:?}",
+                    self.transform_handles.hover_handle
+                ));
+                ui.label(format!(
+                    "Active handle: {:?}",
+                    self.transform_handles.active_handle
+                ));
+                ui.label(format!(
+                    "Is dragging: {}",
+                    self.transform_handles.is_dragging
+                ));
                 ui.label(format!("Drag state: {}", drag_state_name(&self.drag)));
                 ui.label(format!("Selection: {} items", self.scene.selection.len()));
-                ui.label(format!("Pan: ({:.1}, {:.1}) Zoom: {:.3}",
-                    self.viewport.pan.x, self.viewport.pan.y, self.viewport.zoom));
+                ui.label(format!(
+                    "Pan: ({:.1}, {:.1}) Zoom: {:.3}",
+                    self.viewport.pan.x, self.viewport.pan.y, self.viewport.zoom
+                ));
                 ui.separator();
                 if let Some(id) = self.scene.selection.iter().next() {
                     if let Some(item) = self.scene.get_item(id) {
                         ui.label(format!("Selected item {}:", id));
-                        ui.label(format!("  pos: ({:.1}, {:.1})", item.transform.pos.x, item.transform.pos.y));
-                        ui.label(format!("  scale: ({:.2}, {:.2})", item.transform.scale.x, item.transform.scale.y));
-                        ui.label(format!("  rotation: {:.2}°", item.transform.rotation.to_degrees()));
+                        ui.label(format!(
+                            "  pos: ({:.1}, {:.1})",
+                            item.transform.pos.x, item.transform.pos.y
+                        ));
+                        ui.label(format!(
+                            "  scale: ({:.2}, {:.2})",
+                            item.transform.scale.x, item.transform.scale.y
+                        ));
+                        ui.label(format!(
+                            "  rotation: {:.2}°",
+                            item.transform.rotation.to_degrees()
+                        ));
                         ui.label(format!("  z: {}", item.z));
                     }
                 }
@@ -1772,10 +2063,26 @@ fn apply_scale_drag(
 
     // corners = [TL, TR, BL, BR]，对角关系：0↔3, 1↔2
     let (anchor_idx, anchor_local, drag_local) = match handle {
-        Handle::ResizeTopLeft     => (3, CanvasVector::new(base_w, base_h), CanvasVector::new(0.0, 0.0)),
-        Handle::ResizeTopRight    => (2, CanvasVector::new(0.0,   base_h), CanvasVector::new(base_w, 0.0)),
-        Handle::ResizeBottomLeft  => (1, CanvasVector::new(base_w, 0.0),   CanvasVector::new(0.0, base_h)),
-        Handle::ResizeBottomRight => (0, CanvasVector::new(0.0,   0.0),   CanvasVector::new(base_w, base_h)),
+        Handle::ResizeTopLeft => (
+            3,
+            CanvasVector::new(base_w, base_h),
+            CanvasVector::new(0.0, 0.0),
+        ),
+        Handle::ResizeTopRight => (
+            2,
+            CanvasVector::new(0.0, base_h),
+            CanvasVector::new(base_w, 0.0),
+        ),
+        Handle::ResizeBottomLeft => (
+            1,
+            CanvasVector::new(base_w, 0.0),
+            CanvasVector::new(0.0, base_h),
+        ),
+        Handle::ResizeBottomRight => (
+            0,
+            CanvasVector::new(0.0, 0.0),
+            CanvasVector::new(base_w, base_h),
+        ),
         _ => return,
     };
     let anchor_canvas = start_corners[anchor_idx];
@@ -1803,7 +2110,11 @@ fn apply_scale_drag(
         let ratio_x = new_scale_x / start_sx;
         let ratio_y = new_scale_y / start_sy;
         // 取变化幅度更大的方向作为统一缩放�?
-        let uniform_ratio = if ratio_x.abs() >= ratio_y.abs() { ratio_x } else { ratio_y };
+        let uniform_ratio = if ratio_x.abs() >= ratio_y.abs() {
+            ratio_x
+        } else {
+            ratio_y
+        };
         new_scale_x = start_sx * uniform_ratio;
         new_scale_y = start_sy * uniform_ratio;
     }
@@ -1818,8 +2129,16 @@ fn apply_scale_drag(
     //   flip_h 时 x 分量 = base_w - anchor_local.x，否则 = anchor_local.x
     //   flip_v 时 y 分量 = base_h - anchor_local.y，否则 = anchor_local.y
     // 修 B?：之前缺失 F_translation 项，导致 flip 状态下缩放时 pos 计算错误、图片跳动。
-    let fa_x = if start_transform.flip_h { base_w - anchor_local.x } else { anchor_local.x };
-    let fa_y = if start_transform.flip_v { base_h - anchor_local.y } else { anchor_local.y };
+    let fa_x = if start_transform.flip_h {
+        base_w - anchor_local.x
+    } else {
+        anchor_local.x
+    };
+    let fa_y = if start_transform.flip_v {
+        base_h - anchor_local.y
+    } else {
+        anchor_local.y
+    };
     let sa_x = new_scale_x * fa_x;
     let sa_y = new_scale_y * fa_y;
     let r_x = cos * sa_x - sin * sa_y;
@@ -1850,7 +2169,8 @@ fn apply_rotate_drag(
     );
     let center_screen = viewport.canvas_to_screen(center_canvas);
     let start_angle = (start_screen.y - center_screen.y).atan2(start_screen.x - center_screen.x);
-    let current_angle = (current_screen.y - center_screen.y).atan2(current_screen.x - center_screen.x);
+    let current_angle =
+        (current_screen.y - center_screen.y).atan2(current_screen.x - center_screen.x);
     let delta = current_angle - start_angle;
     item.transform.rotation = start_transform.rotation + delta;
 
@@ -1890,12 +2210,13 @@ impl PReferZApp {
         }
 
         // Ctrl+Shift+P 显示菜单
-        let show_menu = ctx.input(|i| {
-            i.modifiers.ctrl && i.modifiers.shift && i.key_pressed(egui::Key::P)
-        });
+        let show_menu =
+            ctx.input(|i| i.modifiers.ctrl && i.modifiers.shift && i.key_pressed(egui::Key::P));
         if show_menu && !self.context_menu_open {
             self.context_menu_open = true;
-            self.context_menu_pos = ctx.input(|i| i.pointer.latest_pos()).unwrap_or_else(|| ctx.screen_rect().center());
+            self.context_menu_pos = ctx
+                .input(|i| i.pointer.latest_pos())
+                .unwrap_or_else(|| ctx.screen_rect().center());
         }
 
         // ESC 关闭菜单 / 退出颜色采�?
@@ -1913,21 +2234,22 @@ impl PReferZApp {
         }
 
         // Ctrl+Z 撤销
-        if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::Z) && !i.modifiers.shift) {
-            if self.perform_undo() {
-                self.flash(t(self.lang, T::FlashUndo).to_string());
-                ctx.request_repaint();
-            }
+        if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::Z) && !i.modifiers.shift)
+            && self.perform_undo()
+        {
+            self.flash(t(self.lang, T::FlashUndo).to_string());
+            ctx.request_repaint();
         }
 
         // Ctrl+Y / Ctrl+Shift+Z 重做
         if ctx.input(|i| {
-            i.modifiers.ctrl && (i.key_pressed(egui::Key::Y) || (i.key_pressed(egui::Key::Z) && i.modifiers.shift))
-        }) {
-            if self.perform_redo() {
-                self.flash(t(self.lang, T::FlashRedo).to_string());
-                ctx.request_repaint();
-            }
+            i.modifiers.ctrl
+                && (i.key_pressed(egui::Key::Y)
+                    || (i.key_pressed(egui::Key::Z) && i.modifiers.shift))
+        }) && self.perform_redo()
+        {
+            self.flash(t(self.lang, T::FlashRedo).to_string());
+            ctx.request_repaint();
         }
 
         // Ctrl+S 保存，Ctrl+Shift+S 另存为，Ctrl+O 打开项目，Ctrl+I 载入图片，Ctrl+N 新建画布
@@ -2015,13 +2337,18 @@ impl PReferZApp {
         );
         self.texture_cache.insert(texture_id, texture_handle);
         // 缓存原始字节，保存时写入 sqlar
-        self.image_data_cache.insert(texture_id, outcome.bytes.clone());
+        self.image_data_cache
+            .insert(texture_id, outcome.bytes.clone());
         // 缓存 RGBA 像素（懒生成灰度纹理 + 颜色采样用）
-        self.rgba_pixel_cache.insert(texture_id, outcome.rgba.clone());
-        self.rgba_size_cache.insert(texture_id, (outcome.width, outcome.height));
+        self.rgba_pixel_cache
+            .insert(texture_id, outcome.rgba.clone());
+        self.rgba_size_cache
+            .insert(texture_id, (outcome.width, outcome.height));
 
         // 初始位置：视口中心对应的画布�?
-        let center_canvas = self.viewport.screen_to_canvas(self.viewport.screen_rect.center());
+        let center_canvas = self
+            .viewport
+            .screen_to_canvas(self.viewport.screen_rect.center());
         let item = Item::new_pixmap(
             texture_id,
             Some(outcome.path.to_string_lossy().to_string()),
@@ -2278,13 +2605,20 @@ impl PReferZApp {
             pan_y: self.viewport.pan.y,
             zoom: self.viewport.zoom,
         });
-        self.bg_ops.start_save(ctx, path, self.scene.clone(), images, viewport);
+        self.bg_ops
+            .start_save(ctx, path, self.scene.clone(), images, viewport);
     }
 
     /// 启动后台导出（spec §2.3 导出）。
     /// 收集所有 Pixmap 的 RGBA + item 快照，后台线程逐像素合成 + 编码。
     /// 文本便签在导出中渲染为纯色矩形（MVP 简化，不渲染 glyph）。
-    fn start_export(&mut self, ctx: &egui::Context, path: PathBuf, format: ExportFormat, selection_only: bool) {
+    fn start_export(
+        &mut self,
+        ctx: &egui::Context,
+        path: PathBuf,
+        format: ExportFormat,
+        selection_only: bool,
+    ) {
         if self.scene.items.is_empty() {
             self.flash(t(self.lang, T::FlashCanvasEmptyNoExport).to_string());
             return;
@@ -2293,7 +2627,9 @@ impl PReferZApp {
         // 按 selection_only 过滤 items
         let items_snapshot: Vec<Item> = if selection_only {
             let sel = &self.scene.selection;
-            self.scene.items.iter()
+            self.scene
+                .items
+                .iter()
                 .filter(|it| sel.contains(&it.id))
                 .cloned()
                 .collect()
@@ -2321,7 +2657,11 @@ impl PReferZApp {
         let (tx, rx) = mpsc::channel();
         self.bg_ops.export_rx = Some(rx);
         self.bg_ops.pending += 1;
-        self.bg_ops.msg = Some(format!("{}: {}", t(self.lang, T::FlashExportProgress), path.display()));
+        self.bg_ops.msg = Some(format!(
+            "{}: {}",
+            t(self.lang, T::FlashExportProgress),
+            path.display()
+        ));
         let ctx2 = ctx.clone();
         std::thread::spawn(move || {
             let result = export_scene_to_file(&items_snapshot, &pixmaps, &path, format)
@@ -2333,16 +2673,28 @@ impl PReferZApp {
 
     /// 启动后台批量导出图片到目录（每个 Pixmap 一个 PNG 文件，原始分辨率）。
     /// `selection_only=true` 仅导出选中的 Pixmap。
-    fn start_export_images_to_dir(&mut self, ctx: &egui::Context, dir: PathBuf, selection_only: bool) {
+    fn start_export_images_to_dir(
+        &mut self,
+        ctx: &egui::Context,
+        dir: PathBuf,
+        selection_only: bool,
+    ) {
         // 过滤 Pixmap items
         let sel = &self.scene.selection;
-        let pixmap_items: Vec<&Item> = self.scene.items.iter()
+        let pixmap_items: Vec<&Item> = self
+            .scene
+            .items
+            .iter()
             .filter(|it| matches!(it.kind, ItemKind::Pixmap { .. }))
             .filter(|it| !selection_only || sel.contains(&it.id))
             .collect();
 
         if pixmap_items.is_empty() {
-            self.flash(if selection_only { "无选中的图片项" } else { "无可导出的图片项" });
+            self.flash(if selection_only {
+                "无选中的图片项"
+            } else {
+                "无可导出的图片项"
+            });
             return;
         }
 
@@ -2351,17 +2703,33 @@ impl PReferZApp {
         let mut used_names: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut anon_index = 1usize;
         for item in &pixmap_items {
-            if let ItemKind::Pixmap { texture_id, filename, .. } = &item.kind {
+            if let ItemKind::Pixmap {
+                texture_id,
+                filename,
+                ..
+            } = &item.kind
+            {
                 let (Some(rgba), Some(size)) = (
                     self.rgba_pixel_cache.get(texture_id),
                     self.rgba_size_cache.get(texture_id),
-                ) else { continue; };
+                ) else {
+                    continue;
+                };
 
                 // 文件名：优先 filename 的 stem，否则 image_N.png；确保目录内唯一
                 let base = filename
                     .as_ref()
-                    .and_then(|s| std::path::Path::new(s).file_stem().and_then(|x| x.to_str()).map(|x| x.to_string()))
-                    .unwrap_or_else(|| { let n = format!("image_{}", anon_index); anon_index += 1; n });
+                    .and_then(|s| {
+                        std::path::Path::new(s)
+                            .file_stem()
+                            .and_then(|x| x.to_str())
+                            .map(|x| x.to_string())
+                    })
+                    .unwrap_or_else(|| {
+                        let n = format!("image_{}", anon_index);
+                        anon_index += 1;
+                        n
+                    });
                 let mut name = format!("{}.png", base);
                 let mut n = 1;
                 while used_names.contains(&name) {
@@ -2381,14 +2749,28 @@ impl PReferZApp {
         let (tx, rx) = mpsc::channel();
         self.bg_ops.export_rx = Some(rx);
         self.bg_ops.pending += 1;
-        self.bg_ops.msg = Some(format!("{}: {}", t(self.lang, T::FlashExportImagesProgress), dir.display()));
+        self.bg_ops.msg = Some(format!(
+            "{}: {}",
+            t(self.lang, T::FlashExportImagesProgress),
+            dir.display()
+        ));
         let ctx2 = ctx.clone();
         let lang = self.lang;
         std::thread::spawn(move || {
             let total = entries.len();
-            let result = export_pixmaps_to_dir(&entries, &dir)
-                .map(|_| format!("{} {} {}: {}", t(lang, T::FlashExportedNImages), total, t(lang, T::FlashExportImagesTo), dir.display()));
-            let _ = tx.send(ExportOutcome { path: dir.clone(), result });
+            let result = export_pixmaps_to_dir(&entries, &dir).map(|_| {
+                format!(
+                    "{} {} {}: {}",
+                    t(lang, T::FlashExportedNImages),
+                    total,
+                    t(lang, T::FlashExportImagesTo),
+                    dir.display()
+                )
+            });
+            let _ = tx.send(ExportOutcome {
+                path: dir.clone(),
+                result,
+            });
             ctx2.request_repaint();
         });
     }
@@ -2403,7 +2785,12 @@ impl PReferZApp {
         }
     }
 
-    fn start_export_dialog(&mut self, ctx: &egui::Context, format: ExportFormat, selection_only: bool) {
+    fn start_export_dialog(
+        &mut self,
+        ctx: &egui::Context,
+        format: ExportFormat,
+        selection_only: bool,
+    ) {
         let ext = format.extension();
         let default_name = if selection_only { "selection" } else { "scene" };
         let picked = rfd::FileDialog::new()
@@ -2489,7 +2876,9 @@ impl PReferZApp {
 
     /// 当前选中 Pixmap item 数量�?
     fn selected_pixmap_count(&self) -> usize {
-        self.scene.selection.iter()
+        self.scene
+            .selection
+            .iter()
             .filter_map(|id| self.scene.get_item(id))
             .filter(|it| matches!(it.kind, ItemKind::Pixmap { .. }))
             .count()
@@ -2510,7 +2899,10 @@ impl PReferZApp {
     /// 切换选中 Pixmap item 的灰度标志（spec §2.2 灰度）�?
     fn toggle_grayscale_selected(&mut self) {
         // 收集 (id, old_gray) 后再处理，避免借用冲突
-        let targets: Vec<(ItemId, bool)> = self.scene.selection.iter()
+        let targets: Vec<(ItemId, bool)> = self
+            .scene
+            .selection
+            .iter()
             .filter_map(|id| {
                 self.scene.get_item(id).and_then(|it| match &it.kind {
                     ItemKind::Pixmap { grayscale, .. } => Some((*id, *grayscale)),
@@ -2534,7 +2926,11 @@ impl PReferZApp {
         let id = *self.scene.selection.iter().next().unwrap();
         let (original_size, current_crop) = match self.scene.get_item(&id) {
             Some(item) => match &item.kind {
-                ItemKind::Pixmap { original_size, crop, .. } => (*original_size, *crop),
+                ItemKind::Pixmap {
+                    original_size,
+                    crop,
+                    ..
+                } => (*original_size, *crop),
                 _ => {
                     self.flash(t(self.lang, T::FlashCropImageOnly).to_string());
                     return;
@@ -2596,7 +2992,8 @@ impl PReferZApp {
                 let old_transform = item.transform;
                 let old_l2c = item.local_to_canvas();
                 // crop 左上角的画布位置
-                let crop_tl_local = euclid::Point2D::<_, preferz_core::item::ItemLocalSpace>::new(c.x, c.y);
+                let crop_tl_local =
+                    euclid::Point2D::<_, preferz_core::item::ItemLocalSpace>::new(c.x, c.y);
                 let crop_tl_canvas = old_l2c.transform_point(crop_tl_local);
 
                 // new_scale：让 base_size × new_scale = crop 画布尺寸
@@ -2608,9 +3005,10 @@ impl PReferZApp {
                 tmp.transform.scale = CanvasVector::new(new_scale_x, new_scale_y);
                 tmp.transform.pos = CanvasVector::zero();
                 let tmp_l2c = tmp.local_to_canvas();
-                let new_origin_canvas = tmp_l2c.transform_point(
-                    euclid::Point2D::<_, preferz_core::item::ItemLocalSpace>::origin()
-                );
+                let new_origin_canvas = tmp_l2c
+                    .transform_point(
+                        euclid::Point2D::<_, preferz_core::item::ItemLocalSpace>::origin(),
+                    );
                 // new_pos = crop_tl_canvas - new_origin_canvas
                 let new_pos = CanvasVector::new(
                     crop_tl_canvas.x - new_origin_canvas.x,
@@ -2656,11 +3054,24 @@ impl PReferZApp {
             self.viewport.canvas_to_screen(corners[2]),
             self.viewport.canvas_to_screen(corners[3]),
         ];
-        let min_x = screen_corners.iter().map(|p| p.x).fold(f32::INFINITY, f32::min);
-        let max_x = screen_corners.iter().map(|p| p.x).fold(f32::NEG_INFINITY, f32::max);
-        let min_y = screen_corners.iter().map(|p| p.y).fold(f32::INFINITY, f32::min);
-        let max_y = screen_corners.iter().map(|p| p.y).fold(f32::NEG_INFINITY, f32::max);
-        let item_screen_rect = egui::Rect::from_min_max(egui::pos2(min_x, min_y), egui::pos2(max_x, max_y));
+        let min_x = screen_corners
+            .iter()
+            .map(|p| p.x)
+            .fold(f32::INFINITY, f32::min);
+        let max_x = screen_corners
+            .iter()
+            .map(|p| p.x)
+            .fold(f32::NEG_INFINITY, f32::max);
+        let min_y = screen_corners
+            .iter()
+            .map(|p| p.y)
+            .fold(f32::INFINITY, f32::min);
+        let max_y = screen_corners
+            .iter()
+            .map(|p| p.y)
+            .fold(f32::NEG_INFINITY, f32::max);
+        let item_screen_rect =
+            egui::Rect::from_min_max(egui::pos2(min_x, min_y), egui::pos2(max_x, max_y));
 
         let base_w = original_size.0 as f32;
         let base_h = original_size.1 as f32;
@@ -2678,8 +3089,14 @@ impl PReferZApp {
         let handle_size = TransformHandles::handle_size() * 2.0;
         let handles = [
             (CropHandle::TopLeft, crop_screen_rect.min),
-            (CropHandle::TopRight, egui::pos2(crop_screen_rect.max.x, crop_screen_rect.min.y)),
-            (CropHandle::BottomLeft, egui::pos2(crop_screen_rect.min.x, crop_screen_rect.max.y)),
+            (
+                CropHandle::TopRight,
+                egui::pos2(crop_screen_rect.max.x, crop_screen_rect.min.y),
+            ),
+            (
+                CropHandle::BottomLeft,
+                egui::pos2(crop_screen_rect.min.x, crop_screen_rect.max.y),
+            ),
             (CropHandle::BottomRight, crop_screen_rect.max),
         ];
         for (h, p) in handles {
@@ -2719,15 +3136,30 @@ impl PReferZApp {
             self.viewport.canvas_to_screen(corners[2]),
             self.viewport.canvas_to_screen(corners[3]),
         ];
-        let min_x = screen_corners.iter().map(|p| p.x).fold(f32::INFINITY, f32::min);
-        let max_x = screen_corners.iter().map(|p| p.x).fold(f32::NEG_INFINITY, f32::max);
-        let min_y = screen_corners.iter().map(|p| p.y).fold(f32::INFINITY, f32::min);
-        let max_y = screen_corners.iter().map(|p| p.y).fold(f32::NEG_INFINITY, f32::max);
-        let item_screen_rect = egui::Rect::from_min_max(egui::pos2(min_x, min_y), egui::pos2(max_x, max_y));
+        let min_x = screen_corners
+            .iter()
+            .map(|p| p.x)
+            .fold(f32::INFINITY, f32::min);
+        let max_x = screen_corners
+            .iter()
+            .map(|p| p.x)
+            .fold(f32::NEG_INFINITY, f32::max);
+        let min_y = screen_corners
+            .iter()
+            .map(|p| p.y)
+            .fold(f32::INFINITY, f32::min);
+        let max_y = screen_corners
+            .iter()
+            .map(|p| p.y)
+            .fold(f32::NEG_INFINITY, f32::max);
+        let item_screen_rect =
+            egui::Rect::from_min_max(egui::pos2(min_x, min_y), egui::pos2(max_x, max_y));
 
         // 鼠标位置 �?归一�?[0,1] × [0,1] �?局部像�?
-        let nx = ((screen_pos.x - item_screen_rect.min.x) / item_screen_rect.width()).clamp(0.0, 1.0);
-        let ny = ((screen_pos.y - item_screen_rect.min.y) / item_screen_rect.height()).clamp(0.0, 1.0);
+        let nx =
+            ((screen_pos.x - item_screen_rect.min.x) / item_screen_rect.width()).clamp(0.0, 1.0);
+        let ny =
+            ((screen_pos.y - item_screen_rect.min.y) / item_screen_rect.height()).clamp(0.0, 1.0);
         let px = nx * base_w;
         let py = ny * base_h;
 
@@ -2775,7 +3207,11 @@ impl PReferZApp {
             }
         };
         let (texture_id, original_size) = match &item.kind {
-            ItemKind::Pixmap { texture_id, original_size, .. } => (*texture_id, *original_size),
+            ItemKind::Pixmap {
+                texture_id,
+                original_size,
+                ..
+            } => (*texture_id, *original_size),
             _ => {
                 self.flash(t(self.lang, T::FlashColorPickerImageOnly).to_string());
                 return;
@@ -2812,7 +3248,10 @@ impl PReferZApp {
             let b = rgba[idx + 2];
             let a = rgba[idx + 3];
             self.color_sample = Some(ColorSample {
-                r, g, b, a,
+                r,
+                g,
+                b,
+                a,
                 screen_pos,
                 px: px as u32,
                 py: py as u32,
@@ -2826,7 +3265,10 @@ impl PReferZApp {
         let spacing = self.arrange_spacing;
         // 复制一个仅包含选中项的子场景，传给 plan_arrange
         let mut sub = Scene::new();
-        let selected_items: Vec<Item> = self.scene.selection.iter()
+        let selected_items: Vec<Item> = self
+            .scene
+            .selection
+            .iter()
             .filter_map(|id| self.scene.get_item(id).cloned())
             .collect();
         for it in selected_items {
@@ -2848,7 +3290,10 @@ impl PReferZApp {
 
     /// 归一化选中 Pixmap item 尺寸（spec §2.2 归一化尺寸）�?
     fn normalize_selected(&mut self, mode: preferz_core::commands::NormalizeMode) {
-        let ids: Vec<ItemId> = self.scene.selection.iter()
+        let ids: Vec<ItemId> = self
+            .scene
+            .selection
+            .iter()
             .filter_map(|id| {
                 self.scene.get_item(id).and_then(|it| match &it.kind {
                     ItemKind::Pixmap { .. } => Some(*id),
@@ -2867,9 +3312,15 @@ impl PReferZApp {
                     let ow = original_size.0 as f32;
                     let oh = original_size.1 as f32;
                     match mode {
-                        preferz_core::commands::NormalizeMode::Width => Some(it.transform.scale.x * ow),
-                        preferz_core::commands::NormalizeMode::Height => Some(it.transform.scale.y * oh),
-                        preferz_core::commands::NormalizeMode::Area => Some(it.transform.scale.x * it.transform.scale.y * ow * oh),
+                        preferz_core::commands::NormalizeMode::Width => {
+                            Some(it.transform.scale.x * ow)
+                        }
+                        preferz_core::commands::NormalizeMode::Height => {
+                            Some(it.transform.scale.y * oh)
+                        }
+                        preferz_core::commands::NormalizeMode::Area => {
+                            Some(it.transform.scale.x * it.transform.scale.y * ow * oh)
+                        }
                     }
                 }
                 _ => None,
@@ -2966,14 +3417,23 @@ impl PReferZApp {
             .resizable(false)
             .show(ctx, |ui| {
                 ui.label(t(self.lang, T::SettingsArrange));
-                ui.add(egui::Slider::new(&mut self.arrange_spacing, 0.0..=200.0).text(t(self.lang, T::SettingsSpacing)));
+                ui.add(
+                    egui::Slider::new(&mut self.arrange_spacing, 0.0..=200.0)
+                        .text(t(self.lang, T::SettingsSpacing)),
+                );
                 ui.separator();
 
                 ui.label(t(self.lang, T::SettingsWindow));
-                if ui.checkbox(&mut always_on_top, t(self.lang, T::SettingsAlwaysOnTop)).changed() {
+                if ui
+                    .checkbox(&mut always_on_top, t(self.lang, T::SettingsAlwaysOnTop))
+                    .changed()
+                {
                     top_changed = true;
                 }
-                if ui.checkbox(&mut frameless, t(self.lang, T::SettingsFrameless)).changed() {
+                if ui
+                    .checkbox(&mut frameless, t(self.lang, T::SettingsFrameless))
+                    .changed()
+                {
                     frame_changed = true;
                 }
                 // 背景透明度：0.1~1.0，配无边框+置顶可作悬浮看图板。
@@ -2991,7 +3451,10 @@ impl PReferZApp {
                     .selected_text(lang.display_name())
                     .show_ui(ui, |ui| {
                         for option in [Lang::En, Lang::Zh] {
-                            if ui.selectable_label(lang == option, option.display_name()).clicked() {
+                            if ui
+                                .selectable_label(lang == option, option.display_name())
+                                .clicked()
+                            {
                                 lang = option;
                                 lang_changed = true;
                             }
@@ -3059,23 +3522,27 @@ impl PReferZApp {
                         let color = egui::Color32::from_rgba_unmultiplied(
                             sample.r, sample.g, sample.b, sample.a,
                         );
-                        let (rect, _) = ui.allocate_exact_size(
-                            egui::vec2(28.0, 28.0),
-                            egui::Sense::hover(),
-                        );
+                        let (rect, _) =
+                            ui.allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::hover());
                         ui.painter().rect_filled(rect, 2.0, color);
-                        ui.painter().rect_stroke(rect, 2.0, egui::Stroke::new(1.0, egui::Color32::BLACK));
+                        ui.painter().rect_stroke(
+                            rect,
+                            2.0,
+                            egui::Stroke::new(1.0_f32, egui::Color32::BLACK),
+                        );
                         ui.vertical(|ui| {
                             ui.label(format!("RGB: {}, {}, {}", sample.r, sample.g, sample.b));
                             ui.label(format!("Alpha: {}", sample.a));
-                            ui.label(format!("HEX: #{:02X}{:02X}{:02X}", sample.r, sample.g, sample.b));
+                            ui.label(format!(
+                                "HEX: #{:02X}{:02X}{:02X}",
+                                sample.r, sample.g, sample.b
+                            ));
                             ui.label(format!("位置: ({}, {})", sample.px, sample.py));
                         });
                     });
                 });
             });
     }
-
 }
 
 /// 颜色采样结果（spec §2.2 颜色采样）。
@@ -3124,8 +3591,8 @@ fn export_scene_to_file(
     path: &Path,
     format: ExportFormat,
 ) -> Result<(), String> {
-    use preferz_core::spaces::CanvasSpace;
     use euclid::Point2D;
+    use preferz_core::spaces::CanvasSpace;
 
     if items.is_empty() {
         return Err("画布为空".to_string());
@@ -3163,19 +3630,23 @@ fn export_scene_to_file(
 
     // 预构建 Pixmap 像素查找表（texture_id → (rgba, w, h)）
     use std::collections::HashMap;
-    let pixmap_map: HashMap<u64, (&Vec<u8>, u32, u32)> = pixmaps.iter()
+    let pixmap_map: HashMap<u64, (&Vec<u8>, u32, u32)> = pixmaps
+        .iter()
         .map(|(id, rgba, w, h)| (*id, (rgba, *w, *h)))
         .collect();
 
     // 按 Z 序倒序（顶层先采样）
     let mut sorted: Vec<&Item> = items.iter().collect();
-    sorted.sort_by(|a, b| b.z.cmp(&a.z));
+    sorted.sort_by_key(|b| std::cmp::Reverse(b.z));
 
     // 逐像素合成
     let mut out_rgba: Vec<u8> = vec![0u8; (canvas_w as usize) * (canvas_h as usize) * 4];
     // 背景填充为白色（JPG 不支持透明，PNG 也用白底更实用）
     for px in out_rgba.chunks_exact_mut(4) {
-        px[0] = 255; px[1] = 255; px[2] = 255; px[3] = 255;
+        px[0] = 255;
+        px[1] = 255;
+        px[2] = 255;
+        px[3] = 255;
     }
 
     // 遍历每个像素，反向找命中的顶层 item
@@ -3224,7 +3695,8 @@ fn export_scene_to_file(
         }
         ExportFormat::Jpeg => {
             // JPEG 不支持 alpha：RGBA → RGB（背景已合成白底，直接丢弃 alpha）
-            let mut out_rgb: Vec<u8> = Vec::with_capacity((canvas_w as usize) * (canvas_h as usize) * 3);
+            let mut out_rgb: Vec<u8> =
+                Vec::with_capacity((canvas_w as usize) * (canvas_h as usize) * 3);
             for px in out_rgba.chunks_exact(4) {
                 out_rgb.push(px[0]);
                 out_rgb.push(px[1]);
@@ -3300,7 +3772,13 @@ fn sample_item_pixel(
     let base = item.base_size();
 
     match &item.kind {
-        ItemKind::Pixmap { texture_id, opacity, grayscale, crop, .. } => {
+        ItemKind::Pixmap {
+            texture_id,
+            opacity,
+            grayscale,
+            crop,
+            ..
+        } => {
             let (rgba, w, h) = pixmap_map.get(texture_id)?;
             let w = *w as f32;
             let h = *h as f32;
@@ -3373,16 +3851,10 @@ fn config_path() -> Option<PathBuf> {
 }
 
 /// 用户配置（当前仅含语言；后续可扩展窗口形态、透明度等）。
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
 struct UserConfig {
     #[serde(default)]
     lang: Lang,
-}
-
-impl Default for UserConfig {
-    fn default() -> Self {
-        Self { lang: Lang::default() }
-    }
 }
 
 /// 从 `~/.preferz/config.json` 加载配置。文件不存在或解析失败时返回默认值。
@@ -3443,7 +3915,9 @@ fn load_recent_files() -> Vec<PathBuf> {
         files: Vec<RecentFile>,
     }
     match serde_json::from_str::<RecentFiles>(&content) {
-        Ok(parsed) => parsed.files.into_iter()
+        Ok(parsed) => parsed
+            .files
+            .into_iter()
             .map(|f| PathBuf::from(f.path))
             .filter(|p| p.exists())
             .collect(),
@@ -3472,8 +3946,11 @@ fn save_recent_files(files: &[PathBuf]) {
         files: Vec<RecentFile>,
     }
     let recent = RecentFiles {
-        files: files.iter()
-            .map(|p| RecentFile { path: p.to_string_lossy().into_owned() })
+        files: files
+            .iter()
+            .map(|p| RecentFile {
+                path: p.to_string_lossy().into_owned(),
+            })
             .collect(),
     };
     if let Ok(json) = serde_json::to_string_pretty(&recent) {

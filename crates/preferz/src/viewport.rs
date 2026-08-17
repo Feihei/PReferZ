@@ -29,10 +29,7 @@ impl Default for ViewportState {
             zoom: 1.0,
             min_zoom: 0.01,
             max_zoom: 100.0,
-            screen_rect: egui::Rect::from_min_size(
-                egui::Pos2::ZERO,
-                egui::Vec2::new(800.0, 600.0),
-            ),
+            screen_rect: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::Vec2::new(800.0, 600.0)),
         }
     }
 }

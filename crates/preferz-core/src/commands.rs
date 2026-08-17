@@ -1,4 +1,4 @@
-use crate::item::{ItemId, ItemKind, CropRect};
+use crate::item::{CropRect, ItemId, ItemKind};
 use crate::scene::Scene;
 use crate::spaces::CanvasVector;
 use crate::transform::Transform;
@@ -187,7 +187,10 @@ pub struct FlipItems {
 
 impl FlipItems {
     pub fn new(item_ids: Vec<ItemId>, horizontal: bool) -> Self {
-        Self { item_ids, horizontal }
+        Self {
+            item_ids,
+            horizontal,
+        }
     }
 }
 
@@ -247,10 +250,8 @@ impl Command for DeleteItems {
     fn undo(&mut self, scene: &mut Scene) {
         let snaps = self.snapshots.borrow();
         // 用 preserve_z 恢复，保留 item 原本的 z 值
-        for snap in snaps.iter() {
-            if let Some(item) = snap {
-                scene.add_item_preserve_z(item.clone());
-            }
+        for item in snaps.iter().flatten() {
+            scene.add_item_preserve_z(item.clone());
         }
         // 保留 snapshots 以便下次 redo 复用（不必重新抓）
     }
@@ -405,14 +406,23 @@ pub struct EditTextContent {
 
 impl EditTextContent {
     pub fn new(item_id: ItemId, old_content: String, new_content: String) -> Self {
-        Self { item_id, old_content, new_content }
+        Self {
+            item_id,
+            old_content,
+            new_content,
+        }
     }
 }
 
 impl Command for EditTextContent {
     fn redo(&mut self, scene: &mut Scene) {
         if let Some(item) = scene.get_item_mut(&self.item_id) {
-            if let ItemKind::Text { content, measured_size, .. } = &mut item.kind {
+            if let ItemKind::Text {
+                content,
+                measured_size,
+                ..
+            } = &mut item.kind
+            {
                 *content = self.new_content.clone();
                 *measured_size = None; // 强制重新测量
             }
@@ -421,7 +431,12 @@ impl Command for EditTextContent {
 
     fn undo(&mut self, scene: &mut Scene) {
         if let Some(item) = scene.get_item_mut(&self.item_id) {
-            if let ItemKind::Text { content, measured_size, .. } = &mut item.kind {
+            if let ItemKind::Text {
+                content,
+                measured_size,
+                ..
+            } = &mut item.kind
+            {
                 *content = self.old_content.clone();
                 *measured_size = None;
             }
@@ -479,20 +494,44 @@ impl SetPixmapProps {
 impl Command for SetPixmapProps {
     fn redo(&mut self, scene: &mut Scene) {
         if let Some(item) = scene.get_item_mut(&self.item_id) {
-            if let ItemKind::Pixmap { opacity, grayscale, crop, .. } = &mut item.kind {
-                if let Some(v) = self.new_opacity { *opacity = v; }
-                if let Some(v) = self.new_grayscale { *grayscale = v; }
-                if let Some(v) = &self.new_crop { *crop = *v; }
+            if let ItemKind::Pixmap {
+                opacity,
+                grayscale,
+                crop,
+                ..
+            } = &mut item.kind
+            {
+                if let Some(v) = self.new_opacity {
+                    *opacity = v;
+                }
+                if let Some(v) = self.new_grayscale {
+                    *grayscale = v;
+                }
+                if let Some(v) = &self.new_crop {
+                    *crop = *v;
+                }
             }
         }
     }
 
     fn undo(&mut self, scene: &mut Scene) {
         if let Some(item) = scene.get_item_mut(&self.item_id) {
-            if let ItemKind::Pixmap { opacity, grayscale, crop, .. } = &mut item.kind {
-                if let Some(v) = self.old_opacity { *opacity = v; }
-                if let Some(v) = self.old_grayscale { *grayscale = v; }
-                if let Some(v) = &self.old_crop { *crop = *v; }
+            if let ItemKind::Pixmap {
+                opacity,
+                grayscale,
+                crop,
+                ..
+            } = &mut item.kind
+            {
+                if let Some(v) = self.old_opacity {
+                    *opacity = v;
+                }
+                if let Some(v) = self.old_grayscale {
+                    *grayscale = v;
+                }
+                if let Some(v) = &self.old_crop {
+                    *crop = *v;
+                }
             }
         }
     }
