@@ -92,11 +92,18 @@ enum DragState {
         start_canvas: CanvasPoint,
         start_transforms: Vec<(ItemId, preferz_core::Transform)>,
     },
-    /// 框选（spec L240）。空白处左键拖拽成矩形，Shift 加选�?
+    /// 框选（spec L240）。空白处左键拖拽成矩形，Shift 加选。
     BoxSelect {
         start_canvas: CanvasPoint,
         current_canvas: CanvasPoint,
         additive: bool,
+    },
+    /// 用绘制工具拖拽创建 shape（两点式：start → current）。
+    CreatingShape {
+        shape_type: ShapeType,
+        start: CanvasPoint,
+        current: CanvasPoint,
+        shift: bool,
     },
 }
 
@@ -337,14 +344,11 @@ pub struct PReferZApp {
     next_texture_id: u64,
     pending_import: Vec<PathBuf>,
     transform_handles: TransformHandles,
-    /// 当前激活工具（A5 起被绘制流程读取，此前临时屏蔽 dead_code）。
-    #[allow(dead_code)]
+    /// 当前激活工具。
     tool: Tool,
-    /// 绘制形状默认描边样式（样式面板 A8 使用，此前临时屏蔽 dead_code）。
-    #[allow(dead_code)]
+    /// 绘制形状默认描边样式（样式面板 A8 可调）。
     default_stroke: StrokeStyle,
-    /// 绘制形状默认填充色（None = 透明；样式面板 A8 使用，此前临时屏蔽 dead_code）。
-    #[allow(dead_code)]
+    /// 绘制形状默认填充色（None = 透明；样式面板 A8 可调）。
     default_fill: Option<[u8; 4]>,
     drag: DragState,
     /// 文本便签编辑状态（None = 无编辑）�?
@@ -654,6 +658,37 @@ impl eframe::App for PReferZApp {
                 ui.painter().rect_stroke(rect, 0.0, stroke);
             }
 
+            // 绘制工具拖拽预览（两点式：start → current）
+            if let DragState::CreatingShape {
+                shape_type,
+                start,
+                current,
+                ..
+            } = &self.drag
+            {
+                let min_x = start.x.min(current.x);
+                let min_y = start.y.min(current.y);
+                let w = (current.x - start.x).abs();
+                let h = (current.y - start.y).abs();
+                let rect = CanvasRect::new(CanvasPoint::new(min_x, min_y), CanvasSize::new(w, h));
+                let screen_rect = self.viewport.canvas_to_screen_rect(rect);
+                let stroke = egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(100, 200, 255));
+                match shape_type {
+                    ShapeType::Rectangle | ShapeType::Diamond => {
+                        ui.painter().rect_stroke(screen_rect, 0.0, stroke);
+                    }
+                    ShapeType::Ellipse => {
+                        ui.painter().circle_stroke(
+                            screen_rect.center(),
+                            screen_rect.width() / 2.0,
+                            stroke,
+                        );
+                    }
+                    // Phase B 启用
+                    ShapeType::Line | ShapeType::Arrow => {}
+                }
+            }
+
             // 鼠标中键拖拽平移
             if response.dragged_by(egui::PointerButton::Middle) {
                 self.viewport.pan_by_screen(response.drag_delta());
@@ -897,6 +932,19 @@ impl PReferZApp {
             return;
         }
 
+        // 绘制工具激活：直接进入创建拖拽（不处理手柄/命中/框选）。
+        // additive（=Shift 按住）用于正方形锁定，随状态存入。
+        if let Tool::Shape(shape_type) = self.tool {
+            let start_canvas = self.viewport.screen_to_canvas(screen_pos);
+            self.drag = DragState::CreatingShape {
+                shape_type,
+                start: start_canvas,
+                current: start_canvas,
+                shift: additive,
+            };
+            return;
+        }
+
         // 裁剪模式：优先检测裁剪手�?
         if self.crop_mode.is_some() {
             if let Some(h) = self.crop_handle_hit_test(screen_pos) {
@@ -1062,12 +1110,18 @@ impl PReferZApp {
                     }
                 }
             }
+            DragState::CreatingShape { current, .. } => {
+                let _ = current; // 由 match 后更新（需单独 &mut self.drag）
+            }
             DragState::BoxSelect { .. } => {} // 由 match 后更新（需单独 &mut self.drag）
             DragState::Idle => {}
         }
-        // BoxSelect 更新 current_canvas（match &self.drag 不可写，故单独 &mut）
+        // BoxSelect / CreatingShape 更新 current（match &self.drag 不可写，故单独 &mut）
         if let DragState::BoxSelect { current_canvas, .. } = &mut self.drag {
             *current_canvas = self.viewport.screen_to_canvas(screen_pos);
+        }
+        if let DragState::CreatingShape { current, .. } = &mut self.drag {
+            *current = self.viewport.screen_to_canvas(screen_pos);
         }
     }
 
@@ -1153,8 +1207,54 @@ impl PReferZApp {
                     self.scene.select(id);
                 }
             }
+            DragState::CreatingShape {
+                shape_type,
+                start,
+                current,
+                shift,
+            } => {
+                self.finish_create_shape(shape_type, start, current, shift);
+            }
             DragState::Idle => {}
         }
+    }
+
+    /// 用绘制工具完成 shape 创建：计算矩形 → AddItem → 回 Select。
+    /// shift = 锁定正方形（用宽高较大者作边长）。
+    fn finish_create_shape(
+        &mut self,
+        shape_type: ShapeType,
+        start: CanvasPoint,
+        current: CanvasPoint,
+        shift: bool,
+    ) {
+        let w = (current.x - start.x).abs();
+        let h = (current.y - start.y).abs();
+        // 误触：小于 3 画布像素丢弃
+        if w < 3.0 || h < 3.0 {
+            return;
+        }
+        let min_x = start.x.min(current.x);
+        let min_y = start.y.min(current.y);
+        let (bw, bh) = if shift {
+            let side = w.max(h);
+            (side, side)
+        } else {
+            (w, h)
+        };
+        let item = Item::new_shape(
+            shape_type,
+            (bw, bh),
+            min_x,
+            min_y,
+            self.default_stroke,
+            self.default_fill,
+        );
+        let cmd = AddItem::new(item);
+        self.push_cmd(Box::new(cmd));
+        self.flash("已创建图形");
+        // 默认回 Select
+        self.tool = Tool::Select;
     }
 }
 
@@ -2058,6 +2158,7 @@ fn drag_state_name(d: &DragState) -> &'static str {
         DragState::HandleTransform { .. } => "HandleTransform",
         DragState::MoveItems { .. } => "MoveItems",
         DragState::BoxSelect { .. } => "BoxSelect",
+        DragState::CreatingShape { .. } => "CreatingShape",
     }
 }
 
