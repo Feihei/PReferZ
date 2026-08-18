@@ -111,7 +111,10 @@ enum DragState {
         end_arrow: Option<ArrowHeadStyle>,
         start: CanvasPoint,
         current: CanvasPoint,
+        /// Shift 锁正方形/45° 方向。
         shift: bool,
+        /// Ctrl 解锁椭圆（自由宽高比）；默认椭圆为正圆，与变换框行为一致。
+        ctrl: bool,
     },
     /// 拖拽线性对象顶点控制点（Polyline 的 points 下标），预览直接改 points。
     LineEndpoint {
@@ -699,6 +702,145 @@ impl eframe::App for PReferZApp {
                 }
             });
 
+        // 样式面板：绘制工具激活时显示新建默认样式（spec §5.1）；
+        // 选中线性对象时也显示，用于编辑起点/终点箭头（per-item）。
+        // 在 CentralPanel 之前渲染：让画布交互区域正确排除底部面板，
+        // 避免点击复选框时指针事件穿透到画布导致选中被清空、面板消失。
+        let selected_linear = self.selected_linear_arrows();
+        if self.tool != Tool::Select || selected_linear.is_some() {
+            egui::TopBottomPanel::bottom("style_panel").show(ctx, |ui| {
+                if self.tool != Tool::Select {
+                    ui.horizontal(|ui| {
+                        ui.label(t(self.lang, T::StyleStrokeColor));
+                        let mut col = egui::Color32::from_rgba_unmultiplied(
+                            self.default_stroke.color[0],
+                            self.default_stroke.color[1],
+                            self.default_stroke.color[2],
+                            self.default_stroke.color[3],
+                        );
+                        if ui.color_edit_button_srgba(&mut col).changed() {
+                            self.default_stroke.color = [col.r(), col.g(), col.b(), col.a()];
+                        }
+                        ui.separator();
+                        ui.label(t(self.lang, T::StyleStrokeWidth));
+                        ui.add(
+                            egui::Slider::new(&mut self.default_stroke.width, 0.5..=12.0)
+                                .logarithmic(true),
+                        );
+                        ui.separator();
+                        for (dash, label) in [
+                            (DashStyle::Solid, T::StyleDashSolid),
+                            (DashStyle::Dashed, T::StyleDashDashed),
+                            (DashStyle::Dotted, T::StyleDashDotted),
+                        ] {
+                            let active = self.default_stroke.dash == dash;
+                            if ui.selectable_label(active, t(self.lang, label)).clicked() {
+                                self.default_stroke.dash = dash;
+                            }
+                        }
+                        ui.separator();
+                        let mut fill_checked = self.default_fill.is_some();
+                        if ui
+                            .checkbox(&mut fill_checked, t(self.lang, T::StyleFillNone))
+                            .changed()
+                        {
+                            self.default_fill = if fill_checked {
+                                Some([100, 180, 255, 60])
+                            } else {
+                                None
+                            };
+                        }
+                    });
+                }
+                // 编辑选中线性对象：闭合开关 + 起/终点箭头开关（undo 走 SetClosed / SetArrowHeads）
+                if let Some((item_id, start_arrow, end_arrow, closed)) = selected_linear {
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        ui.label(t(self.lang, T::StyleClosed));
+                        let mut checked = closed;
+                        if ui.checkbox(&mut checked, "").changed() && checked != closed {
+                            let cmd = SetClosed::new(item_id, closed, checked);
+                            self.push_cmd(Box::new(cmd));
+                        }
+                    });
+                    // 开放折线才有起/终点箭头；闭合图形首尾相连，箭头无意义
+                    if !closed {
+                        ui.separator();
+                        ui.horizontal(|ui| {
+                            ui.label(t(self.lang, T::StyleArrowStart));
+                            let mut checked = start_arrow.is_some();
+                            if ui.checkbox(&mut checked, "").changed() {
+                                let new = if checked {
+                                    Some(ArrowHeadStyle::Arrow)
+                                } else {
+                                    None
+                                };
+                                let cmd = SetArrowHeads::new(
+                                    item_id,
+                                    start_arrow,
+                                    end_arrow,
+                                    new,
+                                    end_arrow,
+                                );
+                                self.push_cmd(Box::new(cmd));
+                            }
+                            ui.separator();
+                            ui.label(t(self.lang, T::StyleArrowEnd));
+                            let mut checked = end_arrow.is_some();
+                            if ui.checkbox(&mut checked, "").changed() {
+                                let new = if checked {
+                                    Some(ArrowHeadStyle::Arrow)
+                                } else {
+                                    None
+                                };
+                                let cmd = SetArrowHeads::new(
+                                    item_id,
+                                    start_arrow,
+                                    end_arrow,
+                                    start_arrow,
+                                    new,
+                                );
+                                self.push_cmd(Box::new(cmd));
+                            }
+                        });
+                    }
+                }
+            });
+        }
+
+        // 状态栏（持续状态 + flash 消息）
+        egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
+            let file_name = self
+                .current_file
+                .as_ref()
+                .and_then(|p| p.file_name())
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "未保存".to_string());
+            let persistent = format!(
+                "{} | 缩放: {:.2}x | 平移: ({:.0}, {:.0}) | items: {} | 选中: {}",
+                file_name,
+                self.viewport.zoom,
+                self.viewport.pan.x,
+                self.viewport.pan.y,
+                self.scene.items.len(),
+                self.scene.selection.len(),
+            );
+            if let Some((msg, _)) = &self.flash_status {
+                ui.horizontal(|ui| {
+                    ui.label(&persistent);
+                    ui.separator();
+                    ui.colored_label(egui::Color32::LIGHT_GREEN, msg);
+                });
+            } else {
+                ui.label(&persistent);
+            }
+        });
+
+        // Debug 面板（仅 debug 构建显示，release 自动隐藏）
+        if cfg!(debug_assertions) {
+            self.render_debug_panel(ctx);
+        }
+
         // 中央画布
         egui::CentralPanel::default().show(ctx, |ui| {
             let rect = ui.max_rect();
@@ -743,6 +885,7 @@ impl eframe::App for PReferZApp {
                 end_arrow,
                 start,
                 current,
+                ctrl,
                 ..
             } = &self.drag
             {
@@ -780,10 +923,17 @@ impl eframe::App for PReferZApp {
                     }
                     ShapeType::Ellipse => {
                         // 绘制精确椭圆：多边形近似（64段，与 CleanStyler 渲染一致）
-                        let cx_canvas = min_x + w / 2.0;
-                        let cy_canvas = min_y + h / 2.0;
-                        let rx_canvas = w / 2.0;
-                        let ry_canvas = h / 2.0;
+                        // 默认正圆（未按 Ctrl）；Ctrl 按下为自由椭圆，与变换框行为一致
+                        let (rw, rh) = if !ctrl {
+                            let side = w.max(h);
+                            (side, side)
+                        } else {
+                            (w, h)
+                        };
+                        let cx_canvas = min_x + rw / 2.0;
+                        let cy_canvas = min_y + rh / 2.0;
+                        let rx_canvas = rw / 2.0;
+                        let ry_canvas = rh / 2.0;
                         let segments = 64usize;
                         let mut pts: Vec<egui::Pos2> = (0..segments)
                             .map(|i| {
@@ -811,8 +961,8 @@ impl eframe::App for PReferZApp {
                                 let (s, c) = half.sin_cos();
                                 let a1 = egui::vec2(dir.x * c - dir.y * s, dir.x * s + dir.y * c);
                                 let a2 = egui::vec2(dir.x * c + dir.y * s, -dir.x * s + dir.y * c);
-                                ui.painter().line_segment([s1, s1 + a1 * head_len], stroke);
-                                ui.painter().line_segment([s1, s1 + a2 * head_len], stroke);
+                                ui.painter().line_segment([s1, s1 - a1 * head_len], stroke);
+                                ui.painter().line_segment([s1, s1 - a2 * head_len], stroke);
                             }
                         }
                     }
@@ -954,7 +1104,8 @@ impl eframe::App for PReferZApp {
             if primary_pressed && !self.context_menu_open && pointer_on_canvas {
                 if let Some(pos) = pointer_pos {
                     let additive = ctx.input(|i| i.modifiers.shift);
-                    self.begin_drag(pos, additive);
+                    let free_scale = ctx.input(|i| i.modifiers.ctrl);
+                    self.begin_drag(pos, additive, free_scale);
                 }
             }
 
@@ -1018,157 +1169,20 @@ impl eframe::App for PReferZApp {
                     });
                 });
         }
-
-        // 样式面板：绘制工具激活时显示新建默认样式（spec §5.1）；
-        // 选中线性对象时也显示，用于编辑起点/终点箭头（per-item）。
-        let selected_linear = self.selected_linear_arrows();
-        if self.tool != Tool::Select || selected_linear.is_some() {
-            egui::TopBottomPanel::bottom("style_panel").show(ctx, |ui| {
-                if self.tool != Tool::Select {
-                    ui.horizontal(|ui| {
-                        ui.label(t(self.lang, T::StyleStrokeColor));
-                        let mut col = egui::Color32::from_rgba_unmultiplied(
-                            self.default_stroke.color[0],
-                            self.default_stroke.color[1],
-                            self.default_stroke.color[2],
-                            self.default_stroke.color[3],
-                        );
-                        if ui.color_edit_button_srgba(&mut col).changed() {
-                            self.default_stroke.color = [col.r(), col.g(), col.b(), col.a()];
-                        }
-                        ui.separator();
-                        ui.label(t(self.lang, T::StyleStrokeWidth));
-                        ui.add(
-                            egui::Slider::new(&mut self.default_stroke.width, 0.5..=12.0)
-                                .logarithmic(true),
-                        );
-                        ui.separator();
-                        for (dash, label) in [
-                            (DashStyle::Solid, T::StyleDashSolid),
-                            (DashStyle::Dashed, T::StyleDashDashed),
-                            (DashStyle::Dotted, T::StyleDashDotted),
-                        ] {
-                            let active = self.default_stroke.dash == dash;
-                            if ui.selectable_label(active, t(self.lang, label)).clicked() {
-                                self.default_stroke.dash = dash;
-                            }
-                        }
-                        ui.separator();
-                        let mut fill_checked = self.default_fill.is_some();
-                        if ui
-                            .checkbox(&mut fill_checked, t(self.lang, T::StyleFillNone))
-                            .changed()
-                        {
-                            self.default_fill = if fill_checked {
-                                Some([100, 180, 255, 60])
-                            } else {
-                                None
-                            };
-                        }
-                    });
-                }
-                // 编辑选中线性对象：闭合开关 + 起/终点箭头开关（undo 走 SetClosed / SetArrowHeads）
-                if let Some((item_id, start_arrow, end_arrow, closed)) = selected_linear {
-                    ui.separator();
-                    ui.horizontal(|ui| {
-                        ui.label(t(self.lang, T::StyleClosed));
-                        let mut checked = closed;
-                        if ui.checkbox(&mut checked, "").changed() && checked != closed {
-                            let cmd = SetClosed::new(item_id, closed, checked);
-                            self.push_cmd(Box::new(cmd));
-                        }
-                    });
-                    // 开放折线才有起/终点箭头；闭合图形首尾相连，箭头无意义
-                    if !closed {
-                        ui.separator();
-                        ui.horizontal(|ui| {
-                            ui.label(t(self.lang, T::StyleArrowStart));
-                            let mut checked = start_arrow.is_some();
-                            if ui.checkbox(&mut checked, "").changed() {
-                                let new = if checked {
-                                    Some(ArrowHeadStyle::Arrow)
-                                } else {
-                                    None
-                                };
-                                let cmd = SetArrowHeads::new(
-                                    item_id,
-                                    start_arrow,
-                                    end_arrow,
-                                    new,
-                                    end_arrow,
-                                );
-                                self.push_cmd(Box::new(cmd));
-                            }
-                            ui.separator();
-                            ui.label(t(self.lang, T::StyleArrowEnd));
-                            let mut checked = end_arrow.is_some();
-                            if ui.checkbox(&mut checked, "").changed() {
-                                let new = if checked {
-                                    Some(ArrowHeadStyle::Arrow)
-                                } else {
-                                    None
-                                };
-                                let cmd = SetArrowHeads::new(
-                                    item_id,
-                                    start_arrow,
-                                    end_arrow,
-                                    start_arrow,
-                                    new,
-                                );
-                                self.push_cmd(Box::new(cmd));
-                            }
-                        });
-                    }
-                }
-            });
-        }
-
-        // 状态栏（持续状�?+ flash 消息�?
-        egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
-            let file_name = self
-                .current_file
-                .as_ref()
-                .and_then(|p| p.file_name())
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| "未保存".to_string());
-            let persistent = format!(
-                "{} | 缩放: {:.2}x | 平移: ({:.0}, {:.0}) | items: {} | 选中: {}",
-                file_name,
-                self.viewport.zoom,
-                self.viewport.pan.x,
-                self.viewport.pan.y,
-                self.scene.items.len(),
-                self.scene.selection.len(),
-            );
-            if let Some((msg, _)) = &self.flash_status {
-                ui.horizontal(|ui| {
-                    ui.label(&persistent);
-                    ui.separator();
-                    ui.colored_label(egui::Color32::LIGHT_GREEN, msg);
-                });
-            } else {
-                ui.label(&persistent);
-            }
-        });
-
-        // Debug 面板（仅 debug 构建显示，release 自动隐藏）
-        if cfg!(debug_assertions) {
-            self.render_debug_panel(ctx);
-        }
     }
 }
 
 // ─────────────────────────── 拖拽逻辑 ───────────────────────────
 
 impl PReferZApp {
-    fn begin_drag(&mut self, screen_pos: egui::Pos2, additive: bool) {
+    fn begin_drag(&mut self, screen_pos: egui::Pos2, additive: bool, free_scale: bool) {
         // 文本编辑中不启动拖拽
         if self.editing_text.is_some() {
             return;
         }
 
         // 绘制工具激活：直接进入创建拖拽（不处理手柄/命中/框选）。
-        // additive（=Shift 按住）用于正方形锁定，随状态存入。
+        // additive（=Shift 按住）用于正方形锁定，free_scale（=Ctrl 按住）用于椭圆解锁。
         match self.tool {
             Tool::Shape(shape_type) => {
                 let start_canvas = self.viewport.screen_to_canvas(screen_pos);
@@ -1178,6 +1192,7 @@ impl PReferZApp {
                     start: start_canvas,
                     current: start_canvas,
                     shift: additive,
+                    ctrl: free_scale,
                 };
                 return;
             }
@@ -1189,6 +1204,7 @@ impl PReferZApp {
                     start: start_canvas,
                     current: start_canvas,
                     shift: additive,
+                    ctrl: free_scale,
                 };
                 return;
             }
@@ -1419,8 +1435,10 @@ impl PReferZApp {
         if let DragState::BoxSelect { current_canvas, .. } = &mut self.drag {
             *current_canvas = self.viewport.screen_to_canvas(screen_pos);
         }
-        if let DragState::CreatingShape { current, .. } = &mut self.drag {
+        if let DragState::CreatingShape { current, ctrl, .. } = &mut self.drag {
             *current = self.viewport.screen_to_canvas(screen_pos);
+            // 拖动中实时更新 Ctrl 状态（椭圆正圆/自由宽高比切换）
+            *ctrl = free_scale;
         }
     }
 
@@ -1512,8 +1530,9 @@ impl PReferZApp {
                 start,
                 current,
                 shift,
+                ctrl,
             } => {
-                self.finish_create_shape(shape_type, end_arrow, start, current, shift);
+                self.finish_create_shape(shape_type, end_arrow, start, current, shift, ctrl);
             }
             DragState::LineEndpoint {
                 item_id,
@@ -1541,6 +1560,7 @@ impl PReferZApp {
 
     /// 用绘制工具完成 shape 创建：计算矩形 → AddItem → 回 Select。
     /// shift = 锁定正方形（用宽高较大者作边长）；线性对象 = 锁定 45° 方向。
+    /// ctrl = 椭圆解锁自由宽高比（默认椭圆为正圆，与变换框行为一致）。
     fn finish_create_shape(
         &mut self,
         shape_type: ShapeType,
@@ -1548,6 +1568,7 @@ impl PReferZApp {
         start: CanvasPoint,
         current: CanvasPoint,
         shift: bool,
+        ctrl: bool,
     ) {
         // 线性对象：两点式（start → current），Shift 锁 45°，最小长度 3 画布像素。
         if shape_type == ShapeType::Polyline {
@@ -1604,7 +1625,15 @@ impl PReferZApp {
         }
         let min_x = start.x.min(current.x);
         let min_y = start.y.min(current.y);
-        let (bw, bh) = if shift {
+        let (bw, bh) = if shape_type == ShapeType::Ellipse {
+            // 椭圆默认正圆；Ctrl 按下画自由椭圆（与变换框行为一致）
+            if ctrl {
+                (w, h)
+            } else {
+                let side = w.max(h);
+                (side, side)
+            }
+        } else if shift {
             let side = w.max(h);
             (side, side)
         } else {

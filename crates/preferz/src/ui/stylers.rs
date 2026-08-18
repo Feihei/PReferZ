@@ -104,7 +104,7 @@ impl CleanStyler {
             return out;
         }
 
-        // 起点箭头：沿首段方向反向后退（倒 V 指向起点）。
+        // 起点箭头：尖端指向起点，两翼伸向线段体内（V 开口朝前）。
         if let Some(ArrowHeadStyle::Arrow) = start_arrow {
             let dir = pts[1] - pts[0];
             let len = dir.length();
@@ -115,17 +115,17 @@ impl CleanStyler {
                 let a1 = Self::rotate_vec2(dir, half);
                 let a2 = Self::rotate_vec2(dir, -half);
                 out.push(Shape::line(
-                    vec![pts[0], pts[0] - a1 * head_len],
+                    vec![pts[0], pts[0] + a1 * head_len],
                     egui_stroke,
                 ));
                 out.push(Shape::line(
-                    vec![pts[0], pts[0] - a2 * head_len],
+                    vec![pts[0], pts[0] + a2 * head_len],
                     egui_stroke,
                 ));
             }
         }
 
-        // 终点箭头：沿末段方向正向前进（V 指向终点）。
+        // 终点箭头：尖端指向终点，两翼伸向线段体内（V 开口朝后，箭头朝前）。
         if let Some(ArrowHeadStyle::Arrow) = end_arrow {
             let last = pts[pts.len() - 1];
             let dir = last - pts[pts.len() - 2];
@@ -136,8 +136,8 @@ impl CleanStyler {
                 let half = std::f32::consts::FRAC_PI_2 * (5.0 / 9.0); // ≈50°
                 let a1 = Self::rotate_vec2(dir, half);
                 let a2 = Self::rotate_vec2(dir, -half);
-                out.push(Shape::line(vec![last, last + a1 * head_len], egui_stroke));
-                out.push(Shape::line(vec![last, last + a2 * head_len], egui_stroke));
+                out.push(Shape::line(vec![last, last - a1 * head_len], egui_stroke));
+                out.push(Shape::line(vec![last, last - a2 * head_len], egui_stroke));
             }
         }
         out
