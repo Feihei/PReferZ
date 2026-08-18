@@ -470,6 +470,7 @@ mod tests {
             (80.0, 40.0),
             None,
             Some(ArrowHeadStyle::Arrow),
+            false,
             30.0,
             40.0,
             StrokeStyle::default(),
@@ -498,6 +499,7 @@ mod tests {
                 points,
                 start_arrow,
                 end_arrow,
+                closed,
                 ..
             } => {
                 assert_eq!(*shape_type, ShapeType::Polyline);
@@ -505,6 +507,7 @@ mod tests {
                 assert_eq!(points, &vec![(0.0, 0.0), (80.0, 40.0)]);
                 assert_eq!(*start_arrow, None);
                 assert_eq!(*end_arrow, Some(ArrowHeadStyle::Arrow));
+                assert!(!*closed);
             }
             _ => panic!("expected Shape kind"),
         }

@@ -162,6 +162,44 @@ impl Command for SetArrowHeads {
     }
 }
 
+// ─────────────────────────── Set closed ───────────────────────────
+
+/// 切换线性对象（Polyline）闭合状态命令（闭合时首尾相连、可填充）。
+/// 样式面板开关触发：UI 未直接改 item，push 时正常 redo 应用（skip_first_redo = false）。
+pub struct SetClosed {
+    item_id: ItemId,
+    old_closed: bool,
+    new_closed: bool,
+}
+
+impl SetClosed {
+    pub fn new(item_id: ItemId, old_closed: bool, new_closed: bool) -> Self {
+        Self {
+            item_id,
+            old_closed,
+            new_closed,
+        }
+    }
+}
+
+impl Command for SetClosed {
+    fn redo(&mut self, scene: &mut Scene) {
+        if let Some(item) = scene.get_item_mut(&self.item_id) {
+            if let ItemKind::Shape { closed, .. } = &mut item.kind {
+                *closed = self.new_closed;
+            }
+        }
+    }
+
+    fn undo(&mut self, scene: &mut Scene) {
+        if let Some(item) = scene.get_item_mut(&self.item_id) {
+            if let ItemKind::Shape { closed, .. } = &mut item.kind {
+                *closed = self.old_closed;
+            }
+        }
+    }
+}
+
 // ─────────────────────────── Move ───────────────────────────
 
 /// 平移多个 item（拖拽移动的命令）。

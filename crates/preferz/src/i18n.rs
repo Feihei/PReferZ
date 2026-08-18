@@ -134,6 +134,7 @@ pub enum T {
     StyleDashDashed,
     StyleDashDotted,
     StyleFillNone,
+    StyleClosed,
     // ── 箭头样式 ──
     StyleArrowStart,
     StyleArrowEnd,
@@ -257,6 +258,7 @@ fn translate_en(key: T) -> &'static str {
         T::StyleDashDashed => "Dashed",
         T::StyleDashDotted => "Dotted",
         T::StyleFillNone => "No fill",
+        T::StyleClosed => "Closed",
         T::StyleArrowStart => "Start arrow",
         T::StyleArrowEnd => "End arrow",
     }
@@ -372,6 +374,7 @@ fn translate_zh(key: T) -> &'static str {
         T::StyleDashDashed => "虚线",
         T::StyleDashDotted => "点线",
         T::StyleFillNone => "无填充",
+        T::StyleClosed => "闭合",
         T::StyleArrowStart => "起点箭头",
         T::StyleArrowEnd => "终点箭头",
     }

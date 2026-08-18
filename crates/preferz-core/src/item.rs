@@ -50,6 +50,8 @@ pub enum ItemKind {
         start_arrow: Option<ArrowHeadStyle>,
         /// 终点箭头样式（仅 Polyline 使用；矩形族忽略）。
         end_arrow: Option<ArrowHeadStyle>,
+        /// 是否闭合（仅 Polyline 使用；矩形族忽略）。闭合时首尾相连，可填充。
+        closed: bool,
         /// 手绘风确定性噪声预留（Phase F 用），A 期固定 0。
         seed: u64,
     },
@@ -205,6 +207,7 @@ impl Item {
                 fill,
                 start_arrow: None,
                 end_arrow: None,
+                closed: false,
                 seed: 0,
             },
             transform: Transform::new(pos_x, pos_y, 1.0, 1.0),
@@ -213,12 +216,16 @@ impl Item {
     }
 
     /// 线性对象（Polyline）构造器：points 为局部坐标（已对齐左上角 AABB），
-    /// base_size 即 AABB 宽高；起点/终点箭头独立可配；线类无填充。
+    /// base_size 即 AABB 宽高；起点/终点箭头独立可配；closed 表示首尾相连闭合
+    /// （闭合图形可填充，箭头无意义）；线类默认无填充。
+    /// 参数均为独立数据位（无重叠可合并），故显式列出而非引入 builder 结构体。
+    #[allow(clippy::too_many_arguments)]
     pub fn new_polyline(
         points: Vec<(f32, f32)>,
         base_size: (f32, f32),
         start_arrow: Option<ArrowHeadStyle>,
         end_arrow: Option<ArrowHeadStyle>,
+        closed: bool,
         pos_x: f32,
         pos_y: f32,
         stroke: StrokeStyle,
@@ -233,6 +240,7 @@ impl Item {
                 fill: None,
                 start_arrow,
                 end_arrow,
+                closed,
                 seed: 0,
             },
             transform: Transform::new(pos_x, pos_y, 1.0, 1.0),
@@ -352,16 +360,27 @@ impl Item {
             shape_type,
             points,
             stroke,
+            closed,
             ..
         } = &self.kind
         {
             if matches!(shape_type, ShapeType::Polyline) {
                 // 线类：点到任一线段距离 ≤ max(线宽, 6.0) 视为命中
-                // （局部单位；旋转/缩放由逆变换处理）
+                // （局部单位；旋转/缩放由逆变换处理）。闭合时补首尾闭合线段。
                 let threshold = stroke.width.max(6.0);
-                return points
-                    .windows(2)
-                    .any(|seg| dist_point_segment(local, seg[0], seg[1]) <= threshold);
+                if points.len() >= 2 {
+                    let open_hit = points
+                        .windows(2)
+                        .any(|seg| dist_point_segment(local, seg[0], seg[1]) <= threshold);
+                    if open_hit {
+                        return true;
+                    }
+                    if *closed {
+                        return dist_point_segment(local, points[points.len() - 1], points[0])
+                            <= threshold;
+                    }
+                }
+                return false;
             }
         }
         let size = self.base_size();
@@ -451,6 +470,7 @@ mod tests {
             (max_x - min_x, max_y - min_y),
             None,
             Some(ArrowHeadStyle::Arrow),
+            false,
             pos_x,
             pos_y,
             StrokeStyle::default(),
@@ -465,6 +485,7 @@ mod tests {
             (80.0, 0.0),
             None,
             None,
+            false,
             0.0,
             0.0,
             StrokeStyle::default(),
@@ -474,11 +495,13 @@ mod tests {
                 shape_type,
                 start_arrow,
                 end_arrow,
+                closed,
                 ..
             } => {
                 assert_eq!(*shape_type, ShapeType::Polyline);
                 assert_eq!(*start_arrow, None);
                 assert_eq!(*end_arrow, None);
+                assert!(!*closed);
             }
             _ => panic!("expected Shape kind"),
         }
@@ -488,6 +511,7 @@ mod tests {
             (80.0, 0.0),
             Some(ArrowHeadStyle::Arrow),
             Some(ArrowHeadStyle::Arrow),
+            false,
             0.0,
             0.0,
             StrokeStyle::default(),
@@ -496,11 +520,28 @@ mod tests {
             ItemKind::Shape {
                 start_arrow,
                 end_arrow,
+                closed,
                 ..
             } => {
                 assert_eq!(*start_arrow, Some(ArrowHeadStyle::Arrow));
                 assert_eq!(*end_arrow, Some(ArrowHeadStyle::Arrow));
+                assert!(!*closed);
             }
+            _ => panic!("expected Shape kind"),
+        }
+        // 闭合构造
+        let closed = Item::new_polyline(
+            vec![(0.0, 0.0), (80.0, 0.0)],
+            (80.0, 0.0),
+            None,
+            None,
+            true,
+            0.0,
+            0.0,
+            StrokeStyle::default(),
+        );
+        match &closed.kind {
+            ItemKind::Shape { closed, .. } => assert!(*closed),
             _ => panic!("expected Shape kind"),
         }
     }
@@ -557,6 +598,7 @@ mod tests {
                 stroke,
                 start_arrow,
                 end_arrow,
+                closed,
                 ..
             } => {
                 assert_eq!(*shape_type, ShapeType::Polyline);
@@ -565,8 +607,31 @@ mod tests {
                 assert_eq!(stroke.color, StrokeStyle::default().color);
                 assert_eq!(*start_arrow, None);
                 assert_eq!(*end_arrow, Some(ArrowHeadStyle::Arrow));
+                assert!(!*closed);
             }
             _ => panic!("expected Shape kind"),
         }
+    }
+
+    #[test]
+    fn closed_polyline_hits_closing_segment() {
+        // 三角形：闭合边为 (50,50)→(0,0)。(25,25) 位于该闭合边上。
+        let mut item = Item::new_polyline(
+            vec![(0.0, 0.0), (100.0, 0.0), (50.0, 50.0)],
+            (100.0, 50.0),
+            None,
+            None,
+            true,
+            0.0,
+            0.0,
+            StrokeStyle::default(),
+        );
+        // 闭合时：命中闭合边
+        assert!(item.contains_canvas_point(CanvasPoint::new(25.0, 25.0)));
+        // 打开时：该点远离两条开放边（≥35/25 > 阈值 6）→ 未命中
+        if let ItemKind::Shape { closed, .. } = &mut item.kind {
+            *closed = false;
+        }
+        assert!(!item.contains_canvas_point(CanvasPoint::new(25.0, 25.0)));
     }
 }

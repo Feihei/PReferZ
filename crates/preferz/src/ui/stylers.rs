@@ -12,6 +12,8 @@ pub struct ShapeData {
     pub start_arrow: Option<ArrowHeadStyle>,
     /// 终点箭头样式（仅 Polyline 使用）。
     pub end_arrow: Option<ArrowHeadStyle>,
+    /// 是否闭合（仅 Polyline 使用）。闭合时首尾相连，可填充，不显示箭头。
+    pub closed: bool,
 }
 
 /// 将 shape 局部几何转换为屏幕空间的 egui::Shape 列表。
@@ -45,11 +47,13 @@ impl CleanStyler {
         egui::vec2(v.x * c - v.y * s, v.x * s + v.y * c)
     }
 
-    /// 线性对象渲染：折线（支持虚线）与起/终点箭头。
-    /// 线宽按 zoom 缩放；箭头头长 = 线宽 × 4，张角 ≈ ±50°。
+    /// 线性对象渲染：折线（支持虚线）、起/终点箭头，闭合时可填充。
+    /// 线宽按 zoom 缩放；箭头头长 = 线宽 × 4，张角 ≈ ±50°。闭合时首尾相连、
+    /// 可填充，且不绘制箭头。
     fn build_line_shapes(
         shape: &ShapeData,
         stroke: &StrokeStyle,
+        fill: Option<Color32>,
         start_arrow: Option<ArrowHeadStyle>,
         end_arrow: Option<ArrowHeadStyle>,
         to_screen: &euclid::Transform2D<f32, preferz_core::item::ItemLocalSpace, ScreenSpace>,
@@ -59,8 +63,8 @@ impl CleanStyler {
         let line_width = stroke.width * zoom;
         let egui_stroke = egui::Stroke::new(line_width, stroke_color);
 
-        // 折线：所有顶点依次连接（N-1 段）
-        let pts: Vec<Pos2> = shape
+        // 折线：所有顶点依次连接（N-1 段）；闭合时末尾补首个顶点首尾相连。
+        let mut pts: Vec<Pos2> = shape
             .points
             .iter()
             .map(|(x, y)| Self::to_pos2(to_screen.transform_point(euclid::Point2D::new(*x, *y))))
@@ -70,6 +74,18 @@ impl CleanStyler {
         }
 
         let mut out = Vec::new();
+        // 闭合且有点填充：先画凸多边形填充，再补闭合描边。
+        if shape.closed {
+            if let Some(f) = fill {
+                out.push(Shape::convex_polygon(
+                    pts.clone(),
+                    f,
+                    egui::epaint::PathStroke::NONE,
+                ));
+            }
+            pts.push(pts[0]); // 闭合路径
+        }
+
         match stroke.dash {
             DashStyle::Solid => {
                 out.push(Shape::line(pts.clone(), egui_stroke));
@@ -81,6 +97,11 @@ impl CleanStyler {
                 };
                 out.extend(Shape::dashed_line(&pts, egui_stroke, dash_len, gap_len));
             }
+        }
+
+        // 闭合图形不画箭头（首尾相连）
+        if shape.closed {
+            return out;
         }
 
         // 起点箭头：沿首段方向反向后退（倒 V 指向起点）。
@@ -169,11 +190,12 @@ impl ShapeStyler for CleanStyler {
                     })
                     .collect()
             }
-            // 线性对象：折线 + 起/终点箭头
+            // 线性对象：折线（含闭合）+ 起/终点箭头
             ShapeType::Polyline => {
                 return Self::build_line_shapes(
                     shape,
                     stroke,
+                    fill,
                     shape.start_arrow,
                     shape.end_arrow,
                     to_screen,

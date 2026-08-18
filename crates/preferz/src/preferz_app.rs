@@ -10,7 +10,8 @@ use image::GenericImageView;
 use preferz_core::arrange::{plan_arrange, ArrangeMode};
 use preferz_core::commands::{
     AddItem, ArrangeItems, CropItems, DeleteItems, EditShapePoints, EditTextContent, FlipItems,
-    MoveItems, NormalizeItems, ReorderItems, SetArrowHeads, SetPixmapProps, TransformItem,
+    MoveItems, NormalizeItems, ReorderItems, SetArrowHeads, SetClosed, SetPixmapProps,
+    TransformItem,
 };
 use preferz_core::shape::{ArrowHeadStyle, DashStyle, ShapeType, StrokeStyle};
 use preferz_core::spaces::{CanvasPoint, CanvasRect, CanvasSize, CanvasVector};
@@ -112,10 +113,10 @@ enum DragState {
         current: CanvasPoint,
         shift: bool,
     },
-    /// 拖拽线类端点控制点（起点/终点），预览直接改 points。
+    /// 拖拽线性对象顶点控制点（Polyline 的 points 下标），预览直接改 points。
     LineEndpoint {
         item_id: ItemId,
-        /// 0 = 起点，1 = 终点
+        /// points 下标（任意顶点，开放折线/闭合多边形共用）。
         endpoint: usize,
         start_canvas: CanvasPoint,
         start_points: Vec<(f32, f32)>,
@@ -567,21 +568,22 @@ impl PReferZApp {
         items
     }
 
-    /// 选中线性对象（Polyline）的箭头状态：(item_id, start_arrow, end_arrow)。
+    /// 选中线性对象（Polyline）的箭头与闭合状态：(item_id, start_arrow, end_arrow, closed)。
     /// 从选中项中找第一个线性对象；无则返回 None。
     fn selected_linear_arrows(
         &self,
-    ) -> Option<(ItemId, Option<ArrowHeadStyle>, Option<ArrowHeadStyle>)> {
+    ) -> Option<(ItemId, Option<ArrowHeadStyle>, Option<ArrowHeadStyle>, bool)> {
         for id in self.scene.selection.iter() {
             if let Some(item) = self.scene.get_item(id) {
                 if let ItemKind::Shape {
                     shape_type: ShapeType::Polyline,
                     start_arrow,
                     end_arrow,
+                    closed,
                     ..
                 } = &item.kind
                 {
-                    return Some((item.id, *start_arrow, *end_arrow));
+                    return Some((item.id, *start_arrow, *end_arrow, *closed));
                 }
             }
         }
@@ -596,6 +598,10 @@ impl Default for PReferZApp {
 }
 
 const FLASH_DURATION_MS: u128 = 2500;
+
+/// 线性对象自动闭合的模糊距离（画布像素）：终点回到起点该距离内即判定为闭合图形。
+/// 与 Excalidraw 的吸附闭合一致；多段线阶段起作用，两点式下仅覆盖短拖拽。
+const POLYLINE_CLOSE_DISTANCE: f32 = 8.0;
 
 impl eframe::App for PReferZApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
@@ -906,7 +912,7 @@ impl eframe::App for PReferZApp {
                             egui::CursorIcon::ResizeNorthWest
                         }
                         Handle::Rotate => egui::CursorIcon::Grab,
-                        Handle::LineEndpoint0 | Handle::LineEndpoint1 => egui::CursorIcon::Grab,
+                        Handle::Endpoint(_) => egui::CursorIcon::Grab,
                         Handle::FlipH => egui::CursorIcon::ResizeHorizontal,
                         Handle::FlipV => egui::CursorIcon::ResizeVertical,
                         Handle::None => {
@@ -1061,41 +1067,58 @@ impl eframe::App for PReferZApp {
                         }
                     });
                 }
-                // 编辑选中线性对象：起点/终点箭头开关（undo 走 SetArrowHeads）
-                if let Some((item_id, start_arrow, end_arrow)) = selected_linear {
+                // 编辑选中线性对象：闭合开关 + 起/终点箭头开关（undo 走 SetClosed / SetArrowHeads）
+                if let Some((item_id, start_arrow, end_arrow, closed)) = selected_linear {
                     ui.separator();
                     ui.horizontal(|ui| {
-                        ui.label(t(self.lang, T::StyleArrowStart));
-                        let mut checked = start_arrow.is_some();
-                        if ui.checkbox(&mut checked, "").changed() {
-                            let new = if checked {
-                                Some(ArrowHeadStyle::Arrow)
-                            } else {
-                                None
-                            };
-                            let cmd =
-                                SetArrowHeads::new(item_id, start_arrow, end_arrow, new, end_arrow);
-                            self.push_cmd(Box::new(cmd));
-                        }
-                        ui.separator();
-                        ui.label(t(self.lang, T::StyleArrowEnd));
-                        let mut checked = end_arrow.is_some();
-                        if ui.checkbox(&mut checked, "").changed() {
-                            let new = if checked {
-                                Some(ArrowHeadStyle::Arrow)
-                            } else {
-                                None
-                            };
-                            let cmd = SetArrowHeads::new(
-                                item_id,
-                                start_arrow,
-                                end_arrow,
-                                start_arrow,
-                                new,
-                            );
+                        ui.label(t(self.lang, T::StyleClosed));
+                        let mut checked = closed;
+                        if ui.checkbox(&mut checked, "").changed() && checked != closed {
+                            let cmd = SetClosed::new(item_id, closed, checked);
                             self.push_cmd(Box::new(cmd));
                         }
                     });
+                    // 开放折线才有起/终点箭头；闭合图形首尾相连，箭头无意义
+                    if !closed {
+                        ui.separator();
+                        ui.horizontal(|ui| {
+                            ui.label(t(self.lang, T::StyleArrowStart));
+                            let mut checked = start_arrow.is_some();
+                            if ui.checkbox(&mut checked, "").changed() {
+                                let new = if checked {
+                                    Some(ArrowHeadStyle::Arrow)
+                                } else {
+                                    None
+                                };
+                                let cmd = SetArrowHeads::new(
+                                    item_id,
+                                    start_arrow,
+                                    end_arrow,
+                                    new,
+                                    end_arrow,
+                                );
+                                self.push_cmd(Box::new(cmd));
+                            }
+                            ui.separator();
+                            ui.label(t(self.lang, T::StyleArrowEnd));
+                            let mut checked = end_arrow.is_some();
+                            if ui.checkbox(&mut checked, "").changed() {
+                                let new = if checked {
+                                    Some(ArrowHeadStyle::Arrow)
+                                } else {
+                                    None
+                                };
+                                let cmd = SetArrowHeads::new(
+                                    item_id,
+                                    start_arrow,
+                                    end_arrow,
+                                    start_arrow,
+                                    new,
+                                );
+                                self.push_cmd(Box::new(cmd));
+                            }
+                        });
+                    }
                 }
             });
         }
@@ -1206,9 +1229,8 @@ impl PReferZApp {
                     show_rotate,
                 );
                 if h != Handle::None {
-                    // 线类端点控制点：进入端点拖拽（预览直接改 points）
-                    if h == Handle::LineEndpoint0 || h == Handle::LineEndpoint1 {
-                        let endpoint = if h == Handle::LineEndpoint0 { 0 } else { 1 };
+                    // 线性对象顶点控制点：进入端点拖拽（预览直接改 points）
+                    if let Handle::Endpoint(endpoint) = h {
                         let start_points = match &item.kind {
                             ItemKind::Shape { points, .. } => points.clone(),
                             _ => Vec::new(),
@@ -1340,8 +1362,8 @@ impl PReferZApp {
                         }
                         // 翻转手柄�?begin_drag 中已即时处理，不会进入拖拽预�?
                         Handle::FlipH | Handle::FlipV | Handle::None => {}
-                        // 线类端点�?begin_drag 中已进入 LineEndpoint 拖拽，不会到达这里
-                        Handle::LineEndpoint0 | Handle::LineEndpoint1 => {}
+                        // 线类顶点�?begin_drag 中已进入 LineEndpoint 拖拽，不会到达这里
+                        Handle::Endpoint(_) => {}
                     }
                 }
             }
@@ -1545,6 +1567,8 @@ impl PReferZApp {
             if (dx * dx + dy * dy).sqrt() < 3.0 {
                 return;
             }
+            // 自动闭合：终点回到起点模糊距离内即判定为闭合图形（Excalidraw 风格）
+            let closed = (dx * dx + dy * dy).sqrt() <= POLYLINE_CLOSE_DISTANCE;
             let min_x = start.x.min(start.x + dx);
             let min_y = start.y.min(start.y + dy);
             // 局部坐标：起点对齐 AABB 左上角
@@ -1555,6 +1579,7 @@ impl PReferZApp {
                 (dx.abs(), dy.abs()),
                 None,
                 end_arrow,
+                closed,
                 min_x,
                 min_y,
                 self.default_stroke,
@@ -1752,6 +1777,7 @@ impl PReferZApp {
                     fill,
                     start_arrow,
                     end_arrow,
+                    closed,
                     seed: _,
                 } => {
                     let data = ShapeData {
@@ -1760,6 +1786,7 @@ impl PReferZApp {
                         points: points.clone(),
                         start_arrow: *start_arrow,
                         end_arrow: *end_arrow,
+                        closed: *closed,
                     };
                     let to_screen = item_local_to_screen(item, &self.viewport);
                     let fill_color =

@@ -28,13 +28,11 @@ pub enum Handle {
     FlipH,
     /// 垂直翻转手柄（上/下边中点）。
     FlipV,
-    /// 线类端点 0（起点）控制点。
-    LineEndpoint0,
-    /// 线类端点 1（终点）控制点。
-    LineEndpoint1,
+    /// 线性对象顶点控制点（Polyline，局部坐标 points 的下标；开放折线/闭合多边形共用）。
+    Endpoint(usize),
 }
 
-/// 是否为线性对象（Polyline）：选中态用两端点控制点，而非变换边框。
+/// 是否为线性对象（Polyline）：选中态用顶点控制点，而非变换边框。
 fn is_line(item: &Item) -> bool {
     matches!(
         item.kind,
@@ -121,14 +119,14 @@ impl TransformHandles {
         )
     }
 
-    /// 线类两端点的屏幕位置（points[0] / points[1] 经局部→画布→屏幕变换）。
-    fn line_endpoint_screen_positions(item: &Item, viewport: &ViewportState) -> [egui::Pos2; 2] {
+    /// 线性对象各顶点的屏幕位置（points 经局部→画布→屏幕变换）。
+    fn line_endpoint_screen_positions(item: &Item, viewport: &ViewportState) -> Vec<egui::Pos2> {
         let to_screen = item_local_to_screen(item, viewport);
-        let mut out = [egui::Pos2::ZERO; 2];
+        let mut out = Vec::new();
         if let ItemKind::Shape { points, .. } = &item.kind {
-            for (i, (x, y)) in points.iter().take(2).enumerate() {
+            for (x, y) in points.iter() {
                 let p = to_screen.transform_point(euclid::Point2D::new(*x, *y));
-                out[i] = egui::pos2(p.x, p.y);
+                out.push(egui::pos2(p.x, p.y));
             }
         }
         out
@@ -167,14 +165,14 @@ impl TransformHandles {
         show_flip: bool,
         show_rotate: bool,
     ) -> Handle {
-        // 线类：只有两个端点控制点
+        // 线类：只有顶点控制点
         if is_line(item) {
             let eps = Self::line_endpoint_screen_positions(item, viewport);
             let handle_size = Self::handle_size() * 2.0;
-            for (i, h) in [(0, Handle::LineEndpoint0), (1, Handle::LineEndpoint1)] {
-                let r = egui::Rect::from_center_size(eps[i], egui::Vec2::splat(handle_size));
+            for (i, p) in eps.iter().enumerate() {
+                let r = egui::Rect::from_center_size(*p, egui::Vec2::splat(handle_size));
                 if r.contains(screen_pos) {
-                    return h;
+                    return Handle::Endpoint(i);
                 }
             }
             return Handle::None;
@@ -233,7 +231,7 @@ impl TransformHandles {
         show_flip: bool,
         show_rotate: bool,
     ) {
-        // 线类：仅绘制两个端点控制点（不显示变换边框）
+        // 线类：仅绘制顶点控制点（不显示变换边框）
         if is_line(item) {
             let eps = Self::line_endpoint_screen_positions(item, viewport);
             let handle_size = Self::handle_size();
