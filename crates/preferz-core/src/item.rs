@@ -37,6 +37,10 @@ pub enum ItemKind {
         /// `base_size()` 优先用此值，使变换边框与实际渲染一致（修 B6）。
         /// None 时退回到字符宽度估算。
         measured_size: Option<(f32, f32)>,
+        /// 绑定的容器形状 id（None = 自由文本）。绑定文本随容器联动（Phase C）。
+        /// `#[serde(default)]`：旧存档无此字段也能加载。
+        #[serde(default)]
+        container_id: Option<ItemId>,
     },
     Shape {
         shape_type: ShapeType,
@@ -183,9 +187,47 @@ impl Item {
                 color,
                 editing: false,
                 measured_size: None,
+                container_id: None,
             },
             transform: Transform::new(pos_x, pos_y, 1.0, 1.0),
             z: 0,
+        }
+    }
+
+    /// 绑定到容器（封闭形状）的文本构造器。`pos` 通常为容器中心（Phase C）。
+    /// 由调用方负责后续随容器联动（移动/缩放/删除连带）。
+    pub fn new_text_in(
+        content: String,
+        pos_x: f32,
+        pos_y: f32,
+        font_size: f32,
+        color: [u8; 4],
+        container_id: ItemId,
+    ) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            kind: ItemKind::Text {
+                content,
+                font_size,
+                color,
+                editing: false,
+                measured_size: None,
+                container_id: Some(container_id),
+            },
+            transform: Transform::new(pos_x, pos_y, 1.0, 1.0),
+            z: 0,
+        }
+    }
+
+    /// 该 item 是否可作为文本容器（封闭形状）。矩形/椭圆/菱形恒可；多段线仅闭合时可。
+    pub fn shape_can_host_text(&self) -> bool {
+        if let ItemKind::Shape {
+            shape_type, closed, ..
+        } = &self.kind
+        {
+            !matches!(shape_type, ShapeType::Polyline) || *closed
+        } else {
+            false
         }
     }
 
@@ -633,5 +675,87 @@ mod tests {
             *closed = false;
         }
         assert!(!item.contains_canvas_point(CanvasPoint::new(25.0, 25.0)));
+    }
+
+    #[test]
+    fn bound_text_has_container_id() {
+        let container = Item::new_shape(
+            ShapeType::Rectangle,
+            (100.0, 60.0),
+            0.0,
+            0.0,
+            StrokeStyle::default(),
+            None,
+        );
+        let txt = Item::new_text_in(
+            "hello".to_string(),
+            50.0,
+            30.0,
+            16.0,
+            [255; 4],
+            container.id,
+        );
+        match &txt.kind {
+            ItemKind::Text { container_id, .. } => assert_eq!(*container_id, Some(container.id)),
+            _ => panic!("expected Text kind"),
+        }
+        // 自由文本 container_id 应为 None
+        let free = Item::new_text("x".to_string(), 0.0, 0.0, 16.0, [255; 4]);
+        match &free.kind {
+            ItemKind::Text { container_id, .. } => assert_eq!(*container_id, None),
+            _ => panic!("expected Text kind"),
+        }
+        // 矩形/椭圆/菱形可作容器；未闭合多段线不可
+        assert!(container.shape_can_host_text());
+        for st in [ShapeType::Ellipse, ShapeType::Diamond] {
+            let s = Item::new_shape(st, (10.0, 10.0), 0.0, 0.0, StrokeStyle::default(), None);
+            assert!(s.shape_can_host_text());
+        }
+        let open = Item::new_polyline(
+            vec![(0.0, 0.0), (10.0, 0.0)],
+            (10.0, 0.0),
+            None,
+            None,
+            false,
+            0.0,
+            0.0,
+            StrokeStyle::default(),
+        );
+        assert!(!open.shape_can_host_text());
+        let closed = Item::new_polyline(
+            vec![(0.0, 0.0), (10.0, 0.0), (5.0, 5.0)],
+            (10.0, 5.0),
+            None,
+            None,
+            true,
+            0.0,
+            0.0,
+            StrokeStyle::default(),
+        );
+        assert!(closed.shape_can_host_text());
+    }
+
+    #[test]
+    fn text_serde_backward_compat_without_container_id() {
+        // 旧版本 Text JSON 无 container_id 字段，应加载为 None（不报错）。
+        let json = r#"{
+            "Text": {
+                "content": "abc",
+                "font_size": 16.0,
+                "color": [255,255,255,255],
+                "editing": false,
+                "measured_size": null
+            }
+        }"#;
+        let kind: ItemKind = serde_json::from_str(json).unwrap();
+        match &kind {
+            ItemKind::Text { container_id, .. } => assert_eq!(*container_id, None),
+            _ => panic!("expected Text kind"),
+        }
+        // 新版本序列化应包含 container_id，roundtrip 保真
+        let txt = Item::new_text_in("abc".to_string(), 0.0, 0.0, 16.0, [255; 4], Uuid::new_v4());
+        let s = serde_json::to_string(&txt).unwrap();
+        let back: Item = serde_json::from_str(&s).unwrap();
+        assert_eq!(back.id, txt.id);
     }
 }

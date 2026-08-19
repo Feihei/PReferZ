@@ -137,6 +137,8 @@ struct EditingText {
     font_size: f32,
     color: [u8; 4],
     first_frame: bool,
+    /// 绑定文本所属容器 id（None = 自由文本）。新创建绑定时在提交时写入。
+    container_id: Option<ItemId>,
 }
 
 /// 后台图片导入解码结果（线�?�?UI 线程）�?
@@ -982,54 +984,101 @@ impl eframe::App for PReferZApp {
                 }
             }
 
-            // 双击：Text item → 编辑；空白 → 创建文本便签（spec L243 P2-5）
+            // 双击：Text item → 编辑；封闭 Shape → 创建/编辑绑定文本；
+            // 空白 → 创建文本便签（spec L243 P2-5）
             // response.double_clicked() 已自动考虑上层 Window 遮挡
             if response.double_clicked() && self.editing_text.is_none() {
                 if let Some(pos) = ctx.input(|i| i.pointer.latest_pos()) {
-                    // 先克隆命中 Text item 的字段，避免 &self.scene 与 &mut self.editing_text 借用冲突
-                    let hit_text = interaction::get_item_at(pos, &self.scene, &self.viewport)
-                        .and_then(|item| {
-                            if let ItemKind::Text {
+                    // 克隆命中的 item 字段，避免 &self.scene 与 &mut self.editing_text 借用冲突
+                    let hit = interaction::get_item_at(pos, &self.scene, &self.viewport)
+                        .map(|item| (item.id, item.kind.clone()));
+                    match hit {
+                        Some((
+                            id,
+                            ItemKind::Text {
                                 content,
                                 font_size,
                                 color,
-                                ..
-                            } = &item.kind
-                            {
-                                Some((
-                                    item.id,
-                                    item.transform.pos,
-                                    content.clone(),
-                                    *font_size,
-                                    *color,
-                                ))
-                            } else {
-                                None
+                                editing: _,
+                                measured_size: _,
+                                container_id,
+                            },
+                        )) => {
+                            // 双击 Text item → 编辑现有
+                            self.editing_text = Some(EditingText {
+                                editing_item_id: Some(id),
+                                canvas_pos: self
+                                    .scene
+                                    .get_item(&id)
+                                    .map(|it| it.transform.pos)
+                                    .map(|p| CanvasPoint::new(p.x, p.y))
+                                    .unwrap_or_else(|| CanvasPoint::new(f32::MIN, f32::MIN)),
+                                buffer: content,
+                                font_size,
+                                color,
+                                first_frame: true,
+                                container_id,
+                            });
+                            self.drag = DragState::Idle;
+                        }
+                        Some((shape_id, ref kind)) if is_text_container(kind) => {
+                            // 命中封闭 Shape 容器：查找/创建绑定文本
+                            if let Some(shape_item) = self.scene.get_item(&shape_id) {
+                                let center = shape_item.bounding_rect().center();
+                                let existing = self.scene.texts_bound_to(shape_id);
+                                if let Some(text_id) = existing.into_iter().next() {
+                                    // 已有绑定文本 → 编辑
+                                    let text_item = self.scene.get_item(&text_id);
+                                    let (content, font_size, color) = match text_item {
+                                        Some(it) => match &it.kind {
+                                            ItemKind::Text {
+                                                content,
+                                                font_size,
+                                                color,
+                                                ..
+                                            } => (content.clone(), *font_size, *color),
+                                            _ => (String::new(), 18.0, [255; 4]),
+                                        },
+                                        None => (String::new(), 18.0, [255; 4]),
+                                    };
+                                    self.editing_text = Some(EditingText {
+                                        editing_item_id: Some(text_id),
+                                        canvas_pos: CanvasPoint::new(center.x, center.y),
+                                        buffer: content,
+                                        font_size,
+                                        color,
+                                        first_frame: true,
+                                        container_id: Some(shape_id),
+                                    });
+                                } else {
+                                    // 无绑定文本 → 创建（容器 id 在提交时写入）
+                                    self.editing_text = Some(EditingText {
+                                        editing_item_id: None,
+                                        canvas_pos: CanvasPoint::new(center.x, center.y),
+                                        buffer: String::new(),
+                                        font_size: 18.0,
+                                        color: [255, 255, 255, 255],
+                                        first_frame: true,
+                                        container_id: Some(shape_id),
+                                    });
+                                }
+                                self.drag = DragState::Idle;
                             }
-                        });
-                    if let Some((id, pos_canvas, content, font_size, color)) = hit_text {
-                        // 双击 Text item → 编辑现有
-                        self.editing_text = Some(EditingText {
-                            editing_item_id: Some(id),
-                            canvas_pos: CanvasPoint::new(pos_canvas.x, pos_canvas.y),
-                            buffer: content,
-                            font_size,
-                            color,
-                            first_frame: true,
-                        });
-                        self.drag = DragState::Idle;
-                    } else {
-                        // 双击空白 → 创建新文本
-                        let canvas_pos = self.viewport.screen_to_canvas(pos);
-                        self.editing_text = Some(EditingText {
-                            editing_item_id: None,
-                            canvas_pos,
-                            buffer: String::new(),
-                            font_size: 24.0,
-                            color: [255, 255, 255, 255],
-                            first_frame: true,
-                        });
-                        self.drag = DragState::Idle;
+                        }
+                        _ => {
+                            // 双击空白 → 创建新文本
+                            let canvas_pos = self.viewport.screen_to_canvas(pos);
+                            self.editing_text = Some(EditingText {
+                                editing_item_id: None,
+                                canvas_pos,
+                                buffer: String::new(),
+                                font_size: 24.0,
+                                color: [255, 255, 255, 255],
+                                first_frame: true,
+                                container_id: None,
+                            });
+                            self.drag = DragState::Idle;
+                        }
                     }
                 }
             }
@@ -1305,11 +1354,17 @@ impl PReferZApp {
                 self.scene.select(id);
             }
             // 收集所有选中 item �?transform 快照
-            let start_transforms: Vec<(ItemId, preferz_core::Transform)> = self
-                .scene
-                .selection
-                .iter()
-                .filter_map(|sid| self.scene.get_item(sid).map(|it| (*sid, it.transform)))
+            let selected: Vec<ItemId> = self.scene.selection.iter().cloned().collect();
+            // 容器联动：选中封闭形状时连带其绑定文本，使文本随容器一起移动（Phase C）。
+            let mut collected: Vec<ItemId> = selected.clone();
+            for sid in &selected {
+                collected.extend(self.scene.texts_bound_to(*sid));
+            }
+            collected.sort();
+            collected.dedup();
+            let start_transforms: Vec<(ItemId, preferz_core::Transform)> = collected
+                .into_iter()
+                .filter_map(|sid| self.scene.get_item(&sid).map(|it| (sid, it.transform)))
                 .collect();
             let start_canvas = self.viewport.screen_to_canvas(screen_pos);
             self.drag = DragState::MoveItems {
@@ -1771,6 +1826,7 @@ impl PReferZApp {
                     content,
                     font_size,
                     color,
+                    container_id,
                     ..
                 } => {
                     // 编辑期间跳过�?item 的内容渲染（overlay 接管，避免原文字与编辑框重叠�?
@@ -1784,17 +1840,38 @@ impl PReferZApp {
                         let text_color = egui::Color32::from_rgba_premultiplied(
                             color[0], color[1], color[2], color[3],
                         );
-                        let origin = self.viewport.canvas_to_screen(corners[0]);
-                        // 文字渲染应用 scale �?zoom（修 B6：与变换边框一致）�?                        // �?scale.x（等比缩放场景下�?scale.y 相同；非等比�?egui text 不支持非均匀缩放�?
-                        let effective_font_size =
-                            *font_size * item.transform.scale.x.abs() * self.viewport.zoom;
-                        ui.painter().text(
-                            origin,
-                            egui::Align2::LEFT_TOP,
-                            content.clone(),
-                            egui::FontId::proportional(effective_font_size),
-                            text_color,
-                        );
+                        if let Some(cid) = container_id {
+                            // 绑定文本：换行到容器宽度，居中绘制
+                            if let Some(container) = self.scene.get_item(cid) {
+                                let cr = self
+                                    .viewport
+                                    .canvas_to_screen_rect(container.bounding_rect());
+                                let wrap = (cr.width() - 12.0).max(20.0);
+                                let ef = *font_size * self.viewport.zoom;
+                                let job = egui::text::LayoutJob::simple(
+                                    content.clone(),
+                                    egui::FontId::proportional(ef),
+                                    text_color,
+                                    wrap,
+                                );
+                                let gal = ui.ctx().fonts(|f| f.layout_job(job));
+                                let gsz = gal.size();
+                                let tl = cr.center() - egui::vec2(gsz.x / 2.0, gsz.y / 2.0);
+                                ui.painter().galley(tl, gal, text_color);
+                            }
+                        } else {
+                            let origin = self.viewport.canvas_to_screen(corners[0]);
+                            // 文字渲染应用 scale �?zoom（修 B6：与变换边框一致）�?                        // �?scale.x（等比缩放场景下�?scale.y 相同；非等比�?egui text 不支持非均匀缩放�?
+                            let effective_font_size =
+                                *font_size * item.transform.scale.x.abs() * self.viewport.zoom;
+                            ui.painter().text(
+                                origin,
+                                egui::Align2::LEFT_TOP,
+                                content.clone(),
+                                egui::FontId::proportional(effective_font_size),
+                                text_color,
+                            );
+                        } // else: 自由文本
                     }
                 }
                 // Shape：经 ShapeStyler（CleanStyler）构建 egui 形状并绘制。
@@ -2042,16 +2119,38 @@ impl PReferZApp {
 
     /// 测量所�?Text item 的实际文字尺寸并更新 `measured_size`（修 B6）�?    /// 仅在 `measured_size` �?None 时测量（content 变化会清�?measured_size）�?
     fn update_text_measured_sizes(&mut self, ctx: &egui::Context) {
+        let zoom = self.viewport.zoom;
         let mut updates: Vec<(ItemId, (f32, f32))> = Vec::new();
         for item in &self.scene.items {
             if let ItemKind::Text {
                 content,
                 font_size,
                 measured_size,
+                container_id,
                 ..
             } = &item.kind
             {
+                if let Some(cid) = container_id {
+                    // 绑定文本：换行到容器宽度，随容器 resize 每帧重测。
+                    if let Some(container) = self.scene.get_item(cid) {
+                        let cw = self
+                            .viewport
+                            .canvas_to_screen_rect(container.bounding_rect())
+                            .width();
+                        let wrap = (cw - 12.0).max(20.0);
+                        let job = egui::text::LayoutJob::simple(
+                            content.clone(),
+                            egui::FontId::proportional(*font_size * zoom),
+                            egui::Color32::WHITE,
+                            wrap,
+                        );
+                        let gal = ctx.fonts(|f| f.layout_job(job));
+                        updates.push((item.id, (gal.size().x / zoom, gal.size().y / zoom)));
+                        continue;
+                    }
+                }
                 if measured_size.is_none() {
+                    // 自由文本：仅在未测量时测（content 变化会清空触发重测）。
                     let gal = ctx.fonts(|fonts| {
                         fonts.layout_no_wrap(
                             content.clone(),
@@ -2079,20 +2178,59 @@ impl PReferZApp {
             None => return,
         };
         let screen_pos = self.viewport.canvas_to_screen(edit.canvas_pos);
+        // 绑定文本：获取容器屏幕矩形，用于居中 + 定宽（换行）。
+        let container_screen_rect = edit.container_id.and_then(|cid| {
+            self.scene
+                .get_item(&cid)
+                .map(|it| self.viewport.canvas_to_screen_rect(it.bounding_rect()))
+        });
         let mut commit = false;
         let mut cancel = false;
 
-        egui::Area::new(egui::Id::new("text_edit_area"))
-            .order(egui::Order::Foreground)
-            .fixed_pos(screen_pos)
-            .show(ctx, |ui| {
-                let frame = egui::Frame::popup(ui.style())
-                    .fill(egui::Color32::from_rgb(50, 50, 50))
-                    .stroke(egui::Stroke::new(
-                        1.0_f32,
-                        egui::Color32::from_rgb(100, 200, 255),
-                    ));
-                frame.show(ui, |ui| {
+        let mut area =
+            egui::Area::new(egui::Id::new("text_edit_area")).order(egui::Order::Foreground);
+        if let Some(r) = container_screen_rect {
+            // 绑定文本：居中于容器（先按预估高度定位，渲染后再由 min_width 撑开）。
+            let w = (r.width() - 16.0).max(60.0);
+            let est_h = edit.font_size.max(16.0) * 2.0 + 16.0;
+            area = area.fixed_pos(r.center() - egui::vec2(w / 2.0, est_h / 2.0));
+        } else {
+            area = area.fixed_pos(screen_pos);
+        }
+        area.show(ctx, |ui| {
+            let frame = egui::Frame::popup(ui.style())
+                .fill(egui::Color32::from_rgb(50, 50, 50))
+                .stroke(egui::Stroke::new(
+                    1.0_f32,
+                    egui::Color32::from_rgb(100, 200, 255),
+                ));
+            frame.show(ui, |ui| {
+                if let Some(r) = container_screen_rect {
+                    // 绑定文本编辑：宽度受容器约束，支持换行，居中。
+                    let w = (r.width() - 16.0).max(60.0);
+                    ui.set_min_width(w);
+                    let response = ui.add(
+                        egui::TextEdit::multiline(&mut edit.buffer)
+                            .desired_width(w)
+                            .hint_text("输入文本...")
+                            .font(egui::FontId::proportional(edit.font_size))
+                            .text_color(egui::Color32::from_rgba_premultiplied(
+                                edit.color[0],
+                                edit.color[1],
+                                edit.color[2],
+                                edit.color[3],
+                            )),
+                    );
+                    if edit.first_frame {
+                        response.request_focus();
+                        edit.first_frame = false;
+                    }
+                    if ui.ctx().input(|i| i.key_pressed(egui::Key::Escape)) {
+                        cancel = true;
+                    } else if response.lost_focus() {
+                        commit = true;
+                    }
+                } else {
                     ui.set_min_width(120.0);
                     let response = ui.add(
                         egui::TextEdit::singleline(&mut edit.buffer)
@@ -2115,8 +2253,9 @@ impl PReferZApp {
                     } else if response.lost_focus() {
                         commit = true;
                     }
-                });
+                }
             });
+        });
 
         if cancel {
             self.editing_text = None;
@@ -2127,13 +2266,23 @@ impl PReferZApp {
                 None => {
                     // 创建模式：空内容丢弃，非�?push AddItem
                     if !edit.buffer.trim().is_empty() {
-                        let item = Item::new_text(
-                            edit.buffer,
-                            edit.canvas_pos.x,
-                            edit.canvas_pos.y,
-                            edit.font_size,
-                            edit.color,
-                        );
+                        let item = match edit.container_id {
+                            Some(cid) => Item::new_text_in(
+                                edit.buffer,
+                                edit.canvas_pos.x,
+                                edit.canvas_pos.y,
+                                edit.font_size,
+                                edit.color,
+                                cid,
+                            ),
+                            None => Item::new_text(
+                                edit.buffer,
+                                edit.canvas_pos.x,
+                                edit.canvas_pos.y,
+                                edit.font_size,
+                                edit.color,
+                            ),
+                        };
                         self.push_cmd(Box::new(AddItem::new(item)));
                         self.flash(t(self.lang, T::FlashTextCreated).to_string());
                     }
@@ -2590,6 +2739,18 @@ fn drag_state_name(d: &DragState) -> &'static str {
     }
 }
 
+/// 是否为文本容器（封闭形状）。矩形/椭圆/菱形恒可；多段线仅闭合时可。
+fn is_text_container(kind: &ItemKind) -> bool {
+    if let ItemKind::Shape {
+        shape_type, closed, ..
+    } = kind
+    {
+        !matches!(shape_type, ShapeType::Polyline) || *closed
+    } else {
+        false
+    }
+}
+
 /// 判断路径是否�?PReferZ 项目文件�?prz / .bee）�?
 fn is_project_file(path: &Path) -> bool {
     path.extension()
@@ -3013,6 +3174,8 @@ impl PReferZApp {
                 }
 
                 self.scene = scene;
+                // 清理孤儿 container_id（容器已不存在则置 None），Phase C/Step 4
+                self.scene.cleanup_orphan_containers();
                 self.current_file = Some(outcome.path.clone());
                 self.dirty = false;
                 // 加载成功后加入最近文件列表
@@ -3397,10 +3560,17 @@ impl PReferZApp {
     }
 
     fn delete_selected(&mut self) {
-        let ids: Vec<ItemId> = self.scene.selection.iter().cloned().collect();
-        if ids.is_empty() {
+        // 容器联动：删除封闭形状时连带删除其绑定文本（Phase C/Step 3）。
+        let base_ids: Vec<ItemId> = self.scene.selection.iter().cloned().collect();
+        if base_ids.is_empty() {
             return;
         }
+        let mut ids: Vec<ItemId> = base_ids.clone();
+        for sid in &base_ids {
+            ids.extend(self.scene.texts_bound_to(*sid));
+        }
+        ids.sort();
+        ids.dedup();
         // 清理纹理缓存与字节缓存（Pixmap�?
         for id in &ids {
             if let Some(item) = self.scene.get_item(id) {
