@@ -1138,27 +1138,27 @@ git commit -m "feat(fileio): persist Shape items"
 
 ### Task D1：数据模型
 
-- [ ] **Step 1**：`ItemKind::Frame { number: u32, name: Option<String> }` + `Item::new_frame` + `base_size` 分支 + serde 单测。
-- [ ] **Step 2**：`scene.rs`：`frame_members(frame_id)`（item 的 `bounding_rect ⊆ frame` 的 canvas 矩形，frame 自身排除，绑定文本跟随容器）、`frames_by_number()`。
-- [ ] **Step 3**：编号冲突顺移：编辑编号与现有重复时，冲突及后续 `number += 1`（core 函数 + 单测）。
+- [x] **Step 1**：`ItemKind::Frame { number: u32, name: Option<String> }` + `Item::new_frame` + `base_size` 分支 + serde 单测。
+- [x] **Step 2**：`scene.rs`：`frame_members(frame_id)`（item 的 `bounding_rect ⊆ frame` 的 canvas 矩形，frame 自身排除，绑定文本跟随容器）、`frames_by_number()`。
+- [x] **Step 3**：编号冲突顺移：编辑编号与现有重复时，冲突及后续 `number += 1`（core 函数 + 单测）。
 
 ### Task D2：创建与渲染
 
-- [ ] **Step 1**：`Tool::Frame` + `M` 快捷键 + 工具栏按钮 + `DragState::CreatingFrame`（同 CreatingShape 模式）。
-- [ ] **Step 2**：`Item::new_frame`：transform 不旋转（创建即 rotation=0，`should_show_rotate` 已 false）；创建时 `z = min_z - 1`（帧恒在最底）。
-- [ ] **Step 3**：render_scene Frame 分支：虚线边框（灰 #555）+ 左上角编号角标（圆角矩形底 + number）+ name；不裁剪内容。
-- [ ] **Step 4**：`should_show_flip/rotate` 对 Frame 保持 false；四角缩放手柄仍可用（现有 render 角点 always 显示）。
+- [x] **Step 1**：`Tool::Frame` + `M` 快捷键 + 工具栏按钮 + `DragState::CreatingFrame`（同 CreatingShape 模式）。
+- [x] **Step 2**：`Item::new_frame`：transform 不旋转（创建即 rotation=0，`should_show_rotate` 已 false）；创建时 `z = min_z - 1`（帧恒在最底）。
+- [x] **Step 3**：render_scene Frame 分支：虚线边框（灰 #555）+ 左上角编号角标（圆角矩形底 + number）+ name；不裁剪内容。
+- [x] **Step 4**：`should_show_flip/rotate` 对 Frame 保持 false；四角缩放手柄仍可用（现有 render 角点 always 显示）。
 
 ### Task D3：交互
 
-- [ ] **Step 1**：命中：Frame 优先命中边框线（6px 阈值，`contains_canvas_point` 分发或单独 `contains_frame_border`），内容区域点击穿透到下层 item。
-- [ ] **Step 2**：拖动 = `MoveItems(frame + frame_members)`；缩放改变 frame 大小实时增减成员。
-- [ ] **Step 3**：删除 frame 只删自身，成员散落（无需弹窗）。
-- [ ] **Step 4**：编号编辑：点击角标 → 小输入框（egui `TextEdit`，数字 only）→ Enter 提交，冲突顺移。
+- [x] **Step 1**：命中：Frame 优先命中边框线（6px 阈值，`contains_canvas_point` 分发或单独 `contains_frame_border`），内容区域点击穿透到下层 item。
+- [x] **Step 2**：拖动 = `MoveItems(frame + frame_members)`；缩放改变 frame 大小实时增减成员。
+- [x] **Step 3**：删除 frame 只删自身，成员散落（无需弹窗）。
+- [x] **Step 4**：编号编辑：点击角标 → 小输入框（egui `TextEdit`，数字 only）→ Enter 提交，冲突顺移。
 
 ### Task D4：测试 + 验收
 
-- [ ] core 单测：frame_members 包含/相切、绑定文本跟随、frames_by_number 排序、冲突顺移。
+- [x] core 单测：frame_members 包含/相切、绑定文本跟随、frames_by_number 排序、冲突顺移。
 - [ ] 手工验收：画 frame、拖入拖出自动收纳、编号编辑、拖动连带、删除散落、保存重开。
 
 ---

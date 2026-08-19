@@ -10,8 +10,8 @@ use image::GenericImageView;
 use preferz_core::arrange::{plan_arrange, ArrangeMode};
 use preferz_core::commands::{
     AddItem, ArrangeItems, CropItems, DeleteItems, EditShapePoints, EditTextContent, FlipItems,
-    MoveItems, NormalizeItems, ReorderItems, SetArrowHeads, SetClosed, SetPixmapProps,
-    TransformItem,
+    MoveItems, NormalizeItems, RenumberFrame, ReorderItems, SetArrowHeads, SetClosed,
+    SetPixmapProps, TransformItem,
 };
 use preferz_core::shape::{ArrowHeadStyle, DashStyle, ShapeType, StrokeStyle};
 use preferz_core::spaces::{CanvasPoint, CanvasRect, CanvasSize, CanvasVector};
@@ -70,8 +70,6 @@ impl UndoStack {
 }
 
 /// 当前激活工具。Select = 现有选择/框选行为。
-/// Frame 由 Phase D 启用，此前不构造（保留 allow + 注释，D 期移除）。
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tool {
     Select,
@@ -80,7 +78,7 @@ enum Tool {
     Linear {
         end_arrow: Option<ArrowHeadStyle>,
     },
-    /// Phase D 启用
+    /// 幻灯片画框（Phase D）。
     Frame,
 }
 
@@ -123,6 +121,11 @@ enum DragState {
         endpoint: usize,
         start_canvas: CanvasPoint,
         start_points: Vec<(f32, f32)>,
+    },
+    /// 用 Frame 工具拖拽创建画框（两点式：start → current）。
+    CreatingFrame {
+        start: CanvasPoint,
+        current: CanvasPoint,
     },
 }
 
@@ -374,6 +377,10 @@ pub struct PReferZApp {
     drag: DragState,
     /// 文本便签编辑状态（None = 无编辑）�?
     editing_text: Option<EditingText>,
+    /// 画框编号编辑状态（Phase D）：Some(frame_id) 时显示左上角小输入框。
+    editing_frame_number: Option<ItemId>,
+    /// 画框编号编辑输入缓冲区。
+    frame_number_buf: String,
     /// 当前打开的文件路径（保存时若 None 则弹出对话框）�?
     current_file: Option<PathBuf>,
     /// 后台任务（导入解�?/ 文件加载 / 文件保存）�?
@@ -459,6 +466,8 @@ impl PReferZApp {
             default_fill: None,
             drag: DragState::Idle,
             editing_text: None,
+            editing_frame_number: None,
+            frame_number_buf: String::new(),
             current_file: None,
             bg_ops: BackgroundOps::default(),
             color_picker_active: false,
@@ -686,6 +695,7 @@ impl eframe::App for PReferZApp {
                         "➤",
                         T::ToolArrow,
                     ),
+                    (Tool::Frame, "▢", T::ToolFrame),
                 ];
                 for (tool, icon, key) in tools {
                     let is_active = self.tool == tool;
@@ -971,6 +981,19 @@ impl eframe::App for PReferZApp {
                 }
             }
 
+            // Frame 工具拖拽预览：虚线矩形框
+            if let DragState::CreatingFrame { start, current } = &self.drag {
+                let min_x = start.x.min(current.x);
+                let min_y = start.y.min(current.y);
+                let w = (current.x - start.x).abs();
+                let h = (current.y - start.y).abs();
+                let rect_canvas =
+                    CanvasRect::new(CanvasPoint::new(min_x, min_y), CanvasSize::new(w, h));
+                let screen_rect = self.viewport.canvas_to_screen_rect(rect_canvas);
+                let stroke = egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(100, 200, 255));
+                ui.painter().rect_stroke(screen_rect, 0.0, stroke);
+            }
+
             // 鼠标中键拖拽平移
             if response.dragged_by(egui::PointerButton::Middle) {
                 self.viewport.pan_by_screen(response.drag_delta());
@@ -1172,8 +1195,11 @@ impl eframe::App for PReferZApp {
             }
         });
 
-        // 文本编辑 overlay（spec L243 P2-5�?
+        // 文本编辑 overlay（spec L243 P2-5）
         self.render_text_editor(ctx);
+
+        // 画框编号编辑 overlay（Phase D）
+        self.render_frame_number_editor(ctx);
 
         // 上下文菜�?
         if self.context_menu_open {
@@ -1229,6 +1255,10 @@ impl PReferZApp {
         if self.editing_text.is_some() {
             return;
         }
+        // 画框编号编辑中不启动拖拽（点击别处由编辑窗 lost_focus 提交/取消）
+        if self.editing_frame_number.is_some() {
+            return;
+        }
 
         // 绘制工具激活：直接进入创建拖拽（不处理手柄/命中/框选）。
         // additive（=Shift 按住）用于正方形锁定，free_scale（=Ctrl 按住）用于椭圆解锁。
@@ -1254,6 +1284,14 @@ impl PReferZApp {
                     current: start_canvas,
                     shift: additive,
                     ctrl: free_scale,
+                };
+                return;
+            }
+            Tool::Frame => {
+                let start_canvas = self.viewport.screen_to_canvas(screen_pos);
+                self.drag = DragState::CreatingFrame {
+                    start: start_canvas,
+                    current: start_canvas,
                 };
                 return;
             }
@@ -1355,10 +1393,18 @@ impl PReferZApp {
             }
             // 收集所有选中 item �?transform 快照
             let selected: Vec<ItemId> = self.scene.selection.iter().cloned().collect();
-            // 容器联动：选中封闭形状时连带其绑定文本，使文本随容器一起移动（Phase C）。
+            // 容器联动：选中封闭形状时连带其绑定文本（Phase C）；选中画框时连带其成员（Phase D）。
             let mut collected: Vec<ItemId> = selected.clone();
             for sid in &selected {
                 collected.extend(self.scene.texts_bound_to(*sid));
+                if self
+                    .scene
+                    .get_item(sid)
+                    .map(|it| it.is_frame())
+                    .unwrap_or(false)
+                {
+                    collected.extend(self.scene.frame_members(*sid));
+                }
             }
             collected.sort();
             collected.dedup();
@@ -1484,6 +1530,9 @@ impl PReferZApp {
                 }
             }
             DragState::BoxSelect { .. } => {} // 由 match 后更新（需单独 &mut self.drag）
+            DragState::CreatingFrame { current, .. } => {
+                let _ = current; // 由 match 后更新（需单独 &mut self.drag）
+            }
             DragState::Idle => {}
         }
         // BoxSelect / CreatingShape 更新 current（match &self.drag 不可写，故单独 &mut）
@@ -1494,6 +1543,9 @@ impl PReferZApp {
             *current = self.viewport.screen_to_canvas(screen_pos);
             // 拖动中实时更新 Ctrl 状态（椭圆正圆/自由宽高比切换）
             *ctrl = free_scale;
+        }
+        if let DragState::CreatingFrame { current, .. } = &mut self.drag {
+            *current = self.viewport.screen_to_canvas(screen_pos);
         }
     }
 
@@ -1588,6 +1640,9 @@ impl PReferZApp {
                 ctrl,
             } => {
                 self.finish_create_shape(shape_type, end_arrow, start, current, shift, ctrl);
+            }
+            DragState::CreatingFrame { start, current } => {
+                self.finish_create_frame(start, current);
             }
             DragState::LineEndpoint {
                 item_id,
@@ -1705,6 +1760,32 @@ impl PReferZApp {
         let cmd = AddItem::new(item);
         self.push_cmd(Box::new(cmd));
         self.flash("已创建图形");
+        // 默认回 Select
+        self.tool = Tool::Select;
+    }
+
+    /// 用 Frame 工具完成画框创建：计算矩形 → AddItem → 置底（z=min-1）→ 选中 → 回 Select。
+    fn finish_create_frame(&mut self, start: CanvasPoint, current: CanvasPoint) {
+        let w = (current.x - start.x).abs();
+        let h = (current.y - start.y).abs();
+        if w < 10.0 || h < 10.0 {
+            // 误触：过小丢弃
+            self.tool = Tool::Select;
+            return;
+        }
+        let min_x = start.x.min(current.x);
+        let min_y = start.y.min(current.y);
+        let number = self.scene.next_frame_number();
+        let item = Item::new_frame(number, (w, h), min_x, min_y, None);
+        let frame_id = item.id;
+        let cmd = AddItem::new(item);
+        self.push_cmd(Box::new(cmd));
+        // 画框恒在最底（z = min - 1）：用 ReorderItems send-to-back
+        let reorder = ReorderItems::new(vec![frame_id], false);
+        self.push_cmd(Box::new(reorder));
+        self.scene.deselect_all();
+        self.scene.select(frame_id);
+        self.flash(format!("已创建画框 #{}", number));
         // 默认回 Select
         self.tool = Tool::Select;
     }
@@ -1905,6 +1986,58 @@ impl PReferZApp {
                         self.viewport.zoom,
                     );
                     ui.painter().extend(shapes);
+                }
+                // Frame：虚线边框 + 左上角编号角标 + 名称。不裁剪内容，仅作底框。
+                ItemKind::Frame { number, name, .. } => {
+                    // 边框矩形（画布 AABB 转屏幕：frame 不旋转，直接用 bounding_rect）。
+                    let fc = item.bounding_rect();
+                    let sr = self.viewport.canvas_to_screen_rect(fc);
+                    let border = egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(90, 90, 95));
+                    ui.painter().rect_stroke(sr, 0.0, border);
+                    // 编号角标（左上角）
+                    let label = format!("#{}", number);
+                    let galley = ui.painter().layout_no_wrap(
+                        label,
+                        egui::FontId::proportional(10.0),
+                        egui::Color32::WHITE,
+                    );
+                    let badge_size = galley.size() + egui::vec2(8.0, 4.0);
+                    let badge_rect = egui::Rect::from_min_size(sr.min, badge_size);
+                    ui.painter().rect_filled(
+                        badge_rect,
+                        egui::Rounding::same(3.0),
+                        egui::Color32::from_rgba_unmultiplied(70, 110, 200, 255),
+                    );
+                    ui.painter().galley(
+                        badge_rect.min + egui::vec2(4.0, 2.0),
+                        galley,
+                        egui::Color32::WHITE,
+                    );
+                    // 点击角标 → 进入编号编辑（Phase D：编号冲突自动顺移）。
+                    let badge_id = egui::Id::new(("frame_badge", item.id));
+                    if ui
+                        .interact(badge_rect, badge_id, egui::Sense::click())
+                        .clicked()
+                        && self.editing_frame_number != Some(item.id)
+                    {
+                        self.editing_frame_number = Some(item.id);
+                        self.frame_number_buf = number.to_string();
+                    }
+                    // 名称（角标右侧）
+                    if let Some(nm) = name {
+                        if !nm.is_empty() {
+                            let ng = ui.painter().layout_no_wrap(
+                                nm.clone(),
+                                egui::FontId::proportional(12.0),
+                                egui::Color32::from_rgb(160, 170, 180),
+                            );
+                            ui.painter().galley(
+                                egui::pos2(sr.min.x + badge_size.x + 6.0, sr.min.y + 2.0),
+                                ng,
+                                egui::Color32::from_rgb(160, 170, 180),
+                            );
+                        }
+                    }
                 }
             }
 
@@ -2311,6 +2444,77 @@ impl PReferZApp {
             return;
         }
         self.editing_text = Some(edit);
+    }
+
+    /// 画框编号编辑小窗（Phase D）。点击角标触发；Enter 提交（数字 only），
+    /// 冲突时经 [`Scene::plan_frame_renumber`] 自动顺移，走 undo 命令。
+    fn render_frame_number_editor(&mut self, ctx: &egui::Context) {
+        let Some(frame_id) = self.editing_frame_number else {
+            return;
+        };
+        let Some(frame) = self.scene.get_item(&frame_id).filter(|it| it.is_frame()) else {
+            self.editing_frame_number = None;
+            return;
+        };
+        let old_number = frame.frame_number().unwrap_or(1);
+        let sr = self.viewport.canvas_to_screen_rect(frame.bounding_rect());
+        let mut commit = false;
+        let mut cancel = false;
+
+        let mut buf = self.frame_number_buf.clone();
+        egui::Area::new(egui::Id::new("frame_number_edit_area"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(sr.min)
+            .show(ctx, |ui| {
+                egui::Frame::popup(ui.style())
+                    .fill(egui::Color32::from_rgb(50, 50, 55))
+                    .stroke(egui::Stroke::new(
+                        1.0_f32,
+                        egui::Color32::from_rgb(100, 200, 255),
+                    ))
+                    .show(ui, |ui| {
+                        let resp = ui.add(
+                            egui::TextEdit::singleline(&mut buf)
+                                .desired_width(40.0)
+                                .hint_text("#")
+                                .char_limit(6)
+                                .font(egui::FontId::proportional(10.0)),
+                        );
+                        resp.request_focus();
+                        let esc = ui.input(|i| i.key_pressed(egui::Key::Escape));
+                        let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
+                        if esc {
+                            cancel = true;
+                        } else if enter || resp.lost_focus() {
+                            commit = true;
+                        }
+                    });
+            });
+        self.frame_number_buf = buf;
+
+        if cancel {
+            self.editing_frame_number = None;
+            return;
+        }
+        if !commit {
+            return;
+        }
+        self.editing_frame_number = None;
+        let Some(new_number) = self
+            .frame_number_buf
+            .trim()
+            .parse::<u32>()
+            .ok()
+            .map(|n| n.max(1))
+        else {
+            return;
+        };
+        if new_number != old_number {
+            let plan = self.scene.plan_frame_renumber(frame_id, new_number);
+            let cmd = RenumberFrame::new(plan);
+            self.push_cmd(Box::new(cmd));
+            self.flash(format!("画框编号 → #{}", new_number));
+        }
     }
 
     fn render_context_menu(&mut self, ctx: &egui::Context) {
@@ -2736,6 +2940,7 @@ fn drag_state_name(d: &DragState) -> &'static str {
         DragState::BoxSelect { .. } => "BoxSelect",
         DragState::CreatingShape { .. } => "CreatingShape",
         DragState::LineEndpoint { .. } => "LineEndpoint",
+        DragState::CreatingFrame { .. } => "CreatingFrame",
     }
 }
 
@@ -3064,6 +3269,8 @@ impl PReferZApp {
             Some(Tool::Linear {
                 end_arrow: Some(ArrowHeadStyle::Arrow),
             })
+        } else if pressed(egui::Key::M) {
+            Some(Tool::Frame)
         } else {
             None
         }
@@ -4595,6 +4802,8 @@ fn sample_item_pixel(
         }
         // A1 数据模型先行，取色采样在 Phase A6 后补充
         ItemKind::Shape { .. } => None,
+        // 画框不参与导出采样
+        ItemKind::Frame { .. } => None,
     }
 }
 

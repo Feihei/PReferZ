@@ -322,6 +322,7 @@ fn item_kind_str(kind: &ItemKind) -> &'static str {
         ItemKind::Pixmap { .. } => "pixmap",
         ItemKind::Text { .. } => "text",
         ItemKind::Shape { .. } => "shape",
+        ItemKind::Frame { .. } => "frame",
     }
 }
 

@@ -59,6 +59,17 @@ pub enum ItemKind {
         /// 手绘风确定性噪声预留（Phase F 用），A 期固定 0。
         seed: u64,
     },
+    /// 幻灯片画框（Phase D）。不旋转/不翻转；仅边框点选命中，内容区域点击穿透。
+    /// 渲染恒在其它 item 之下（创建时 z 置为最小）。
+    Frame {
+        /// 局部空间尺寸（宽×高）。
+        base_size: (f32, f32),
+        /// 画框编号（决定演示翻页顺序）。
+        number: u32,
+        /// 可选名称。
+        #[serde(default)]
+        name: Option<String>,
+    },
 }
 
 impl ItemKind {
@@ -231,6 +242,91 @@ impl Item {
         }
     }
 
+    /// 幻灯片画框构造器（Phase D）。创建时 transform 不旋转不翻转。
+    pub fn new_frame(
+        number: u32,
+        base_size: (f32, f32),
+        pos_x: f32,
+        pos_y: f32,
+        name: Option<String>,
+    ) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            kind: ItemKind::Frame {
+                base_size,
+                number,
+                name,
+            },
+            transform: Transform::new(pos_x, pos_y, 1.0, 1.0),
+            z: 0,
+        }
+    }
+
+    /// 该 item 是否为画框。
+    pub fn is_frame(&self) -> bool {
+        matches!(self.kind, ItemKind::Frame { .. })
+    }
+
+    /// 画框编号（非画框返回 None）。
+    pub fn frame_number(&self) -> Option<u32> {
+        match &self.kind {
+            ItemKind::Frame { number, .. } => Some(*number),
+            _ => None,
+        }
+    }
+
+    /// 画框名称（非画框返回 None）。
+    pub fn frame_name(&self) -> Option<&str> {
+        match &self.kind {
+            ItemKind::Frame { name, .. } => name.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// 画框是否在边界阈值内命中（仅边框；内容区域穿透）。`threshold` 为画布单位。
+    pub fn frame_border_hit(&self, canvas_pos: CanvasPoint, threshold: f32) -> bool {
+        if !self.is_frame() {
+            return false;
+        }
+        let r = self.bounding_rect();
+        let min = r.min();
+        let max = r.max();
+        let inside_x = canvas_pos.x >= min.x - threshold && canvas_pos.x <= max.x + threshold;
+        let inside_y = canvas_pos.y >= min.y - threshold && canvas_pos.y <= max.y + threshold;
+        if !(inside_x && inside_y) {
+            return false;
+        }
+        let dx = if canvas_pos.x < min.x {
+            min.x - canvas_pos.x
+        } else if canvas_pos.x > max.x {
+            canvas_pos.x - max.x
+        } else {
+            0.0
+        };
+        let dy = if canvas_pos.y < min.y {
+            min.y - canvas_pos.y
+        } else if canvas_pos.y > max.y {
+            canvas_pos.y - max.y
+        } else {
+            0.0
+        };
+        dx <= threshold && dy <= threshold
+    }
+
+    /// 修改画框编号（非画框无副作用）。
+    pub fn set_frame_number(&mut self, number: u32) {
+        if let ItemKind::Frame { number: n, .. } = &mut self.kind {
+            *n = number;
+        }
+    }
+
+    /// 修改画框名称（非画框无副作用）。
+    pub fn set_frame_name(&mut self, name: Option<String>) {
+        if let ItemKind::Frame { name: nm, .. } = &mut self.kind {
+            *nm = name;
+        }
+    }
+
     pub fn new_shape(
         shape_type: ShapeType,
         base_size: (f32, f32),
@@ -349,6 +445,9 @@ impl Item {
                 }
                 CanvasVector::new(base_size.0.max(1.0), base_size.1.max(1.0))
             }
+            ItemKind::Frame { base_size, .. } => {
+                CanvasVector::new(base_size.0.max(1.0), base_size.1.max(1.0))
+            }
         }
     }
 
@@ -393,6 +492,10 @@ impl Item {
     /// 画布点是否落在 item 内（OBB 命中，正确处理旋转/翻转/缩放；
     /// 线类改为点到线段距离命中）。
     pub fn contains_canvas_point(&self, canvas_pos: CanvasPoint) -> bool {
+        // 画框不参与内容命中：仅边框命中（见 [`Item::frame_border_hit`]），内容穿透到下层。
+        if self.is_frame() {
+            return false;
+        }
         let inv = match self.local_to_canvas().inverse() {
             Some(inv) => inv,
             None => return false,
@@ -757,5 +860,47 @@ mod tests {
         let s = serde_json::to_string(&txt).unwrap();
         let back: Item = serde_json::from_str(&s).unwrap();
         assert_eq!(back.id, txt.id);
+    }
+
+    #[test]
+    fn frame_serde_roundtrip_preserves_fields() {
+        let f = Item::new_frame(7, (300.0, 200.0), 10.0, 20.0, Some("封面".to_string()));
+        let s = serde_json::to_string(&f).unwrap();
+        let back: Item = serde_json::from_str(&s).unwrap();
+        assert_eq!(back.id, f.id);
+        assert!(back.is_frame());
+        assert_eq!(back.frame_number(), Some(7));
+        assert!(back.bounding_rect().width() >= 300.0);
+        match &back.kind {
+            ItemKind::Frame {
+                number,
+                name,
+                base_size,
+            } => {
+                assert_eq!(*number, 7);
+                assert_eq!(name.as_deref(), Some("封面"));
+                assert_eq!(*base_size, (300.0, 200.0));
+            }
+            _ => panic!("expected Frame kind"),
+        }
+    }
+
+    #[test]
+    fn frame_serde_without_name_loads_as_none() {
+        // 旧/外部 JSON 未提供 name 字段 → 加载为 None（serde default）。
+        let json = r#"{
+            "Frame": {
+                "base_size": [400.0, 300.0],
+                "number": 3
+            }
+        }"#;
+        let kind: ItemKind = serde_json::from_str(json).unwrap();
+        match &kind {
+            ItemKind::Frame { number, name, .. } => {
+                assert_eq!(*number, 3);
+                assert!(name.is_none());
+            }
+            _ => panic!("expected Frame kind"),
+        }
     }
 }

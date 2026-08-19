@@ -1,5 +1,5 @@
 use crate::item::{CropRect, ItemId, ItemKind};
-use crate::scene::Scene;
+use crate::scene::{RenumberPlan, Scene};
 use crate::shape::ArrowHeadStyle;
 use crate::spaces::CanvasVector;
 use crate::transform::Transform;
@@ -812,5 +812,42 @@ impl Command for NormalizeItems {
                 item.transform = *old_tf;
             }
         }
+    }
+}
+
+// ─────────────────────────── Frame renumber ───────────────────────────
+
+/// 画框编号重排命令（Phase D）。redo 应用冲突顺移，undo 还原。
+/// 使用 [`Scene::plan_frame_renumber`] 生成的计划，经 [`Scene::apply_renumber`] /
+/// [`Scene::undo_renumber`] 执行。
+pub struct RenumberFrame {
+    plan: RenumberPlan,
+    applied: bool,
+}
+
+impl RenumberFrame {
+    pub fn new(plan: RenumberPlan) -> Self {
+        Self {
+            plan,
+            applied: false,
+        }
+    }
+}
+
+impl Command for RenumberFrame {
+    fn redo(&mut self, scene: &mut Scene) {
+        if self.applied {
+            return;
+        }
+        self.applied = true;
+        scene.apply_renumber(&self.plan);
+    }
+
+    fn undo(&mut self, scene: &mut Scene) {
+        if !self.applied {
+            return;
+        }
+        self.applied = false;
+        scene.undo_renumber(&self.plan);
     }
 }
