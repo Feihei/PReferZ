@@ -82,6 +82,21 @@ enum Tool {
     Frame,
 }
 
+/// 应用运行模式。Present 为全屏幻灯片演示（Phase E）。
+enum AppMode {
+    Edit,
+    Present {
+        /// 按 number 排序、尺寸达标的画框 id 快照（进入时固化，退出前不刷新）。
+        slides: Vec<ItemId>,
+        /// 每个 slide 的成员快照（与 slides 等长，进入时预计算，翻页不重算）。
+        members: Vec<Vec<ItemId>>,
+        index: usize,
+        /// 退出 Present 时恢复的进入前视口。
+        saved_pan: CanvasVector,
+        saved_zoom: f32,
+    },
+}
+
 /// 拖拽状态机。
 enum DragState {
     Idle,
@@ -381,6 +396,10 @@ pub struct PReferZApp {
     editing_frame_number: Option<ItemId>,
     /// 画框编号编辑输入缓冲区。
     frame_number_buf: String,
+    /// 运行模式：编辑 / 全屏幻灯片演示（Phase E）。
+    app_mode: AppMode,
+    /// Present 翻页过渡目标视口（zoom, pan），Some 时逐帧指数插值。
+    present_anim: Option<(f32, CanvasVector)>,
     /// 当前打开的文件路径（保存时若 None 则弹出对话框）�?
     current_file: Option<PathBuf>,
     /// 后台任务（导入解�?/ 文件加载 / 文件保存）�?
@@ -468,6 +487,8 @@ impl PReferZApp {
             editing_text: None,
             editing_frame_number: None,
             frame_number_buf: String::new(),
+            app_mode: AppMode::Edit,
+            present_anim: None,
             current_file: None,
             bg_ops: BackgroundOps::default(),
             color_picker_active: false,
@@ -674,6 +695,13 @@ impl eframe::App for PReferZApp {
             if t.elapsed().as_millis() > FLASH_DURATION_MS {
                 self.flash_status = None;
             }
+        }
+
+        // Present 演示模式：纯展示态，跳过所有编辑界面，进入独立渲染与导航。
+        if matches!(self.app_mode, AppMode::Present { .. }) {
+            self.handle_present_input(ctx);
+            self.render_present(ctx);
+            return;
         }
 
         // 左侧工具条（spec §5.1：绘制工具切换）
@@ -1794,6 +1822,401 @@ impl PReferZApp {
 // ─────────────────────────── 渲染 ───────────────────────────
 
 impl PReferZApp {
+    // ─────────────────────────── Present（Slide 演示） ───────────────────────────
+
+    /// 绘制单个 item 的视觉内容（不含选中手柄 / 多选外框 / 裁剪 overlay）。
+    /// Edit 与 Present 模式共用的渲染原语，保证两处观感一致。
+    fn draw_item_visual(&self, ui: &mut egui::Ui, item: &Item, editing_id: Option<ItemId>) {
+        let canvas_bbox = item.bounding_rect();
+        let item_screen_rect = self.viewport.canvas_to_screen_rect(canvas_bbox);
+        let corners = item.canvas_corners();
+        let screen_corners = [
+            self.viewport.canvas_to_screen(corners[0]),
+            self.viewport.canvas_to_screen(corners[1]),
+            self.viewport.canvas_to_screen(corners[2]),
+            self.viewport.canvas_to_screen(corners[3]),
+        ];
+        match &item.kind {
+            ItemKind::Pixmap {
+                texture_id,
+                opacity,
+                grayscale,
+                crop,
+                ..
+            } => {
+                let tex_id = *texture_id;
+                let handle = if *grayscale {
+                    self.grayscale_texture_cache
+                        .get(&tex_id)
+                        .or_else(|| self.texture_cache.get(&tex_id))
+                } else {
+                    self.texture_cache.get(&tex_id)
+                };
+                if let Some(handle) = handle {
+                    let (u_min, u_max, v_min, v_max) = if let Some(c) = crop {
+                        let base_w = item.base_size().x.max(1.0);
+                        let base_h = item.base_size().y.max(1.0);
+                        let cx0 = (c.x / base_w).clamp(0.0, 1.0);
+                        let cx1 = ((c.x + c.width) / base_w).clamp(0.0, 1.0);
+                        let cy0 = (c.y / base_h).clamp(0.0, 1.0);
+                        let cy1 = ((c.y + c.height) / base_h).clamp(0.0, 1.0);
+                        (cx0, cx1, cy0, cy1)
+                    } else {
+                        (0.0, 1.0, 0.0, 1.0)
+                    };
+                    let alpha = (opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
+                    let tint = egui::Color32::from_rgba_premultiplied(255, 255, 255, alpha);
+                    let [tl, tr, bl, br] = screen_corners;
+                    let verts = [
+                        ([tl.x, tl.y], [u_min, v_min]),
+                        ([tr.x, tr.y], [u_max, v_min]),
+                        ([br.x, br.y], [u_max, v_max]),
+                        ([bl.x, bl.y], [u_min, v_max]),
+                    ];
+                    let mut mesh = egui::epaint::Mesh {
+                        texture_id: handle.id(),
+                        ..Default::default()
+                    };
+                    for ([px, py], [u, v]) in verts {
+                        mesh.vertices.push(egui::epaint::Vertex {
+                            pos: [px, py].into(),
+                            uv: [u, v].into(),
+                            color: tint,
+                        });
+                    }
+                    mesh.indices = vec![0, 1, 2, 0, 2, 3];
+                    ui.painter().add(egui::epaint::Shape::mesh(mesh));
+                } else {
+                    ui.painter().rect_filled(
+                        item_screen_rect,
+                        egui::Rounding::same(0.0),
+                        egui::Color32::from_rgb(70, 70, 70),
+                    );
+                }
+            }
+            ItemKind::Text {
+                content,
+                font_size,
+                color,
+                container_id,
+                ..
+            } => {
+                if editing_id != Some(item.id) {
+                    ui.painter().rect_filled(
+                        item_screen_rect,
+                        egui::Rounding::same(2.0),
+                        egui::Color32::from_rgb(60, 60, 60),
+                    );
+                    let text_color = egui::Color32::from_rgba_premultiplied(
+                        color[0], color[1], color[2], color[3],
+                    );
+                    if let Some(cid) = container_id {
+                        // 绑定文本：换行到容器宽度，居中绘制
+                        if let Some(container) = self.scene.get_item(cid) {
+                            let cr = self
+                                .viewport
+                                .canvas_to_screen_rect(container.bounding_rect());
+                            let wrap = (cr.width() - 12.0).max(20.0);
+                            let ef = *font_size * self.viewport.zoom;
+                            let job = egui::text::LayoutJob::simple(
+                                content.clone(),
+                                egui::FontId::proportional(ef),
+                                text_color,
+                                wrap,
+                            );
+                            let gal = ui.ctx().fonts(|f| f.layout_job(job));
+                            let gsz = gal.size();
+                            let tl = cr.center() - egui::vec2(gsz.x / 2.0, gsz.y / 2.0);
+                            ui.painter().galley(tl, gal, text_color);
+                        }
+                    } else {
+                        let origin = self.viewport.canvas_to_screen(corners[0]);
+                        let effective_font_size =
+                            *font_size * item.transform.scale.x.abs() * self.viewport.zoom;
+                        ui.painter().text(
+                            origin,
+                            egui::Align2::LEFT_TOP,
+                            content.clone(),
+                            egui::FontId::proportional(effective_font_size),
+                            text_color,
+                        );
+                    }
+                }
+            }
+            ItemKind::Shape {
+                shape_type,
+                base_size,
+                points,
+                stroke,
+                fill,
+                start_arrow,
+                end_arrow,
+                closed,
+                seed: _,
+            } => {
+                let data = ShapeData {
+                    shape_type: *shape_type,
+                    base_size: *base_size,
+                    points: points.clone(),
+                    start_arrow: *start_arrow,
+                    end_arrow: *end_arrow,
+                    closed: *closed,
+                };
+                let to_screen = item_local_to_screen(item, &self.viewport);
+                let fill_color =
+                    fill.map(|c| egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]));
+                let shapes = CleanStyler.build_shapes(
+                    &data,
+                    stroke,
+                    fill_color,
+                    &to_screen,
+                    self.viewport.zoom,
+                );
+                ui.painter().extend(shapes);
+            }
+            ItemKind::Frame { .. } => {
+                let sr = self.viewport.canvas_to_screen_rect(item.bounding_rect());
+                let border = egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(90, 90, 95));
+                ui.painter().rect_stroke(sr, 0.0, border);
+            }
+        }
+    }
+
+    /// 进入演示：收集尺寸达标的画框快照（按编号升序）+ 预计算成员，记录视口，进入全屏。
+    fn enter_present(&mut self, ctx: &egui::Context) {
+        let slides: Vec<ItemId> = self
+            .scene
+            .frames_by_number()
+            .into_iter()
+            .filter(|id| {
+                self.scene.get_item(id).is_some_and(|it| {
+                    let s = it.base_size();
+                    s.x >= 10.0 && s.y >= 10.0
+                })
+            })
+            .collect();
+        if slides.is_empty() {
+            self.flash(t(self.lang, T::PresentNoFrames));
+            return;
+        }
+        // 进入时预计算每帧成员快照（翻页不重算）。
+        let members: Vec<Vec<ItemId>> = slides
+            .iter()
+            .map(|id| self.scene.frame_members(*id))
+            .collect();
+        let saved_pan = self.viewport.pan;
+        let saved_zoom = self.viewport.zoom;
+        self.app_mode = AppMode::Present {
+            slides,
+            members,
+            index: 0,
+            saved_pan,
+            saved_zoom,
+        };
+        self.present_anim = None;
+        self.drag = DragState::Idle;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
+        ctx.request_repaint();
+    }
+
+    /// 退出演示：恢复视口与窗口（全屏关闭）。
+    fn exit_present(&mut self, ctx: &egui::Context) {
+        if let AppMode::Present {
+            saved_pan,
+            saved_zoom,
+            ..
+        } = &self.app_mode
+        {
+            self.viewport.pan = *saved_pan;
+            self.viewport.zoom = *saved_zoom;
+        }
+        self.app_mode = AppMode::Edit;
+        self.present_anim = None;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+        ctx.request_repaint();
+    }
+
+    /// 计算 Present 模式下把 `frame_rect` 适配到 `screen_rect` 的目标视口 `(zoom, pan)`。
+    /// 按渲染标准和设计取 95% 填充；Present 临时放宽 max_zoom（不 clamp 上限）。
+    fn present_compute_fit(
+        &self,
+        screen_rect: egui::Rect,
+        frame_rect: CanvasRect,
+    ) -> (f32, CanvasVector) {
+        let fw = frame_rect.width().max(1.0);
+        let fh = frame_rect.height().max(1.0);
+        let sw = screen_rect.width().max(1.0);
+        let sh = screen_rect.height().max(1.0);
+        let zoom = (sw / fw).min(sh / fh) * 0.95;
+        let zoom = zoom.max(self.viewport.min_zoom);
+        (zoom, frame_rect.center().to_vector())
+    }
+
+    /// 每帧把视口渐进趋近目标（翻页过渡 / Present 实时适配 DPI）。
+    fn present_apply_fit(
+        &mut self,
+        ctx: &egui::Context,
+        screen_rect: egui::Rect,
+        frame_rect: CanvasRect,
+    ) {
+        let (tz, tp) = match self.present_anim {
+            Some(t) => t,
+            None => self.present_compute_fit(screen_rect, frame_rect),
+        };
+        if self.present_anim.is_some() {
+            // 指数插值，约 200ms 收敛
+            let dt = ctx.input(|i| i.unstable_dt).clamp(0.0, 0.05);
+            let k = 1.0 - (-dt / 0.18).exp();
+            self.viewport.zoom += (tz - self.viewport.zoom) * k;
+            self.viewport.pan.x += (tp.x - self.viewport.pan.x) * k;
+            self.viewport.pan.y += (tp.y - self.viewport.pan.y) * k;
+            let pan_close = (self.viewport.pan - tp).length() < 0.5;
+            if (self.viewport.zoom - tz).abs() < 0.001 && pan_close {
+                self.viewport.zoom = tz;
+                self.viewport.pan = tp;
+                self.present_anim = None;
+            } else {
+                ctx.request_repaint();
+            }
+        } else {
+            self.viewport.zoom = tz;
+            self.viewport.pan = tp;
+        }
+    }
+
+    fn present_slide_count(&self) -> usize {
+        match &self.app_mode {
+            AppMode::Present { slides, .. } => slides.len(),
+            AppMode::Edit => 0,
+        }
+    }
+
+    fn present_goto(&mut self, idx: usize, ctx: &egui::Context) {
+        let (slides, index) = match &self.app_mode {
+            AppMode::Present { slides, index, .. } => (slides.clone(), *index),
+            AppMode::Edit => return,
+        };
+        let n = slides.len();
+        if n <= 1 {
+            return;
+        }
+        let idx = idx.min(n - 1);
+        if idx == index {
+            return;
+        }
+        if let AppMode::Present { index: slot, .. } = &mut self.app_mode {
+            *slot = idx;
+        }
+        if let Some(frame) = self.scene.get_item(&slides[idx]) {
+            let (z, p) = self.present_compute_fit(ctx.screen_rect(), frame.bounding_rect());
+            self.present_anim = Some((z, p));
+        }
+        ctx.request_repaint();
+    }
+
+    fn render_present(&mut self, ctx: &egui::Context) {
+        let (slides, members, index) = match &self.app_mode {
+            AppMode::Present {
+                slides,
+                members,
+                index,
+                ..
+            } => (slides.clone(), members.clone(), *index),
+            AppMode::Edit => return,
+        };
+        if slides.is_empty() {
+            return;
+        }
+        let screen_rect = ctx.screen_rect();
+        self.viewport.set_screen_rect(screen_rect);
+
+        let Some(frame) = self.scene.get_item(&slides[index]) else {
+            return;
+        };
+        let frame_rect = frame.bounding_rect();
+        self.present_apply_fit(ctx, screen_rect, frame_rect);
+        let frame_screen_rect = self.viewport.canvas_to_screen_rect(frame_rect);
+
+        egui::CentralPanel::default()
+            .frame(egui::Frame::none().fill(egui::Color32::from_rgb(24, 24, 27)))
+            .show(ctx, |ui| {
+                let original_clip = ui.clip_rect();
+                // 只绘制当前帧成员，且裁剪到帧矩形，形成独立"幻灯片"画布。
+                ui.set_clip_rect(frame_screen_rect);
+                for id in &members[index] {
+                    let Some(item) = self.scene.get_item(id).cloned() else {
+                        continue;
+                    };
+                    let cull = self.viewport.canvas_to_screen_rect(item.bounding_rect());
+                    if screen_rect.intersects(cull) {
+                        self.draw_item_visual(ui, &item, None);
+                    }
+                }
+                ui.set_clip_rect(original_clip);
+            });
+
+        // 页码指示（右下角）
+        egui::Area::new(egui::Id::new("present_page_indicator"))
+            .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-28.0, -20.0))
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                let label = format!("{} / {}", index + 1, slides.len());
+                ui.label(
+                    egui::RichText::new(label)
+                        .size(16.0)
+                        .color(egui::Color32::from_gray(210)),
+                );
+            });
+    }
+
+    fn handle_present_input(&mut self, ctx: &egui::Context) {
+        let mut delta: i32 = 0;
+        let keys = |ctx: &egui::Context| {
+            (
+                ctx.input(|i| i.key_pressed(egui::Key::ArrowRight)),
+                ctx.input(|i| i.key_pressed(egui::Key::Space)),
+                ctx.input(|i| i.key_pressed(egui::Key::PageDown)),
+                ctx.input(|i| i.key_pressed(egui::Key::ArrowLeft)),
+                ctx.input(|i| i.key_pressed(egui::Key::PageUp)),
+                ctx.input(|i| i.key_pressed(egui::Key::Home)),
+                ctx.input(|i| i.key_pressed(egui::Key::End)),
+                ctx.input(|i| i.key_pressed(egui::Key::Escape)),
+                ctx.input(|i| i.key_pressed(egui::Key::F5)),
+            )
+        };
+        let (right, space, pgdn, left, pgup, home, end, esc, f5) = keys(ctx);
+        let n = self.present_slide_count();
+        let index = match &self.app_mode {
+            AppMode::Present { index, .. } => *index,
+            AppMode::Edit => return,
+        };
+
+        if esc || f5 {
+            self.exit_present(ctx);
+            return;
+        }
+        if right || space || pgdn {
+            delta = 1;
+        } else if left || pgup {
+            delta = -1;
+        }
+        if home {
+            delta = i32::MIN;
+        } else if end {
+            delta = i32::MAX;
+        }
+        let scroll = ctx.input(|i| i.raw_scroll_delta).y;
+        if scroll != 0.0 {
+            // Present 模式滚轮 = 翻页（滚轮向下 → 下一页）
+            delta = if scroll < 0.0 { 1 } else { -1 };
+        }
+        if delta != 0 {
+            let target = (index as i32 + delta).clamp(0, n as i32 - 1) as usize;
+            self.present_goto(target, ctx);
+        }
+    }
+
+    // ─────────────────────────── 渲染 ───────────────────────────
     fn render_scene(&mut self, ui: &mut egui::Ui) {
         let screen_rect = ui.max_rect();
 
@@ -2540,6 +2963,15 @@ impl PReferZApp {
                         self.new_canvas(ctx);
                         self.context_menu_open = false;
                     }
+                    ui.separator();
+                    if ui
+                        .button(format!("\u{25B6} {}", t(self.lang, T::Present)))
+                        .clicked()
+                    {
+                        self.enter_present(ctx);
+                        self.context_menu_open = false;
+                    }
+                    ui.separator();
                     if ui
                         .button(format!("\u{1F4C2} {}", t(self.lang, T::OpenProject)))
                         .clicked()
@@ -3113,6 +3545,16 @@ fn apply_rotate_drag(
 
 impl PReferZApp {
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
+        // Present 演示：F5 / Esc 退出（进入由 F5 或右键菜单触发，present 输入走 handle_present_input）。
+        if ctx.input(|i| i.key_pressed(egui::Key::F5)) {
+            if matches!(self.app_mode, AppMode::Present { .. }) {
+                self.exit_present(ctx);
+            } else {
+                self.enter_present(ctx);
+            }
+            return;
+        }
+
         // 文本编辑中不处理场景快捷键（Esc �?render_text_editor 处理�?
         if self.editing_text.is_some() {
             return;

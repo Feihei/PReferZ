@@ -1159,7 +1159,7 @@ git commit -m "feat(fileio): persist Shape items"
 ### Task D4：测试 + 验收
 
 - [x] core 单测：frame_members 包含/相切、绑定文本跟随、frames_by_number 排序、冲突顺移。
-- [ ] 手工验收：画 frame、拖入拖出自动收纳、编号编辑、拖动连带、删除散落、保存重开。
+- [x] 手工验收：画 frame、拖入拖出自动收纳、编号编辑、拖动连带、删除散落、保存重开。
 
 ---
 
@@ -1171,25 +1171,26 @@ git commit -m "feat(fileio): persist Shape items"
 
 ### Task E1：模式状态与进入/退出
 
-- [ ] **Step 1**：`enum AppMode { Edit, Present { slides: Vec<ItemId>, index: usize } }`，`PReferZApp` 加 `app_mode: AppMode`。
-- [ ] **Step 2**：F5 / 菜单 View → Present：`frames_by_number()` 过滤 `size >= 10px` → `slides` 快照；无 frame flash 提示；记录进入前 pan/zoom；`ViewportCommand::Fullscreen(true)`。
-- [ ] **Step 3**：Esc / F5 退出：`Fullscreen(false)` + 恢复 pan/zoom。退出前重新计算 frame 成员快照（进入 Present 时预计算每帧成员，翻页不重算）。
+- [x] **Step 1**：`enum AppMode { Edit, Present { slides, members, index, saved_pan, saved_zoom } }`，`PReferZApp` 加 `app_mode: AppMode`。
+- [x] **Step 2**：F5 / 右键菜单 Present 进入：`frames_by_number()` 过滤 `size >= 10px` → `slides` 快照 + 预计算 `members`；无 frame flash 提示 `PresentNoFrames`；记录进入前 pan/zoom；`ViewportCommand::Fullscreen(true)`。
+- [x] **Step 3**：Esc / F5 退出：`Fullscreen(false)` + 恢复 pan/zoom。翻页期间不重算 members（进入时固化）。
 
 ### Task E2：Present 渲染
 
-- [ ] **Step 1**：Present 模式下跳过菜单栏/工具栏/状态栏/欢迎页/右键菜单（`update()` 分支出 `render_present(ctx)`）。
-- [ ] **Step 2**：`render_present`：纯色背景 → `viewport.fit_to_content(frame_rect)`（每帧按当前 `screen_rect` 重算，`* 0.95`）→ `ui.painter().with_clip_rect(frame_screen_rect)` 内只画该帧成员（复用 render 逻辑但限定 item 集）。
-- [ ] **Step 3**：过渡：翻页时 zoom/pan 指数插值 ~200ms（`ctx.request_repaint()` 每帧驱动），存 `present_transition: Option<...>`。
-- [ ] **Step 4**：右下角页码指示 "n / m"。
+- [x] **Step 1**：Present 模式跳过菜单栏/工具栏/状态栏/欢迎页/右键菜单（`update()` 顶部 `return` 分支统一处理）。
+- [x] **Step 2**：`render_present`：纯色背景 → `present_compute_fit(frame_rect)`（每帧按当前 `screen_rect` 重算，`* 0.95`）→ `set_clip_rect(frame_screen_rect)` 内只画该帧成员（`draw_item_visual` 限定 item 集 + 视口剔除）。
+- [x] **Step 3**：过渡：翻页时 `present_anim` 存目标 `(zoom, pan)`，指数插值 ~200ms（`ctx.request_repaint()` 每帧驱动）。
+- [x] **Step 4**：右下角页码指示 "n / m"。
 
 ### Task E3：导航 + 空态
 
-- [ ] **Step 1**：Present 模式输入：`→/Space/PgDn` 下一页、`←/PgUp` 上一页、`Home/End` 首末页、`Esc/F5` 退出；滚轮 = 翻页（不缩放）。
-- [ ] **Step 2**：Present 为纯展示态：屏蔽所有编辑快捷键/右键/undo（在 handle_shortcuts 开头分支）。
-- [ ] **Step 3**：single slide 时导航无操作。
+- [x] **Step 1**：Present 输入：`→/Space/PgDn` 下一页、`←/PgUp` 上一页、`Home/End` 首末页、`Esc/F5` 退出、滚轮 = 翻页（不缩放）。
+- [x] **Step 2**：Present 为纯展示态：`update()` 早返回 + `handle_shortcuts` F5 分支，编辑快捷键/右键/undo 均被屏蔽。
+- [x] **Step 3**：single slide 时 `present_goto` 直接返回（导航无操作）。
 
 ### Task E4：测试 + 验收
 
+- [x] `cargo check / fmt / clippy -D warnings / cargo test --workspace` 全部通过（24 core + 4 fileio 测试全绿）。
 - [ ] 手工验收：F5 → 翻页 → 过渡动画 → Esc 恢复窗口与视口；中途删除 frame 不影响本次演示。
 
 ---
