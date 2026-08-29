@@ -1,5 +1,8 @@
 # PReferZ Phase F：手绘风描边（RoughStyler）实施计划
 
+> **状态（2026-08-29 更新）**：**代码已合入 main**，提交 `3a21aef`。自动化测试全绿（工作区 50 个测试），`cargo fmt` / `cargo clippy -D warnings` 均通过。
+> **剩余**：§6「手工验收清单」需 Feihei 本人跑 GUI 确认观感（7 项未勾）。
+>
 > **配套文档**：`.agents/shapes-and-frame-slides-design.md`（§4 风格生成器、§16 非目标、§附录 B roughjs 对照）、`.agents/shapes-and-frame-slides-plan.md`（Phase A–E 已全部合入）。
 > **决策（2026-08-29）**：本轮只做**手绘描边**，填充保持纯色（不做 hachure 斜线阴影）。
 
@@ -142,23 +145,28 @@ impl SeededRng {
 
 ## 6. 测试
 
-**core（`preferz-core`）**
-- `SeededRng`：同 seed 序列一致、不同 seed 序列不同、`next_f32()` 落在 [0,1)、`signed()` 落在 [-1,1]
-- `rough` serde：旧 JSON 无 `rough` 字段 → 默认 `false`；写入 true 后往返一致
-- `with_rough(true)` 使 `seed != 0`；`with_rough(false)` 不改 seed
-- `SetRough` redo/undo 往返
+**core（`preferz-core`）** — 全部已实现（+11 测试，共 35 通过）
+- [x] `SeededRng`：同 seed 序列一致、不同 seed 序列不同、`next_f32()` 落在 [0,1)、`signed()` 落在 [-1,1]
+- [x] `rough` serde：旧 JSON 无 `rough` 字段 → 默认 `false`；写入 true 后往返一致
+- [x] `with_rough(true)` 使 `seed != 0`；`with_rough(false)` 不改 seed
+- [x] `SetRough` redo/undo 往返（含 undo/redo 后 seed 不变、非 Shape item 为空操作）
 
-**binary（`preferz`）**
-- `RoughStyler` 输出确定性：同 seed 两次 `build_shapes` 得到等价的 `Vec<Shape>`（用 `format!("{:?}")` 比对）
-- 不同 seed 输出不同
-- 矩形 rough 输出 shape 数 = 1 fill(可选) + 4 边 × 2 passes
+**binary（`preferz`）** — 全部已实现（+11 测试）
+- [x] `RoughStyler` 输出确定性：同 seed 两次 `build_shapes` 得到等价的 `Vec<Shape>`（用 `format!("{:?}")` 比对）
+- [x] 不同 seed 输出不同
+- [x] 矩形 rough 输出 shape 数 = 1 fill(可选) + 4 边 × 2 passes
+- [x] `build_shape_visuals` 按 `rough` 分发；非 Shape item 返回空
 
-**质量门槛**
+**质量门槛** — 全部通过
 ```
-cargo fmt --all --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+cargo fmt --all --check                                  ✔
+cargo clippy --workspace --all-targets -- -D warnings    ✔ 零警告
+cargo test --workspace                                   ✔ 50 passed
 ```
+
+> **顺带修复（无关 Phase F，单独提交 `5bd8f13`）**：clippy 1.98 新增 `chunks_exact_to_as_chunks`
+> lint 命中了既有代码三处（welcome logo 纹理、导出白底填充、RGBA→RGB 转换），
+> 改用 `as_chunks::<4>()`。不修会导致 CI 因 `-D warnings` 失败。
 
 **手工验收清单**（交给 Feihei）
 - [ ] 工具栏切矩形工具 → 勾「手绘」→ 拖拽画矩形，观感接近 Excalidraw
