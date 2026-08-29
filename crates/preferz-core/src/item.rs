@@ -592,6 +592,9 @@ impl Item {
 
     /// 4 个角点（画布空间），按 TopLeft / TopRight / BottomLeft / BottomRight 顺序。
     /// 用于变换手柄绘制与命中。
+    ///
+    /// ⚠️ **不是环形顺序**（第 3 个是 BL 而非 BR）：直接按此顺序连多边形会画成
+    /// 交叉四边形。要画轮廓请用 [`Item::canvas_corners_ring`]。
     pub fn canvas_corners(&self) -> [CanvasPoint; 4] {
         let size = self.base_size();
         let to_canvas = self.local_to_canvas();
@@ -601,6 +604,156 @@ impl Item {
             to_canvas.transform_point(euclid::Point2D::new(0.0, size.y)),
             to_canvas.transform_point(euclid::Point2D::new(size.x, size.y)),
         ]
+    }
+
+    /// 同 [`Item::canvas_corners`]，但重排为**环形顺序** TL → TR → BR → BL，
+    /// 可直接用于连多边形（`Shape::convex_polygon` `PathShape::closed_line` 等）。
+    pub fn canvas_corners_ring(&self) -> [CanvasPoint; 4] {
+        let c = self.canvas_corners();
+        // canvas_corners 是 [TL, TR, BL, BR] → 环形 [TL, TR, BR, BL]
+        [c[0], c[1], c[3], c[2]]
+    }
+
+    /// 当前生效的裁剪区域（原图像素坐标）；未裁剪时为整图。
+    ///
+    /// 即画面上**实际可见**的那块原图区域。应用裁剪时 `transform.scale` 会同步按
+    /// 裁剪比例缩小，因此 item 的显示尺寸始终等于该区域的像素尺寸。
+    pub fn current_crop(&self) -> Option<CropRect> {
+        let (ow, oh) = self.original_pixel_size()?;
+        match &self.kind {
+            ItemKind::Pixmap { crop: Some(c), .. } => Some(*c),
+            ItemKind::Pixmap { crop: None, .. } => Some(CropRect::new(0.0, 0.0, ow, oh)),
+            _ => None,
+        }
+    }
+
+    /// 裁剪框 4 角（画布空间），按**环形顺序** TL → TR → BR → BL。
+    ///
+    /// `crop` 以原图像素为单位（见 [`CropRect`]），但归一化基准是
+    /// [`Item::current_crop`]（**当前可见区域**）而非整图——应用裁剪后
+    /// `transform.scale` 已按裁剪比例缩小，若仍以整图为基准会二次缩放，
+    /// 裁剪框比图片小一圈。以当前可见区域为基准，`crop == current_crop()`
+    /// 时裁剪框与图片重合。
+    ///
+    /// 归一化后再走完整的 [`Item::local_to_canvas`]，旋转/缩放/翻转下裁剪框
+    /// 会**跟随 item 一起变换**。
+    ///
+    /// ⚠️ 不要用画布 AABB 对 crop 做线性插值来定位裁剪框——AABB 在旋转下会膨胀，
+    /// 且轴对齐插值不含旋转，裁剪框会与图片错位（历史 bug）。
+    ///
+    /// 非 Pixmap 或尺寸退化时返回 `None`。
+    pub fn crop_corners(&self, crop: CropRect) -> Option<[CanvasPoint; 4]> {
+        let base = self.current_crop()?;
+        let size = self.base_size();
+        if base.width <= 0.0 || base.height <= 0.0 || size.x <= 0.0 || size.y <= 0.0 {
+            return None;
+        }
+        let to_canvas = self.local_to_canvas();
+        let local = |u: f32, v: f32| {
+            to_canvas.transform_point(euclid::Point2D::<_, ItemLocalSpace>::new(
+                u * size.x,
+                v * size.y,
+            ))
+        };
+        let (u0, v0) = (
+            (crop.x - base.x) / base.width,
+            (crop.y - base.y) / base.height,
+        );
+        let (u1, v1) = (
+            (crop.x + crop.width - base.x) / base.width,
+            (crop.y + crop.height - base.y) / base.height,
+        );
+        Some([local(u0, v0), local(u1, v0), local(u1, v1), local(u0, v1)])
+    }
+
+    /// 画布坐标 → 原图像素坐标（裁剪框拖拽用的逆变换）。
+    ///
+    /// 是 [`Item::crop_corners`] 的逆运算：先逆变换回 item 局部空间，按 `base_size`
+    /// 归一化，再映射回 [`Item::current_crop`] 坐标系。结果可能落在当前可见区域
+    /// 之外（拖到图外时），由调用方 clamp。
+    pub fn canvas_to_crop_pixel(&self, canvas_pos: CanvasPoint) -> Option<(f32, f32)> {
+        let base = self.current_crop()?;
+        let inv = self.local_to_canvas().inverse()?;
+        let size = self.base_size();
+        if base.width <= 0.0 || base.height <= 0.0 || size.x <= 0.0 || size.y <= 0.0 {
+            return None;
+        }
+        let local = inv.transform_point(canvas_pos);
+        Some((
+            base.x + local.x / size.x * base.width,
+            base.y + local.y / size.y * base.height,
+        ))
+    }
+
+    /// 应用裁剪后的 transform：使裁剪区域在画布上的**位置与尺寸保持不变**。
+    ///
+    /// 裁剪语义（与渲染端 UV 计算一致）：item 局部空间 `[0, size]²` 经 UV 映射到
+    /// 原图的 `crop` 子区域，因此局部坐标 ℓ 对应原图像素
+    /// `crop.x + ℓ / size * crop.width`。由此：
+    /// - 新缩放 = 旧缩放 × (`crop` / 当前可见区域)，不是除以整图尺寸——
+    ///   否则对**已裁剪过的图片**二次裁剪会再缩小一次（历史 bug）
+    /// - 新 `pos` = 让局部原点落在 `crop` 左上角的画布位置（含旋转/翻转）
+    ///
+    /// 返回的新 transform 保持 `rotation` / `flip_*` 不变。非 Pixmap 或尺寸
+    /// 退化时返回 `None`。
+    pub fn transform_after_crop(&self, crop: CropRect) -> Option<Transform> {
+        let base = self.current_crop()?;
+        let size = self.base_size();
+        if base.width <= 0.0
+            || base.height <= 0.0
+            || size.x <= 0.0
+            || size.y <= 0.0
+            || crop.width <= 0.0
+            || crop.height <= 0.0
+        {
+            return None;
+        }
+        let old = self.transform;
+        let new_scale = CanvasVector::new(
+            old.scale.x * (crop.width / base.width),
+            old.scale.y * (crop.height / base.height),
+        );
+
+        // crop 左上角在局部空间的坐标（注意基准是 base，不是整图）
+        let u = (crop.x - base.x) / base.width * size.x;
+        let v = (crop.y - base.y) / base.height * size.y;
+        let crop_tl_canvas = self
+            .local_to_canvas()
+            .transform_point(euclid::Point2D::<_, ItemLocalSpace>::new(u, v));
+
+        // 新 transform 下局部原点的画布位置（scale 已变、pos 置零）
+        let mut probe = self.clone();
+        probe.transform.scale = new_scale;
+        probe.transform.pos = CanvasVector::zero();
+        let new_origin_canvas = probe
+            .local_to_canvas()
+            .transform_point(euclid::Point2D::<_, ItemLocalSpace>::origin());
+
+        Some(Transform {
+            pos: CanvasVector::new(
+                crop_tl_canvas.x - new_origin_canvas.x,
+                crop_tl_canvas.y - new_origin_canvas.y,
+            ),
+            scale: new_scale,
+            rotation: old.rotation,
+            flip_h: old.flip_h,
+            flip_v: old.flip_v,
+        })
+    }
+
+    /// Pixmap 的原始像素尺寸 `(w, h)`；非 Pixmap 或尺寸退化时返回 `None`。
+    pub fn original_pixel_size(&self) -> Option<(f32, f32)> {
+        match &self.kind {
+            ItemKind::Pixmap { original_size, .. } => {
+                let (w, h) = (original_size.0 as f32, original_size.1 as f32);
+                if w > 0.0 && h > 0.0 {
+                    Some((w, h))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
     }
 }
 
@@ -970,6 +1123,306 @@ mod tests {
         assert!(!txt.rough());
         let frame = Item::new_frame(1, (10.0, 10.0), 0.0, 0.0, None);
         assert!(!frame.rough());
+    }
+
+    // ── crop 几何（旋转感知） ──
+
+    /// 200×100 的图，放在 (10, 20)，scale 1.0。
+    fn pixmap(rotation: f32) -> Item {
+        let mut it = Item::new_pixmap(1, None, (200, 100), 10.0, 20.0, 1.0, 1.0);
+        it.transform.rotation = rotation;
+        it
+    }
+
+    const FULL: CropRect = CropRect {
+        x: 0.0,
+        y: 0.0,
+        width: 200.0,
+        height: 100.0,
+    };
+
+    fn assert_pts_eq(a: &[CanvasPoint], b: &[(f32, f32)]) {
+        assert_eq!(a.len(), b.len());
+        for (p, (x, y)) in a.iter().zip(b) {
+            assert!(
+                (p.x - x).abs() < 1e-3 && (p.y - y).abs() < 1e-3,
+                "期望 ({x}, {y})，实际 ({}, {})",
+                p.x,
+                p.y
+            );
+        }
+    }
+
+    /// 模拟 CropItems 效果：套用 transform_after_crop 并写入 crop 字段。
+    fn apply_crop(item: &Item, crop: CropRect) -> Item {
+        let mut out = item.clone();
+        out.transform = item
+            .transform_after_crop(crop)
+            .expect("应能算出新 transform");
+        if let ItemKind::Pixmap { crop: c, .. } = &mut out.kind {
+            *c = Some(crop);
+        } else {
+            panic!("apply_crop 只用于 Pixmap");
+        }
+        out
+    }
+
+    fn assert_quads_eq(a: &[CanvasPoint], b: &[CanvasPoint], ctx: &str) {
+        for (p, q) in a.iter().zip(b.iter()) {
+            assert!(
+                (p.x - q.x).abs() < 1e-2 && (p.y - q.y).abs() < 1e-2,
+                "{ctx}: 期望 ({}, {})，实际 ({}, {})",
+                q.x,
+                q.y,
+                p.x,
+                p.y
+            );
+        }
+    }
+
+    #[test]
+    fn crop_corners_without_rotation_matches_item_corners() {
+        let it = pixmap(0.0);
+        let c = it.crop_corners(FULL).expect("Pixmap 应有 crop 角点");
+        // 满幅裁剪 = item 自身；环形顺序 TL → TR → BR → BL
+        assert_pts_eq(
+            &c,
+            &[(10.0, 20.0), (210.0, 20.0), (210.0, 120.0), (10.0, 120.0)],
+        );
+        assert_pts_eq(
+            &it.crop_corners(FULL).unwrap(),
+            &it.canvas_corners_ring()
+                .iter()
+                .map(|p| (p.x, p.y))
+                .collect::<Vec<_>>(),
+        );
+    }
+
+    #[test]
+    fn crop_corners_follows_rotation() {
+        // 90° 旋转（绕局部原点，即 item 左上角）：局部 (w,0) → 画布 (0,w)
+        let it = pixmap(std::f32::consts::FRAC_PI_2);
+        let c = it.crop_corners(FULL).expect("应有 crop 角点");
+        assert_pts_eq(
+            &c,
+            &[
+                (10.0, 20.0),   // TL 仍在旋转中心
+                (10.0, 220.0),  // TR: +200 宽 → +200 y
+                (-90.0, 220.0), // BR: 再 +100 高 → -100 x
+                (-90.0, 20.0),  // BL
+            ],
+        );
+    }
+
+    #[test]
+    fn crop_corners_is_subset_of_rotated_item() {
+        // 45° 旋转 + 内缩裁剪：4 角必须落在 item 四边形内部
+        // （crop 从 (50,25) 起而非 (0,0)，避免角点正好压在 item 边界上触发浮点判定抖动）
+        let it = pixmap(std::f32::consts::FRAC_PI_4);
+        let inner = CropRect::new(50.0, 25.0, 100.0, 50.0);
+        let crop = it.crop_corners(inner).unwrap();
+        for p in crop {
+            assert!(
+                it.contains_canvas_point(p),
+                "crop 角点 ({}, {}) 应落在 item 内",
+                p.x,
+                p.y
+            );
+        }
+    }
+
+    #[test]
+    fn crop_pixel_roundtrip_is_inverse_of_crop_corners() {
+        let it = pixmap(0.7);
+        let c = CropRect::new(20.0, 10.0, 120.0, 60.0);
+        let corners = it.crop_corners(c).unwrap();
+        // 4 角逆变换回原图像素，应还原 crop 的 4 角
+        let expect = [(20.0, 10.0), (140.0, 10.0), (140.0, 70.0), (20.0, 70.0)];
+        for (p, (x, y)) in corners.iter().zip(expect) {
+            let (px, py) = it.canvas_to_crop_pixel(*p).expect("应可逆");
+            assert!(
+                (px - x).abs() < 1e-2 && (py - y).abs() < 1e-2,
+                "期望 ({x}, {y})，实际 ({px}, {py})"
+            );
+        }
+    }
+
+    /// 已裁剪过的图片：item.crop = Some(..)，且 transform.scale 已按裁剪比例缩小
+    /// （与 `CropItems` 命令一致）。返回 (item, 当前 crop)。
+    fn cropped_pixmap(rotation: f32) -> (Item, CropRect) {
+        let crop = CropRect::new(50.0, 25.0, 100.0, 50.0); // 原图右下半
+        let mut it = Item::new_pixmap(1, None, (200, 100), 0.0, 0.0, 1.0, 1.0);
+        if let ItemKind::Pixmap { crop: c, .. } = &mut it.kind {
+            *c = Some(crop);
+        }
+        // 与 CropItems 一致：scale *= crop / original，使显示尺寸 = crop 像素尺寸
+        it.transform.scale = CanvasVector::new(100.0 / 200.0, 50.0 / 100.0);
+        it.transform.rotation = rotation;
+        (it, crop)
+    }
+
+    #[test]
+    fn crop_corners_matches_item_when_rect_equals_current_crop() {
+        // 二次进入裁剪模式、未改动裁剪框时，裁剪框应与图片本身重合
+        let (it, crop) = cropped_pixmap(0.0);
+        let quad = it.crop_corners(crop).unwrap();
+        let item = it.canvas_corners_ring();
+        for (a, b) in quad.iter().zip(item.iter()) {
+            assert!(
+                (a.x - b.x).abs() < 1e-3 && (a.y - b.y).abs() < 1e-3,
+                "裁剪框 ({}, {}) 应与图片角点 ({}, {}) 重合",
+                a.x,
+                a.y,
+                b.x,
+                b.y
+            );
+        }
+    }
+
+    #[test]
+    fn crop_corners_on_cropped_item_follows_rotation() {
+        // 已裁剪 + 旋转 90°：裁剪框仍与图片重合（相对关系不受旋转影响）
+        let (it, crop) = cropped_pixmap(std::f32::consts::FRAC_PI_2);
+        let quad = it.crop_corners(crop).unwrap();
+        let item = it.canvas_corners_ring();
+        for (a, b) in quad.iter().zip(item.iter()) {
+            assert!(
+                (a.x - b.x).abs() < 1e-3 && (a.y - b.y).abs() < 1e-3,
+                "旋转下裁剪框仍应与图片重合：({}, {}) vs ({}, {})",
+                a.x,
+                a.y,
+                b.x,
+                b.y
+            );
+        }
+    }
+
+    #[test]
+    fn crop_pixel_roundtrip_on_cropped_item() {
+        // 已裁剪 + 旋转：在图片内再选一个子区域，往返应还原
+        let (it, base) = cropped_pixmap(0.6);
+        let inner = CropRect::new(base.x + 20.0, base.y + 10.0, 60.0, 30.0);
+        let quad = it.crop_corners(inner).unwrap();
+        let expect = [
+            (base.x + 20.0, base.y + 10.0),
+            (base.x + 80.0, base.y + 10.0),
+            (base.x + 80.0, base.y + 40.0),
+            (base.x + 20.0, base.y + 40.0),
+        ];
+        for (p, (x, y)) in quad.iter().zip(expect) {
+            let (px, py) = it.canvas_to_crop_pixel(*p).unwrap();
+            assert!(
+                (px - x).abs() < 1e-2 && (py - y).abs() < 1e-2,
+                "期望 ({x}, {y})，实际 ({px}, {py})"
+            );
+        }
+    }
+
+    /// 核心不变式：应用裁剪后，item 的 4 角应正好落在裁剪前裁剪框的 4 角上
+    /// ——即裁剪只是把边框收缩到该区域，不改变区域在画布上的位置/尺寸/角度。
+    #[test]
+    fn transform_after_crop_keeps_region_in_place_when_rotated() {
+        let mut it = pixmap(0.7);
+        it.transform.scale = CanvasVector::new(1.3, 1.3);
+        let c = CropRect::new(30.0, 20.0, 100.0, 50.0);
+
+        let before = it.crop_corners(c).expect("应有 crop 角点");
+        let after = apply_crop(&it, c);
+        assert_quads_eq(
+            &after.canvas_corners_ring(),
+            &before,
+            "旋转下裁剪后边框应对齐裁剪框",
+        );
+    }
+
+    #[test]
+    fn transform_after_crop_keeps_region_in_place_when_flipped() {
+        let mut it = pixmap(-0.4);
+        it.transform.scale = CanvasVector::new(0.8, 1.5);
+        it.transform.flip_h = true;
+        it.transform.flip_v = true;
+        let c = CropRect::new(20.0, 15.0, 120.0, 60.0);
+
+        let before = it.crop_corners(c).expect("应有 crop 角点");
+        let after = apply_crop(&it, c);
+        assert_quads_eq(
+            &after.canvas_corners_ring(),
+            &before,
+            "翻转下裁剪后边框应对齐裁剪框",
+        );
+    }
+
+    /// 回归：二次裁剪曾以「整图尺寸」而非「当前可见区域」为基准，导致图片被
+    /// 再缩小一次。两步裁剪的结果必须与一步裁到最终区域完全一致。
+    #[test]
+    fn repeated_crop_is_equivalent_to_single_crop() {
+        let mut it = pixmap(0.7);
+        it.transform.scale = CanvasVector::new(1.3, 1.3);
+
+        let c1 = CropRect::new(20.0, 10.0, 150.0, 80.0);
+        let c2 = CropRect::new(50.0, 30.0, 60.0, 40.0); // c2 ⊂ c1
+
+        let two_step = apply_crop(&apply_crop(&it, c1), c2);
+        let one_step = apply_crop(&it, c2);
+
+        assert_quads_eq(
+            &two_step.canvas_corners_ring(),
+            &one_step.canvas_corners_ring(),
+            "二次裁剪应与一次裁到 c2 等价",
+        );
+    }
+
+    #[test]
+    fn transform_after_crop_preserves_rotation_and_flip() {
+        let mut it = pixmap(0.7);
+        it.transform.flip_h = true;
+        let t = it
+            .transform_after_crop(CropRect::new(10.0, 10.0, 50.0, 50.0))
+            .expect("应能算出新 transform");
+        assert!((t.rotation - 0.7).abs() < 1e-6);
+        assert!(t.flip_h);
+        assert!(!t.flip_v);
+    }
+
+    #[test]
+    fn transform_after_crop_returns_none_for_degenerate_rect() {
+        let it = pixmap(0.0);
+        assert!(it
+            .transform_after_crop(CropRect::new(0.0, 0.0, 0.0, 10.0))
+            .is_none());
+        assert!(it
+            .transform_after_crop(CropRect::new(0.0, 0.0, 10.0, 0.0))
+            .is_none());
+    }
+
+    #[test]
+    fn crop_geometry_returns_none_for_non_pixmap() {
+        let txt = Item::new_text("x".to_string(), 0.0, 0.0, 16.0, [255; 4]);
+        assert!(txt.crop_corners(FULL).is_none());
+        assert!(txt
+            .canvas_to_crop_pixel(CanvasPoint::new(1.0, 1.0))
+            .is_none());
+        assert!(txt.original_pixel_size().is_none());
+    }
+
+    #[test]
+    fn canvas_corners_ring_is_counter_clockwise_order() {
+        // 环形顺序下，相邻点连线不应交叉：用叉积符号一致性验证（无旋转的矩形）
+        let it = pixmap(0.0);
+        let r = it.canvas_corners_ring();
+        let mut sign = 0.0f32;
+        for i in 0..4 {
+            let a = r[i];
+            let b = r[(i + 1) % 4];
+            let c = r[(i + 2) % 4];
+            let cross = (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x);
+            assert!(cross.abs() > 1e-6, "相邻边不应共线");
+            if sign == 0.0 {
+                sign = cross.signum();
+            } else {
+                assert_eq!(sign, cross.signum(), "环形顺序应保持同一绕向");
+            }
+        }
     }
 
     #[test]
