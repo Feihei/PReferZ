@@ -2561,100 +2561,54 @@ impl PReferZApp {
                 return;
             }
         };
-        let _ = texture_id;
+        let _ = (texture_id, original_size);
 
-        // item 4 角点（画布空间）�?屏幕空间
-        let corners = item.canvas_corners();
-        let screen_corners = [
-            self.viewport.canvas_to_screen(corners[0]),
-            self.viewport.canvas_to_screen(corners[1]),
-            self.viewport.canvas_to_screen(corners[2]),
-            self.viewport.canvas_to_screen(corners[3]),
-        ];
+        // item 与 crop 的 4 角（屏幕空间，环形顺序 TL -> TR -> BR -> BL）。
+        // 两者都完整走 item 的 local_to_canvas（含 flip/scale/rotate），因此旋转下
+        // 裁剪框会跟随图片一起旋转。不能用画布 AABB 做线性插值定位——AABB 在旋转下
+        // 会膨胀且不含旋转，裁剪框与图片会错位。
+        let item_quad = item
+            .canvas_corners_ring()
+            .map(|p| self.viewport.canvas_to_screen(p));
+        let crop_quad = match item.crop_corners(crop_state.rect) {
+            Some(q) => q.map(|p| self.viewport.canvas_to_screen(p)),
+            None => return,
+        };
 
-        // 计算 item 在屏幕空间的轴对齐包围盒（含旋转：用 4 角点 min/max�?
-        let min_x = screen_corners
-            .iter()
-            .map(|p| p.x)
-            .fold(f32::INFINITY, f32::min);
-        let max_x = screen_corners
-            .iter()
-            .map(|p| p.x)
-            .fold(f32::NEG_INFINITY, f32::max);
-        let min_y = screen_corners
-            .iter()
-            .map(|p| p.y)
-            .fold(f32::INFINITY, f32::min);
-        let max_y = screen_corners
-            .iter()
-            .map(|p| p.y)
-            .fold(f32::NEG_INFINITY, f32::max);
-        let item_screen_rect =
-            egui::Rect::from_min_max(egui::pos2(min_x, min_y), egui::pos2(max_x, max_y));
-
-        // 裁剪矩形（item 局部空间像�?�?屏幕空间�?        // 简化：�?item �?TL→BR 屏幕对角作为线性映射（旋转下有误差，但 MVP 够用�?
-        let base_w = original_size.0 as f32;
-        let base_h = original_size.1 as f32;
-        let c = crop_state.rect;
-        // 用局部空间到屏幕的变换：�?TL 为原点，�?scale �?zoom 缩放
-        // local_to_canvas 已经包含 flip/scale/rotate，crop 子矩形局部坐�?�?画布 �?屏幕
-        // 这里简化用 item_screen_rect 的线性映射（旋转下不准确，但 MVP 简化）
-        let crop_screen_rect = egui::Rect::from_min_max(
-            egui::pos2(
-                item_screen_rect.min.x + (c.x / base_w) * item_screen_rect.width(),
-                item_screen_rect.min.y + (c.y / base_h) * item_screen_rect.height(),
-            ),
-            egui::pos2(
-                item_screen_rect.min.x + ((c.x + c.width) / base_w) * item_screen_rect.width(),
-                item_screen_rect.min.y + ((c.y + c.height) / base_h) * item_screen_rect.height(),
-            ),
-        );
-
-        // 遮罩�? 个矩形包围裁剪区
+        // 遮罩：item 四边形与 crop 四边形之间的 4 个梯形。
+        // 两组角点一一对应、且同为凸四边形（仿射变换保凸），故每个梯形也是凸的。
         let mask_color = egui::Color32::from_rgba_premultiplied(0, 0, 0, 120);
-        // �?/ �?/ �?/ �?
-        let above = egui::Rect::from_min_max(
-            item_screen_rect.min,
-            egui::pos2(item_screen_rect.max.x, crop_screen_rect.min.y),
-        );
-        let below = egui::Rect::from_min_max(
-            egui::pos2(item_screen_rect.min.x, crop_screen_rect.max.y),
-            item_screen_rect.max,
-        );
-        let left = egui::Rect::from_min_max(
-            egui::pos2(item_screen_rect.min.x, crop_screen_rect.min.y),
-            egui::pos2(crop_screen_rect.min.x, crop_screen_rect.max.y),
-        );
-        let right = egui::Rect::from_min_max(
-            egui::pos2(crop_screen_rect.max.x, crop_screen_rect.min.y),
-            egui::pos2(item_screen_rect.max.x, crop_screen_rect.max.y),
-        );
-        for r in [above, below, left, right] {
-            if r.is_positive() {
-                ui.painter().rect_filled(r, 0.0, mask_color);
-            }
+        for i in 0..4 {
+            let j = (i + 1) % 4;
+            ui.painter().add(egui::Shape::convex_polygon(
+                vec![item_quad[i], item_quad[j], crop_quad[j], crop_quad[i]],
+                mask_color,
+                egui::Stroke::NONE,
+            ));
         }
-        // 裁剪框边�?
+        // 裁剪框：旋转四边形，用闭合折线描边而非轴对齐矩形
         let stroke = egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(100, 200, 255));
-        ui.painter().rect_stroke(crop_screen_rect, 0.0, stroke);
-        // 4 角手�?
+        ui.painter()
+            .add(egui::Shape::closed_line(crop_quad.to_vec(), stroke));
+        // 4 角手柄（落在旋转后的裁剪框角点上）
         let handle_size = TransformHandles::handle_size();
         let fill = egui::Color32::from_rgb(100, 200, 255);
-        for p in [
-            crop_screen_rect.min,
-            egui::pos2(crop_screen_rect.max.x, crop_screen_rect.min.y),
-            egui::pos2(crop_screen_rect.min.x, crop_screen_rect.max.y),
-            crop_screen_rect.max,
-        ] {
+        for p in crop_quad {
             let r = egui::Rect::from_center_size(p, egui::Vec2::splat(handle_size));
             ui.painter().rect_filled(r, egui::Rounding::same(1.0), fill);
         }
 
-        // 提示文字
+        // 提示文字：挂在 item 屏幕包围盒左上角上方
+        let mut min_x = f32::INFINITY;
+        let mut min_y = f32::INFINITY;
+        for p in item_quad {
+            min_x = min_x.min(p.x);
+            min_y = min_y.min(p.y);
+        }
         ui.painter().text(
-            item_screen_rect.min + egui::vec2(0.0, -18.0),
+            egui::pos2(min_x, min_y) + egui::vec2(0.0, -18.0),
             egui::Align2::LEFT_BOTTOM,
-            "裁剪模式：拖拽角点调�?· Enter 应用 · Esc 取消",
+            "裁剪模式：拖拽角点调整 · Enter 应用 · Esc 取消",
             egui::FontId::proportional(12.0),
             egui::Color32::from_rgb(100, 200, 255),
         );
@@ -4351,11 +4305,13 @@ impl PReferZApp {
         self.flash(t(self.lang, T::FlashCropHint).to_string());
     }
 
-    /// 应用裁剪：push CropItems 命令并退出裁剪模式�?    ///
-    /// 裁剪�?item 的边框（canvas_corners）应等于裁剪框在画布上的位置和尺寸，
-    /// 因此同时调整 transform.pos �?transform.scale�?    /// - new_scale = old_scale × (crop.width / base_w, crop.height / base_h)
-    /// - new_pos �?new_local_to_canvas(0,0) == old_local_to_canvas(crop.x, crop.y)
-    ///   （即新的局部原点对齐到�?crop 左上角的画布位置�?
+    /// 应用裁剪：push CropItems 命令并退出裁剪模式。
+    ///
+    /// 裁剪后 item 的边框（canvas_corners）应正好落在裁剪框在画布上的位置，
+    /// 因此同步调整 transform.scale 与 transform.pos。几何计算收敛在 core 的
+    /// Item::transform_after_crop（可单测），本函数只负责校验与命令封装：
+    /// - new_scale = old_scale × (crop / 当前可见区域)，不是除以整图尺寸
+    /// - new_pos 使新的局部原点对齐到 crop 左上角的画布位置（含旋转/翻转）
     fn apply_crop(&mut self) {
         let crop_state = match self.crop_mode.take() {
             Some(c) => c,
@@ -4363,7 +4319,7 @@ impl PReferZApp {
         };
         let original = crop_state.original;
         let new_crop = Some(crop_state.rect);
-        // 若与原值相同则�?push 命令
+        // 若与原值相同则不 push 命令
         if original == new_crop {
             self.flash(t(self.lang, T::FlashCropNoChange).to_string());
             return;
@@ -4371,52 +4327,20 @@ impl PReferZApp {
 
         let item_id = crop_state.item_id;
         let c = crop_state.rect;
-        // 计算 new_transform（在 clone 出来�?item 上操作，避免 &mut self.scene 与后�?push 冲突�?
+        if c.width < 1.0 || c.height < 1.0 {
+            self.flash(t(self.lang, T::FlashCropInvalidSize).to_string());
+            return;
+        }
+        // 新 transform 交给 core 计算：以「当前可见区域」为基准而非整图尺寸，
+        // 否则对已裁剪过的图片二次裁剪会再缩小一次（旋转下表现为图片错位）。
         let new_transform = match self.scene.get_item(&item_id) {
-            Some(item) => {
-                let (base_w, base_h) = match &item.kind {
-                    ItemKind::Pixmap { original_size, .. } => {
-                        (original_size.0 as f32, original_size.1 as f32)
-                    }
-                    _ => {
-                        // �?Pixmap 不应进入裁剪模式，安全兜�?self.flash(t(self.lang, T::FlashCropImageOnly).to_string());
-                        return;
-                    }
-                };
-                if base_w < 1.0 || base_h < 1.0 || c.width < 1.0 || c.height < 1.0 {
+            Some(item) => match item.transform_after_crop(c) {
+                Some(t) => t,
+                None => {
                     self.flash(t(self.lang, T::FlashCropInvalidSize).to_string());
                     return;
                 }
-                let old_transform = item.transform;
-                let old_l2c = item.local_to_canvas();
-                // crop 左上角的画布位置
-                let crop_tl_local =
-                    euclid::Point2D::<_, preferz_core::item::ItemLocalSpace>::new(c.x, c.y);
-                let crop_tl_canvas = old_l2c.transform_point(crop_tl_local);
-
-                // new_scale：让 base_size × new_scale = crop 画布尺寸
-                let new_scale_x = old_transform.scale.x * (c.width / base_w);
-                let new_scale_y = old_transform.scale.y * (c.height / base_h);
-
-                // 临时�?item �?scale 改成 new_scale、pos 设为 0，算 new_local_to_canvas(0,0)
-                let mut tmp = item.clone();
-                tmp.transform.scale = CanvasVector::new(new_scale_x, new_scale_y);
-                tmp.transform.pos = CanvasVector::zero();
-                let tmp_l2c = tmp.local_to_canvas();
-                let new_origin_canvas = tmp_l2c
-                    .transform_point(
-                        euclid::Point2D::<_, preferz_core::item::ItemLocalSpace>::origin(),
-                    );
-                // new_pos = crop_tl_canvas - new_origin_canvas
-                let new_pos = CanvasVector::new(
-                    crop_tl_canvas.x - new_origin_canvas.x,
-                    crop_tl_canvas.y - new_origin_canvas.y,
-                );
-                let mut new_transform = old_transform;
-                new_transform.scale = CanvasVector::new(new_scale_x, new_scale_y);
-                new_transform.pos = new_pos;
-                new_transform
-            }
+            },
             None => return,
         };
 
@@ -4438,64 +4362,21 @@ impl PReferZApp {
     }
 
     /// 检测鼠标是否命中裁剪手柄（4 个角点）�?
+    /// 命中裁剪手柄：手柄位于旋转后的裁剪框 4 角，跟随 item 一起旋转。
     fn crop_handle_hit_test(&self, screen_pos: egui::Pos2) -> Option<CropHandle> {
         let crop_state = self.crop_mode.as_ref()?;
         let item = self.scene.get_item(&crop_state.item_id)?;
-        let (original_size, _) = match &item.kind {
-            ItemKind::Pixmap { original_size, .. } => (*original_size, ()),
-            _ => return None,
-        };
-        let corners = item.canvas_corners();
-        let screen_corners = [
-            self.viewport.canvas_to_screen(corners[0]),
-            self.viewport.canvas_to_screen(corners[1]),
-            self.viewport.canvas_to_screen(corners[2]),
-            self.viewport.canvas_to_screen(corners[3]),
-        ];
-        let min_x = screen_corners
-            .iter()
-            .map(|p| p.x)
-            .fold(f32::INFINITY, f32::min);
-        let max_x = screen_corners
-            .iter()
-            .map(|p| p.x)
-            .fold(f32::NEG_INFINITY, f32::max);
-        let min_y = screen_corners
-            .iter()
-            .map(|p| p.y)
-            .fold(f32::INFINITY, f32::min);
-        let max_y = screen_corners
-            .iter()
-            .map(|p| p.y)
-            .fold(f32::NEG_INFINITY, f32::max);
-        let item_screen_rect =
-            egui::Rect::from_min_max(egui::pos2(min_x, min_y), egui::pos2(max_x, max_y));
-
-        let base_w = original_size.0 as f32;
-        let base_h = original_size.1 as f32;
-        let c = crop_state.rect;
-        let crop_screen_rect = egui::Rect::from_min_max(
-            egui::pos2(
-                item_screen_rect.min.x + (c.x / base_w) * item_screen_rect.width(),
-                item_screen_rect.min.y + (c.y / base_h) * item_screen_rect.height(),
-            ),
-            egui::pos2(
-                item_screen_rect.min.x + ((c.x + c.width) / base_w) * item_screen_rect.width(),
-                item_screen_rect.min.y + ((c.y + c.height) / base_h) * item_screen_rect.height(),
-            ),
-        );
+        // crop_corners 走完整 local_to_canvas（含旋转），手柄因此跟随图片一起转
+        let crop_quad = item
+            .crop_corners(crop_state.rect)?
+            .map(|p| self.viewport.canvas_to_screen(p));
         let handle_size = TransformHandles::handle_size() * 2.0;
+        // 角点顺序：TL → TR → BR → BL
         let handles = [
-            (CropHandle::TopLeft, crop_screen_rect.min),
-            (
-                CropHandle::TopRight,
-                egui::pos2(crop_screen_rect.max.x, crop_screen_rect.min.y),
-            ),
-            (
-                CropHandle::BottomLeft,
-                egui::pos2(crop_screen_rect.min.x, crop_screen_rect.max.y),
-            ),
-            (CropHandle::BottomRight, crop_screen_rect.max),
+            (CropHandle::TopLeft, crop_quad[0]),
+            (CropHandle::TopRight, crop_quad[1]),
+            (CropHandle::BottomRight, crop_quad[2]),
+            (CropHandle::BottomLeft, crop_quad[3]),
         ];
         for (h, p) in handles {
             let r = egui::Rect::from_center_size(p, egui::Vec2::splat(handle_size));
@@ -4506,60 +4387,32 @@ impl PReferZApp {
         None
     }
 
-    /// 拖拽裁剪手柄时更�?crop 矩形（屏幕坐�?�?item 局部坐标）�?
+    /// 拖拽裁剪手柄时更新 crop 矩形（屏幕坐标 → 原图像素坐标）。
     fn update_crop_drag(&mut self, screen_pos: egui::Pos2, handle: CropHandle) {
         // 先取一份 crop_state，避免 &mut self.crop_mode 与 &self.scene 借用冲突
         let (item_id, mut rect) = match self.crop_mode.as_ref() {
             Some(c) => (c.item_id, c.rect),
             None => return,
         };
-        let original_size = match self.scene.get_item(&item_id) {
-            Some(item) => match &item.kind {
-                ItemKind::Pixmap { original_size, .. } => *original_size,
-                _ => return,
-            },
+        let item = match self.scene.get_item(&item_id) {
+            Some(i) => i.clone(),
             None => return,
         };
-        let base_w = original_size.0 as f32;
-        let base_h = original_size.1 as f32;
-
-        // 屏幕 �?item 局部坐标（简化：�?AABB 线性映射，旋转下有误差�?
-        let corners = match self.scene.get_item(&item_id) {
-            Some(item) => item.canvas_corners(),
+        let (base_w, base_h) = match item.original_pixel_size() {
+            Some(s) => s,
             None => return,
         };
-        let screen_corners = [
-            self.viewport.canvas_to_screen(corners[0]),
-            self.viewport.canvas_to_screen(corners[1]),
-            self.viewport.canvas_to_screen(corners[2]),
-            self.viewport.canvas_to_screen(corners[3]),
-        ];
-        let min_x = screen_corners
-            .iter()
-            .map(|p| p.x)
-            .fold(f32::INFINITY, f32::min);
-        let max_x = screen_corners
-            .iter()
-            .map(|p| p.x)
-            .fold(f32::NEG_INFINITY, f32::max);
-        let min_y = screen_corners
-            .iter()
-            .map(|p| p.y)
-            .fold(f32::INFINITY, f32::min);
-        let max_y = screen_corners
-            .iter()
-            .map(|p| p.y)
-            .fold(f32::NEG_INFINITY, f32::max);
-        let item_screen_rect =
-            egui::Rect::from_min_max(egui::pos2(min_x, min_y), egui::pos2(max_x, max_y));
 
-        // 鼠标位置 �?归一�?[0,1] × [0,1] �?局部像�?
-        let nx =
-            ((screen_pos.x - item_screen_rect.min.x) / item_screen_rect.width()).clamp(0.0, 1.0);
-        let ny =
-            ((screen_pos.y - item_screen_rect.min.y) / item_screen_rect.height()).clamp(0.0, 1.0);
-        let px = nx * base_w;
-        let py = ny * base_h;
+        // 屏幕 → 画布 → 原图像素：走 item 变换的逆变换，旋转下同样正确
+        // （旧的 AABB 线性映射在旋转下会算出错误的像素位置）。
+        let canvas_pos = self.viewport.screen_to_canvas(screen_pos);
+        let (raw_px, raw_py) = match item.canvas_to_crop_pixel(canvas_pos) {
+            Some(p) => p,
+            None => return,
+        };
+        // 拖到图外时由 clamp_to 兜底，这里只防 NaN/Inf 传入后续运算
+        let px = if raw_px.is_finite() { raw_px } else { 0.0 };
+        let py = if raw_py.is_finite() { raw_py } else { 0.0 };
 
         match handle {
             CropHandle::TopLeft => {
