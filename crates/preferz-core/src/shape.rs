@@ -42,9 +42,84 @@ impl Default for StrokeStyle {
     }
 }
 
+/// 确定性伪随机数发生器（xorshift64\*）。
+///
+/// 手绘风描边的抖动必须**可复现**：同一 `seed` 恒产生同一序列，
+/// 否则每次重绘（缩放、平移、存盘重开）图形轮廓都会跳变。
+/// 放在 core 层（不依赖 egui）以便单测确定性。
+#[derive(Debug, Clone, Copy)]
+pub struct SeededRng {
+    state: u64,
+}
+
+impl SeededRng {
+    /// seed 为 0 时用黄金比例常数兜底：xorshift 在 state=0 时会永久输出 0。
+    const FALLBACK_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
+
+    pub fn new(seed: u64) -> Self {
+        Self {
+            state: if seed == 0 { Self::FALLBACK_SEED } else { seed },
+        }
+    }
+
+    pub fn next_u64(&mut self) -> u64 {
+        // xorshift64*
+        self.state ^= self.state >> 12;
+        self.state ^= self.state << 25;
+        self.state ^= self.state >> 27;
+        self.state.wrapping_mul(0x2545_F491_4F6C_DD1D)
+    }
+
+    /// [0, 1) 区间的 f32。
+    pub fn next_f32(&mut self) -> f32 {
+        // 取高 24 位，保证精度足够且严格小于 1.0
+        let v = (self.next_u64() >> 40) as f32;
+        v / ((1u64 << 24) as f32)
+    }
+
+    /// [-1, 1] 区间的 f32，用于对称抖动。
+    pub fn signed(&mut self) -> f32 {
+        self.next_f32() * 2.0 - 1.0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn seeded_rng_is_deterministic() {
+        let mut a = SeededRng::new(12345);
+        let mut b = SeededRng::new(12345);
+        for _ in 0..64 {
+            assert_eq!(a.next_u64(), b.next_u64());
+        }
+    }
+
+    #[test]
+    fn seeded_rng_differs_by_seed() {
+        let mut a = SeededRng::new(1);
+        let mut b = SeededRng::new(2);
+        // 两个不同 seed 不可能 16 次全部相同
+        assert!((0..16).any(|_| a.next_u64() != b.next_u64()));
+    }
+
+    #[test]
+    fn seeded_rng_zero_seed_does_not_stick() {
+        let mut r = SeededRng::new(0);
+        assert_ne!(r.next_u64(), 0);
+    }
+
+    #[test]
+    fn seeded_rng_f32_ranges() {
+        let mut r = SeededRng::new(0xDEAD_BEEF);
+        for _ in 0..1024 {
+            let v = r.next_f32();
+            assert!((0.0..1.0).contains(&v), "next_f32 out of range: {v}");
+            let s = r.signed();
+            assert!((-1.0..=1.0).contains(&s), "signed out of range: {s}");
+        }
+    }
 
     #[test]
     fn stroke_style_serde_roundtrip() {

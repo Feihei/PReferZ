@@ -200,6 +200,40 @@ impl Command for SetClosed {
     }
 }
 
+// ─────────────────────────── Set rough ───────────────────────────
+
+/// 切换 Shape 手绘风描边命令（Phase F）。开启时由 RoughStyler 渲染抖动描边。
+/// 经 `Item::set_rough` 写入，顺带在 seed 为 0 时生成随机种子。
+pub struct SetRough {
+    item_id: ItemId,
+    old_rough: bool,
+    new_rough: bool,
+}
+
+impl SetRough {
+    pub fn new(item_id: ItemId, old_rough: bool, new_rough: bool) -> Self {
+        Self {
+            item_id,
+            old_rough,
+            new_rough,
+        }
+    }
+}
+
+impl Command for SetRough {
+    fn redo(&mut self, scene: &mut Scene) {
+        if let Some(item) = scene.get_item_mut(&self.item_id) {
+            item.set_rough(self.new_rough);
+        }
+    }
+
+    fn undo(&mut self, scene: &mut Scene) {
+        if let Some(item) = scene.get_item_mut(&self.item_id) {
+            item.set_rough(self.old_rough);
+        }
+    }
+}
+
 // ─────────────────────────── Move ───────────────────────────
 
 /// 平移多个 item（拖拽移动的命令）。
@@ -849,5 +883,72 @@ impl Command for RenumberFrame {
         }
         self.applied = false;
         scene.undo_renumber(&self.plan);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::item::Item;
+    use crate::shape::{ShapeType, StrokeStyle};
+
+    fn shape_in(scene: &mut Scene) -> ItemId {
+        let item = Item::new_shape(
+            ShapeType::Rectangle,
+            (10.0, 10.0),
+            0.0,
+            0.0,
+            StrokeStyle::default(),
+            None,
+        );
+        let id = item.id;
+        scene.add_item(item);
+        id
+    }
+
+    #[test]
+    fn set_rough_redo_undo_restores_previous_state() {
+        let mut scene = Scene::new();
+        let id = shape_in(&mut scene);
+        assert!(!scene.get_item(&id).unwrap().rough());
+
+        let mut cmd = SetRough::new(id, false, true);
+        cmd.redo(&mut scene);
+        assert!(scene.get_item(&id).unwrap().rough());
+        cmd.undo(&mut scene);
+        assert!(!scene.get_item(&id).unwrap().rough());
+    }
+
+    #[test]
+    fn set_rough_generates_seed_and_keeps_it_across_undo() {
+        let mut scene = Scene::new();
+        let id = shape_in(&mut scene);
+
+        let mut cmd = SetRough::new(id, false, true);
+        cmd.redo(&mut scene);
+        let seed = match &scene.get_item(&id).unwrap().kind {
+            ItemKind::Shape { seed, .. } => *seed,
+            _ => panic!("expected Shape kind"),
+        };
+        assert_ne!(seed, 0, "redo 应生成非 0 种子");
+
+        cmd.undo(&mut scene);
+        cmd.redo(&mut scene);
+        let seed2 = match &scene.get_item(&id).unwrap().kind {
+            ItemKind::Shape { seed, .. } => *seed,
+            _ => panic!("expected Shape kind"),
+        };
+        assert_eq!(seed, seed2, "undo/redo 往返应保持种子不变");
+    }
+
+    #[test]
+    fn set_rough_on_non_shape_is_noop() {
+        let mut scene = Scene::new();
+        let txt = Item::new_text("x".to_string(), 0.0, 0.0, 16.0, [255; 4]);
+        let id = txt.id;
+        scene.add_item(txt);
+        let mut cmd = SetRough::new(id, false, true);
+        cmd.redo(&mut scene);
+        assert!(!scene.get_item(&id).unwrap().rough());
     }
 }

@@ -140,6 +140,8 @@ pub enum T {
     // ── 箭头样式 ──
     StyleArrowStart,
     StyleArrowEnd,
+    // ── 手绘风（Phase F）──
+    StyleRough,
 }
 
 /// 查表翻译。未命中的 key 返回 debug 字符串（开发期易发现遗漏）。
@@ -265,6 +267,7 @@ fn translate_en(key: T) -> &'static str {
         T::StyleClosed => "Closed",
         T::StyleArrowStart => "Start arrow",
         T::StyleArrowEnd => "End arrow",
+        T::StyleRough => "Hand-drawn",
     }
 }
 
@@ -383,5 +386,6 @@ fn translate_zh(key: T) -> &'static str {
         T::StyleClosed => "闭合",
         T::StyleArrowStart => "起点箭头",
         T::StyleArrowEnd => "终点箭头",
+        T::StyleRough => "手绘",
     }
 }

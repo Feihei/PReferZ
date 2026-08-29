@@ -1,6 +1,6 @@
 use crate::i18n::{t, Lang, T};
 use crate::interaction;
-use crate::ui::stylers::{item_local_to_screen, CleanStyler, ShapeData, ShapeStyler};
+use crate::ui::stylers::{build_shape_visuals, item_local_to_screen};
 use crate::ui::widgets::transform_handles::{
     should_show_flip, should_show_rotate, Handle, TransformHandles,
 };
@@ -11,7 +11,7 @@ use preferz_core::arrange::{plan_arrange, ArrangeMode};
 use preferz_core::commands::{
     AddItem, ArrangeItems, CropItems, DeleteItems, EditShapePoints, EditTextContent, FlipItems,
     MoveItems, NormalizeItems, RenumberFrame, ReorderItems, SetArrowHeads, SetClosed,
-    SetPixmapProps, TransformItem,
+    SetPixmapProps, SetRough, TransformItem,
 };
 use preferz_core::shape::{ArrowHeadStyle, DashStyle, ShapeType, StrokeStyle};
 use preferz_core::spaces::{CanvasPoint, CanvasRect, CanvasSize, CanvasVector};
@@ -389,6 +389,8 @@ pub struct PReferZApp {
     default_stroke: StrokeStyle,
     /// 绘制形状默认填充色（None = 透明；样式面板 A8 可调）。
     default_fill: Option<[u8; 4]>,
+    /// 新建形状是否默认手绘风描边（Phase F；样式面板可调）。
+    default_rough: bool,
     drag: DragState,
     /// 文本便签编辑状态（None = 无编辑）�?
     editing_text: Option<EditingText>,
@@ -483,6 +485,7 @@ impl PReferZApp {
             tool: Tool::Select,
             default_stroke: StrokeStyle::default(),
             default_fill: None,
+            default_rough: false,
             drag: DragState::Idle,
             editing_text: None,
             editing_frame_number: None,
@@ -624,6 +627,19 @@ impl PReferZApp {
         }
         None
     }
+
+    /// 选中态中第一个 Shape 的 id 与手绘风开关（Phase F 样式面板用）。
+    /// 选中多个 Shape 时只取第一个——与 `selected_linear_arrows` 一致的单值编辑语义。
+    fn selected_shape_rough(&self) -> Option<(ItemId, bool)> {
+        for id in self.scene.selection.iter() {
+            if let Some(item) = self.scene.get_item(id) {
+                if matches!(item.kind, ItemKind::Shape { .. }) {
+                    return Some((item.id, item.rough()));
+                }
+            }
+        }
+        None
+    }
 }
 
 impl Default for PReferZApp {
@@ -743,11 +759,12 @@ impl eframe::App for PReferZApp {
             });
 
         // 样式面板：绘制工具激活时显示新建默认样式（spec §5.1）；
-        // 选中线性对象时也显示，用于编辑起点/终点箭头（per-item）。
+        // 选中线性对象时也显示，用于编辑起/终点箭头；选中任意 Shape 时显示手绘开关（per-item）。
         // 在 CentralPanel 之前渲染：让画布交互区域正确排除底部面板，
         // 避免点击复选框时指针事件穿透到画布导致选中被清空、面板消失。
         let selected_linear = self.selected_linear_arrows();
-        if self.tool != Tool::Select || selected_linear.is_some() {
+        let selected_shape = self.selected_shape_rough();
+        if self.tool != Tool::Select || selected_linear.is_some() || selected_shape.is_some() {
             egui::TopBottomPanel::bottom("style_panel").show(ctx, |ui| {
                 if self.tool != Tool::Select {
                     ui.horizontal(|ui| {
@@ -790,6 +807,9 @@ impl eframe::App for PReferZApp {
                                 None
                             };
                         }
+                        ui.separator();
+                        // 手绘风：新建形状的默认开关（Phase F）
+                        ui.checkbox(&mut self.default_rough, t(self.lang, T::StyleRough));
                     });
                 }
                 // 编辑选中线性对象：闭合开关 + 起/终点箭头开关（undo 走 SetClosed / SetArrowHeads）
@@ -844,6 +864,22 @@ impl eframe::App for PReferZApp {
                             }
                         });
                     }
+                }
+                // 编辑选中 Shape：手绘风开关（Phase F，undo 走 SetRough）。
+                // 对矩形族与线性对象一视同仁，故单独成块而非塞进上面的线性分支。
+                if let Some((item_id, rough)) = selected_shape {
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        let mut checked = rough;
+                        if ui
+                            .checkbox(&mut checked, t(self.lang, T::StyleRough))
+                            .changed()
+                            && checked != rough
+                        {
+                            let cmd = SetRough::new(item_id, rough, checked);
+                            self.push_cmd(Box::new(cmd));
+                        }
+                    });
                 }
             });
         }
@@ -1742,7 +1778,8 @@ impl PReferZApp {
                 min_x,
                 min_y,
                 self.default_stroke,
-            );
+            )
+            .with_rough(self.default_rough);
             let cmd = AddItem::new(item);
             self.push_cmd(Box::new(cmd));
             self.flash(if end_arrow.is_some() {
@@ -1784,7 +1821,8 @@ impl PReferZApp {
             min_y,
             self.default_stroke,
             self.default_fill,
-        );
+        )
+        .with_rough(self.default_rough);
         let cmd = AddItem::new(item);
         self.push_cmd(Box::new(cmd));
         self.flash("已创建图形");
@@ -1943,35 +1981,10 @@ impl PReferZApp {
                     }
                 }
             }
-            ItemKind::Shape {
-                shape_type,
-                base_size,
-                points,
-                stroke,
-                fill,
-                start_arrow,
-                end_arrow,
-                closed,
-                seed: _,
-            } => {
-                let data = ShapeData {
-                    shape_type: *shape_type,
-                    base_size: *base_size,
-                    points: points.clone(),
-                    start_arrow: *start_arrow,
-                    end_arrow: *end_arrow,
-                    closed: *closed,
-                };
+            // 风格器分发（CleanStyler / RoughStyler）在 build_shape_visuals 内按 rough 字段决定。
+            ItemKind::Shape { .. } => {
                 let to_screen = item_local_to_screen(item, &self.viewport);
-                let fill_color =
-                    fill.map(|c| egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]));
-                let shapes = CleanStyler.build_shapes(
-                    &data,
-                    stroke,
-                    fill_color,
-                    &to_screen,
-                    self.viewport.zoom,
-                );
+                let shapes = build_shape_visuals(&item.kind, &to_screen, self.viewport.zoom);
                 ui.painter().extend(shapes);
             }
             ItemKind::Frame { .. } => {
@@ -2378,36 +2391,10 @@ impl PReferZApp {
                         } // else: 自由文本
                     }
                 }
-                // Shape：经 ShapeStyler（CleanStyler）构建 egui 形状并绘制。
-                ItemKind::Shape {
-                    shape_type,
-                    base_size,
-                    points,
-                    stroke,
-                    fill,
-                    start_arrow,
-                    end_arrow,
-                    closed,
-                    seed: _,
-                } => {
-                    let data = ShapeData {
-                        shape_type: *shape_type,
-                        base_size: *base_size,
-                        points: points.clone(),
-                        start_arrow: *start_arrow,
-                        end_arrow: *end_arrow,
-                        closed: *closed,
-                    };
+                // Shape：风格器分发同 render_scene，rough 开关决定 Clean 或手绘。
+                ItemKind::Shape { .. } => {
                     let to_screen = item_local_to_screen(item, &self.viewport);
-                    let fill_color =
-                        fill.map(|c| egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]));
-                    let shapes = CleanStyler.build_shapes(
-                        &data,
-                        stroke,
-                        fill_color,
-                        &to_screen,
-                        self.viewport.zoom,
-                    );
+                    let shapes = build_shape_visuals(&item.kind, &to_screen, self.viewport.zoom);
                     ui.painter().extend(shapes);
                 }
                 // Frame：虚线边框 + 左上角编号角标 + 名称。不裁剪内容，仅作底框。

@@ -56,8 +56,12 @@ pub enum ItemKind {
         end_arrow: Option<ArrowHeadStyle>,
         /// 是否闭合（仅 Polyline 使用；矩形族忽略）。闭合时首尾相连，可填充。
         closed: bool,
-        /// 手绘风确定性噪声预留（Phase F 用），A 期固定 0。
+        /// 手绘风描边抖动种子（Phase F）。同种子恒得同一抖动，保证重绘/存盘后形状不变。
         seed: u64,
+        /// 手绘风描边开关（Phase F）。true 时由 RoughStyler 渲染抖动描边。
+        /// `#[serde(default)]`：旧存档无此字段时按 false 加载。
+        #[serde(default)]
+        rough: bool,
     },
     /// 幻灯片画框（Phase D）。不旋转/不翻转；仅边框点选命中，内容区域点击穿透。
     /// 渲染恒在其它 item 之下（创建时 z 置为最小）。
@@ -347,6 +351,7 @@ impl Item {
                 end_arrow: None,
                 closed: false,
                 seed: 0,
+                rough: false,
             },
             transform: Transform::new(pos_x, pos_y, 1.0, 1.0),
             z: 0,
@@ -380,9 +385,32 @@ impl Item {
                 end_arrow,
                 closed,
                 seed: 0,
+                rough: false,
             },
             transform: Transform::new(pos_x, pos_y, 1.0, 1.0),
             z: 0,
+        }
+    }
+
+    /// 是否启用手绘风描边（非 Shape 恒为 false）。
+    pub fn rough(&self) -> bool {
+        matches!(self.kind, ItemKind::Shape { rough: true, .. })
+    }
+
+    /// builder：设置手绘风开关。开启时若 `seed` 仍为 0，则生成一个随机种子，
+    /// 避免所有手绘图形抖出一模一样的轮廓。
+    pub fn with_rough(mut self, rough: bool) -> Self {
+        self.set_rough(rough);
+        self
+    }
+
+    /// 设置手绘风开关（供 `SetRough` 命令使用），语义同 [`Item::with_rough`]。
+    pub fn set_rough(&mut self, rough: bool) {
+        if let ItemKind::Shape { rough: r, seed, .. } = &mut self.kind {
+            *r = rough;
+            if rough && *seed == 0 {
+                *seed = Uuid::new_v4().as_u128() as u64;
+            }
         }
     }
 
@@ -860,6 +888,88 @@ mod tests {
         let s = serde_json::to_string(&txt).unwrap();
         let back: Item = serde_json::from_str(&s).unwrap();
         assert_eq!(back.id, txt.id);
+    }
+
+    #[test]
+    fn shape_serde_backward_compat_without_rough() {
+        // 旧版本 Shape JSON 无 rough 字段（Phase F 新增），应加载为 false（不报错）。
+        let json = r#"{
+            "Shape": {
+                "shape_type": "Rectangle",
+                "base_size": [10.0, 20.0],
+                "points": [],
+                "stroke": {"color": [255,255,255,255], "width": 2.0, "dash": "Solid"},
+                "fill": null,
+                "start_arrow": null,
+                "end_arrow": null,
+                "closed": false,
+                "seed": 0
+            }
+        }"#;
+        let kind: ItemKind = serde_json::from_str(json).unwrap();
+        match &kind {
+            ItemKind::Shape { rough, .. } => assert!(!*rough),
+            _ => panic!("expected Shape kind"),
+        }
+    }
+
+    #[test]
+    fn shape_rough_serde_roundtrip() {
+        let item = Item::new_shape(
+            ShapeType::Rectangle,
+            (10.0, 10.0),
+            0.0,
+            0.0,
+            StrokeStyle::default(),
+            None,
+        )
+        .with_rough(true);
+        assert!(item.rough());
+        let s = serde_json::to_string(&item).unwrap();
+        let back: Item = serde_json::from_str(&s).unwrap();
+        assert!(back.rough());
+        // seed 一并持久化，保证重开后抖动形状不变
+        match (&item.kind, &back.kind) {
+            (ItemKind::Shape { seed: a, .. }, ItemKind::Shape { seed: b, .. }) => assert_eq!(a, b),
+            _ => panic!("expected Shape kind"),
+        }
+    }
+
+    #[test]
+    fn with_rough_assigns_seed_only_when_zero() {
+        let item = Item::new_shape(
+            ShapeType::Rectangle,
+            (10.0, 10.0),
+            0.0,
+            0.0,
+            StrokeStyle::default(),
+            None,
+        );
+        let seed_of = |it: &Item| match &it.kind {
+            ItemKind::Shape { seed, .. } => *seed,
+            _ => panic!("expected Shape kind"),
+        };
+        assert_eq!(seed_of(&item), 0);
+
+        let rough = item.clone().with_rough(true);
+        let seed = seed_of(&rough);
+        assert_ne!(seed, 0, "开启手绘应生成非 0 种子");
+        // 二次切换保留原种子：重绘时轮廓不跳变
+        assert_eq!(seed_of(&rough.clone().with_rough(true)), seed);
+        assert_eq!(seed_of(&rough.clone().with_rough(false)), seed);
+
+        // 关闭手绘不改 seed（再次打开沿用同一抖动）
+        let off = rough.with_rough(false);
+        assert!(!off.rough());
+        assert_eq!(seed_of(&off), seed);
+    }
+
+    #[test]
+    fn rough_is_false_for_non_shape_items() {
+        let txt = Item::new_text("x".to_string(), 0.0, 0.0, 16.0, [255; 4]);
+        assert!(!txt.rough());
+        let frame = Item::new_frame(1, (10.0, 10.0), 0.0, 0.0, None);
+        assert!(!frame.rough());
     }
 
     #[test]
