@@ -3219,13 +3219,15 @@ impl PReferZApp {
                 Ok(img) => {
                     let rgba = img.to_rgba8();
                     let (w, h) = rgba.dimensions();
+                    let raw = rgba.into_raw();
                     ctx.load_texture(
                         "welcome-logo",
                         egui::ColorImage {
                             size: [w as usize, h as usize],
-                            pixels: rgba
-                                .into_raw()
-                                .chunks_exact(4)
+                            pixels: raw
+                                .as_chunks::<4>()
+                                .0
+                                .iter()
                                 .map(|p| {
                                     egui::Color32::from_rgba_unmultiplied(p[0], p[1], p[2], p[3])
                                 })
@@ -5051,7 +5053,7 @@ fn export_scene_to_file(
     // 逐像素合成
     let mut out_rgba: Vec<u8> = vec![0u8; (canvas_w as usize) * (canvas_h as usize) * 4];
     // 背景填充为白色（JPG 不支持透明，PNG 也用白底更实用）
-    for px in out_rgba.chunks_exact_mut(4) {
+    for px in out_rgba.as_chunks_mut::<4>().0 {
         px[0] = 255;
         px[1] = 255;
         px[2] = 255;
@@ -5106,10 +5108,9 @@ fn export_scene_to_file(
             // JPEG 不支持 alpha：RGBA → RGB（背景已合成白底，直接丢弃 alpha）
             let mut out_rgb: Vec<u8> =
                 Vec::with_capacity((canvas_w as usize) * (canvas_h as usize) * 3);
-            for px in out_rgba.chunks_exact(4) {
-                out_rgb.push(px[0]);
-                out_rgb.push(px[1]);
-                out_rgb.push(px[2]);
+            for px in out_rgba.as_chunks::<4>().0 {
+                // 丢弃 alpha（背景已合成白底）
+                out_rgb.extend_from_slice(&px[..3]);
             }
             let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(writer, 90);
             image::ImageEncoder::write_image(
