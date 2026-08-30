@@ -31,6 +31,12 @@ arboard = { workspace = true }
 # Image
 image = { workspace = true }
 
+# 字体压缩（运行时 inflate，配合 build.rs 的 deflate）
+flate2 = { workspace = true }
+
+[build-dependencies]
+flate2 = { workspace = true }
+
 # Windows exe 资源图标（编译期嵌入 .res 到 exe）
 [target.'cfg(windows)'.build-dependencies]
 embed-resource = "2.4"

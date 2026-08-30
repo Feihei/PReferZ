@@ -57,3 +57,6 @@ thiserror = "1"
 log = "0.4"
 rfd = "0.14"
 arboard = "3"
+# 字体压缩（build.rs deflate + 运行时解压）。用 rust_backend 走 miniz_oxide，
+# 显式关掉默认特性以免引入 zlib C 依赖；依赖树里 image/rusqlite 已在用同一后端。
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
