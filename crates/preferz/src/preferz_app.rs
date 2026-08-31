@@ -543,6 +543,17 @@ impl PReferZApp {
         }
     }
 
+    /// 入栈 AddItem 并**选中新 item**（Excalidraw 语义）。
+    ///
+    /// 画完立即选中，才能接着按 Enter 加文字 / 调侧栏属性，不必再点一下。
+    /// 选中态不进 undo 栈（与 Scene 的既有约定一致）。
+    fn push_new_item(&mut self, cmd: AddItem) {
+        let id = cmd.item_id();
+        self.push_cmd(Box::new(cmd));
+        self.scene.deselect_all();
+        self.scene.select(id);
+    }
+
     /// 执行 redo：成功则标记 dirty
     fn perform_redo(&mut self) -> bool {
         if self.undo_stack.redo(&mut self.scene) {
@@ -1089,96 +1100,22 @@ impl eframe::App for PReferZApp {
             if response.double_clicked() && self.editing_text.is_none() {
                 if let Some(pos) = ctx.input(|i| i.pointer.latest_pos()) {
                     // 克隆命中的 item 字段，避免 &self.scene 与 &mut self.editing_text 借用冲突
-                    let hit = interaction::get_item_at(pos, &self.scene, &self.viewport)
-                        .map(|item| (item.id, item.kind.clone()));
-                    match hit {
-                        Some((
-                            id,
-                            ItemKind::Text {
-                                content,
-                                font_size,
-                                color,
-                                editing: _,
-                                measured_size: _,
-                                container_id,
-                            },
-                        )) => {
-                            // 双击 Text item → 编辑现有
-                            self.editing_text = Some(EditingText {
-                                editing_item_id: Some(id),
-                                canvas_pos: self
-                                    .scene
-                                    .get_item(&id)
-                                    .map(|it| it.transform.pos)
-                                    .map(|p| CanvasPoint::new(p.x, p.y))
-                                    .unwrap_or_else(|| CanvasPoint::new(f32::MIN, f32::MIN)),
-                                buffer: content,
-                                font_size,
-                                color,
-                                first_frame: true,
-                                container_id,
-                            });
-                            self.drag = DragState::Idle;
-                        }
-                        Some((shape_id, ref kind)) if is_text_container(kind) => {
-                            // 命中封闭 Shape 容器：查找/创建绑定文本
-                            if let Some(shape_item) = self.scene.get_item(&shape_id) {
-                                let center = shape_item.bounding_rect().center();
-                                let existing = self.scene.texts_bound_to(shape_id);
-                                if let Some(text_id) = existing.into_iter().next() {
-                                    // 已有绑定文本 → 编辑
-                                    let text_item = self.scene.get_item(&text_id);
-                                    let (content, font_size, color) = match text_item {
-                                        Some(it) => match &it.kind {
-                                            ItemKind::Text {
-                                                content,
-                                                font_size,
-                                                color,
-                                                ..
-                                            } => (content.clone(), *font_size, *color),
-                                            _ => (String::new(), 18.0, [255; 4]),
-                                        },
-                                        None => (String::new(), 18.0, [255; 4]),
-                                    };
-                                    self.editing_text = Some(EditingText {
-                                        editing_item_id: Some(text_id),
-                                        canvas_pos: CanvasPoint::new(center.x, center.y),
-                                        buffer: content,
-                                        font_size,
-                                        color,
-                                        first_frame: true,
-                                        container_id: Some(shape_id),
-                                    });
-                                } else {
-                                    // 无绑定文本 → 创建（容器 id 在提交时写入）
-                                    self.editing_text = Some(EditingText {
-                                        editing_item_id: None,
-                                        canvas_pos: CanvasPoint::new(center.x, center.y),
-                                        buffer: String::new(),
-                                        font_size: 18.0,
-                                        color: [255, 255, 255, 255],
-                                        first_frame: true,
-                                        container_id: Some(shape_id),
-                                    });
-                                }
-                                self.drag = DragState::Idle;
-                            }
-                        }
-                        _ => {
-                            // 双击空白 → 创建新文本
-                            let canvas_pos = self.viewport.screen_to_canvas(pos);
-                            self.editing_text = Some(EditingText {
-                                editing_item_id: None,
-                                canvas_pos,
-                                buffer: String::new(),
-                                font_size: 24.0,
-                                color: [255, 255, 255, 255],
-                                first_frame: true,
-                                container_id: None,
-                            });
-                            self.drag = DragState::Idle;
-                        }
+                    let hit_id = interaction::get_item_at(pos, &self.scene, &self.viewport)
+                        .map(|item| item.id);
+                    // 命中可承载文本的 item → 编辑/新建文本；否则（图片或空白）新建自由文本
+                    if !hit_id.is_some_and(|id| self.start_text_edit(id)) {
+                        let canvas_pos = self.viewport.screen_to_canvas(pos);
+                        self.editing_text = Some(EditingText {
+                            editing_item_id: None,
+                            canvas_pos,
+                            buffer: String::new(),
+                            font_size: 24.0,
+                            color: [255, 255, 255, 255],
+                            first_frame: true,
+                            container_id: None,
+                        });
                     }
+                    self.drag = DragState::Idle;
                 }
             }
 
@@ -1795,8 +1732,7 @@ impl PReferZApp {
                 self.default_stroke,
             )
             .with_rough(self.default_rough);
-            let cmd = AddItem::new(item);
-            self.push_cmd(Box::new(cmd));
+            self.push_new_item(AddItem::new(item));
             self.flash(if end_arrow.is_some() {
                 "已创建箭头"
             } else {
@@ -1838,8 +1774,7 @@ impl PReferZApp {
             self.default_fill,
         )
         .with_rough(self.default_rough);
-        let cmd = AddItem::new(item);
-        self.push_cmd(Box::new(cmd));
+        self.push_new_item(AddItem::new(item));
         self.flash("已创建图形");
         // 默认回 Select
         self.tool = Tool::Select;
@@ -2620,7 +2555,94 @@ impl PReferZApp {
         );
     }
 
-    /// 测量所Text item 的实际文字尺寸并更新 `measured_size`（修 B6）    /// 仅在 `measured_size` None 时测量（content 变化会清measured_size）
+    /// 对指定 item 开启文本编辑（Excalidraw 语义），双击与 Enter 快捷键共用：
+    /// - `Text` item → 编辑其内容；
+    /// - 封闭 `Shape` → 编辑已有绑定文本，没有则新建一个空的；
+    /// - 其它（图片 / 未闭合折线 / 画框）→ 不处理并返回 false，由调用方兜底。
+    ///
+    /// 已在编辑中时直接返回 true（不打断当前输入）。
+    fn start_text_edit(&mut self, id: ItemId) -> bool {
+        if self.editing_text.is_some() {
+            return true;
+        }
+        let Some(kind) = self.scene.get_item(&id).map(|it| it.kind.clone()) else {
+            return false;
+        };
+        match kind {
+            ItemKind::Text {
+                content,
+                font_size,
+                color,
+                container_id,
+                ..
+            } => {
+                let canvas_pos = self
+                    .scene
+                    .get_item(&id)
+                    .map(|it| it.transform.pos)
+                    .map(|p| CanvasPoint::new(p.x, p.y))
+                    .unwrap_or_else(|| CanvasPoint::new(f32::MIN, f32::MIN));
+                self.editing_text = Some(EditingText {
+                    editing_item_id: Some(id),
+                    canvas_pos,
+                    buffer: content,
+                    font_size,
+                    color,
+                    first_frame: true,
+                    container_id,
+                });
+            }
+            ref k if is_text_container(k) => {
+                let center = self
+                    .scene
+                    .get_item(&id)
+                    .map(|it| it.bounding_rect().center())
+                    .map(|p| CanvasPoint::new(p.x, p.y));
+                let Some(center) = center else {
+                    return false;
+                };
+                let existing = self.scene.texts_bound_to(id).into_iter().next();
+                // 已有绑定文本 → 编辑；否则提交时才写入容器 id 新建一个
+                let (editing_item_id, buffer, font_size, color) =
+                    match existing.and_then(|tid| self.scene.get_item(&tid)) {
+                        Some(it) => match &it.kind {
+                            ItemKind::Text {
+                                content,
+                                font_size,
+                                color,
+                                ..
+                            } => (existing, content.clone(), *font_size, *color),
+                            _ => (None, String::new(), 18.0, [255; 4]),
+                        },
+                        None => (None, String::new(), 18.0, [255; 4]),
+                    };
+                self.editing_text = Some(EditingText {
+                    editing_item_id,
+                    canvas_pos: center,
+                    buffer,
+                    font_size,
+                    color,
+                    first_frame: true,
+                    container_id: Some(id),
+                });
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    /// 选中项恰好一个时返回其 id（多选返回 None，此时不做"编辑文本"这类单选语义的操作）。
+    fn single_selected_id(&self) -> Option<ItemId> {
+        if self.scene.selection.len() == 1 {
+            self.scene.selection.iter().next().copied()
+        } else {
+            None
+        }
+    }
+
+    /// 测量所有 Text item 的实际文字尺寸并更新 `measured_size`（修 B6）。
+    /// 仅在 `measured_size` 为 None 时测量（content 变化会清空 measured_size）；
+    /// 绑定文本例外——它随容器宽度换行，需每帧重测。
     fn update_text_measured_sizes(&mut self, ctx: &egui::Context) {
         let zoom = self.viewport.zoom;
         let mut updates: Vec<(ItemId, (f32, f32))> = Vec::new();
@@ -3584,6 +3606,16 @@ impl PReferZApp {
             }
             // 裁剪模式下屏蔽其他场景快捷键
             return;
+        }
+
+        // Enter：编辑选中项的文本（Excalidraw 语义）。单选才生效——
+        // Text 直接改内容；封闭 Shape 编辑/新建绑定文本；其余类型不响应。
+        // 注意必须排在裁剪分支之后，否则裁剪模式下 Enter 会被这里吃掉。
+        if self.keymap.pressed(Action::EditText, ctx) {
+            if let Some(id) = self.single_selected_id() {
+                self.start_text_edit(id);
+                return;
+            }
         }
 
         // 显示右键菜单

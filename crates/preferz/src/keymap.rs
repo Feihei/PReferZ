@@ -390,6 +390,11 @@ pub enum Action {
     Cancel,
     // 通用确认（裁剪模式应用 / 文本编辑提交）
     Confirm,
+    /// 编辑选中项的文本：Text 直接改内容，封闭 Shape 编辑/新建其绑定文本。
+    ///
+    /// 与 `Confirm` 默认同为 Enter —— 裁剪模式下 Enter 由 `Confirm` 先消费
+    /// （`handle_shortcuts` 的分支顺序保证），两者不冲突，也能各自改绑。
+    EditText,
 }
 
 impl Action {
@@ -422,6 +427,7 @@ impl Action {
         Action::PresentLast,
         Action::Cancel,
         Action::Confirm,
+        Action::EditText,
     ];
 
     /// 出厂默认绑定。一个动作可有多个绑定（如翻页的三组键）。
@@ -463,6 +469,8 @@ impl Action {
             PresentLast => vec![KeyBind::new(End)],
             Cancel => vec![KeyBind::new(Escape)],
             Confirm => vec![KeyBind::new(Enter)],
+            // Excalidraw 语义：选中对象后按 Enter 直接进入文字编辑
+            EditText => vec![KeyBind::new(Enter)],
         }
     }
 }
@@ -624,18 +632,49 @@ mod tests {
         }
     }
 
+    /// 允许共用同一默认组合的动作对。
+    ///
+    /// `Confirm`（裁剪应用）与 `EditText`（编辑选中项文本）都默认挂在 Enter 上，
+    /// 因为它们永远不会同时待命：裁剪模式下 Enter 由 `Confirm` 消费后立刻 return，
+    /// 走不到 `EditText`（见 `handle_shortcuts` 的分支顺序）。
+    /// 放在白名单里，是为了让"默认表不许抢键"这条不变量对其它动作依然成立。
+    const SHARED_DEFAULT_BINDS: &[(Action, Action)] = &[(Action::Confirm, Action::EditText)];
+
+    fn allows_shared(a: Action, b: Action) -> bool {
+        SHARED_DEFAULT_BINDS
+            .iter()
+            .any(|(x, y)| (*x == a && *y == b) || (*x == b && *y == a))
+    }
+
     #[test]
     fn no_duplicate_bindings_in_defaults() {
         // 出厂默认里若有两个动作抢同一组合，说明默认表本身有 bug
+        // （唯一例外见 SHARED_DEFAULT_BINDS，且必须在文档里写明为何安全）
         let km = Keymap::new();
         let mut seen: HashMap<KeyBind, Action> = HashMap::new();
         for action in Action::ALL {
             for bind in km.bindings(*action) {
                 if let Some(prev) = seen.insert(*bind, *action) {
-                    panic!("默认绑定冲突: {bind:?} 同时属于 {prev:?} 和 {action:?}");
+                    assert!(
+                        allows_shared(prev, *action),
+                        "默认绑定冲突: {bind:?} 同时属于 {prev:?} 和 {action:?}"
+                    );
                 }
             }
         }
+    }
+
+    #[test]
+    fn edit_text_defaults_to_enter() {
+        // Excalidraw 语义：选中对象后按 Enter 直接进文字编辑
+        let km = Keymap::new();
+        let binds = km.bindings(Action::EditText);
+        assert_eq!(binds.len(), 1);
+        assert_eq!(binds[0].key, BindKey::Enter);
+        assert!(
+            !binds[0].ctrl && !binds[0].shift && !binds[0].alt,
+            "裸 Enter"
+        );
     }
 
     #[test]

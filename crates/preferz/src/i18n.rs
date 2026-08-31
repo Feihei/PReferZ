@@ -428,6 +428,7 @@ pub fn action_label(lang: Lang, action: Action) -> &'static str {
             PresentLast => "Slideshow: last",
             Cancel => "Cancel (crop / tool / picker)",
             Confirm => "Confirm (apply crop)",
+            EditText => "Edit text of selection",
         },
         Lang::Zh => match action {
             NewCanvas => "新建画布",
@@ -457,6 +458,7 @@ pub fn action_label(lang: Lang, action: Action) -> &'static str {
             PresentLast => "放映：末页",
             Cancel => "取消（裁剪 / 工具 / 取色器）",
             Confirm => "确认（应用裁剪）",
+            EditText => "编辑选中项的文字",
         },
     }
 }
