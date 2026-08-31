@@ -10,5 +10,4 @@ euclid = { workspace = true }
 uuid = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-undo = { workspace = true }
 

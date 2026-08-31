@@ -9,7 +9,6 @@ description.workspace = true
 preferz-core = { path = "../preferz-core" }
 rusqlite = { workspace = true }
 image = "0.25"
-rayon = "1.10"
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

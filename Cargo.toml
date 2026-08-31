@@ -39,7 +39,6 @@ pre-release-replacements = []
 # Core
 euclid = { version = "0.22", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
-undo = "0.4"
 
 # GUI
 eframe = "0.29"
@@ -48,7 +47,6 @@ egui = "0.29"
 # File I/O
 rusqlite = { version = "0.31", features = ["bundled"] }
 image = "0.25"
-rayon = "1.10"
 
 # Utilities
 serde = { version = "1", features = ["derive"] }
