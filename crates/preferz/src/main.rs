@@ -4,6 +4,7 @@
 
 mod i18n;
 mod interaction;
+mod keymap;
 mod preferz_app;
 mod ui;
 mod viewport;

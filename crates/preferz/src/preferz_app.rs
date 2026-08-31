@@ -1,5 +1,6 @@
-use crate::i18n::{t, Lang, T};
+use crate::i18n::{action_label, t, Lang, T};
 use crate::interaction;
+use crate::keymap::{Action, BindKey, KeyBind, Keymap, KeymapMap};
 use crate::ui::stylers::{build_shape_visuals, item_local_to_screen};
 use crate::ui::widgets::transform_handles::{
     should_show_flip, should_show_rotate, Handle, TransformHandles,
@@ -429,6 +430,12 @@ pub struct PReferZApp {
     bg_alpha: f32,
     /// UI 语言（默认英文，设置面板可切换中文，持久化到 config.json）。
     lang: Lang,
+    /// 键盘快捷键映射（可在设置面板重绑定，持久化到 config.json）。
+    keymap: Keymap,
+    /// 正在等待按键捕获的动作槽位（动作 + 该动作的第几个绑定）。
+    rebinding: Option<(Action, usize)>,
+    /// 最近一次改绑的冲突提示（D2-a：标红告知占用者）。
+    rebind_notice: Option<String>,
     /// 最近文件列表（Phase 6 §2.3 欢迎页）。
     recent_files: Vec<PathBuf>,
     /// 欢迎页点击的最近文件路径（待处理）。
@@ -467,6 +474,8 @@ enum CropHandle {
 
 impl PReferZApp {
     pub fn new() -> Self {
+        // 只加载一次：lang 与 keymap 同源
+        let cfg = load_config();
         Self {
             scene: Scene::new(),
             viewport: ViewportState::default(),
@@ -504,7 +513,10 @@ impl PReferZApp {
             always_on_top: false,
             frameless: false,
             bg_alpha: 1.0,
-            lang: load_config().lang,
+            lang: cfg.lang,
+            keymap: Keymap::from_partial(cfg.keymap),
+            rebinding: None,
+            rebind_notice: None,
             recent_files: load_recent_files(),
             pending_open_recent: None,
             logo_texture: None,
@@ -1282,6 +1294,9 @@ impl eframe::App for PReferZApp {
 
         // 快捷�?
         self.handle_shortcuts(ctx);
+        // 改绑捕获必须排在 handle_shortcuts 之后：否则刚捕获的组合会在同一帧里
+        // 顺带触发它新绑定的那个动作。
+        self.poll_rebind_capture(ctx);
 
         // 保存提示对话框（关闭/新建时若 dirty 弹出�?
         self.render_save_prompt(ctx);
@@ -2183,39 +2198,30 @@ impl PReferZApp {
     }
 
     fn handle_present_input(&mut self, ctx: &egui::Context) {
-        let mut delta: i32 = 0;
-        let keys = |ctx: &egui::Context| {
-            (
-                ctx.input(|i| i.key_pressed(egui::Key::ArrowRight)),
-                ctx.input(|i| i.key_pressed(egui::Key::Space)),
-                ctx.input(|i| i.key_pressed(egui::Key::PageDown)),
-                ctx.input(|i| i.key_pressed(egui::Key::ArrowLeft)),
-                ctx.input(|i| i.key_pressed(egui::Key::PageUp)),
-                ctx.input(|i| i.key_pressed(egui::Key::Home)),
-                ctx.input(|i| i.key_pressed(egui::Key::End)),
-                ctx.input(|i| i.key_pressed(egui::Key::Escape)),
-                ctx.input(|i| i.key_pressed(egui::Key::F5)),
-            )
-        };
-        let (right, space, pgdn, left, pgup, home, end, esc, f5) = keys(ctx);
         let n = self.present_slide_count();
         let index = match &self.app_mode {
             AppMode::Present { index, .. } => *index,
             AppMode::Edit => return,
         };
 
-        if esc || f5 {
+        // 退出：取消键 / 再次按演示切换键 / Esc 硬兜底（与 cancel_pressed 同策略）
+        let exit = self.keymap.pressed(Action::Cancel, ctx)
+            || self.keymap.pressed(Action::TogglePresent, ctx)
+            || ctx.input(|i| i.key_pressed(egui::Key::Escape));
+        if exit {
             self.exit_present(ctx);
             return;
         }
-        if right || space || pgdn {
+
+        let mut delta: i32 = 0;
+        if self.keymap.pressed(Action::PresentNext, ctx) {
             delta = 1;
-        } else if left || pgup {
+        } else if self.keymap.pressed(Action::PresentPrev, ctx) {
             delta = -1;
         }
-        if home {
+        if self.keymap.pressed(Action::PresentFirst, ctx) {
             delta = i32::MIN;
-        } else if end {
+        } else if self.keymap.pressed(Action::PresentLast, ctx) {
             delta = i32::MAX;
         }
         let scroll = ctx.input(|i| i.raw_scroll_delta).y;
@@ -2906,7 +2912,10 @@ impl PReferZApp {
                     }
                     ui.separator();
                     if ui
-                        .button(format!("\u{25B6} {}", t(self.lang, T::Present)))
+                        .button(format!(
+                            "\u{25B6} {}",
+                            self.shortcut_hint(T::Present, &[Action::TogglePresent])
+                        ))
                         .clicked()
                     {
                         self.enter_present(ctx);
@@ -2928,7 +2937,10 @@ impl PReferZApp {
                         self.context_menu_open = false;
                     }
                     if ui
-                        .button(format!("\u{1F4CB} {}", t(self.lang, T::PasteImage)))
+                        .button(format!(
+                            "\u{1F4CB} {}",
+                            self.shortcut_hint(T::PasteImage, &[Action::Paste])
+                        ))
                         .clicked()
                     {
                         self.paste_from_clipboard(ctx);
@@ -3339,6 +3351,34 @@ fn is_project_file(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// 把模板里的 `{0}`/`{1}`… 依次替换为 `parts`。
+///
+/// i18n 文案中内嵌了快捷键占位（如 `"Present slides ({0})"`）——快捷键可改绑后
+/// 不能把 `Ctrl+V` 之类写死进翻译表。`t()` 返回 `&'static str` 不支持格式化，
+/// 故在这里补一层极简替换（不引入 `formatx` / `strfmt` 之类依赖）。
+fn fill(template: &str, parts: &[String]) -> String {
+    let mut s = template.to_string();
+    for (i, part) in parts.iter().enumerate() {
+        s = s.replace(&format!("{{{i}}}"), part);
+    }
+    s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fill_replaces_indexed_placeholders() {
+        assert_eq!(
+            fill("a {0} b {1}", &["X".to_string(), "Y".to_string()]),
+            "a X b Y"
+        );
+        // 占位多于参数时保留原样，便于开发期发现漏填
+        assert_eq!(fill("a {0} b {1}", &["X".to_string()]), "a X b {1}");
+    }
+}
+
 /// 缩放手柄：以拖拽角点的对角为锚点�?
 /// 数学：见 REVIEW 报告 P0-4。设 T(p)=pos+R(rot)*(scale∘F∘p)，F=flip 矩阵�?
 /// 对角�?a 和拖拽点 d�?
@@ -3487,19 +3527,29 @@ fn apply_rotate_drag(
 // ─────────────────────────── 操作 ───────────────────────────
 
 impl PReferZApp {
+    /// 全局键盘派发。所有组合一律走 [`Keymap`] 查表，不再硬编码 `egui::Key`。
+    ///
+    /// 派发顺序即优先级：演示切换 → 工具切换 → 模式内（绘制/裁剪）→ 场景操作。
+    /// 两条与改绑有关的约束：
+    /// - 改绑捕获中与文本编辑中直接返回。编辑框会吃掉可打印字符，此时若仍派发，
+    ///   把某个动作绑到字母键就会导致该字母打不进文本。
+    /// - `Cancel` 走 [`Self::cancel_pressed`]（查表 + `Esc` 硬兜底），见 D1-a。
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
-        // Present 演示：F5 / Esc 退出（进入由 F5 或右键菜单触发，present 输入走 handle_present_input）。
-        if ctx.input(|i| i.key_pressed(egui::Key::F5)) {
+        if self.rebinding.is_some() {
+            return;
+        }
+        // 文本编辑中不派发场景快捷键（Esc/Enter 由 render_text_editor 自行处理）
+        if self.editing_text.is_some() {
+            return;
+        }
+
+        // 演示模式切换（present 内部输入走 handle_present_input）
+        if self.keymap.pressed(Action::TogglePresent, ctx) {
             if matches!(self.app_mode, AppMode::Present { .. }) {
                 self.exit_present(ctx);
             } else {
                 self.enter_present(ctx);
             }
-            return;
-        }
-
-        // 文本编辑中不处理场景快捷键（Esc �?render_text_editor 处理�?
-        if self.editing_text.is_some() {
             return;
         }
 
@@ -3514,21 +3564,21 @@ impl PReferZApp {
             }
             return;
         }
-        // 绘制工具激活：屏蔽其它场景快捷键，Esc 回 Select
+        // 绘制工具激活：屏蔽其它场景快捷键，取消键回 Select
         if self.tool != Tool::Select {
-            if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            if self.cancel_pressed(ctx) {
                 self.tool = Tool::Select;
             }
             return;
         }
 
-        // 裁剪模式快捷键：Enter 应用 / Esc 取消
+        // 裁剪模式：确认应用 / 取消
         if self.crop_mode.is_some() {
-            if ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
+            if self.keymap.pressed(Action::Confirm, ctx) {
                 self.apply_crop();
                 return;
             }
-            if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            if self.cancel_pressed(ctx) {
                 self.cancel_crop();
                 return;
             }
@@ -3536,18 +3586,16 @@ impl PReferZApp {
             return;
         }
 
-        // Ctrl+Shift+P 显示菜单
-        let show_menu =
-            ctx.input(|i| i.modifiers.ctrl && i.modifiers.shift && i.key_pressed(egui::Key::P));
-        if show_menu && !self.context_menu_open {
+        // 显示右键菜单
+        if self.keymap.pressed(Action::ContextMenu, ctx) && !self.context_menu_open {
             self.context_menu_open = true;
             self.context_menu_pos = ctx
                 .input(|i| i.pointer.latest_pos())
                 .unwrap_or_else(|| ctx.screen_rect().center());
         }
 
-        // ESC 关闭菜单 / 退出颜色采�?
-        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        // 取消键：关闭菜单 / 退出颜色采样
+        if self.cancel_pressed(ctx) {
             if self.context_menu_open {
                 self.context_menu_open = false;
             } else if self.color_picker_active {
@@ -3555,112 +3603,153 @@ impl PReferZApp {
             }
         }
 
-        // Delete 删除选中（走命令�?
-        if ctx.input(|i| i.key_pressed(egui::Key::Delete)) && !self.scene.selection.is_empty() {
+        // 删除选中（走命令栈）
+        if self.keymap.pressed(Action::DeleteSelected, ctx) && !self.scene.selection.is_empty() {
             self.delete_selected();
         }
 
-        // Ctrl+Z 撤销
-        if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::Z) && !i.modifiers.shift)
-            && self.perform_undo()
-        {
+        let do_undo = self.keymap.pressed(Action::Undo, ctx);
+        if do_undo && self.perform_undo() {
             self.flash(t(self.lang, T::FlashUndo).to_string());
             ctx.request_repaint();
         }
 
-        // Ctrl+Y / Ctrl+Shift+Z 重做
-        if ctx.input(|i| {
-            i.modifiers.ctrl
-                && (i.key_pressed(egui::Key::Y)
-                    || (i.key_pressed(egui::Key::Z) && i.modifiers.shift))
-        }) && self.perform_redo()
-        {
+        let do_redo = self.keymap.pressed(Action::Redo, ctx);
+        if do_redo && self.perform_redo() {
             self.flash(t(self.lang, T::FlashRedo).to_string());
             ctx.request_repaint();
         }
 
-        // Ctrl+S 保存，Ctrl+Shift+S 另存为，Ctrl+O 打开项目，Ctrl+I 载入图片，Ctrl+N 新建画布
-        if ctx.input(|i| i.modifiers.ctrl && !i.modifiers.shift && i.key_pressed(egui::Key::S)) {
+        if self.keymap.pressed(Action::Save, ctx) {
             self.save_file(ctx);
         }
-        if ctx.input(|i| i.modifiers.ctrl && i.modifiers.shift && i.key_pressed(egui::Key::S)) {
+        if self.keymap.pressed(Action::SaveAs, ctx) {
             self.save_file_as(ctx);
         }
-        if ctx.input(|i| i.modifiers.ctrl && !i.modifiers.shift && i.key_pressed(egui::Key::O)) {
+        if self.keymap.pressed(Action::OpenProject, ctx) {
             self.open_project_file(ctx);
         }
-        if ctx.input(|i| i.modifiers.ctrl && !i.modifiers.shift && i.key_pressed(egui::Key::I)) {
+        if self.keymap.pressed(Action::LoadImage, ctx) {
             self.import_image_file(ctx);
         }
-        if ctx.input(|i| i.modifiers.ctrl && !i.modifiers.shift && i.key_pressed(egui::Key::N)) {
+        if self.keymap.pressed(Action::NewCanvas, ctx) {
             self.new_canvas(ctx);
         }
-        // Ctrl+V 粘贴剪贴板图片到画布（spec §2.1 剪贴板粘贴）
-        // egui-winit 0.29 拦截 Ctrl+V 的 key_pressed 事件用于文本粘贴：
-        //   is_paste_command(modifiers, Key::V) 在 pressed=true 时返回 true，
-        //   egui-winit 尝试 arboard.get_text()：
-        //     - 剪贴板有文本 → 产生 Event::Paste(text)，不产生 Event::Key for V
-        //     - 剪贴板是图片 → 什么都不产生（get_text 读不到图片），直接 return
-        //   因此 key_pressed(Key::V) 永远不会在 Ctrl+V 时返回 true。
-        // 解决方案：is_paste_command 只在 pressed=true 时拦截，V 释放（pressed=false）
-        // 不被拦截，会正常产生 Event::Key。所以用 key_released(V) + modifiers.ctrl 检测。
-        if ctx.input(|i| i.key_released(egui::Key::V) && i.modifiers.ctrl && !i.modifiers.shift) {
+        // 粘贴必须用释放沿，见 keymap 模块文档第 1 条
+        if self.keymap.pressed(Action::Paste, ctx) {
             self.paste_from_clipboard(ctx);
         }
 
-        // F 适应画布（替代原双击手势，双击已用于创建文本便签�?
-        if ctx.input(|i| i.key_pressed(egui::Key::F)) {
+        // 适应画布
+        if self.keymap.pressed(Action::FitToScreen, ctx) {
             self.fit_to_screen();
         }
 
-        // Phase 5 快捷键（�?Ctrl/Shift 修饰�?
-        let no_mod = ctx.input(|i| !i.modifiers.ctrl && !i.modifiers.shift && !i.modifiers.alt);
-        if no_mod && !self.scene.selection.is_empty() {
-            // C = 进入裁剪模式
-            if ctx.input(|i| i.key_pressed(egui::Key::C)) && self.selected_pixmap_count() == 1 {
-                self.enter_crop_mode();
-            }
+        // 进入裁剪模式（仅单张图片选中时）
+        if self.keymap.pressed(Action::Crop, ctx) && self.selected_pixmap_count() == 1 {
+            self.enter_crop_mode();
         }
 
-        // I = 切换取色器模式（独立，不要求选中�?
-        if no_mod && ctx.input(|i| i.key_pressed(egui::Key::I)) {
+        // 切换取色器模式（独立，不要求选中）
+        if self.keymap.pressed(Action::ColorPicker, ctx) {
             self.color_picker_active = !self.color_picker_active;
             self.flash(if self.color_picker_active {
-                t(self.lang, T::FlashColorPickerHint).to_string()
+                self.shortcut_hint(T::FlashColorPickerHint, &[Action::Cancel])
             } else {
                 t(self.lang, T::ExitColorPicker).to_string()
             });
         }
     }
 
-    /// 工具切换快捷键：V/R/O/D（无修饰键）。再次按同键在 handle_shortcuts 里回 Select。
+    /// 取消键：查 `Cancel` 绑定，**外加 `Esc` 硬兜底**（D1-a）。
+    ///
+    /// 用户在设置面板里可以把 `Cancel` 改成任何键，但 `Esc` 永远能退出裁剪 / 绘制
+    /// 工具 / 取色器——否则一旦改坏就卡在某个模式里出不来。
+    fn cancel_pressed(&self, ctx: &egui::Context) -> bool {
+        self.keymap.pressed(Action::Cancel, ctx) || ctx.input(|i| i.key_pressed(egui::Key::Escape))
+    }
+
+    /// 工具切换快捷键。修饰键严格匹配由 [`Keymap::pressed`] 保证（默认绑定均无修饰键）。
+    /// 再次按同键在 handle_shortcuts 里回 Select。
     fn tool_switch_shortcut(&self, ctx: &egui::Context) -> Option<Tool> {
-        let no_mod = ctx.input(|i| !i.modifiers.ctrl && !i.modifiers.shift && !i.modifiers.alt);
-        if !no_mod {
-            return None;
-        }
-        let pressed = |key| ctx.input(|i| i.key_pressed(key));
-        if pressed(egui::Key::V) {
+        let pressed = |action| self.keymap.pressed(action, ctx);
+        if pressed(Action::ToolSelect) {
             Some(Tool::Select)
-        } else if pressed(egui::Key::R) {
+        } else if pressed(Action::ToolRect) {
             Some(Tool::Shape(ShapeType::Rectangle))
-        } else if pressed(egui::Key::O) {
+        } else if pressed(Action::ToolEllipse) {
             Some(Tool::Shape(ShapeType::Ellipse))
-        } else if pressed(egui::Key::D) {
+        } else if pressed(Action::ToolDiamond) {
             Some(Tool::Shape(ShapeType::Diamond))
-        } else if pressed(egui::Key::L) {
+        } else if pressed(Action::ToolLine) {
             Some(Tool::Linear { end_arrow: None })
-        } else if pressed(egui::Key::A) {
+        } else if pressed(Action::ToolArrow) {
             Some(Tool::Linear {
                 end_arrow: Some(ArrowHeadStyle::Arrow),
             })
-        } else if pressed(egui::Key::M) {
+        } else if pressed(Action::ToolFrame) {
             Some(Tool::Frame)
         } else {
             None
         }
     }
 
+    /// 某动作当前的首个绑定展示串（如 `Ctrl+Shift+S`），未绑定时给本地化占位。
+    fn binding_display(&self, action: Action) -> String {
+        self.keymap
+            .bindings(action)
+            .first()
+            .map(|b| b.display())
+            .unwrap_or_else(|| t(self.lang, T::SettingsKeymapUnbound).to_string())
+    }
+
+    /// 把 i18n 文案里的 `{0}`/`{1}`… 依次替换为对应动作的绑定展示串。
+    /// 快捷键可改绑后，翻译表里不能再写死 `Ctrl+V` 之类。
+    fn shortcut_hint(&self, key: T, actions: &[Action]) -> String {
+        let parts: Vec<String> = actions.iter().map(|a| self.binding_display(*a)).collect();
+        fill(t(self.lang, key), &parts)
+    }
+
+    /// 捕获一次按键并应用改绑（D2-a：冲突时覆盖，并提示被挤掉的动作）。
+    fn poll_rebind_capture(&mut self, ctx: &egui::Context) {
+        let Some((action, index)) = self.rebinding else {
+            return;
+        };
+        // 裸 Esc = 放弃改绑
+        let abort = ctx.input(|i| {
+            i.key_pressed(egui::Key::Escape)
+                && !i.modifiers.ctrl
+                && !i.modifiers.shift
+                && !i.modifiers.alt
+        });
+        if abort {
+            self.rebinding = None;
+            return;
+        }
+        let captured = ctx.input(|i| {
+            i.events.iter().find_map(|e| match e {
+                egui::Event::Key {
+                    key,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } => BindKey::from_egui(*key).map(|k| (k, *modifiers)),
+                _ => None,
+            })
+        });
+        let Some((key, modifiers)) = captured else {
+            return;
+        };
+        let evicted = self.keymap.rebind_captured(action, index, key, modifiers);
+        self.rebinding = None;
+        self.rebind_notice = evicted.first().map(|other| {
+            fill(
+                t(self.lang, T::SettingsKeymapConflict),
+                &[action_label(self.lang, *other).to_string()],
+            )
+        });
+        self.persist_config();
+    }
     fn finish_import(&mut self, ctx: &egui::Context, outcome: ImportOutcome) {
         if let Some(e) = outcome.error {
             self.flash(format!("导入失败 {}: {}", outcome.path.display(), e));
@@ -4300,7 +4389,7 @@ impl PReferZApp {
             dragging: None,
             original: current_crop,
         });
-        self.flash(t(self.lang, T::FlashCropHint).to_string());
+        self.flash(self.shortcut_hint(T::FlashCropHint, &[Action::Confirm, Action::Cancel]));
     }
 
     /// 应用裁剪：push CropItems 命令并退出裁剪模式。
@@ -4651,7 +4740,15 @@ impl PReferZApp {
         }
     }
 
-    /// 渲染设置面板（spec §2.3 简化版：排列间距 + 窗口形态 + 语言 + 快捷键说明，仅暗色主题）。
+    /// 把当前配置（语言 + 快捷键）落盘到 `~/.preferz/config.json`。
+    fn persist_config(&self) {
+        save_config(&UserConfig {
+            lang: self.lang,
+            keymap: self.keymap.as_map().clone(),
+        });
+    }
+
+    /// 渲染设置面板（spec §2.3 简化版：排列间距 + 窗口形态 + 语言 + 快捷键，仅暗色主题）。
     fn render_settings_window(&mut self, ctx: &egui::Context) {
         let mut open = self.settings_open;
         // 局部副本，闭包内修改；changed 时记录，闭包外发 ViewportCommand
@@ -4661,6 +4758,7 @@ impl PReferZApp {
         let mut top_changed = false;
         let mut frame_changed = false;
         let mut lang_changed = false;
+        let mut keymap_changed = false;
         egui::Window::new(t(self.lang, T::SettingsTitle))
             .open(&mut open)
             .resizable(false)
@@ -4711,11 +4809,71 @@ impl PReferZApp {
                     });
                 ui.separator();
 
-                ui.label(t(self.lang, T::SettingsShortcuts));
-                ui.label(t(self.lang, T::SettingsShortcutArrange));
-                ui.label(t(self.lang, T::SettingsShortcutUndo));
-                ui.label(t(self.lang, T::SettingsShortcutFile));
-                ui.label(t(self.lang, T::SettingsShortcutPaste));
+                // 快捷键映射表（可改绑）。先快照绑定文本，避免闭包里同时借
+                // self 的可变与不可变部分。
+                let lang = self.lang;
+                let rows: Vec<(Action, Vec<(KeyBind, String)>)> = Action::ALL
+                    .iter()
+                    .map(|a| {
+                        (
+                            *a,
+                            self.keymap
+                                .bindings(*a)
+                                .iter()
+                                .map(|b| (*b, b.display()))
+                                .collect(),
+                        )
+                    })
+                    .collect();
+                let unbound_label = t(lang, T::SettingsKeymapUnbound).to_string();
+                let capturing_label = t(lang, T::SettingsKeymapCapturing).to_string();
+
+                ui.label(t(lang, T::SettingsShortcuts));
+                ui.label(t(lang, T::SettingsKeymapHint));
+                if ui.button(t(lang, T::SettingsKeymapRestore)).clicked() {
+                    self.keymap.reset();
+                    self.rebinding = None;
+                    self.rebind_notice = None;
+                    keymap_changed = true;
+                }
+                if let Some(notice) = self.rebind_notice.clone() {
+                    ui.colored_label(egui::Color32::RED, notice);
+                }
+                egui::ScrollArea::vertical()
+                    .max_height(220.0)
+                    .id_salt("keymap_scroll")
+                    .show(ui, |ui| {
+                        for (action, binds) in &rows {
+                            ui.horizontal(|ui| {
+                                ui.label(action_label(lang, *action));
+                                for (i, (bind, text)) in binds.iter().enumerate() {
+                                    let capturing = self.rebinding == Some((*action, i));
+                                    // 正常改绑路径总会挤掉对方，只有手改 config.json
+                                    // 才可能出现两个动作抢同一组合，这里标红提示。
+                                    let dup = self
+                                        .keymap
+                                        .owner_of(bind)
+                                        .is_some_and(|owner| owner != *action);
+                                    let label = if capturing {
+                                        capturing_label.clone()
+                                    } else if dup {
+                                        format!("{text} \u{26A0}")
+                                    } else {
+                                        text.clone()
+                                    };
+                                    if ui.button(label).clicked() {
+                                        self.rebinding = Some((*action, i));
+                                        self.rebind_notice = None;
+                                    }
+                                }
+                                // 被冲突挤空后给一个重新绑定的入口（D2-a）
+                                if binds.is_empty() && ui.button(unbound_label.clone()).clicked() {
+                                    self.rebinding = Some((*action, 0));
+                                    self.rebind_notice = None;
+                                }
+                            });
+                        }
+                    });
             });
         self.settings_open = open;
         // 应用窗口形态切换
@@ -4735,7 +4893,10 @@ impl PReferZApp {
         if lang_changed {
             self.lang = lang;
             // 持久化到 config.json
-            save_config(&UserConfig { lang });
+            self.persist_config();
+        }
+        if keymap_changed {
+            self.persist_config();
         }
     }
 
@@ -4753,7 +4914,9 @@ impl PReferZApp {
                         .show(ctx, |ui| {
                             let frame = egui::Frame::popup(ui.style());
                             frame.show(ui, |ui| {
-                                ui.label(t(self.lang, T::FlashColorPickerHint));
+                                ui.label(
+                                    self.shortcut_hint(T::FlashColorPickerHint, &[Action::Cancel]),
+                                );
                             });
                         });
                 }
@@ -5107,6 +5270,10 @@ fn config_path() -> Option<PathBuf> {
 struct UserConfig {
     #[serde(default)]
     lang: Lang,
+    /// 部分表：缺失的动作由 [`Keymap::from_partial`] 用默认值补齐，
+    /// 因此新增 Action 变体不会让老配置文件解析失败。
+    #[serde(default)]
+    keymap: KeymapMap,
 }
 
 /// 从 `~/.preferz/config.json` 加载配置。文件不存在或解析失败时返回默认值。
