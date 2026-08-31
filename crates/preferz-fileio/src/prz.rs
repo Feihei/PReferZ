@@ -30,7 +30,7 @@ impl Default for ViewportMeta {
 }
 
 #[derive(Debug)]
-pub struct BeeFile {
+pub struct PrzFile {
     pub path: PathBuf,
     pub connection: Connection,
 }
@@ -38,7 +38,7 @@ pub struct BeeFile {
 /// 加载结果：场景 + 图片字节映射（texture_id 字符串 → 原始图片字节）+ 视口元数据。
 pub type LoadResult = (Scene, HashMap<String, Vec<u8>>, ViewportMeta);
 
-impl BeeFile {
+impl PrzFile {
     /// 打开已存在的 `.prz` 文件。
     ///
     /// 会校验 `metadata.format == 'prz'`；格式不符（含 BeeRef 的 `.bee`——其
@@ -384,13 +384,13 @@ mod tests {
 
         // 保存
         {
-            let mut bee = BeeFile::create(&path).unwrap();
-            bee.save_scene(&scene, &images, viewport).unwrap();
+            let mut prz = PrzFile::create(&path).unwrap();
+            prz.save_scene(&scene, &images, viewport).unwrap();
         }
 
         // 加载
-        let bee = BeeFile::open(&path).unwrap();
-        let (loaded_scene, loaded_images, loaded_vp) = bee.load_scene().unwrap();
+        let prz = PrzFile::open(&path).unwrap();
+        let (loaded_scene, loaded_images, loaded_vp) = prz.load_scene().unwrap();
 
         // 验证 items 数量
         assert_eq!(loaded_scene.items.len(), 2);
@@ -469,13 +469,13 @@ mod tests {
             zoom: 1.0,
         };
         {
-            let mut bee = BeeFile::create(&path).unwrap();
-            bee.save_scene(&scene, &HashMap::new(), viewport).unwrap();
+            let mut prz = PrzFile::create(&path).unwrap();
+            prz.save_scene(&scene, &HashMap::new(), viewport).unwrap();
         }
 
         // 加载
-        let bee = BeeFile::open(&path).unwrap();
-        let (loaded_scene, _, _) = bee.load_scene().unwrap();
+        let prz = PrzFile::open(&path).unwrap();
+        let (loaded_scene, _, _) = prz.load_scene().unwrap();
         assert_eq!(loaded_scene.items.len(), 1);
         let line = &loaded_scene.items[0];
         match &line.kind {
@@ -532,7 +532,7 @@ mod tests {
             )
             .unwrap();
         }
-        let err = BeeFile::open(&path).expect_err("应拒绝非 prz 文件");
+        let err = PrzFile::open(&path).expect_err("应拒绝非 prz 文件");
         assert!(
             err.to_string().contains("不是有效的 PReferZ 项目文件"),
             "错误信息应可读，实际: {err}"
@@ -545,16 +545,16 @@ mod tests {
     fn load_scene_falls_back_to_default_viewport() {
         let path = tmp_path("noviewport.prz");
         {
-            let mut bee = BeeFile::create(&path).unwrap();
-            bee.save_scene(&Scene::new(), &HashMap::new(), ViewportMeta::default())
+            let mut prz = PrzFile::create(&path).unwrap();
+            prz.save_scene(&Scene::new(), &HashMap::new(), ViewportMeta::default())
                 .unwrap();
             // 清掉视口元数据，模拟早期文件
-            bee.connection
+            prz.connection
                 .execute("DELETE FROM metadata WHERE key LIKE 'viewport%'", [])
                 .unwrap();
         }
-        let bee = BeeFile::open(&path).unwrap();
-        let (_scene, _images, vp) = bee.load_scene().unwrap();
+        let prz = PrzFile::open(&path).unwrap();
+        let (_scene, _images, vp) = prz.load_scene().unwrap();
         assert_eq_float(vp.pan_x, 0.0);
         assert_eq_float(vp.pan_y, 0.0);
         assert_eq_float(vp.zoom, 1.0);
@@ -572,8 +572,8 @@ mod tests {
 
         // 第一次保存
         {
-            let mut bee = BeeFile::create(&path).unwrap();
-            bee.save_scene(&scene, &images, ViewportMeta::default())
+            let mut prz = PrzFile::create(&path).unwrap();
+            prz.save_scene(&scene, &images, ViewportMeta::default())
                 .unwrap();
         }
         // 第二次保存：删除 Pixmap，只留 Text（sqlar 应被清空）
@@ -586,12 +586,12 @@ mod tests {
             [255, 255, 255, 255],
         ));
         {
-            let mut bee = BeeFile::open(&path).unwrap();
-            bee.save_scene(&scene2, &HashMap::new(), ViewportMeta::default())
+            let mut prz = PrzFile::open(&path).unwrap();
+            prz.save_scene(&scene2, &HashMap::new(), ViewportMeta::default())
                 .unwrap();
         }
-        let bee = BeeFile::open(&path).unwrap();
-        let (_s, images2, _vp) = bee.load_scene().unwrap();
+        let prz = PrzFile::open(&path).unwrap();
+        let (_s, images2, _vp) = prz.load_scene().unwrap();
         assert!(images2.is_empty(), "孤儿 sqlar 条目应被清除");
         let _ = std::fs::remove_file(&path);
     }

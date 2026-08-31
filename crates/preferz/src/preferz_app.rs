@@ -16,7 +16,7 @@ use preferz_core::commands::{
 use preferz_core::shape::{ArrowHeadStyle, DashStyle, ShapeType, StrokeStyle};
 use preferz_core::spaces::{CanvasPoint, CanvasRect, CanvasSize, CanvasVector};
 use preferz_core::{Command, CropRect, Item, ItemId, ItemKind, Scene};
-use preferz_fileio::{BeeFile, ViewportMeta};
+use preferz_fileio::{PrzFile, ViewportMeta};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
@@ -260,8 +260,8 @@ impl BackgroundOps {
         let ctx2 = ctx.clone();
         std::thread::spawn(move || {
             let result = (|| {
-                let bee = BeeFile::open(&path)?;
-                bee.load_scene()
+                let prz = PrzFile::open(&path)?;
+                prz.load_scene()
             })();
             let outcome = LoadOutcome {
                 path: path.clone(),
@@ -287,12 +287,12 @@ impl BackgroundOps {
         let ctx2 = ctx.clone();
         std::thread::spawn(move || {
             let result = (|| {
-                let mut bee = if path.exists() {
-                    BeeFile::open(&path)?
+                let mut prz = if path.exists() {
+                    PrzFile::open(&path)?
                 } else {
-                    BeeFile::create(&path)?
+                    PrzFile::create(&path)?
                 };
-                bee.save_scene(&scene, &images, viewport)
+                prz.save_scene(&scene, &images, viewport)
             })();
             let _ = tx.send(SaveOutcome {
                 path: path.clone(),
