@@ -2,11 +2,11 @@
 
 ## Stack
 
-- **Rust** (stable, >= 1.75), edition 2021
+- **Rust** (stable, >= 1.88), edition 2021 — 1.88 起才稳定的 `slice::as_chunks` / `as_chunks_mut` 已在代码中使用
 - **GUI**: `egui` + `eframe` (glow backend)
 - **2D geometry**: `euclid` (parameterized `CanvasSpace` / `ScreenSpace`)
 - **Undo**: custom `undo` crate wrapping `History` / `Command`
-- **File I/O**: `rusqlite` (`.bee` / `.prz` SQLite + sqlar), `image`, `rayon`
+- **File I/O**: `rusqlite` (`.prz` SQLite + sqlar), `image`, `rayon`
 - **File dialog**: `rfd`; **clipboard**: `arboard`; **config**: `confy`
 - **Workspace**: `crates/preferz` (binary), `crates/preferz-core`, `crates/preferz-fileio`
 
@@ -52,7 +52,7 @@ preferz (binary, eframe::App)
 - **Three coordinate systems**: `ScreenSpace` (pixels), `Viewport` (screen/zoom), `CanvasSpace` (world). Use `euclid` types — never cast between them with raw `f32`.
 - **Texture ownership**: `egui::TextureHandle` lives on `egui::Context`. Create/release textures inside `update()`. Do not hold bare `TextureId` across frames without registration.
 - **Undo "preview" mode**: interactive drag/scale rotates items directly, then `push(cmd)` on release with `skip_first_redo: true`. The `undo` crate has no built-in skip — this field is on the `Command` impl.
-- **BeeRef `.bee` compat**: `USER_VERSION=2`, `sqlar` table with `sz` (uncompressed size) + `data` (compressed blob). `.prz` starts at `USER_VERSION=3` with a `metadata` table.
+- **`.prz` is the only format**（`.bee` 兼容层已移除，commit `62692a8`）：`.prz` 为 SQLite，含 `items`（5 列，主键为 UUID 字符串，transform 存单列 JSON）、`sqlar`（`name` / `sz` 未压缩大小 / `data` 压缩 blob）、`metadata`（`format` 恒为 `prz`、视口状态、`next_z`）。与 BeeRef `.bee` **不兼容**：后者 items 为 9 列、INTEGER 主键、transform 分列存储，且会写 `PRAGMA user_version`；详见 spec §5.4。`BeeFile::open()` 校验 `metadata.format == 'prz'`，不符直接报错。
 - **Image decode runs on background threads** (`std::thread::spawn` or `rayon`), post result via channel, call `egui_ctx.request_repaint()`.
 - **Canvas rendering**: egui is immediate-mode — viewport culling is mandatory. LOD (thumbnail textures at small zoom) is Phase 5+.
 

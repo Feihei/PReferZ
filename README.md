@@ -21,7 +21,7 @@ cargo build --release -p preferz # release binary
 
 ### Tech Stack
 
-- **Rust** (stable, >= 1.75)
+- **Rust** (stable, >= 1.88)
 - **GUI**: `egui` + `eframe` (glow backend)
 - **2D geometry**: `euclid`
 - **File I/O**: `rusqlite`, `image`, `rayon`
@@ -46,7 +46,7 @@ cargo build --release -p preferz # release binary
 | Shortcut | Action |
 | --- | --- |
 | `Ctrl+N` | New canvas |
-| `Ctrl+O` | Open `.prz` / `.bee` project |
+| `Ctrl+O` | Open `.prz` project |
 | `Ctrl+I` | Import image onto canvas |
 | `Ctrl+V` | Paste image from clipboard |
 | `Ctrl+S` | Save |
@@ -89,7 +89,7 @@ cargo build --release -p preferz # 构建发布版本
 
 ### 技术栈
 
-- **Rust** (stable, >= 1.75)
+- **Rust** (stable, >= 1.88)
 - **GUI**: `egui` + `eframe` (glow backend)
 - **2D geometry**: `euclid`
 - **File I/O**: `rusqlite`, `image`, `rayon`
@@ -114,7 +114,7 @@ cargo build --release -p preferz # 构建发布版本
 | 快捷键 | 动作 |
 | --- | --- |
 | `Ctrl+N` | 新建画布 |
-| `Ctrl+O` | 打开 `.prz` / `.bee` 工程 |
+| `Ctrl+O` | 打开 `.prz` 工程 |
 | `Ctrl+I` | 载入图片到画布 |
 | `Ctrl+V` | 从剪贴板粘贴图片 |
 | `Ctrl+S` | 保存 |

@@ -7,7 +7,7 @@
 | 项目 | 说明 |
 |------|------|
 | 名称 | **PReferZ**（Picture Reference Zoomer） |
-| 语言 | Rust（stable，建议 >= 1.75） |
+| 语言 | Rust（stable，>= 1.88；代码用了 1.88 才稳定的 `slice::as_chunks`） |
 | GUI | egui + eframe（pure Rust，不引入 Qt） |
 | 渲染后端 | eframe 默认 glow，后续可选 wgpu |
 | 许可 | MIT（见 §8） |
@@ -32,7 +32,7 @@
 | 选中与手柄 | ✅ | 单击选中 + 四角缩放 + 旋转手柄 + 翻转边 + 框选 | SelectableMixin |
 | 撤销/重做 | ✅ | Ctrl+Z / Ctrl+Shift+Z（自定义 Command trait） | QUndoStack |
 | 图层 | ✅ | 置顶/置底，Z 序管理（ReorderItems） | `max_z`/`min_z` + `Z_STEP` |
-| 保存/加载 | ✅ | `.prz`/`.bee` SQLite 持久化（items + sqlar 图片 + metadata 视口），后台线程加载/保存 | SQLiteIO |
+| 保存/加载 | ✅ | `.prz` SQLite 持久化（items + sqlar 图片 + metadata 视口），后台线程加载/保存 | SQLiteIO |
 
 ### 2.2 扩展功能（Phase 5）
 
@@ -350,7 +350,7 @@ impl UndoStack {
 1. **所有 Item 变换走 undo 栈**，不直接改 item 属性。
 2. **Item ID 用 `uuid::Uuid`**，不依赖 BeeRef 的整数自增 id（uuid 更安全，且 Rust 生态习惯）。
 3. **图片解码进后台线程**：`PReferZApp::BackgroundOps` 用 `std::thread::spawn` + `mpsc::channel` + `ctx.request_repaint()` 实现导入解码 / 文件加载 / 文件保存三类后台任务，UI 线程在 `update` 开头 `poll_background` 取结果。`preferz-fileio::ImageLoader` 有同步缓存实现但未被二进制引用（后台逻辑直接在 app 层实现）。
-4. **单测覆盖核心逻辑**：transform 数学、hit test、scene 操作、bee 文件读写。
+4. **单测覆盖核心逻辑**：transform 数学、hit test、scene 操作、`.prz` 文件读写。
 5. **Dependency 尽量少**：Rust 生态优势之一就是依赖树浅，别引入不必要的重量级框架。
 
 ### 5.3 与 BeeRef 的差异
@@ -363,16 +363,38 @@ impl UndoStack {
 | 文件对话框 | 原生 QFileDialog | rfd（也是原生） |
 | 撤销栈 | QUndoStack（内置预览模式） | undo crate（需手动预览） |
 | 文本编辑 | QGraphicsTextItem 原生编辑 | egui TextEdit overlay |
-| 默认文件格式 | .bee | 兼容 .bee + 自有 .prz |
+| 默认文件格式 | .bee | 自有 .prz（与 .bee 不兼容，见 §5.4） |
 | 包体积 | 50–100MB+ | 目标 5–15MB |
 
 ### 5.4 自有格式 .prz
 
-兼容 BeeRef `.bee` 作为读取来源，同时设计自有格式：
+**不兼容 BeeRef `.bee`**（2026-08-30 决策，commit `62692a8`）。两者虽同为 SQLite，
+但 schema 差异是结构性的，不是加几列就能对齐：
 
-- 格式：与 `.bee` 同为 SQLite 数据库
-- 扩展列：`USER_VERSION` 从 3 开始，增加 `metadata` 表（视口状态、主题、最后编辑时间等）
-- 查看方式一致：`sqlite3 xxx.prz -Axv`
+| | BeeRef `.bee` | PReferZ `.prz` |
+|---|---|---|
+| items 主键 | `INTEGER` | `TEXT`（UUID） |
+| transform | 分列 `x/y/scale/rotation/flip` | 单列 JSON 串 |
+| items 列数 | 9（`data` 在第 9 列） | 5（`data` 在第 3 列） |
+| sqlar | 多 `item_id INTEGER NOT NULL UNIQUE` | 3 列 |
+| `PRAGMA user_version` | 写入 2 | 不写 |
+| `PRAGMA application_id` | 写入 2060242126 | 不写 |
+
+后果是**双向不通**：PReferZ 读 `.bee` 会 `no such column: kind`；BeeRef 读 PReferZ
+写的文件时读到 `user_version = 0`，会执行其 `MIGRATIONS[2]` 的
+`ALTER TABLE items ADD COLUMN data JSON`，与已有 `data` 列冲突后 fallback 成
+「当新文件重建」，等于静默清空数据。
+
+因此 `.prz` 是**唯一**格式：`BeeFile::open()` 校验 `metadata.format == 'prz'`，
+不符则拒绝并给出可读错误，不会退化成难懂的 SQLite 报错。若将来要支持从 BeeRef
+迁移，正解是写一个**独立导入器**按上表左列读取并转换（INTEGER id → 新 UUID、
+分列 transform → `Transform`），而不是假装同构。
+
+自有格式要点：
+
+- 格式：SQLite 数据库
+- `metadata` 表：`format`（恒为 `prz`）、`version`、视口状态（`viewport_pan_x/y`、`viewport_zoom`）、`next_z`
+- 查看方式：`sqlite3 xxx.prz -Axv`
 
 ---
 
@@ -497,16 +519,17 @@ pub fn get_item_at<'a>(
 }
 ```
 
-### 7.3 背景线程读取 .bee
+### 7.3 背景线程读取 .prz
 
 ```rust
 // 伪代码：用 egui_ctx.request_repaint 驱动画布刷新
-fn open_bee_file(app: &mut PReferZApp, path: &Path, egui_ctx: &egui::Context) {
+fn open_prz_file(app: &mut PReferZApp, path: &Path, egui_ctx: &egui::Context) {
     let path = path.to_path_buf();
     let tx = app.loader_tx.clone();
     let ctx = egui_ctx.clone();
     std::thread::spawn(move || {
-        let result = BeeFile::read(&path);
+        // open() 校验 metadata.format == 'prz'，非 prz 文件在此处即被拒绝
+        let result = BeeFile::open(&path).and_then(|bee| bee.load_scene());
         tx.send(LoadResult { path, result }).ok();
         ctx.request_repaint(); // 通知 egui 刷新
     });
