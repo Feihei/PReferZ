@@ -16,3 +16,6 @@ Thumbs.db
 .ref/
 
 .issues/
+
+# WorkBuddy project data
+.workbuddy/
