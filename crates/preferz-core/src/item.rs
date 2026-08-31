@@ -41,6 +41,13 @@ pub enum ItemKind {
         /// `#[serde(default)]`：旧存档无此字段也能加载。
         #[serde(default)]
         container_id: Option<ItemId>,
+        /// 文字背景色（RGBA）。`None` = **全透明**（默认，与 Excalidraw 一致）。
+        ///
+        /// 保留此字段是为了将来侧栏能按需给文字加底色；默认不画任何背景矩形，
+        /// 避免出现"文字自带灰色底"的观感。
+        /// `#[serde(default)]`：旧存档无此字段视为透明。
+        #[serde(default)]
+        background: Option<[u8; 4]>,
     },
     Shape {
         shape_type: ShapeType,
@@ -203,6 +210,7 @@ impl Item {
                 editing: false,
                 measured_size: None,
                 container_id: None,
+                background: None,
             },
             transform: Transform::new(pos_x, pos_y, 1.0, 1.0),
             z: 0,
@@ -228,6 +236,7 @@ impl Item {
                 editing: false,
                 measured_size: None,
                 container_id: Some(container_id),
+                background: None,
             },
             transform: Transform::new(pos_x, pos_y, 1.0, 1.0),
             z: 0,
@@ -243,6 +252,21 @@ impl Item {
             !matches!(shape_type, ShapeType::Polyline) || *closed
         } else {
             false
+        }
+    }
+
+    /// 文字背景色（`None` = 透明）。非 Text item 恒为 `None`。
+    pub fn text_background(&self) -> Option<[u8; 4]> {
+        match &self.kind {
+            ItemKind::Text { background, .. } => *background,
+            _ => None,
+        }
+    }
+
+    /// 设置文字背景色。非 Text item 无副作用。
+    pub fn set_text_background(&mut self, background: Option<[u8; 4]>) {
+        if let ItemKind::Text { background: bg, .. } = &mut self.kind {
+            *bg = background;
         }
     }
 
@@ -1041,6 +1065,40 @@ mod tests {
         let s = serde_json::to_string(&txt).unwrap();
         let back: Item = serde_json::from_str(&s).unwrap();
         assert_eq!(back.id, txt.id);
+    }
+
+    #[test]
+    fn text_background_defaults_to_transparent() {
+        let free = Item::new_text("x".to_string(), 0.0, 0.0, 16.0, [255; 4]);
+        assert_eq!(free.text_background(), None, "默认必须无背景");
+        let bound = Item::new_text_in("x".to_string(), 0.0, 0.0, 16.0, [255; 4], Uuid::new_v4());
+        assert_eq!(bound.text_background(), None);
+
+        let mut it = free;
+        it.set_text_background(Some([10, 20, 30, 255]));
+        assert_eq!(it.text_background(), Some([10, 20, 30, 255]));
+        it.set_text_background(None);
+        assert_eq!(it.text_background(), None);
+    }
+
+    #[test]
+    fn text_serde_backward_compat_without_background() {
+        // 旧版本 Text JSON 无 background 字段，应加载为 None（= 透明，不报错）。
+        let json = r#"{
+            "Text": {
+                "content": "abc",
+                "font_size": 16.0,
+                "color": [255,255,255,255],
+                "editing": false,
+                "measured_size": null,
+                "container_id": null
+            }
+        }"#;
+        let kind: ItemKind = serde_json::from_str(json).unwrap();
+        match &kind {
+            ItemKind::Text { background, .. } => assert_eq!(*background, None),
+            _ => panic!("expected Text kind"),
+        }
     }
 
     #[test]

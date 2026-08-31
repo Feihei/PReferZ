@@ -1812,6 +1812,81 @@ impl PReferZApp {
 impl PReferZApp {
     // ─────────────────────────── Present（Slide 演示） ───────────────────────────
 
+    /// 绘制 Text item：可选背景色 + 文字。Edit 与 Present 两条渲染路径共用。
+    ///
+    /// **背景默认全透明**：只有 item 显式设置了 `ItemKind::Text::background` 才画底色
+    /// （为将来侧栏"文字背景"开关预留）。背景矩形取自**本次实际排版结果**——
+    /// 自由文本跟随自身 transform，绑定文本跟随容器矩形，
+    /// 故容器移动 / 缩放 / 换行时背景与文字始终同步，不会各自错位。
+    fn draw_text_item(&self, ui: &mut egui::Ui, item: &Item, editing_id: Option<ItemId>) {
+        let ItemKind::Text {
+            content,
+            font_size,
+            color,
+            container_id,
+            background,
+            ..
+        } = &item.kind
+        else {
+            return;
+        };
+        // 编辑期间内容由 overlay 的 TextEdit 接管，此处不画，避免原文字与编辑框重影
+        if editing_id == Some(item.id) {
+            return;
+        }
+
+        let text_color =
+            egui::Color32::from_rgba_premultiplied(color[0], color[1], color[2], color[3]);
+        let zoom = self.viewport.zoom;
+
+        let (galley, top_left) = match container_id.filter(|cid| self.scene.get_item(cid).is_some())
+        {
+            // 绑定文本：换行到容器宽度，居中于容器矩形（随容器实时联动）
+            Some(cid) => {
+                let container = self.scene.get_item(&cid).expect("filter 已保证存在");
+                let cr = self
+                    .viewport
+                    .canvas_to_screen_rect(container.bounding_rect());
+                let wrap = (cr.width() - 12.0).max(20.0);
+                let galley = ui.ctx().fonts(|f| {
+                    f.layout_job(egui::text::LayoutJob::simple(
+                        content.clone(),
+                        egui::FontId::proportional(*font_size * zoom),
+                        text_color,
+                        wrap,
+                    ))
+                });
+                let size = galley.size();
+                (galley, cr.center() - egui::vec2(size.x * 0.5, size.y * 0.5))
+            }
+            // 自由文本（或容器已丢失）：按自身 transform 定位，字号叠加 scale
+            None => {
+                let origin = self.viewport.canvas_to_screen(item.canvas_corners()[0]);
+                // scale.x（等比缩放场景下 scale.y 相同；非等比 egui text 不支持非均匀缩放）
+                let effective_font_size = *font_size * item.transform.scale.x.abs() * zoom;
+                let galley = ui.ctx().fonts(|f| {
+                    f.layout_no_wrap(
+                        content.clone(),
+                        egui::FontId::proportional(effective_font_size),
+                        text_color,
+                    )
+                });
+                (galley, origin)
+            }
+        };
+
+        if let Some(bg) = background {
+            let pad = 4.0 * zoom;
+            let rect = egui::Rect::from_min_size(top_left, galley.size()).expand(pad);
+            ui.painter().rect_filled(
+                rect,
+                egui::Rounding::same(2.0),
+                egui::Color32::from_rgba_unmultiplied(bg[0], bg[1], bg[2], bg[3]),
+            );
+        }
+        ui.painter().galley(top_left, galley, text_color);
+    }
+
     /// 绘制单个 item 的视觉内容（不含选中手柄 / 多选外框 / 裁剪 overlay）。
     /// Edit 与 Present 模式共用的渲染原语，保证两处观感一致。
     fn draw_item_visual(&self, ui: &mut egui::Ui, item: &Item, editing_id: Option<ItemId>) {
@@ -1882,55 +1957,8 @@ impl PReferZApp {
                     );
                 }
             }
-            ItemKind::Text {
-                content,
-                font_size,
-                color,
-                container_id,
-                ..
-            } => {
-                if editing_id != Some(item.id) {
-                    ui.painter().rect_filled(
-                        item_screen_rect,
-                        egui::Rounding::same(2.0),
-                        egui::Color32::from_rgb(60, 60, 60),
-                    );
-                    let text_color = egui::Color32::from_rgba_premultiplied(
-                        color[0], color[1], color[2], color[3],
-                    );
-                    if let Some(cid) = container_id {
-                        // 绑定文本：换行到容器宽度，居中绘制
-                        if let Some(container) = self.scene.get_item(cid) {
-                            let cr = self
-                                .viewport
-                                .canvas_to_screen_rect(container.bounding_rect());
-                            let wrap = (cr.width() - 12.0).max(20.0);
-                            let ef = *font_size * self.viewport.zoom;
-                            let job = egui::text::LayoutJob::simple(
-                                content.clone(),
-                                egui::FontId::proportional(ef),
-                                text_color,
-                                wrap,
-                            );
-                            let gal = ui.ctx().fonts(|f| f.layout_job(job));
-                            let gsz = gal.size();
-                            let tl = cr.center() - egui::vec2(gsz.x / 2.0, gsz.y / 2.0);
-                            ui.painter().galley(tl, gal, text_color);
-                        }
-                    } else {
-                        let origin = self.viewport.canvas_to_screen(corners[0]);
-                        let effective_font_size =
-                            *font_size * item.transform.scale.x.abs() * self.viewport.zoom;
-                        ui.painter().text(
-                            origin,
-                            egui::Align2::LEFT_TOP,
-                            content.clone(),
-                            egui::FontId::proportional(effective_font_size),
-                            text_color,
-                        );
-                    }
-                }
-            }
+            // 文字：可选背景 + 排版绘制，两处渲染路径共用 draw_text_item
+            ItemKind::Text { .. } => self.draw_text_item(ui, item, editing_id),
             // 风格器分发（CleanStyler / RoughStyler）在 build_shape_visuals 内按 rough 字段决定。
             ItemKind::Shape { .. } => {
                 let to_screen = item_local_to_screen(item, &self.viewport);
@@ -2280,58 +2308,8 @@ impl PReferZApp {
                         );
                     }
                 }
-                ItemKind::Text {
-                    content,
-                    font_size,
-                    color,
-                    container_id,
-                    ..
-                } => {
-                    // 编辑期间跳过item 的内容渲染（overlay 接管，避免原文字与编辑框重叠
-                    let is_being_edited = editing_id == Some(item.id);
-                    if !is_being_edited {
-                        ui.painter().rect_filled(
-                            item_screen_rect,
-                            egui::Rounding::same(2.0),
-                            egui::Color32::from_rgb(60, 60, 60),
-                        );
-                        let text_color = egui::Color32::from_rgba_premultiplied(
-                            color[0], color[1], color[2], color[3],
-                        );
-                        if let Some(cid) = container_id {
-                            // 绑定文本：换行到容器宽度，居中绘制
-                            if let Some(container) = self.scene.get_item(cid) {
-                                let cr = self
-                                    .viewport
-                                    .canvas_to_screen_rect(container.bounding_rect());
-                                let wrap = (cr.width() - 12.0).max(20.0);
-                                let ef = *font_size * self.viewport.zoom;
-                                let job = egui::text::LayoutJob::simple(
-                                    content.clone(),
-                                    egui::FontId::proportional(ef),
-                                    text_color,
-                                    wrap,
-                                );
-                                let gal = ui.ctx().fonts(|f| f.layout_job(job));
-                                let gsz = gal.size();
-                                let tl = cr.center() - egui::vec2(gsz.x / 2.0, gsz.y / 2.0);
-                                ui.painter().galley(tl, gal, text_color);
-                            }
-                        } else {
-                            let origin = self.viewport.canvas_to_screen(corners[0]);
-                            // 文字渲染应用 scale zoom（修 B6：与变换边框一致）                        // scale.x（等比缩放场景下scale.y 相同；非等比egui text 不支持非均匀缩放
-                            let effective_font_size =
-                                *font_size * item.transform.scale.x.abs() * self.viewport.zoom;
-                            ui.painter().text(
-                                origin,
-                                egui::Align2::LEFT_TOP,
-                                content.clone(),
-                                egui::FontId::proportional(effective_font_size),
-                                text_color,
-                            );
-                        } // else: 自由文本
-                    }
-                }
+                // 文字：可选背景 + 排版绘制，两处渲染路径共用 draw_text_item
+                ItemKind::Text { .. } => self.draw_text_item(ui, item, editing_id),
                 // Shape：风格器分发同 render_scene，rough 开关决定 Clean 或手绘。
                 ItemKind::Shape { .. } => {
                     let to_screen = item_local_to_screen(item, &self.viewport);
