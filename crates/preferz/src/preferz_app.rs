@@ -22,11 +22,11 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
 
-/// Undo 栈。`push` 会读�?`Command::skip_first_redo()`�?
-/// - 交互预览命令（拖拽中已直接改 item）返�?true �?跳过首次 redo
-/// - 普通命令返�?false �?push 时立�?redo 应用变更
+/// Undo 栈。`push` 会读`Command::skip_first_redo()`
+/// - 交互预览命令（拖拽中已直接改 item）返true 跳过首次 redo
+/// - 普通命令返false push 时立redo 应用变更
 ///
-/// 这让 AGENTS.md Gotcha #5（skip_first_redo）真正生效（�?S5/M7）�?
+/// 这让 AGENTS.md Gotcha #5（skip_first_redo）真正生效（S5/M7）
 struct UndoStack {
     undo: Vec<Box<dyn Command>>,
     redo: Vec<Box<dyn Command>>,
@@ -145,10 +145,10 @@ enum DragState {
     },
 }
 
-/// 文本便签编辑状态（spec L243 P2-5）�?
-/// `editing_item_id = None` 表示创建新文本（提交�?push `AddItem`）；
-/// `Some(id)` 表示编辑现有 item（提交时 push `EditTextContent`）�?
-/// Enter/失焦时提交，空内容在创建模式下丢弃，在编辑模式下不修改原 item�?
+/// 文本便签编辑状态（spec L243 P2-5）
+/// `editing_item_id = None` 表示创建新文本（提交push `AddItem`）；
+/// `Some(id)` 表示编辑现有 item（提交时 push `EditTextContent`）
+/// Enter/失焦时提交，空内容在创建模式下丢弃，在编辑模式下不修改原 item
 struct EditingText {
     editing_item_id: Option<ItemId>,
     canvas_pos: CanvasPoint,
@@ -160,28 +160,28 @@ struct EditingText {
     container_id: Option<ItemId>,
 }
 
-/// 后台图片导入解码结果（线�?�?UI 线程）�?
-/// 线程负责读取文件字节 + 解码；UI 线程负责上传纹理 + 创建 item�?
+/// 后台图片导入解码结果（线UI 线程）
+/// 线程负责读取文件字节 + 解码；UI 线程负责上传纹理 + 创建 item
 struct ImportOutcome {
     path: PathBuf,
-    /// 原始图片字节（写�?sqlar 用）
+    /// 原始图片字节（写sqlar 用）
     bytes: Vec<u8>,
     /// 解码后的图片尺寸
     width: u32,
     height: u32,
-    /// RGBA 像素数据（上传纹理用�?
+    /// RGBA 像素数据（上传纹理用
     rgba: Vec<u8>,
-    /// 解码错误（若存在�?
+    /// 解码错误（若存在
     error: Option<String>,
 }
 
-/// 后台 .prz 加载结果（线�?�?UI 线程）�?
+/// 后台 .prz 加载结果（线UI 线程）
 struct LoadOutcome {
     path: PathBuf,
     result: Result<preferz_fileio::LoadResult, String>,
 }
 
-/// 后台保存结果（线�?�?UI 线程）�?
+/// 后台保存结果（线UI 线程）
 struct SaveOutcome {
     path: PathBuf,
     result: Result<(), String>,
@@ -303,7 +303,7 @@ impl BackgroundOps {
         });
     }
 
-    /// 取出并处理已完成的导入结果（�?PReferZApp::poll_background 调用）�?
+    /// 取出并处理已完成的导入结果（PReferZApp::poll_background 调用）
     fn take_import(&mut self) -> Option<ImportOutcome> {
         if let Some(rx) = &self.import_rx {
             if let Ok(outcome) = rx.try_recv() {
@@ -318,7 +318,7 @@ impl BackgroundOps {
         None
     }
 
-    /// 取出并处理已完成的加载结果（�?PReferZApp::poll_background 调用）�?
+    /// 取出并处理已完成的加载结果（PReferZApp::poll_background 调用）
     fn take_load(&mut self) -> Option<LoadOutcome> {
         if let Some(rx) = &self.load_rx {
             if let Ok(outcome) = rx.try_recv() {
@@ -368,18 +368,18 @@ pub struct PReferZApp {
     scene: Scene,
     viewport: ViewportState,
     undo_stack: UndoStack,
-    /// 临时状态消息（�?已导�?），会在若干帧后清空，避免覆盖持续状态（�?B5）�?
+    /// 临时状态消息（已导），会在若干帧后清空，避免覆盖持续状态（B5）
     flash_status: Option<(String, std::time::Instant)>,
     context_menu_open: bool,
     context_menu_pos: egui::Pos2,
     texture_cache: HashMap<u64, egui::TextureHandle>,
-    /// 灰度纹理缓存（懒生成）。grayscale=true �?Pixmap 渲染时用此处的纹理�?
+    /// 灰度纹理缓存（懒生成）。grayscale=true Pixmap 渲染时用此处的纹理
     grayscale_texture_cache: HashMap<u64, egui::TextureHandle>,
-    /// 原始图片字节缓存（texture_id �?原始文件字节），保存时写�?sqlar�?
+    /// 原始图片字节缓存（texture_id 原始文件字节），保存时写sqlar
     image_data_cache: HashMap<u64, Vec<u8>>,
-    /// 解码后的 RGBA 像素缓存（texture_id �?RGBA 字节），用于懒生成灰度纹�?+ 颜色采样�?
+    /// 解码后的 RGBA 像素缓存（texture_id RGBA 字节），用于懒生成灰度纹+ 颜色采样
     rgba_pixel_cache: HashMap<u64, Vec<u8>>,
-    /// RGBA 像素尺寸（texture_id �?(w, h)），用于灰度生成和颜色采样�?
+    /// RGBA 像素尺寸（texture_id (w, h)），用于灰度生成和颜色采样
     rgba_size_cache: HashMap<u64, (u32, u32)>,
     next_texture_id: u64,
     pending_import: Vec<PathBuf>,
@@ -393,7 +393,7 @@ pub struct PReferZApp {
     /// 新建形状是否默认手绘风描边（Phase F；样式面板可调）。
     default_rough: bool,
     drag: DragState,
-    /// 文本便签编辑状态（None = 无编辑）�?
+    /// 文本便签编辑状态（None = 无编辑）
     editing_text: Option<EditingText>,
     /// 画框编号编辑状态（Phase D）：Some(frame_id) 时显示左上角小输入框。
     editing_frame_number: Option<ItemId>,
@@ -403,19 +403,19 @@ pub struct PReferZApp {
     app_mode: AppMode,
     /// Present 翻页过渡目标视口（zoom, pan），Some 时逐帧指数插值。
     present_anim: Option<(f32, CanvasVector)>,
-    /// 当前打开的文件路径（保存时若 None 则弹出对话框）�?
+    /// 当前打开的文件路径（保存时若 None 则弹出对话框）
     current_file: Option<PathBuf>,
-    /// 后台任务（导入解�?/ 文件加载 / 文件保存）�?
+    /// 后台任务（导入解/ 文件加载 / 文件保存）
     bg_ops: BackgroundOps,
-    /// 颜色采样模式（spec §2.2 颜色采样）。true 时鼠标在 Pixmap 上读取像�?RGB 显示�?
+    /// 颜色采样模式（spec §2.2 颜色采样）。true 时鼠标在 Pixmap 上读取像RGB 显示
     color_picker_active: bool,
-    /// 最近一次采样的颜色结果（取色器模式下持续更新）�?
+    /// 最近一次采样的颜色结果（取色器模式下持续更新）
     color_sample: Option<ColorSample>,
-    /// 裁剪模式（spec §2.2 裁剪）。Some(item_id) 时该 item 进入裁剪交互模式�?
+    /// 裁剪模式（spec §2.2 裁剪）。Some(item_id) 时该 item 进入裁剪交互模式
     crop_mode: Option<CropMode>,
-    /// 设置面板是否打开（Phase 6 §2.3，简化版：仅排列间距 + 主题切换）�?
+    /// 设置面板是否打开（Phase 6 §2.3，简化版：仅排列间距 + 主题切换）
     settings_open: bool,
-    /// 排列间距（设置面板可调）�?
+    /// 排列间距（设置面板可调）
     arrange_spacing: f32,
     /// 画布是否有未保存修改（用于关闭/新建时提示保存）。
     dirty: bool,
@@ -444,11 +444,11 @@ pub struct PReferZApp {
     logo_texture: Option<egui::TextureHandle>,
 }
 
-/// 保存提示对话框的触发场景�?#[derive(Clone, Copy, PartialEq)]
+/// 保存提示对话框的触发场景#[derive(Clone, Copy, PartialEq)]
 enum SavePromptAction {
-    /// 用户点了窗口关闭按钮�?
+    /// 用户点了窗口关闭按钮
     Close,
-    /// 用户点了新建画布（Ctrl+N）�?
+    /// 用户点了新建画布（Ctrl+N）
     NewCanvas,
 }
 
@@ -456,11 +456,11 @@ enum SavePromptAction {
 #[derive(Clone)]
 struct CropMode {
     item_id: ItemId,
-    /// 当前正在编辑的裁剪矩形（item 局部空间像素坐标）�?
+    /// 当前正在编辑的裁剪矩形（item 局部空间像素坐标）
     rect: CropRect,
-    /// 拖拽中的角点（None = 未拖拽）�?
+    /// 拖拽中的角点（None = 未拖拽）
     dragging: Option<CropHandle>,
-    /// 进入裁剪模式前的原始 crop（Esc 取消时恢复）�?
+    /// 进入裁剪模式前的原始 crop（Esc 取消时恢复）
     original: Option<CropRect>,
 }
 
@@ -527,13 +527,13 @@ impl PReferZApp {
         self.flash_status = Some((msg.into(), std::time::Instant::now()));
     }
 
-    /// push undo command 并标记画布为 dirty（有未保存修改）�?
+    /// push undo command 并标记画布为 dirty（有未保存修改）
     fn push_cmd(&mut self, cmd: Box<dyn Command>) {
         self.undo_stack.push(cmd, &mut self.scene);
         self.dirty = true;
     }
 
-    /// 执行 undo：成功则标记 dirty�?
+    /// 执行 undo：成功则标记 dirty
     fn perform_undo(&mut self) -> bool {
         if self.undo_stack.undo(&mut self.scene) {
             self.dirty = true;
@@ -543,7 +543,7 @@ impl PReferZApp {
         }
     }
 
-    /// 执行 redo：成功则标记 dirty�?
+    /// 执行 redo：成功则标记 dirty
     fn perform_redo(&mut self) -> bool {
         if self.undo_stack.redo(&mut self.scene) {
             self.dirty = true;
@@ -553,7 +553,7 @@ impl PReferZApp {
         }
     }
 
-    /// poll 后台任务通道，分发到 finish_import / finish_load / 保存结果处理�?
+    /// poll 后台任务通道，分发到 finish_import / finish_load / 保存结果处理
     fn poll_background(&mut self, ctx: &egui::Context) {
         // 导入
         if let Some(outcome) = self.bg_ops.take_import() {
@@ -606,7 +606,7 @@ impl PReferZApp {
         }
     }
 
-    /// 选中 item 的快照（�?Z 序倒序，顶层在前）�?
+    /// 选中 item 的快照（Z 序倒序，顶层在前）
     fn selected_items_snapshot(&self) -> Vec<Item> {
         let mut items: Vec<Item> = self
             .scene
@@ -689,7 +689,7 @@ impl eframe::App for PReferZApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
         }
 
-        // 拖放导入（spec L228，P3-1）�?prz �?加载项目文件；其�?�?图片导入
+        // 拖放导入（spec L228，P3-1）prz 加载项目文件；其图片导入
         let dropped: Vec<PathBuf> = ctx.input(|i| {
             i.raw
                 .dropped_files
@@ -705,7 +705,7 @@ impl eframe::App for PReferZApp {
             }
         }
 
-        // 处理待导入：启动后台解码（不阻塞 UI�?
+        // 处理待导入：启动后台解码（不阻塞 UI
         while let Some(path) = self.pending_import.pop() {
             self.bg_ops.start_import(ctx, path);
         }
@@ -718,7 +718,7 @@ impl eframe::App for PReferZApp {
             self.add_recent_and_load(ctx, path);
         }
 
-        // 清理过期�?flash 状�?
+        // 清理过期flash 状
         if let Some((_, t)) = self.flash_status {
             if t.elapsed().as_millis() > FLASH_DURATION_MS {
                 self.flash_status = None;
@@ -945,10 +945,10 @@ impl eframe::App for PReferZApp {
                 egui::Color32::from_rgba_unmultiplied(45, 45, 48, bg_alpha_u8),
             );
 
-            // 渲染场景（含视口剔除 + Z �?+ 复用 self.transform_handles�?
+            // 渲染场景（含视口剔除 + Z + 复用 self.transform_handles
             self.render_scene(ui);
 
-            // 框选矩形（spec L240�?
+            // 框选矩形（spec L240
             if let DragState::BoxSelect {
                 start_canvas,
                 current_canvas,
@@ -1277,12 +1277,12 @@ impl eframe::App for PReferZApp {
         // 画框编号编辑 overlay（Phase D）
         self.render_frame_number_editor(ctx);
 
-        // 上下文菜�?
+        // 上下文菜
         if self.context_menu_open {
             self.render_context_menu(ctx);
         }
 
-        // 颜色采样 overlay（spec §2.2�?
+        // 颜色采样 overlay（spec §2.2
         if self.color_picker_active {
             self.render_color_picker_overlay(ctx);
         }
@@ -1292,16 +1292,16 @@ impl eframe::App for PReferZApp {
             self.render_settings_window(ctx);
         }
 
-        // 快捷�?
+        // 快捷
         self.handle_shortcuts(ctx);
         // 改绑捕获必须排在 handle_shortcuts 之后：否则刚捕获的组合会在同一帧里
         // 顺带触发它新绑定的那个动作。
         self.poll_rebind_capture(ctx);
 
-        // 保存提示对话框（关闭/新建时若 dirty 弹出�?
+        // 保存提示对话框（关闭/新建时若 dirty 弹出
         self.render_save_prompt(ctx);
 
-        // 后台任务进度条（spec L298：加�?保存时显示进度）
+        // 后台任务进度条（spec L298：加保存时显示进度）
         if self.bg_ops.pending > 0 {
             egui::Window::new("background_progress")
                 .title_bar(false)
@@ -1377,7 +1377,7 @@ impl PReferZApp {
             _ => {}
         }
 
-        // 裁剪模式：优先检测裁剪手�?
+        // 裁剪模式：优先检测裁剪手
         if self.crop_mode.is_some() {
             if let Some(h) = self.crop_handle_hit_test(screen_pos) {
                 if let Some(crop) = self.crop_mode.as_mut() {
@@ -1385,11 +1385,11 @@ impl PReferZApp {
                 }
                 return;
             }
-            // 裁剪模式下点空白：不响应（避免误操作�?
+            // 裁剪模式下点空白：不响应（避免误操作
             return;
         }
 
-        // 颜色采样模式：单�?Pixmap 采样像素
+        // 颜色采样模式：单Pixmap 采样像素
         if self.color_picker_active {
             self.pick_color_at(screen_pos);
             return;
@@ -1456,21 +1456,21 @@ impl PReferZApp {
             }
         }
 
-        // 2) 命中 item：选中并开始移动拖�?
+        // 2) 命中 item：选中并开始移动拖
         if let Some(item) = interaction::get_item_at(screen_pos, &self.scene, &self.viewport) {
             let id = item.id;
             if additive {
-                // Shift 加选：toggle，若取消选中则不开始拖�?
+                // Shift 加选：toggle，若取消选中则不开始拖
                 self.scene.toggle_selection(id);
                 if !self.scene.selection.contains(&id) {
                     return;
                 }
             } else if !self.scene.selection.contains(&id) {
-                // 非加选且未选中：替换选中为该�?
+                // 非加选且未选中：替换选中为该
                 self.scene.deselect_all();
                 self.scene.select(id);
             }
-            // 收集所有选中 item �?transform 快照
+            // 收集所有选中 item transform 快照
             let selected: Vec<ItemId> = self.scene.selection.iter().cloned().collect();
             // 容器联动：选中封闭形状时连带其绑定文本（Phase C）；选中画框时连带其成员（Phase D）。
             let mut collected: Vec<ItemId> = selected.clone();
@@ -1499,7 +1499,7 @@ impl PReferZApp {
             return;
         }
 
-        // 3) 空白：开始框选（spec L240）。Shift = 加选模�?
+        // 3) 空白：开始框选（spec L240）。Shift = 加选模
         let start_canvas = self.viewport.screen_to_canvas(screen_pos);
         self.drag = DragState::BoxSelect {
             start_canvas,
@@ -1509,7 +1509,7 @@ impl PReferZApp {
     }
 
     fn update_drag_preview(&mut self, screen_pos: egui::Pos2, free_scale: bool) {
-        // 裁剪模式拖拽：直接更�?crop_mode.rect，不进入 DragState
+        // 裁剪模式拖拽：直接更crop_mode.rect，不进入 DragState
         if let Some(crop) = self.crop_mode.as_mut() {
             if let Some(handle) = crop.dragging {
                 self.update_crop_drag(screen_pos, handle);
@@ -1556,9 +1556,9 @@ impl PReferZApp {
                                 free_scale,
                             );
                         }
-                        // 翻转手柄�?begin_drag 中已即时处理，不会进入拖拽预�?
+                        // 翻转手柄begin_drag 中已即时处理，不会进入拖拽预
                         Handle::FlipH | Handle::FlipV | Handle::None => {}
-                        // 线类顶点�?begin_drag 中已进入 LineEndpoint 拖拽，不会到达这里
+                        // 线类顶点begin_drag 中已进入 LineEndpoint 拖拽，不会到达这里
                         Handle::Endpoint(_) => {}
                     }
                 }
@@ -1629,7 +1629,7 @@ impl PReferZApp {
     }
 
     fn end_drag(&mut self) {
-        // 裁剪模式拖拽释放：清�?dragging 标志（应用通过 Enter 触发�?
+        // 裁剪模式拖拽释放：清dragging 标志（应用通过 Enter 触发
         if let Some(crop) = self.crop_mode.as_mut() {
             if crop.dragging.is_some() {
                 crop.dragging = None;
@@ -1644,7 +1644,7 @@ impl PReferZApp {
                 start_transform,
                 ..
             } => {
-                // �?clone �?new_transform，避免与 undo_stack.push �?&mut self.scene 冲突
+                // clone new_transform，避免与 undo_stack.push &mut self.scene 冲突
                 let new_transform = self.scene.get_item(&item_id).map(|it| it.transform);
                 if let Some(new_tf) = new_transform {
                     if new_tf != start_transform {
@@ -1665,7 +1665,7 @@ impl PReferZApp {
                 start_canvas,
                 start_transforms,
             } => {
-                // 用第一�?item 的当前位置反�?delta
+                // 用第一item 的当前位置反delta
                 let delta_opt = start_transforms.first().and_then(|(id, start_tf)| {
                     self.scene
                         .get_item(id)
@@ -1686,7 +1686,7 @@ impl PReferZApp {
                 current_canvas,
                 additive,
             } => {
-                // 选中框内所�?item（bounding_rect 相交即选中�?
+                // 选中框内所item（bounding_rect 相交即选中
                 let min_x = start_canvas.x.min(current_canvas.x);
                 let max_x = start_canvas.x.max(current_canvas.x);
                 let min_y = start_canvas.y.min(current_canvas.y);
@@ -2249,16 +2249,16 @@ impl PReferZApp {
         // measured_size 为 None（新建/编辑/undo/redo 后）才重新测量，避免每帧重复计算。
         self.update_text_measured_sizes(ui.ctx());
 
-        // 预生成所�?grayscale=true �?Pixmap 灰度纹理（避免渲染循环里 &mut self �?&self.scene 冲突�?
+        // 预生成所grayscale=true Pixmap 灰度纹理（避免渲染循环里 &mut self &self.scene 冲突
         self.ensure_grayscale_textures(ui.ctx());
 
-        // �?Z 序渲染（�?W9）：底层先画，顶层后�?
+        // Z 序渲染（W9）：底层先画，顶层后
         let items: Vec<&Item> = self.scene.items_by_z_order();
         let selection_count = self.scene.selection.len();
         let editing_id = self.editing_text.as_ref().and_then(|e| e.editing_item_id);
         let crop_item_id = self.crop_mode.as_ref().map(|c| c.item_id);
         for item in items {
-            // 视口剔除（修 S9/M11）：用画�?AABB 转屏幕矩形，不相交则跳过
+            // 视口剔除（修 S9/M11）：用画AABB 转屏幕矩形，不相交则跳过
             let canvas_bbox = item.bounding_rect();
             let item_screen_rect = self.viewport.canvas_to_screen_rect(canvas_bbox);
             if !screen_rect.intersects(item_screen_rect) {
@@ -2295,8 +2295,8 @@ impl PReferZApp {
                         self.texture_cache.get(&tex_id)
                     };
                     if let Some(handle) = handle_opt {
-                        // UV 计算说明�?                        // - flip �?local_to_canvas 的几何翻转实现（canvas_corners �?flip 后位置交换）�?                        //   因此 mesh quad �?screen_corners 即可呈现镜像，UV 不再翻转�?                        //   否则会与几何翻转抵消，导�?flip 后图片看起来不变�?                        // - crop 通过 UV 子矩形采样（�?item 局部空间，未应�?flip），
-                        //   crop 区域的画布位置由 transform.scale 同步保证边框对齐�?
+                        // UV 计算说明                        // - flip local_to_canvas 的几何翻转实现（canvas_corners flip 后位置交换）                        //   因此 mesh quad screen_corners 即可呈现镜像，UV 不再翻转                        //   否则会与几何翻转抵消，导flip 后图片看起来不变                        // - crop 通过 UV 子矩形采样（item 局部空间，未应flip），
+                        //   crop 区域的画布位置由 transform.scale 同步保证边框对齐
                         let (u_min, u_max, v_min, v_max) = if let Some(c) = crop {
                             let base_w = item.base_size().x.max(1.0);
                             let base_h = item.base_size().y.max(1.0);
@@ -2311,8 +2311,8 @@ impl PReferZApp {
                         // 透明度：tint_color alpha = opacity（spec §2.2 透明度）
                         let alpha = (opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
                         let tint = egui::Color32::from_rgba_premultiplied(255, 255, 255, alpha);
-                        // �?mesh quad 渲染，让图片真正跟着旋转/flip（screen_corners 已包含全部几何变换）
-                        // screen_corners 顺序：[TL, TR, BL, BR]，重排为 [TL, TR, BR, BL] 顺时�?
+                        // mesh quad 渲染，让图片真正跟着旋转/flip（screen_corners 已包含全部几何变换）
+                        // screen_corners 顺序：[TL, TR, BL, BR]，重排为 [TL, TR, BR, BL] 顺时
                         let [tl, tr, bl, br] = screen_corners;
                         let verts = [
                             ([tl.x, tl.y], [u_min, v_min]),
@@ -2352,7 +2352,7 @@ impl PReferZApp {
                     container_id,
                     ..
                 } => {
-                    // 编辑期间跳过�?item 的内容渲染（overlay 接管，避免原文字与编辑框重叠�?
+                    // 编辑期间跳过item 的内容渲染（overlay 接管，避免原文字与编辑框重叠
                     let is_being_edited = editing_id == Some(item.id);
                     if !is_being_edited {
                         ui.painter().rect_filled(
@@ -2384,7 +2384,7 @@ impl PReferZApp {
                             }
                         } else {
                             let origin = self.viewport.canvas_to_screen(corners[0]);
-                            // 文字渲染应用 scale �?zoom（修 B6：与变换边框一致）�?                        // �?scale.x（等比缩放场景下�?scale.y 相同；非等比�?egui text 不支持非均匀缩放�?
+                            // 文字渲染应用 scale zoom（修 B6：与变换边框一致）                        // scale.x（等比缩放场景下scale.y 相同；非等比egui text 不支持非均匀缩放
                             let effective_font_size =
                                 *font_size * item.transform.scale.x.abs() * self.viewport.zoom;
                             ui.painter().text(
@@ -2457,7 +2457,7 @@ impl PReferZApp {
                 }
             }
 
-            // 选中�?+ 手柄：单选时画单独手柄；多选时画统一外框（循环后�?            // 裁剪模式下手柄隐藏（避免与裁剪框冲突�?
+            // 选中+ 手柄：单选时画单独手柄；多选时画统一外框（循环后            // 裁剪模式下手柄隐藏（避免与裁剪框冲突
             if is_selected && selection_count == 1 && crop_item_id != Some(item.id) {
                 let show_flip = should_show_flip(item);
                 let show_rotate = should_show_rotate(item);
@@ -2471,7 +2471,7 @@ impl PReferZApp {
             }
         }
 
-        // 多选统一外框（spec L241：多选时画一个统一 bbox�?
+        // 多选统一外框（spec L241：多选时画一个统一 bbox
         if selection_count > 1 {
             if let Some(bbox) = self.scene.selection_bounding_rect() {
                 let screen_bbox = self.viewport.canvas_to_screen_rect(bbox);
@@ -2492,11 +2492,11 @@ impl PReferZApp {
             }
         }
 
-        // 裁剪模式 overlay（spec §2.2 裁剪�?
+        // 裁剪模式 overlay（spec §2.2 裁剪
         self.render_crop_overlay(ui);
     }
 
-    /// 懒生成所�?grayscale=true �?Pixmap 灰度纹理（spec §2.2 灰度）�?    /// 使用 ITU-R BT.601 亮度系数：Y = 0.299R + 0.587G + 0.114B（不引入 palette crate）�?
+    /// 懒生成所grayscale=true Pixmap 灰度纹理（spec §2.2 灰度）    /// 使用 ITU-R BT.601 亮度系数：Y = 0.299R + 0.587G + 0.114B（不引入 palette crate）
     fn ensure_grayscale_textures(&mut self, ctx: &egui::Context) {
         // 收集需要生成的 (texture_id, original_size) 列表
         let mut to_generate: Vec<(u64, (u32, u32))> = Vec::new();
@@ -2541,7 +2541,7 @@ impl PReferZApp {
         }
     }
 
-    /// 渲染裁剪模式 overlay：在裁剪 item 上画可拖拽的裁剪矩形 + 4 角手�?+ 遮罩�?
+    /// 渲染裁剪模式 overlay：在裁剪 item 上画可拖拽的裁剪矩形 + 4 角手+ 遮罩
     fn render_crop_overlay(&mut self, ui: &mut egui::Ui) {
         let crop_state = match self.crop_mode.as_ref() {
             Some(c) => c.clone(),
@@ -2555,7 +2555,7 @@ impl PReferZApp {
                 return;
             }
         };
-        // �?Pixmap 支持裁剪
+        // Pixmap 支持裁剪
         let (texture_id, original_size) = match &item.kind {
             ItemKind::Pixmap {
                 texture_id,
@@ -2620,7 +2620,7 @@ impl PReferZApp {
         );
     }
 
-    /// 测量所�?Text item 的实际文字尺寸并更新 `measured_size`（修 B6）�?    /// 仅在 `measured_size` �?None 时测量（content 变化会清�?measured_size）�?
+    /// 测量所Text item 的实际文字尺寸并更新 `measured_size`（修 B6）    /// 仅在 `measured_size` None 时测量（content 变化会清measured_size）
     fn update_text_measured_sizes(&mut self, ctx: &egui::Context) {
         let zoom = self.viewport.zoom;
         let mut updates: Vec<(ItemId, (f32, f32))> = Vec::new();
@@ -2674,7 +2674,7 @@ impl PReferZApp {
         }
     }
 
-    /// 渲染文本便签编辑 overlay（spec L243 P2-5）�?    /// 创建中的文本不在 scene 中；Enter/失焦时提交（非空→AddItem），Esc 取消�?
+    /// 渲染文本便签编辑 overlay（spec L243 P2-5）    /// 创建中的文本不在 scene 中；Enter/失焦时提交（非空→AddItem），Esc 取消
     fn render_text_editor(&mut self, ctx: &egui::Context) {
         let mut edit = match self.editing_text.take() {
             Some(e) => e,
@@ -2767,7 +2767,7 @@ impl PReferZApp {
         if commit {
             match edit.editing_item_id {
                 None => {
-                    // 创建模式：空内容丢弃，非�?push AddItem
+                    // 创建模式：空内容丢弃，非push AddItem
                     if !edit.buffer.trim().is_empty() {
                         let item = match edit.container_id {
                             Some(cid) => Item::new_text_in(
@@ -2791,7 +2791,7 @@ impl PReferZApp {
                     }
                 }
                 Some(id) => {
-                    // 编辑模式：空内容不修改原 item（避免误删）；非空且变化�?push EditTextContent
+                    // 编辑模式：空内容不修改原 item（避免误删）；非空且变化push EditTextContent
                     if !edit.buffer.trim().is_empty() {
                         let old_content = self.scene.get_item(&id).and_then(|item| {
                             if let ItemKind::Text { content, .. } = &item.kind {
@@ -2894,7 +2894,7 @@ impl PReferZApp {
         let primary_pressed = ctx.input(|i| i.pointer.primary_pressed());
         let pointer_pos = ctx.input(|i| i.pointer.latest_pos());
 
-        // �?egui::Area + 手动按钮。返回菜�?rect 用于检测点击外部（�?B4�?
+        // egui::Area + 手动按钮。返回菜rect 用于检测点击外部（B4
         let area_response = egui::Area::new(menu_id)
             .order(egui::Order::Foreground)
             .fixed_pos(pos)
@@ -3146,7 +3146,7 @@ impl PReferZApp {
                 ui.min_rect()
             });
 
-        // 点击菜单外部 �?关闭菜单（修 B4�?
+        // 点击菜单外部 关闭菜单（修 B4
         if primary_pressed {
             if let Some(p) = pointer_pos {
                 if !area_response.inner.contains(p) {
@@ -3343,7 +3343,7 @@ fn is_text_container(kind: &ItemKind) -> bool {
     }
 }
 
-/// 判断路径是否�?PReferZ 项目文件�?prz）�?
+/// 判断路径是否PReferZ 项目文件prz）
 fn is_project_file(path: &Path) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
@@ -3379,14 +3379,14 @@ mod tests {
     }
 }
 
-/// 缩放手柄：以拖拽角点的对角为锚点�?
-/// 数学：见 REVIEW 报告 P0-4。设 T(p)=pos+R(rot)*(scale∘F∘p)，F=flip 矩阵�?
-/// 对角�?a 和拖拽点 d�?
-///   R(rot)*(scale'*F*(d-a)) = mouse-a  �?
+/// 缩放手柄：以拖拽角点的对角为锚点
+/// 数学：见 REVIEW 报告 P0-4。设 T(p)=pos+R(rot)*(scale∘F∘p)，F=flip 矩阵
+/// 对角a 和拖拽点 d
+///   R(rot)*(scale'*F*(d-a)) = mouse-a  
 ///   scale' = R(-rot)*(mouse-a) ./ (F*(d-a))
 ///   pos' = a - R(rot)*(scale'*F*a)
-/// �?B3：加�?flip 矩阵 F，否则翻转后缩放方向错误导致跳跃�?
-/// �?B2：free_scale=false 时默认等比缩放，Ctrl 自由缩放�?
+/// B3：加flip 矩阵 F，否则翻转后缩放方向错误导致跳跃
+/// B2：free_scale=false 时默认等比缩放，Ctrl 自由缩放
 fn apply_scale_drag(
     item: &mut Item,
     handle: Handle,
@@ -3424,7 +3424,7 @@ fn apply_scale_drag(
         _ => return,
     };
     let anchor_canvas = start_corners[anchor_idx];
-    let v = drag_local - anchor_local; // 局部空间对角向量，分量�?0
+    let v = drag_local - anchor_local; // 局部空间对角向量，分量0
     let w = mouse_canvas - anchor_canvas; // 画布空间
 
     let rot = start_transform.rotation;
@@ -3434,20 +3434,20 @@ fn apply_scale_drag(
     let w_local_x = cos * w.x + sin * w.y;
     let w_local_y = -sin * w.x + cos * w.y;
 
-    // flip 因子（修 B3：缩放计算需除以 F*v 而非 v�?
+    // flip 因子（修 B3：缩放计算需除以 F*v 而非 v
     let fx = if start_transform.flip_h { -1.0 } else { 1.0 };
     let fy = if start_transform.flip_v { -1.0 } else { 1.0 };
 
     let mut new_scale_x = w_local_x / (fx * v.x);
     let mut new_scale_y = w_local_y / (fy * v.y);
 
-    // 等比缩放（修 B2：默认保持高宽比，Ctrl 自由缩放�?
+    // 等比缩放（修 B2：默认保持高宽比，Ctrl 自由缩放
     if !free_scale {
         let start_sx = start_transform.scale.x.abs().max(0.05);
         let start_sy = start_transform.scale.y.abs().max(0.05);
         let ratio_x = new_scale_x / start_sx;
         let ratio_y = new_scale_y / start_sy;
-        // 取变化幅度更大的方向作为统一缩放�?
+        // 取变化幅度更大的方向作为统一缩放
         let uniform_ratio = if ratio_x.abs() >= ratio_y.abs() {
             ratio_x
         } else {
@@ -3488,11 +3488,11 @@ fn apply_scale_drag(
     // rotation / flip 不变
 }
 
-/// 旋转手柄：以拖拽前的 4 角点中心为锚点旋转�?
+/// 旋转手柄：以拖拽前的 4 角点中心为锚点旋转
 ///
 /// 由于 `local_to_canvas` 的旋转绕局部原点（左上角），单纯改 `rotation` 会让图片
-/// 围绕左上角旋转。这里在更新 rotation 后补�?pos，让旋转后的 4 角点中心等于
-/// 旋转前的中心，从而视觉上围绕中心旋转�?
+/// 围绕左上角旋转。这里在更新 rotation 后补pos，让旋转后的 4 角点中心等于
+/// 旋转前的中心，从而视觉上围绕中心旋转
 fn apply_rotate_drag(
     viewport: &ViewportState,
     item: &mut Item,
@@ -3512,7 +3512,7 @@ fn apply_rotate_drag(
     let delta = current_angle - start_angle;
     item.transform.rotation = start_transform.rotation + delta;
 
-    // 补偿 pos：让旋转后的 4 角点中心 = 旋转前中心（center_canvas）�?    // local_to_canvas 的旋转绕局部原点，所以改 rotation 后中心会偏移�?    // 需把偏移量加回 pos�?
+    // 补偿 pos：让旋转后的 4 角点中心 = 旋转前中心（center_canvas）    // local_to_canvas 的旋转绕局部原点，所以改 rotation 后中心会偏移    // 需把偏移量加回 pos
     let new_corners = item.canvas_corners();
     let new_center = CanvasPoint::new(
         (new_corners[0].x + new_corners[1].x + new_corners[2].x + new_corners[3].x) * 0.25,
@@ -3777,7 +3777,7 @@ impl PReferZApp {
         self.rgba_size_cache
             .insert(texture_id, (outcome.width, outcome.height));
 
-        // 初始位置：视口中心对应的画布�?
+        // 初始位置：视口中心对应的画布
         let center_canvas = self
             .viewport
             .screen_to_canvas(self.viewport.screen_rect.center());
@@ -3797,7 +3797,7 @@ impl PReferZApp {
         ctx.request_repaint();
     }
 
-    /// 后台加载完成：重�?scene + 上传纹理 + 重新映射 texture_id（由 BackgroundOps::poll 调用）�?
+    /// 后台加载完成：重scene + 上传纹理 + 重新映射 texture_id（由 BackgroundOps::poll 调用）
     fn finish_load(&mut self, ctx: &egui::Context, outcome: LoadOutcome) {
         match outcome.result {
             Ok((mut scene, images, viewport_meta)) => {
@@ -3809,7 +3809,7 @@ impl PReferZApp {
                 self.rgba_size_cache.clear();
                 self.undo_stack = UndoStack::new();
 
-                // 为每�?Pixmap 重新分配 texture_id，解码上传纹理，重映�?item.texture_id
+                // 为每Pixmap 重新分配 texture_id，解码上传纹理，重映item.texture_id
                 let mut id_remap: HashMap<u64, u64> = HashMap::new();
                 for item in &mut scene.items {
                     if let ItemKind::Pixmap { texture_id, .. } = &mut item.kind {
@@ -3848,7 +3848,7 @@ impl PReferZApp {
                     }
                 }
 
-                // 应用视口元数�?
+                // 应用视口元数
                 self.viewport.pan = CanvasVector::new(viewport_meta.pan_x, viewport_meta.pan_y);
                 self.viewport.zoom = viewport_meta.zoom;
 
@@ -3868,7 +3868,7 @@ impl PReferZApp {
         }
     }
 
-    /// 保存到当前文件；若没有则调用 save_file_as 弹出对话框�?
+    /// 保存到当前文件；若没有则调用 save_file_as 弹出对话框
     fn save_file(&mut self, ctx: &egui::Context) {
         if let Some(path) = self.current_file.clone() {
             self.start_save(ctx, path);
@@ -3877,7 +3877,7 @@ impl PReferZApp {
         }
     }
 
-    /// 另存为：弹出对话框选择路径�?
+    /// 另存为：弹出对话框选择路径
     fn save_file_as(&mut self, ctx: &egui::Context) {
         let picked = rfd::FileDialog::new()
             .add_filter("PReferZ 项目", &["prz"])
@@ -3888,7 +3888,7 @@ impl PReferZApp {
         }
     }
 
-    /// 新建空白画布：清�?scene / 纹理缓存 / undo �?/ current_file / dirty�?    /// 调用前应已处理保存提示（由调用方负责）�?
+    /// 新建空白画布：清scene / 纹理缓存 / undo / current_file / dirty    /// 调用前应已处理保存提示（由调用方负责）
     fn reset_canvas(&mut self, ctx: &egui::Context) {
         self.scene = Scene::new();
         self.texture_cache.clear();
@@ -3909,7 +3909,7 @@ impl PReferZApp {
         ctx.request_repaint();
     }
 
-    /// 触发新建画布流程：若 dirty 弹保存提示，否则直接 reset�?
+    /// 触发新建画布流程：若 dirty 弹保存提示，否则直接 reset
     fn new_canvas(&mut self, ctx: &egui::Context) {
         if self.dirty {
             self.pending_save_prompt = Some(SavePromptAction::NewCanvas);
@@ -4021,9 +4021,9 @@ impl PReferZApp {
         });
     }
 
-    /// 启动后台保存�?
+    /// 启动后台保存
     fn start_save(&mut self, ctx: &egui::Context, path: PathBuf) {
-        // 收集 image_data_cache（key 转字符串以匹�?sqlar name�?
+        // 收集 image_data_cache（key 转字符串以匹sqlar name
         let mut images: HashMap<String, Vec<u8>> = HashMap::new();
         for item in &self.scene.items {
             if let ItemKind::Pixmap { texture_id, .. } = &item.kind {
@@ -4250,7 +4250,7 @@ impl PReferZApp {
         }
         ids.sort();
         ids.dedup();
-        // 清理纹理缓存与字节缓存（Pixmap�?
+        // 清理纹理缓存与字节缓存（Pixmap
         for id in &ids {
             if let Some(item) = self.scene.get_item(id) {
                 if let ItemKind::Pixmap { texture_id, .. } = &item.kind {
@@ -4262,7 +4262,7 @@ impl PReferZApp {
                 }
             }
         }
-        // �?DeleteItems 命令（修 S1/W8），undo 已支持快照恢复（P1-3�?
+        // DeleteItems 命令（修 S1/W8），undo 已支持快照恢复（P1-3
         let cmd = DeleteItems::new(ids.clone());
         self.push_cmd(Box::new(cmd));
         self.scene.selection.clear();
@@ -4274,7 +4274,7 @@ impl PReferZApp {
         if ids.is_empty() {
             return;
         }
-        // �?ReorderItems 命令（修 S3/W8），不再直接�?z
+        // ReorderItems 命令（修 S3/W8），不再直接z
         let cmd = ReorderItems::new(ids, true);
         self.push_cmd(Box::new(cmd));
         self.flash(t(self.lang, T::FlashBroughtToFront).to_string());
@@ -4296,7 +4296,7 @@ impl PReferZApp {
             self.flash(t(self.lang, T::FlashFitToCanvas).to_string());
             return;
         }
-        // 用所�?item �?AABB 并集
+        // 用所item AABB 并集
         let mut bbox: Option<preferz_core::spaces::CanvasRect> = None;
         for item in &self.scene.items {
             let r = item.bounding_rect();
@@ -4313,7 +4313,7 @@ impl PReferZApp {
 
     // ─────────── Phase 5 辅助方法 ───────────
 
-    /// 当前选中 Pixmap item 数量�?
+    /// 当前选中 Pixmap item 数量
     fn selected_pixmap_count(&self) -> usize {
         self.scene
             .selection
@@ -4323,7 +4323,7 @@ impl PReferZApp {
             .count()
     }
 
-    /// 单�?Pixmap �?grayscale 状态（用于右键菜单文案）�?
+    /// 单Pixmap grayscale 状态（用于右键菜单文案）
     fn selected_pixmap_grayscale(&self) -> bool {
         for id in &self.scene.selection {
             if let Some(item) = self.scene.get_item(id) {
@@ -4335,7 +4335,7 @@ impl PReferZApp {
         false
     }
 
-    /// 切换选中 Pixmap item 的灰度标志（spec §2.2 灰度）�?
+    /// 切换选中 Pixmap item 的灰度标志（spec §2.2 灰度）
     fn toggle_grayscale_selected(&mut self) {
         // 收集 (id, old_gray) 后再处理，避免借用冲突
         let targets: Vec<(ItemId, bool)> = self
@@ -4356,7 +4356,7 @@ impl PReferZApp {
         self.flash(t(self.lang, T::FlashToggleGrayscale).to_string());
     }
 
-    /// 进入裁剪模式（spec §2.2 裁剪）�?    /// 选中单个 Pixmap 时，初始�?crop 矩形为当�?crop 或整个图片�?
+    /// 进入裁剪模式（spec §2.2 裁剪）    /// 选中单个 Pixmap 时，初始crop 矩形为当crop 或整个图片
     fn enter_crop_mode(&mut self) {
         if self.scene.selection.len() != 1 {
             self.flash(t(self.lang, T::FlashCropNeedSingleImage).to_string());
@@ -4431,7 +4431,7 @@ impl PReferZApp {
             None => return,
         };
 
-        // �?old_transform（再次取，因为上面的�?clone �?item�?
+        // old_transform（再次取，因为上面的clone item
         let old_transform = match self.scene.get_item(&item_id) {
             Some(item) => item.transform,
             None => return,
@@ -4442,13 +4442,13 @@ impl PReferZApp {
         self.flash(t(self.lang, T::FlashCropApplied).to_string());
     }
 
-    /// 取消裁剪：恢复原 crop 并退出裁剪模式�?
+    /// 取消裁剪：恢复原 crop 并退出裁剪模式
     fn cancel_crop(&mut self) {
         self.crop_mode = None;
         self.flash(t(self.lang, T::FlashCropCancelled).to_string());
     }
 
-    /// 检测鼠标是否命中裁剪手柄（4 个角点）�?
+    /// 检测鼠标是否命中裁剪手柄（4 个角点）
     /// 命中裁剪手柄：手柄位于旋转后的裁剪框 4 角，跟随 item 一起旋转。
     fn crop_handle_hit_test(&self, screen_pos: egui::Pos2) -> Option<CropHandle> {
         let crop_state = self.crop_mode.as_ref()?;
@@ -4534,7 +4534,7 @@ impl PReferZApp {
         }
     }
 
-    /// 颜色采样：在 Pixmap 上的鼠标位置读取像素 RGB（spec §2.2 颜色采样）�?
+    /// 颜色采样：在 Pixmap 上的鼠标位置读取像素 RGB（spec §2.2 颜色采样）
     fn pick_color_at(&mut self, screen_pos: egui::Pos2) {
         let hit = interaction::get_item_at(screen_pos, &self.scene, &self.viewport);
         let item = match hit {
@@ -4555,7 +4555,7 @@ impl PReferZApp {
                 return;
             }
         };
-        // 鼠标 �?item 局部坐�?
+        // 鼠标 item 局部坐
         let inv = match item.local_to_canvas().inverse() {
             Some(m) => m,
             None => return,
@@ -4597,9 +4597,9 @@ impl PReferZApp {
         }
     }
 
-    /// 批量排列选中 item（spec §2.2 批量操作）�?
+    /// 批量排列选中 item（spec §2.2 批量操作）
     fn arrange_selected(&mut self, mode: ArrangeMode) {
-        // 临时把选中项作为整体排�?
+        // 临时把选中项作为整体排
         let spacing = self.arrange_spacing;
         // 复制一个仅包含选中项的子场景，传给 plan_arrange
         let mut sub = Scene::new();
@@ -4626,7 +4626,7 @@ impl PReferZApp {
         self.flash(format!("排列：{}", mode_name));
     }
 
-    /// 归一化选中 Pixmap item 尺寸（spec §2.2 归一化尺寸）�?
+    /// 归一化选中 Pixmap item 尺寸（spec §2.2 归一化尺寸）
     fn normalize_selected(&mut self, mode: preferz_core::commands::NormalizeMode) {
         let ids: Vec<ItemId> = self
             .scene
@@ -4643,7 +4643,7 @@ impl PReferZApp {
             self.flash(t(self.lang, T::FlashNormalizeNeedMultiple).to_string());
             return;
         }
-        // target = 首个选中 Pixmap 的当前�?
+        // target = 首个选中 Pixmap 的当前
         let target = ids.first().and_then(|id| {
             self.scene.get_item(id).and_then(|it| match &it.kind {
                 ItemKind::Pixmap { original_size, .. } => {
@@ -4678,13 +4678,13 @@ impl PReferZApp {
         self.flash(format!("{}: {}", t(self.lang, T::NormalizeSize), mode_name));
     }
 
-    /// 渲染保存提示对话框（关闭/新建时若 dirty 弹出）�?    /// 按钮�?    /// - 保存：触发保存流程，首次保存弹系统文件选择器；保存完成后由 poll_background 执行 pending action
-    /// - 放弃：不保存，直接执�?pending action（关闭窗�?/ 新建画布�?    /// - 取消：什么都不做，保留当前画布状�?
+    /// 渲染保存提示对话框（关闭/新建时若 dirty 弹出）    /// 按钮    /// - 保存：触发保存流程，首次保存弹系统文件选择器；保存完成后由 poll_background 执行 pending action
+    /// - 放弃：不保存，直接执pending action（关闭窗/ 新建画布    /// - 取消：什么都不做，保留当前画布状
     fn render_save_prompt(&mut self, ctx: &egui::Context) {
         if self.pending_save_prompt.is_none() {
             return;
         }
-        // 保存进行中：等待完成（poll_background 会自动执�?pending action�?
+        // 保存进行中：等待完成（poll_background 会自动执pending action
         if self.bg_ops.save_rx.is_some() {
             return;
         }
@@ -4719,7 +4719,7 @@ impl PReferZApp {
             });
 
         if save_clicked {
-            // 触发保存流程：保存完成时 poll_background 会执�?pending action
+            // 触发保存流程：保存完成时 poll_background 会执pending action
             self.save_file(ctx);
         } else if discard_clicked {
             // 不保存，直接执行 pending action
@@ -4900,7 +4900,7 @@ impl PReferZApp {
         }
     }
 
-    /// 渲染颜色采样 overlay（在鼠标附近显示 RGB/HEX）�?
+    /// 渲染颜色采样 overlay（在鼠标附近显示 RGB/HEX）
     fn render_color_picker_overlay(&self, ctx: &egui::Context) {
         let pos = ctx.input(|i| i.pointer.latest_pos());
         let sample = match self.color_sample.as_ref() {
