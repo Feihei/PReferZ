@@ -2,13 +2,8 @@
 // debug 构建保留 console 子系统（方便看 panic 输出和 env_logger 日志）。
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod i18n;
-mod interaction;
-mod keymap;
-mod preferz_app;
-mod ui;
-mod viewport;
-
+// 二进制入口：业务模块统一由 lib.rs 导出，这里直接复用 lib，避免与 lib 重复编译同一份代码。
+use preferz::PReferZApp;
 use std::io::Read;
 
 fn main() -> eframe::Result<()> {
@@ -41,7 +36,7 @@ fn main() -> eframe::Result<()> {
             cc.egui_ctx.set_fonts(font_definitions.clone());
             // 仅暗色主题（用户要求去掉亮色选项）
             cc.egui_ctx.set_visuals(egui::Visuals::dark());
-            Ok(Box::new(preferz_app::PReferZApp::new()))
+            Ok(Box::new(PReferZApp::new()))
         }),
     )
 }
