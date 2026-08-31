@@ -53,8 +53,8 @@ fn rotate_vec2(v: egui::Vec2, angle: f32) -> egui::Vec2 {
 
 /// 生成轮廓点的局部坐标。矩形族按 `base_size` 推导，Polyline 直接用 `points`。
 ///
-/// `ellipse_segments` 控制椭圆近似精度：`CleanStyler` 用 64 段（边缘平滑），
-/// `RoughStyler` 用 16 段（抖动本身会掩盖折线感，段数翻倍会让贝塞尔数量爆炸）。
+/// `ellipse_segments` 控制椭圆的采样点数：`CleanStyler` 用 64 段（边缘平滑），
+/// `RoughStyler` 用 24 段——后者还会把采样点插值成光滑曲线，无需靠堆段数换圆度。
 fn outline_points(shape: &ShapeData, ellipse_segments: usize) -> Vec<(f32, f32)> {
     let (w, h) = shape.base_size;
     match shape.shape_type {
@@ -235,10 +235,98 @@ impl RoughStyler {
     const MAX_OFFSET_CANVAS: f32 = 8.0;
     /// 抖动幅度占边长的比例。
     const OFFSET_RATIO: f32 = 0.06;
-    /// 椭圆近似段数（降采样以控制贝塞尔数量）。
-    const ELLIPSE_SEGMENTS: usize = 16;
+    /// 椭圆近似的采样点数：`RoughStyler` 采样后还要经
+    /// [`RoughStyler::closed_catmull_rom`] 插值成光滑曲线，故点数只需够圆即可。
+    const ELLIPSE_SEGMENTS: usize = 24;
     /// dash 模式下把每条贝塞尔采样为折线的点数。
     const DASH_SAMPLES: usize = 16;
+
+    /// 该轮廓是否为**曲线类**：抖动后需连成光滑曲线，而非逐边画抖动的直线段。
+    ///
+    /// 椭圆由采样点近似，直接连段会露出多边形折角（手绘风下尤其刺眼），
+    /// 故走 [`RoughStyler::closed_catmull_rom`]；矩形/菱形/折线本来就是直边，保持逐边抖动。
+    fn is_smooth(shape: &ShapeData) -> bool {
+        matches!(shape.shape_type, ShapeType::Ellipse)
+    }
+
+    /// 整圈抖动：给每个采样点加独立偏移，得到"手抖画歪"的轮廓点环。
+    ///
+    /// 与逐边抖动（[`RoughStyler::sketch_edge`]）的区别是——这里先抖动顶点、
+    /// 再用光滑曲线穿过它们，因此曲线类轮廓（椭圆）不会出现直线段拼接的折角。
+    fn jitter_points(rng: &mut SeededRng, pts: &[Pos2], amp: f32) -> Vec<Pos2> {
+        pts.iter()
+            .map(|p| *p + egui::vec2(rng.signed() * amp, rng.signed() * amp))
+            .collect()
+    }
+
+    /// 把闭合点环转成 C1 连续的三次贝塞尔序列（均匀 Catmull-Rom，张力 0.5）。
+    ///
+    /// 段 i 从 `p1` 到 `p2`，控制点由前后邻居推出：
+    /// `c1 = p1 + (p2 - p0) / 6`、`c2 = p2 - (p3 - p1) / 6`。
+    /// 相邻两段在共享端点处切线方向相同，故整条闭合曲线无可见折角。
+    fn closed_catmull_rom(pts: &[Pos2]) -> Vec<[Pos2; 4]> {
+        let n = pts.len();
+        if n < 3 {
+            return Vec::new();
+        }
+        (0..n)
+            .map(|i| {
+                let p0 = pts[(i + n - 1) % n];
+                let p1 = pts[i];
+                let p2 = pts[(i + 1) % n];
+                let p3 = pts[(i + 2) % n];
+                [p1, p1 + (p2 - p0) / 6.0, p2 - (p3 - p1) / 6.0, p2]
+            })
+            .collect()
+    }
+
+    /// 闭合点环的抖动幅度（屏幕像素）：取相邻点平均间距换算回画布像素后乘
+    /// [`RoughStyler::OFFSET_RATIO`]，再受 `MAX_OFFSET_CANVAS` 约束——
+    /// 与 [`RoughStyler::sketch_edge`] 同一尺度，保证直线与曲线抖动观感一致。
+    fn curve_jitter_amp(pts: &[Pos2], zoom: f32) -> f32 {
+        let n = pts.len();
+        if n < 2 {
+            return 0.0;
+        }
+        let zoom = zoom.max(1e-3);
+        let perimeter: f32 = (0..n).map(|i| (pts[i] - pts[(i + 1) % n]).length()).sum();
+        let avg_canvas = perimeter / n as f32 / zoom;
+        (avg_canvas * Self::OFFSET_RATIO).min(Self::MAX_OFFSET_CANVAS) * zoom * 0.5
+    }
+
+    /// 按 dash 样式把一条抖动贝塞尔落到 egui 形状列表。
+    ///
+    /// 实线直接用 `CubicBezier`（tessellator 自适应细分，放大也不露折角）；
+    /// dash 模式下 `PathStroke` 不支持虚线，只能采样成点列交给 `Shape::dashed_line`。
+    fn push_edge(
+        out: &mut Vec<Shape>,
+        bez: [Pos2; 4],
+        stroke: &StrokeStyle,
+        line_width: f32,
+        stroke_color: Color32,
+        zoom: f32,
+    ) {
+        match stroke.dash {
+            DashStyle::Solid => out.push(Shape::CubicBezier(
+                egui::epaint::CubicBezierShape::from_points_stroke(
+                    bez,
+                    false,
+                    Color32::TRANSPARENT,
+                    egui::epaint::PathStroke::new(line_width, stroke_color),
+                ),
+            )),
+            DashStyle::Dashed | DashStyle::Dotted => {
+                let (d, g) = dash_lengths(stroke.dash, zoom, line_width);
+                let sampled = Self::sample_bezier(&bez, Self::DASH_SAMPLES);
+                out.extend(Shape::dashed_line(
+                    &sampled,
+                    egui::Stroke::new(line_width, stroke_color),
+                    d,
+                    g,
+                ));
+            }
+        }
+    }
 
     /// 生成一条抖动边 `a → b` 的三次贝塞尔控制点 `[p0, c1, c2, p3]`。
     ///
@@ -325,27 +413,26 @@ impl ShapeStyler for RoughStyler {
         }
 
         let mut rng = SeededRng::new(shape.seed);
-        // 闭合图形多一条 n-1 → 0 的收尾边。
-        let seg_count = if closed { pts.len() } else { pts.len() - 1 };
-        for i in 0..seg_count {
-            let a = pts[i];
-            let b = pts[(i + 1) % pts.len()];
+
+        if Self::is_smooth(shape) {
+            // 曲线类轮廓（椭圆）：整圈抖动后连成光滑闭合曲线。
+            // 若沿用逐边直线抖动，24（原 16）段的多边形折角会非常明显。
+            let amp = Self::curve_jitter_amp(&pts, zoom);
             for _ in 0..Self::PASSES {
-                let bez = Self::sketch_edge(&mut rng, a, b, zoom);
-                match stroke.dash {
-                    DashStyle::Solid => out.push(Shape::CubicBezier(
-                        egui::epaint::CubicBezierShape::from_points_stroke(
-                            bez,
-                            false,
-                            Color32::TRANSPARENT,
-                            egui::epaint::PathStroke::new(line_width, stroke_color),
-                        ),
-                    )),
-                    DashStyle::Dashed | DashStyle::Dotted => {
-                        let (d, g) = dash_lengths(stroke.dash, zoom, line_width);
-                        let sampled = Self::sample_bezier(&bez, Self::DASH_SAMPLES);
-                        out.extend(Shape::dashed_line(&sampled, egui_stroke, d, g));
-                    }
+                let jittered = Self::jitter_points(&mut rng, &pts, amp);
+                for bez in Self::closed_catmull_rom(&jittered) {
+                    Self::push_edge(&mut out, bez, stroke, line_width, stroke_color, zoom);
+                }
+            }
+        } else {
+            // 直线类轮廓（矩形 / 菱形 / 折线）：逐边抖动，闭合图形多一条 n-1 → 0 的收尾边。
+            let seg_count = if closed { pts.len() } else { pts.len() - 1 };
+            for i in 0..seg_count {
+                let a = pts[i];
+                let b = pts[(i + 1) % pts.len()];
+                for _ in 0..Self::PASSES {
+                    let bez = Self::sketch_edge(&mut rng, a, b, zoom);
+                    Self::push_edge(&mut out, bez, stroke, line_width, stroke_color, zoom);
                 }
             }
         }
@@ -519,21 +606,106 @@ mod tests {
         assert!(shapes.iter().all(|s| !matches!(s, Shape::CubicBezier(_))));
     }
 
-    #[test]
-    fn rough_styler_ellipse_is_downsampled() {
-        let stroke = StrokeStyle::default();
-        let ellipse = ShapeData {
+    fn ellipse(size: f32, seed: u64) -> ShapeData {
+        ShapeData {
             shape_type: ShapeType::Ellipse,
-            base_size: (100.0, 100.0),
+            base_size: (size, size),
             points: Vec::new(),
             start_arrow: None,
             end_arrow: None,
             closed: false,
-            seed: 3,
+            seed,
+        }
+    }
+
+    /// 取出所有贝塞尔的控制点数组（非贝塞尔形状直接 panic，便于定位）。
+    fn beziers(shapes: &[Shape]) -> Vec<[Pos2; 4]> {
+        shapes
+            .iter()
+            .map(|s| match s {
+                Shape::CubicBezier(b) => b.points,
+                other => panic!("expected CubicBezier, got {other:?}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn rough_styler_ellipse_is_smooth_curve() {
+        let stroke = StrokeStyle::default();
+        let shapes = RoughStyler.build_shapes(&ellipse(100.0, 3), &stroke, None, &identity(), 1.0);
+        // 24 段 × 2 passes = 48 条贝塞尔；曲线轮廓不得退化成直线段拼接
+        assert_eq!(shapes.len(), 48);
+        assert!(shapes.iter().all(|s| matches!(s, Shape::CubicBezier(_))));
+
+        // 每条 pass 内部：相邻两段首尾重合且切线共线（C1 连续），否则会看到折角
+        let bez = beziers(&shapes);
+        for pass in bez.chunks(24) {
+            for i in 0..pass.len() {
+                let cur = pass[i];
+                let next = pass[(i + 1) % pass.len()];
+                assert_eq!(cur[3], next[0], "相邻段必须在端点处相接");
+                let in_tangent = cur[3] - cur[2];
+                let out_tangent = next[1] - next[0];
+                let cross = in_tangent.x * out_tangent.y - in_tangent.y * out_tangent.x;
+                assert!(cross.abs() < 1e-3, "接缝处切线不共线，会露出折角");
+                assert!(
+                    (in_tangent - out_tangent).length() < 1e-3,
+                    "接缝处切线长度应相等"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn rough_styler_ellipse_stays_deterministic_and_seed_sensitive() {
+        let stroke = StrokeStyle::default();
+        let a = RoughStyler.build_shapes(&ellipse(100.0, 9), &stroke, None, &identity(), 1.0);
+        let b = RoughStyler.build_shapes(&ellipse(100.0, 9), &stroke, None, &identity(), 1.0);
+        assert_eq!(debug(&a), debug(&b));
+        let c = RoughStyler.build_shapes(&ellipse(100.0, 10), &stroke, None, &identity(), 1.0);
+        assert_ne!(debug(&a), debug(&c));
+    }
+
+    #[test]
+    fn rough_styler_ellipse_jitter_is_bounded() {
+        // 抖动幅度受 MAX_OFFSET_CANVAS 约束：既不会抖成一团，也不会抖飞出圆周太远。
+        // 局部坐标经 identity 变换直接落到屏幕，故圆心 (200,200)、半径 200。
+        let stroke = StrokeStyle::default();
+        let shapes = RoughStyler.build_shapes(&ellipse(400.0, 11), &stroke, None, &identity(), 1.0);
+        let center = egui::pos2(200.0, 200.0);
+        for p in beziers(&shapes).iter().flat_map(|seg| seg.iter()) {
+            let d = (*p - center).length();
+            assert!((100.0..=300.0).contains(&d), "抖动越界: {p:?} d={d}");
+        }
+    }
+
+    #[test]
+    fn rough_styler_ellipse_dash_sampled_no_nan() {
+        let stroke = StrokeStyle {
+            color: [255, 255, 255, 255],
+            width: 2.0,
+            dash: DashStyle::Dashed,
         };
-        // 16 段 × 2 passes = 32 条贝塞尔（CleanStyler 的 64 段会翻倍到 128）
-        let shapes = RoughStyler.build_shapes(&ellipse, &stroke, None, &identity(), 1.0);
-        assert_eq!(shapes.len(), 32);
+        let shapes = RoughStyler.build_shapes(&ellipse(100.0, 4), &stroke, None, &identity(), 1.0);
+        assert!(!shapes.is_empty());
+        assert!(shapes.iter().all(|s| !matches!(s, Shape::CubicBezier(_))));
+    }
+
+    #[test]
+    fn rough_styler_degenerate_ellipse_does_not_produce_nan() {
+        // 零尺寸椭圆：所有采样点重合，Catmull-Rom 退化，不应产生 NaN
+        let shapes = RoughStyler.build_shapes(
+            &ellipse(0.0, 5),
+            &StrokeStyle::default(),
+            None,
+            &identity(),
+            1.0,
+        );
+        for b in beziers(&shapes) {
+            for p in b {
+                assert!(p.x.is_finite() && p.y.is_finite(), "NaN/Inf 坐标: {p:?}");
+            }
+        }
     }
 
     #[test]
