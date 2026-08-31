@@ -174,7 +174,7 @@ struct ImportOutcome {
     error: Option<String>,
 }
 
-/// 后台 .prz/.bee 加载结果（线�?�?UI 线程）�?
+/// 后台 .prz 加载结果（线�?�?UI 线程）�?
 struct LoadOutcome {
     path: PathBuf,
     result: Result<preferz_fileio::LoadResult, String>,
@@ -197,7 +197,7 @@ struct ExportOutcome {
 struct BackgroundOps {
     /// 图片导入解码通道（单条队列，每次导入一条）。
     import_rx: Option<Receiver<ImportOutcome>>,
-    /// .prz/.bee 文件加载通道。
+    /// .prz 文件加载通道。
     load_rx: Option<Receiver<LoadOutcome>>,
     /// 文件保存通道。
     save_rx: Option<Receiver<SaveOutcome>>,
@@ -278,7 +278,7 @@ impl BackgroundOps {
         path: PathBuf,
         scene: Scene,
         images: HashMap<String, Vec<u8>>,
-        viewport: Option<ViewportMeta>,
+        viewport: ViewportMeta,
     ) {
         let (tx, rx) = mpsc::channel();
         self.save_rx = Some(rx);
@@ -677,7 +677,7 @@ impl eframe::App for PReferZApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
         }
 
-        // 拖放导入（spec L228，P3-1）�?prz/.bee �?加载项目文件；其�?�?图片导入
+        // 拖放导入（spec L228，P3-1）�?prz �?加载项目文件；其�?�?图片导入
         let dropped: Vec<PathBuf> = ctx.input(|i| {
             i.raw
                 .dropped_files
@@ -3331,11 +3331,11 @@ fn is_text_container(kind: &ItemKind) -> bool {
     }
 }
 
-/// 判断路径是否�?PReferZ 项目文件�?prz / .bee）�?
+/// 判断路径是否�?PReferZ 项目文件�?prz）�?
 fn is_project_file(path: &Path) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
-        .map(|e| matches!(e.to_ascii_lowercase().as_str(), "prz" | "bee"))
+        .map(|e| e.eq_ignore_ascii_case("prz"))
         .unwrap_or(false)
 }
 
@@ -3760,10 +3760,8 @@ impl PReferZApp {
                 }
 
                 // 应用视口元数�?
-                if let Some(meta) = viewport_meta {
-                    self.viewport.pan = CanvasVector::new(meta.pan_x, meta.pan_y);
-                    self.viewport.zoom = meta.zoom;
-                }
+                self.viewport.pan = CanvasVector::new(viewport_meta.pan_x, viewport_meta.pan_y);
+                self.viewport.zoom = viewport_meta.zoom;
 
                 self.scene = scene;
                 // 清理孤儿 container_id（容器已不存在则置 None），Phase C/Step 4
@@ -3831,10 +3829,10 @@ impl PReferZApp {
         }
     }
 
-    /// 打开项目文件（.prz/.bee）。
+    /// 打开项目文件（.prz）。
     fn open_project_file(&mut self, ctx: &egui::Context) {
         let picked = rfd::FileDialog::new()
-            .add_filter("PReferZ 项目", &["prz", "bee"])
+            .add_filter("PReferZ 项目", &["prz"])
             .pick_file();
         if let Some(path) = picked {
             self.add_recent_and_load(ctx, path);
@@ -3945,11 +3943,11 @@ impl PReferZApp {
                 }
             }
         }
-        let viewport = Some(ViewportMeta {
+        let viewport = ViewportMeta {
             pan_x: self.viewport.pan.x,
             pan_y: self.viewport.pan.y,
             zoom: self.viewport.zoom,
-        });
+        };
         self.bg_ops
             .start_save(ctx, path, self.scene.clone(), images, viewport);
     }

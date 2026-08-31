@@ -10,7 +10,7 @@ use preferz_core::transform::Transform;
 
 use crate::schema::*;
 
-/// 视口持久化元数据（仅 `.prz` 格式存入 `metadata` 表）。
+/// 视口持久化元数据（存入 `.prz` 的 `metadata` 表）。
 #[derive(Debug, Clone, Copy)]
 pub struct ViewportMeta {
     pub pan_x: f32,
@@ -18,73 +18,70 @@ pub struct ViewportMeta {
     pub zoom: f32,
 }
 
+impl Default for ViewportMeta {
+    /// 文件未记录视口时的兜底值：原点、100% 缩放。
+    fn default() -> Self {
+        Self {
+            pan_x: 0.0,
+            pan_y: 0.0,
+            zoom: 1.0,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct BeeFile {
     pub path: PathBuf,
     pub connection: Connection,
-    pub is_prz: bool,
 }
 
-/// 加载结果：场景 + 图片字节映射（texture_id 字符串 → 原始图片字节）+ 视口元数据（仅 .prz）。
-pub type LoadResult = (Scene, HashMap<String, Vec<u8>>, Option<ViewportMeta>);
+/// 加载结果：场景 + 图片字节映射（texture_id 字符串 → 原始图片字节）+ 视口元数据。
+pub type LoadResult = (Scene, HashMap<String, Vec<u8>>, ViewportMeta);
 
 impl BeeFile {
-    /// 打开已存在的 .bee/.prz 文件。若 metadata 表存在且 format='prz' 则视为 .prz。
+    /// 打开已存在的 `.prz` 文件。
+    ///
+    /// 会校验 `metadata.format == 'prz'`；格式不符（含 BeeRef 的 `.bee`——其
+    /// items 表为 9 列 INTEGER id，与本格式不兼容）直接返回错误，而不是在后续
+    /// 查询里抛出难懂的 `no such column`。
     pub fn open(path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
         let conn = Connection::open(path)?;
-        // 检测是否为 .prz（metadata 表存在且 format='prz'）
-        let is_prz: bool = conn
+        let format: Option<String> = conn
             .query_row(
                 "SELECT value FROM metadata WHERE key = 'format'",
                 [],
                 |row| row.get::<_, String>(0),
             )
-            .ok()
-            .map(|v| v == "prz")
-            .unwrap_or(false);
+            .ok();
+        match format.as_deref() {
+            Some("prz") => {}
+            other => {
+                return Err(format!(
+                    "{} 不是有效的 PReferZ 项目文件（metadata.format = {:?}，期望 \"prz\"）",
+                    path.display(),
+                    other.unwrap_or("<缺失>")
+                )
+                .into());
+            }
+        }
 
         Ok(Self {
             path: path.to_path_buf(),
             connection: conn,
-            is_prz,
         })
     }
 
-    /// 创建新文件并初始化 schema。按扩展名决定 .bee / .prz。
+    /// 创建新文件并初始化 schema。
     pub fn create(path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
         let conn = Connection::open(path)?;
-        let is_prz = path.extension().is_some_and(|e| e == "prz");
-        let schema = if is_prz {
-            Self::prz_schema()
-        } else {
-            Self::bee_schema()
-        };
-        conn.execute_batch(schema)?;
+        conn.execute_batch(Self::schema())?;
         Ok(Self {
             path: path.to_path_buf(),
             connection: conn,
-            is_prz,
         })
     }
 
-    fn bee_schema() -> &'static str {
-        r#"
-        CREATE TABLE IF NOT EXISTS items (
-            id TEXT PRIMARY KEY,
-            kind TEXT NOT NULL,
-            data BLOB NOT NULL,
-            transform TEXT NOT NULL,
-            z INTEGER NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS sqlar (
-            name TEXT PRIMARY KEY,
-            sz INTEGER NOT NULL,
-            data BLOB NOT NULL
-        );
-        "#
-    }
-
-    fn prz_schema() -> &'static str {
+    fn schema() -> &'static str {
         r#"
         CREATE TABLE IF NOT EXISTS items (
             id TEXT PRIMARY KEY,
@@ -111,7 +108,7 @@ impl BeeFile {
     ///
     /// - `images`: `texture_id` 字符串 → 原始图片字节（Pixmap item 的图片数据，存入 sqlar 表）。
     ///   若某 Pixmap 的 texture_id 不在 images 中，sqlar 中对应条目保留不变（不删除）。
-    /// - `viewport`: 仅 `.prz` 格式写入 metadata；`.bee` 忽略。
+    /// - `viewport`: 视口状态，写入 metadata 表。
     ///
     /// 策略：事务内全量替换 items + 增量同步 sqlar（仅写入 images 中提供的条目），
     /// 删除场景中已不存在的 Pixmap texture_id 对应的 sqlar 条目，最后 VACUUM。
@@ -119,7 +116,7 @@ impl BeeFile {
         &mut self,
         scene: &Scene,
         images: &HashMap<String, Vec<u8>>,
-        viewport: Option<ViewportMeta>,
+        viewport: ViewportMeta,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let tx = self.connection.transaction()?;
 
@@ -177,27 +174,23 @@ impl BeeFile {
             tx.execute("DELETE FROM sqlar", [])?;
         }
 
-        // 5) 视口元数据（仅 .prz）
-        if self.is_prz {
-            if let Some(v) = viewport {
-                tx.execute(
-                    insert_metadata_query(),
-                    params!["viewport_pan_x", v.pan_x.to_string()],
-                )?;
-                tx.execute(
-                    insert_metadata_query(),
-                    params!["viewport_pan_y", v.pan_y.to_string()],
-                )?;
-                tx.execute(
-                    insert_metadata_query(),
-                    params!["viewport_zoom", v.zoom.to_string()],
-                )?;
-            }
-            tx.execute(
-                insert_metadata_query(),
-                params!["next_z", scene.next_z.to_string()],
-            )?;
-        }
+        // 5) 视口元数据
+        tx.execute(
+            insert_metadata_query(),
+            params!["viewport_pan_x", viewport.pan_x.to_string()],
+        )?;
+        tx.execute(
+            insert_metadata_query(),
+            params!["viewport_pan_y", viewport.pan_y.to_string()],
+        )?;
+        tx.execute(
+            insert_metadata_query(),
+            params!["viewport_zoom", viewport.zoom.to_string()],
+        )?;
+        tx.execute(
+            insert_metadata_query(),
+            params!["next_z", scene.next_z.to_string()],
+        )?;
 
         tx.commit()?;
 
@@ -208,9 +201,9 @@ impl BeeFile {
 
     /// 加载场景。
     ///
-    /// 返回 `(Scene, images, Option<ViewportMeta>)`：
+    /// 返回 `(Scene, images, ViewportMeta)`：
     /// - `images`: `texture_id` 字符串 → 原始图片字节（从 sqlar 表读出）
-    /// - `ViewportMeta`: 仅 `.prz` 格式且 metadata 中存在视口数据时返回
+    /// - `ViewportMeta`: metadata 中的视口数据；文件未记录时返回 [`ViewportMeta::default`]
     ///
     /// 加载后会清空 Text item 的 `measured_size` 与 `editing`（运行时状态不持久化）。
     pub fn load_scene(&self) -> Result<LoadResult, Box<dyn std::error::Error>> {
@@ -273,17 +266,13 @@ impl BeeFile {
             }
         }
 
-        // 3) 读取视口元数据（仅 .prz）
-        let viewport = if self.is_prz {
-            self.load_viewport_meta()?
-        } else {
-            None
-        };
+        // 3) 读取视口元数据
+        let viewport = self.load_viewport_meta()?;
 
         Ok((scene, images, viewport))
     }
 
-    fn load_viewport_meta(&self) -> Result<Option<ViewportMeta>, Box<dyn std::error::Error>> {
+    fn load_viewport_meta(&self) -> Result<ViewportMeta, Box<dyn std::error::Error>> {
         let mut map: HashMap<String, String> = HashMap::new();
         let mut stmt = self.connection.prepare(select_metadata_query())?;
         let rows = stmt.query_map([], |row| {
@@ -301,13 +290,12 @@ impl BeeFile {
             map.get("viewport_pan_y"),
             map.get("viewport_zoom"),
         ) {
-            (Some(x), Some(y), Some(z)) => {
-                let pan_x: f32 = x.parse().unwrap_or(0.0);
-                let pan_y: f32 = y.parse().unwrap_or(0.0);
-                let zoom: f32 = z.parse().unwrap_or(1.0);
-                Ok(Some(ViewportMeta { pan_x, pan_y, zoom }))
-            }
-            _ => Ok(None),
+            (Some(x), Some(y), Some(z)) => Ok(ViewportMeta {
+                pan_x: x.parse().unwrap_or_default(),
+                pan_y: y.parse().unwrap_or_default(),
+                zoom: z.parse().unwrap_or(1.0),
+            }),
+            _ => Ok(ViewportMeta::default()),
         }
     }
 
@@ -397,12 +385,11 @@ mod tests {
         // 保存
         {
             let mut bee = BeeFile::create(&path).unwrap();
-            bee.save_scene(&scene, &images, Some(viewport)).unwrap();
+            bee.save_scene(&scene, &images, viewport).unwrap();
         }
 
         // 加载
         let bee = BeeFile::open(&path).unwrap();
-        assert!(bee.is_prz);
         let (loaded_scene, loaded_images, loaded_vp) = bee.load_scene().unwrap();
 
         // 验证 items 数量
@@ -451,10 +438,9 @@ mod tests {
             Some(&vec![1u8, 2, 3, 4, 5])
         );
         // 验证视口元数据
-        let vp = loaded_vp.expect("应有视口元数据");
-        assert_eq_float(vp.pan_x, 100.0);
-        assert_eq_float(vp.pan_y, 200.0);
-        assert_eq_float(vp.zoom, 1.5);
+        assert_eq_float(loaded_vp.pan_x, 100.0);
+        assert_eq_float(loaded_vp.pan_y, 200.0);
+        assert_eq_float(loaded_vp.zoom, 1.5);
         // 验证 next_z
         assert_eq!(loaded_scene.next_z, scene.next_z);
 
@@ -484,8 +470,7 @@ mod tests {
         };
         {
             let mut bee = BeeFile::create(&path).unwrap();
-            bee.save_scene(&scene, &HashMap::new(), Some(viewport))
-                .unwrap();
+            bee.save_scene(&scene, &HashMap::new(), viewport).unwrap();
         }
 
         // 加载
@@ -516,18 +501,63 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    /// 非 PReferZ 的 SQLite 文件（含 BeeRef 的 .bee）应被 `open` 明确拒绝，
+    /// 而不是在后续查询里抛出 `no such column` 之类的底层错误。
     #[test]
-    fn bee_format_no_metadata() {
-        let path = tmp_path("noprz.bee");
-        let scene = Scene::new();
+    fn open_rejects_non_prz_file() {
+        let path = tmp_path("foreign.bee");
+        {
+            // 模拟 BeeRef 的 items 表：9 列、INTEGER id、transform 分列存储
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE items (
+                    id INTEGER PRIMARY KEY,
+                    type TEXT NOT NULL,
+                    x REAL DEFAULT 0,
+                    y REAL DEFAULT 0,
+                    z REAL DEFAULT 0,
+                    scale REAL DEFAULT 1,
+                    rotation REAL DEFAULT 0,
+                    flip INTEGER DEFAULT 1,
+                    data JSON
+                );
+                CREATE TABLE sqlar (
+                    name TEXT PRIMARY KEY,
+                    item_id INTEGER NOT NULL UNIQUE,
+                    mode INT,
+                    mtime INT,
+                    sz INT,
+                    data BLOB
+                );",
+            )
+            .unwrap();
+        }
+        let err = BeeFile::open(&path).expect_err("应拒绝非 prz 文件");
+        assert!(
+            err.to_string().contains("不是有效的 PReferZ 项目文件"),
+            "错误信息应可读，实际: {err}"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// 文件未记录视口时，`load_scene` 应返回默认视口而非失败。
+    #[test]
+    fn load_scene_falls_back_to_default_viewport() {
+        let path = tmp_path("noviewport.prz");
         {
             let mut bee = BeeFile::create(&path).unwrap();
-            bee.save_scene(&scene, &HashMap::new(), None).unwrap();
+            bee.save_scene(&Scene::new(), &HashMap::new(), ViewportMeta::default())
+                .unwrap();
+            // 清掉视口元数据，模拟早期文件
+            bee.connection
+                .execute("DELETE FROM metadata WHERE key LIKE 'viewport%'", [])
+                .unwrap();
         }
         let bee = BeeFile::open(&path).unwrap();
-        assert!(!bee.is_prz);
         let (_scene, _images, vp) = bee.load_scene().unwrap();
-        assert!(vp.is_none(), ".bee 不应有视口元数据");
+        assert_eq_float(vp.pan_x, 0.0);
+        assert_eq_float(vp.pan_y, 0.0);
+        assert_eq_float(vp.zoom, 1.0);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -543,7 +573,8 @@ mod tests {
         // 第一次保存
         {
             let mut bee = BeeFile::create(&path).unwrap();
-            bee.save_scene(&scene, &images, None).unwrap();
+            bee.save_scene(&scene, &images, ViewportMeta::default())
+                .unwrap();
         }
         // 第二次保存：删除 Pixmap，只留 Text（sqlar 应被清空）
         let mut scene2 = Scene::new();
@@ -556,7 +587,8 @@ mod tests {
         ));
         {
             let mut bee = BeeFile::open(&path).unwrap();
-            bee.save_scene(&scene2, &HashMap::new(), None).unwrap();
+            bee.save_scene(&scene2, &HashMap::new(), ViewportMeta::default())
+                .unwrap();
         }
         let bee = BeeFile::open(&path).unwrap();
         let (_s, images2, _vp) = bee.load_scene().unwrap();
