@@ -5,9 +5,9 @@
 - **Rust** (stable, >= 1.88), edition 2021 — 1.88 起才稳定的 `slice::as_chunks` / `as_chunks_mut` 已在代码中使用
 - **GUI**: `egui` + `eframe` (glow backend)
 - **2D geometry**: `euclid` (parameterized `CanvasSpace` / `ScreenSpace`)
-- **Undo**: custom `undo` crate wrapping `History` / `Command`
+- **Undo**: 全手写——`preferz-core::commands::Command` trait + binary 层 `UndoStack`（`preferz_app.rs`）。注意 `undo` crate 虽列在 preferz-core 依赖里，但**零引用**（历史遗留）
 - **File I/O**: `rusqlite` (`.prz` SQLite + sqlar), `image`, `rayon`
-- **File dialog**: `rfd`; **clipboard**: `arboard`; **config**: `confy`
+- **File dialog**: `rfd`; **clipboard**: `arboard`; **config**: 手写 JSON（`~/.preferz/config.json` + `recent.json`，serde_json + `std::env` 取 home，**无 confy / dirs 依赖**）
 - **Workspace**: `crates/preferz` (binary), `crates/preferz-core`, `crates/preferz-fileio`
 
 ## Commands
