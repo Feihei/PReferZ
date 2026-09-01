@@ -2499,9 +2499,17 @@ impl PReferZApp {
 
         // 遮罩：item 四边形与 crop 四边形之间的 4 个梯形。
         // 两组角点一一对应、且同为凸四边形（仿射变换保凸），故每个梯形也是凸的。
+        // 梯形两侧宽度都不足 1px（crop 边贴住 item 边——进入裁剪时 crop 为全图，
+        // 四条梯形全是零宽缝）时跳过：亚像素多边形经 egui 羽化会渲染成贴边暗线，
+        // 拖动时逐帧重排表现为闪烁黑影。
         let mask_color = egui::Color32::from_rgba_premultiplied(0, 0, 0, 120);
         for i in 0..4 {
             let j = (i + 1) % 4;
+            if (item_quad[i] - crop_quad[i]).length() < 1.0
+                && (item_quad[j] - crop_quad[j]).length() < 1.0
+            {
+                continue;
+            }
             ui.painter().add(egui::Shape::convex_polygon(
                 vec![item_quad[i], item_quad[j], crop_quad[j], crop_quad[i]],
                 mask_color,
