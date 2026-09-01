@@ -2770,12 +2770,11 @@ impl PReferZApp {
             area = area.fixed_pos(screen_pos);
         }
         area.show(ctx, |ui| {
-            let frame = egui::Frame::popup(ui.style())
-                .fill(egui::Color32::from_rgb(50, 50, 50))
-                .stroke(egui::Stroke::new(
-                    1.0_f32,
-                    egui::Color32::from_rgb(100, 200, 255),
-                ));
+            // 弹层背景跟随主题（D2）：去掉硬编码暗色 fill，用 Frame::popup 的主题默认。
+            let frame = egui::Frame::popup(ui.style()).stroke(egui::Stroke::new(
+                1.0_f32,
+                egui::Color32::from_rgb(100, 200, 255),
+            ));
             frame.show(ui, |ui| {
                 if let Some(r) = container_screen_rect {
                     // 绑定文本编辑：宽度受容器约束，支持换行，居中。
@@ -2905,8 +2904,8 @@ impl PReferZApp {
             .order(egui::Order::Foreground)
             .fixed_pos(sr.min)
             .show(ctx, |ui| {
+                // 弹层背景跟随主题（D2）：去掉硬编码暗色 fill，用 Frame::popup 的主题默认。
                 egui::Frame::popup(ui.style())
-                    .fill(egui::Color32::from_rgb(50, 50, 55))
                     .stroke(egui::Stroke::new(
                         1.0_f32,
                         egui::Color32::from_rgb(100, 200, 255),
