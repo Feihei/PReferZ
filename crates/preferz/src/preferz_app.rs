@@ -2497,24 +2497,76 @@ impl PReferZApp {
             None => return,
         };
 
-        // 遮罩：item 四边形与 crop 四边形之间的 4 个梯形。
-        // 两组角点一一对应、且同为凸四边形（仿射变换保凸），故每个梯形也是凸的。
-        // 梯形两侧宽度都不足 1px（crop 边贴住 item 边——进入裁剪时 crop 为全图，
-        // 四条梯形全是零宽缝）时跳过：亚像素多边形经 egui 羽化会渲染成贴边暗线，
-        // 拖动时逐帧重排表现为闪烁黑影。
+        // 遮罩（修旋转图闪烁黑影）：
+        // 旧实现把「图片边→裁剪边」拆成 4 条梯形，每条边随裁剪框拖动而重排；
+        // 旋转下这些对角线经 egui 抗锯齿后缝隙逐帧变化 → 影像周围闪黑。
+        // 改为：① 单个凸多边形把整张图片压暗，外缘 = item_quad（拖拽时图片不动，
+        //   遮罩外缘稳定不闪）；② 再把裁剪框内的图片以原始亮度重绘到 crop_quad 之上。
+        // 裁剪框描边压住内部接缝，重绘的亮图与底层像素一致（同纹理同 UV），不引入新闪烁。
         let mask_color = egui::Color32::from_rgba_premultiplied(0, 0, 0, 120);
-        for i in 0..4 {
-            let j = (i + 1) % 4;
-            if (item_quad[i] - crop_quad[i]).length() < 1.0
-                && (item_quad[j] - crop_quad[j]).length() < 1.0
-            {
-                continue;
+        ui.painter().add(egui::Shape::convex_polygon(
+            item_quad.to_vec(),
+            mask_color,
+            egui::Stroke::NONE,
+        ));
+
+        // 裁剪框内图片以原始亮度重绘（需纹理句柄；缺失时退化为仅压暗整图）。
+        let tex_handle = match &item.kind {
+            ItemKind::Pixmap {
+                texture_id,
+                grayscale,
+                ..
+            } => {
+                let tid = *texture_id;
+                if *grayscale {
+                    self.grayscale_texture_cache
+                        .get(&tid)
+                        .or_else(|| self.texture_cache.get(&tid))
+                } else {
+                    self.texture_cache.get(&tid)
+                }
             }
-            ui.painter().add(egui::Shape::convex_polygon(
-                vec![item_quad[i], item_quad[j], crop_quad[j], crop_quad[i]],
-                mask_color,
-                egui::Stroke::NONE,
-            ));
+            _ => None,
+        };
+        if let Some(handle) = tex_handle {
+            // UV 必须与 crop_corners 的归一化基准（current_crop）一致，
+            // 而非 base_size——否则已在裁剪过的图片会二次偏移。
+            let base = item
+                .current_crop()
+                .unwrap_or(CropRect::new(0.0, 0.0, 1.0, 1.0));
+            let r = crop_state.rect;
+            let (u0, u1, v0, v1) = (
+                ((r.x - base.x) / base.width).clamp(0.0, 1.0),
+                ((r.x + r.width - base.x) / base.width).clamp(0.0, 1.0),
+                ((r.y - base.y) / base.height).clamp(0.0, 1.0),
+                ((r.y + r.height - base.y) / base.height).clamp(0.0, 1.0),
+            );
+            let opacity = match &item.kind {
+                ItemKind::Pixmap { opacity, .. } => *opacity,
+                _ => 1.0,
+            };
+            let alpha = (opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
+            let tint = egui::Color32::from_rgba_premultiplied(255, 255, 255, alpha);
+            let [tl, tr, br, bl] = crop_quad;
+            let verts = [
+                ([tl.x, tl.y], [u0, v0]),
+                ([tr.x, tr.y], [u1, v0]),
+                ([br.x, br.y], [u1, v1]),
+                ([bl.x, bl.y], [u0, v1]),
+            ];
+            let mut mesh = egui::epaint::Mesh {
+                texture_id: handle.id(),
+                ..Default::default()
+            };
+            for ([px, py], [u, v]) in verts {
+                mesh.vertices.push(egui::epaint::Vertex {
+                    pos: [px, py].into(),
+                    uv: [u, v].into(),
+                    color: tint,
+                });
+            }
+            mesh.indices = vec![0, 1, 2, 0, 2, 3];
+            ui.painter().add(egui::epaint::Shape::mesh(mesh));
         }
         // 裁剪框：旋转四边形，用闭合折线描边而非轴对齐矩形
         let stroke = egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(100, 200, 255));
