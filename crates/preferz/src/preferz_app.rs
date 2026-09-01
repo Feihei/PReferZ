@@ -2129,8 +2129,14 @@ impl PReferZApp {
         self.present_apply_fit(ctx, screen_rect, frame_rect);
         let frame_screen_rect = self.viewport.canvas_to_screen_rect(frame_rect);
 
+        // 画布背景跟随主题（D2）；Present 为不透明演示背景。
+        let present_bg = self.theme.canvas_bg(ctx);
         egui::CentralPanel::default()
-            .frame(egui::Frame::none().fill(egui::Color32::from_rgb(24, 24, 27)))
+            .frame(egui::Frame::none().fill(egui::Color32::from_rgb(
+                present_bg[0],
+                present_bg[1],
+                present_bg[2],
+            )))
             .show(ctx, |ui| {
                 let original_clip = ui.clip_rect();
                 // 只绘制当前帧成员，且裁剪到帧矩形，形成独立"幻灯片"画布。
@@ -2153,11 +2159,13 @@ impl PReferZApp {
             .order(egui::Order::Foreground)
             .show(ctx, |ui| {
                 let label = format!("{} / {}", index + 1, slides.len());
-                ui.label(
-                    egui::RichText::new(label)
-                        .size(16.0)
-                        .color(egui::Color32::from_gray(210)),
-                );
+                // 页码颜色随主题反色（Light 下浅灰背景上需深色字）。
+                let page_text_color = if self.theme.is_dark(ctx) {
+                    egui::Color32::from_gray(210)
+                } else {
+                    egui::Color32::from_gray(40)
+                };
+                ui.label(egui::RichText::new(label).size(16.0).color(page_text_color));
             });
     }
 
