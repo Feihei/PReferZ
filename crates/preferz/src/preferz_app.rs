@@ -1,6 +1,7 @@
 use crate::i18n::{action_label, t, Lang, T};
 use crate::interaction;
 use crate::keymap::{Action, BindKey, KeyBind, Keymap, KeymapMap};
+use crate::theme::{self, ThemeMode};
 use crate::ui::stylers::{build_shape_visuals, item_local_to_screen};
 use crate::ui::widgets::transform_handles::{
     should_show_flip, should_show_rotate, Handle, TransformHandles,
@@ -432,6 +433,8 @@ pub struct PReferZApp {
     lang: Lang,
     /// 键盘快捷键映射（可在设置面板重绑定，持久化到 config.json）。
     keymap: Keymap,
+    /// 明暗主题（Light/Dark/Auto），持久化到 config.json（Phase G）。
+    theme: ThemeMode,
     /// 正在等待按键捕获的动作槽位（动作 + 该动作的第几个绑定）。
     rebinding: Option<(Action, usize)>,
     /// 最近一次改绑的冲突提示（D2-a：标红告知占用者）。
@@ -492,7 +495,13 @@ impl PReferZApp {
             pending_import: Vec::new(),
             transform_handles: TransformHandles::new(),
             tool: Tool::Select,
-            default_stroke: StrokeStyle::default(),
+            default_stroke: {
+                // 新建元素默认色随主题翻转（D2）；启动时尚无 ctx，Auto 按 Dark 兜底。
+                StrokeStyle {
+                    color: cfg.theme.default_stroke_color_static(),
+                    ..Default::default()
+                }
+            },
             default_fill: None,
             default_rough: false,
             drag: DragState::Idle,
@@ -515,6 +524,7 @@ impl PReferZApp {
             bg_alpha: 1.0,
             lang: cfg.lang,
             keymap: Keymap::from_partial(cfg.keymap),
+            theme: cfg.theme,
             rebinding: None,
             rebind_notice: None,
             recent_files: load_recent_files(),
@@ -679,14 +689,10 @@ const POLYLINE_CLOSE_DISTANCE: f32 = 8.0;
 
 impl eframe::App for PReferZApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // 背景透明度：动态调整 visuals.panel_fill 的 alpha。
-        // 当 bg_alpha < 1.0 时 panel 背景半透明，配 with_transparent(true) 实现窗口穿透。
+        // 主题 + 背景透明度：按当前主题构造 Visuals，并把 bg_alpha 施加到 chrome 填充色
+        // （panel/window/faint），使透明窗口效果在明暗两套主题下都生效。
         {
-            let alpha = (self.bg_alpha * 255.0).round() as u8;
-            let mut visuals = ctx.style().visuals.clone();
-            visuals.panel_fill = egui::Color32::from_rgba_unmultiplied(45, 45, 48, alpha);
-            visuals.window_fill = egui::Color32::from_rgba_unmultiplied(30, 30, 32, alpha);
-            visuals.faint_bg_color = egui::Color32::from_rgba_unmultiplied(30, 30, 32, alpha);
+            let visuals = theme::build_visuals(self.theme, self.bg_alpha, ctx);
             ctx.set_visuals(visuals);
         }
 
@@ -948,12 +954,13 @@ impl eframe::App for PReferZApp {
             let response =
                 ui.interact(rect, egui::Id::new("canvas"), egui::Sense::click_and_drag());
 
-            // 画布背景：应用 bg_alpha（与 panel_fill 一致，确保透明效果生效）
+            // 画布背景：随主题翻转（D2），并应用 bg_alpha（与 panel_fill 一致，确保透明效果生效）
             let bg_alpha_u8 = (self.bg_alpha * 255.0).round() as u8;
+            let [cb_r, cb_g, cb_b] = self.theme.canvas_bg(ctx);
             ui.painter().rect_filled(
                 rect,
                 egui::Rounding::same(0.0),
-                egui::Color32::from_rgba_unmultiplied(45, 45, 48, bg_alpha_u8),
+                egui::Color32::from_rgba_unmultiplied(cb_r, cb_g, cb_b, bg_alpha_u8),
             );
 
             // 渲染场景（含视口剔除 + Z + 复用 self.transform_handles
@@ -4818,19 +4825,22 @@ impl PReferZApp {
         save_config(&UserConfig {
             lang: self.lang,
             keymap: self.keymap.as_map().clone(),
+            theme: self.theme,
         });
     }
 
-    /// 渲染设置面板（spec §2.3 简化版：排列间距 + 窗口形态 + 语言 + 快捷键，仅暗色主题）。
+    /// 渲染设置面板（spec §2.3 简化版：排列间距 + 窗口形态 + 语言 + 主题 + 快捷键）。
     fn render_settings_window(&mut self, ctx: &egui::Context) {
         let mut open = self.settings_open;
         // 局部副本，闭包内修改；changed 时记录，闭包外发 ViewportCommand
         let mut always_on_top = self.always_on_top;
         let mut frameless = self.frameless;
         let mut lang = self.lang;
+        let mut theme = self.theme;
         let mut top_changed = false;
         let mut frame_changed = false;
         let mut lang_changed = false;
+        let mut theme_changed = false;
         let mut keymap_changed = false;
         egui::Window::new(t(self.lang, T::SettingsTitle))
             .open(&mut open)
@@ -4877,6 +4887,23 @@ impl PReferZApp {
                             {
                                 lang = option;
                                 lang_changed = true;
+                            }
+                        }
+                    });
+                ui.separator();
+
+                // 主题切换（Phase G）：Light / Dark / Auto（跟随系统）。
+                ui.label(t(self.lang, T::SettingsTheme));
+                egui::ComboBox::from_label("")
+                    .selected_text(theme.display_name())
+                    .show_ui(ui, |ui| {
+                        for option in [ThemeMode::Dark, ThemeMode::Light, ThemeMode::Auto] {
+                            if ui
+                                .selectable_label(theme == option, option.display_name())
+                                .clicked()
+                            {
+                                theme = option;
+                                theme_changed = true;
                             }
                         }
                     });
@@ -4969,6 +4996,12 @@ impl PReferZApp {
             self.persist_config();
         }
         if keymap_changed {
+            self.persist_config();
+        }
+        if theme_changed {
+            self.theme = theme;
+            // 切换主题时把新建元素默认色翻到该主题（D2）；用户仍可手动改色。
+            self.default_stroke.color = theme.default_stroke_color(ctx);
             self.persist_config();
         }
     }
@@ -5338,7 +5371,7 @@ fn config_path() -> Option<PathBuf> {
     Some(home.join(".preferz").join("config.json"))
 }
 
-/// 用户配置（当前仅含语言；后续可扩展窗口形态、透明度等）。
+/// 用户配置（语言 + 快捷键 + 主题；均带 `#[serde(default)]` 以便老配置兼容）。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
 struct UserConfig {
     #[serde(default)]
@@ -5347,6 +5380,9 @@ struct UserConfig {
     /// 因此新增 Action 变体不会让老配置文件解析失败。
     #[serde(default)]
     keymap: KeymapMap,
+    /// 主题模式（Light/Dark/Auto），缺省回退 `Dark`。
+    #[serde(default)]
+    theme: ThemeMode,
 }
 
 /// 从 `~/.preferz/config.json` 加载配置。文件不存在或解析失败时返回默认值。

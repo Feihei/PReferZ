@@ -2,6 +2,7 @@ pub mod i18n;
 pub mod interaction;
 pub mod keymap;
 pub mod preferz_app;
+pub mod theme;
 pub mod ui;
 pub mod viewport;
 

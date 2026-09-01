@@ -34,7 +34,8 @@ fn main() -> eframe::Result<()> {
         native_options,
         Box::new(move |cc| {
             cc.egui_ctx.set_fonts(font_definitions.clone());
-            // 仅暗色主题（用户要求去掉亮色选项）
+            // 初始 Visuals 占位；真正的主题（Light/Dark/Auto）在 PReferZApp::update()
+            // 每帧根据 config.json 的 theme 字段重建，故这里只需给个暗色默认值避免首帧闪烁。
             cc.egui_ctx.set_visuals(egui::Visuals::dark());
             Ok(Box::new(PReferZApp::new()))
         }),
