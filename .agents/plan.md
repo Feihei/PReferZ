@@ -52,7 +52,7 @@
 三个方向，实施顺序 **G → I → H**（侧栏属性项依赖 I 定型的字段集合，先做 H 会返工；G 完全独立可先行）：
 
 - [x] **Phase G — 明暗两套样式主题**（小，独立）：`ThemeMode` 持久化 + palette 模块集中管理主题化颜色；UI chrome（egui Visuals）+ 画布语义（底色与新建元素默认色随主题翻转）。D6 键鼠改绑设置入口已移除（架构保留），见 CHANGELOG §Phase G
-- [x] **Phase I — 图形元素类型统一**（大，动数据模型）：`CurveType { Straight, Curved }`（Catmull-Rom 推广出开曲线版本）；不规则多边形 = 闭合 Polyline（`closed: bool`，不新增类型）；`ArrowHeadStyle` 扩展（Arrow/Dot）；矩形族 roundness；`.prz` 仅 `#[serde(default)]` 迁移（`USER_VERSION` 不变）。**已拍板待实施**（2026-09-01），设计文档 [specs/phase-i-shape-unification.md](specs/phase-i-shape-unification.md)。
+- [x] **Phase I — 图形元素类型统一**（大，动数据模型）：`CurveType { Straight, Curved }`（Catmull-Rom 推广出开曲线版本）；不规则多边形 = 闭合 Polyline（`closed: bool`，不新增类型）；`ArrowHeadStyle` 扩展（Arrow/Dot）；矩形族 roundness；`.prz` 仅 `#[serde(default)]` 迁移（`USER_VERSION` 不变）。**已拍板**（2026-09-01），设计文档 [specs/phase-i-shape-unification.md](specs/phase-i-shape-unification.md)。**子阶段 A（数据模型）已交付**（`ddc6209`），B/C/D 待实施。
 
   **Phase I 决策点（2026-09-01 拍板）**
 
