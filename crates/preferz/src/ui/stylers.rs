@@ -1,5 +1,7 @@
 use eframe::egui::{self, Color32, Pos2, Shape};
-use preferz_core::item::{ItemKind, ItemLocalSpace};
+use preferz_core::item::{
+    catmull_rom_polyline, ItemKind, ItemLocalSpace, CURVE_SAMPLES, ROUNDED_CORNER_SEGMENTS,
+};
 use preferz_core::shape::{
     ArrowHeadStyle, CurveType, DashStyle, SeededRng, ShapeType, StrokeStyle,
 };
@@ -57,14 +59,56 @@ fn rotate_vec2(v: egui::Vec2, angle: f32) -> egui::Vec2 {
     egui::vec2(v.x * c - v.y * s, v.x * s + v.y * c)
 }
 
+/// 矩形族的圆角半径（局部坐标）：`min(w, h) * roundness`，且不超过短边的一半。
+///
+/// 超过一半会让两头的圆弧互相吃掉，退化成畸形轮廓，故显式夹紧。
+fn roundness_radius(base_size: (f32, f32), roundness: f32) -> f32 {
+    let (w, h) = base_size;
+    let short = w.min(h);
+    (short * roundness).clamp(0.0, short / 2.0)
+}
+
+/// 圆角矩形的轮廓点（顺时针，未闭合——闭合由调用方按 `is_closed` 处理）。
+///
+/// 每个圆角按 [`ROUNDED_CORNER_SEGMENTS`] 段圆弧采样，故整条轮廓是凸多边形：
+/// CleanStyler 可直接填充，RoughStyler 逐边抖动也会得到"手画的圆角矩形"。
+fn rounded_rect_points(w: f32, h: f32, r: f32) -> Vec<(f32, f32)> {
+    if r <= 1e-3 {
+        return vec![(0.0, 0.0), (w, 0.0), (w, h), (0.0, h)];
+    }
+    // 角心顺序 TL → TR → BR → BL；每段弧跨 90°（屏幕坐标 y 向下，故顺时针推进）
+    let centers = [(r, r), (w - r, r), (w - r, h - r), (r, h - r)];
+    let mut out = Vec::with_capacity(centers.len() * (ROUNDED_CORNER_SEGMENTS + 1));
+    for (i, (cx, cy)) in centers.iter().enumerate() {
+        let start = std::f32::consts::PI + i as f32 * std::f32::consts::FRAC_PI_2;
+        for s in 0..=ROUNDED_CORNER_SEGMENTS {
+            let a =
+                start + (s as f32 / ROUNDED_CORNER_SEGMENTS as f32) * std::f32::consts::FRAC_PI_2;
+            out.push((cx + r * a.cos(), cy + r * a.sin()));
+        }
+    }
+    out
+}
+
 /// 生成轮廓点的局部坐标。矩形族按 `base_size` 推导，Polyline 直接用 `points`。
 ///
 /// `ellipse_segments` 控制椭圆的采样点数：`CleanStyler` 用 64 段（边缘平滑），
 /// `RoughStyler` 用 24 段——后者还会把采样点插值成光滑曲线，无需靠堆段数换圆度。
+///
+/// 两处会改写点列（Phase I）：
+/// - 矩形 `roundness > 0` → 四角换成圆弧采样点；
+/// - Polyline + `Curved` → 经 `catmull_rom_polyline` 插值（与命中测试同源）。
 fn outline_points(shape: &ShapeData, ellipse_segments: usize) -> Vec<(f32, f32)> {
     let (w, h) = shape.base_size;
     match shape.shape_type {
-        ShapeType::Rectangle => vec![(0.0, 0.0), (w, 0.0), (w, h), (0.0, h)],
+        ShapeType::Rectangle => {
+            let r = roundness_radius((w, h), shape.roundness);
+            if r > 1e-3 {
+                rounded_rect_points(w, h, r)
+            } else {
+                vec![(0.0, 0.0), (w, 0.0), (w, h), (0.0, h)]
+            }
+        }
         ShapeType::Diamond => vec![(w / 2.0, 0.0), (w, h / 2.0), (w / 2.0, h), (0.0, h / 2.0)],
         ShapeType::Ellipse => {
             let (cx, cy, rx, ry) = (w / 2.0, h / 2.0, w / 2.0, h / 2.0);
@@ -75,7 +119,15 @@ fn outline_points(shape: &ShapeData, ellipse_segments: usize) -> Vec<(f32, f32)>
                 })
                 .collect()
         }
-        ShapeType::Polyline => shape.points.clone(),
+        ShapeType::Polyline => {
+            // Phase I：`Curved` 经 Catmull-Rom 插值成折线（与命中测试同源，
+            // 故"看着在曲线上"的点一定点得中）。两点曲线无中间控制点，插值无意义。
+            if matches!(shape.curve_type, CurveType::Curved) {
+                catmull_rom_polyline(&shape.points, shape.closed, CURVE_SAMPLES)
+            } else {
+                shape.points.clone()
+            }
+        }
     }
 }
 
@@ -91,7 +143,11 @@ fn is_closed(shape: &ShapeData) -> bool {
     !matches!(shape.shape_type, ShapeType::Polyline) || shape.closed
 }
 
-/// 追加起/终点箭头（V 形两翼）。箭头头长 = 线宽 × 4，张角 ≈ ±50°。
+/// 追加起/终点箭头（Arrow = V 形两翼，Dot = 实心圆点）。
+///
+/// 尺寸基准：Arrow 的头长 = 线宽 × 4；Dot 的半径 = 线宽 × 1.5（直径 3 倍线宽，
+/// 与 Arrow 的视觉分量相当），圆心沿线段方向内缩一个半径，使圆点**相切于端点**
+/// 而不是盖住它（Excalidraw 同款观感）。
 ///
 /// 两个风格器共用：手绘风下**箭头不抖动** —— 抖动的箭头会认不出指向，
 /// 且 Excalidraw 同样只在笔画上抖、箭头保持规整。
@@ -109,37 +165,64 @@ fn push_arrow_heads(
     let half = std::f32::consts::FRAC_PI_2 * (5.0 / 9.0); // ≈50°
 
     // 起点箭头：尖端指向起点，两翼伸向线段体内（V 开口朝前）。
-    if let Some(ArrowHeadStyle::Arrow) = start_arrow {
-        let dir = pts[1] - pts[0];
-        let len = dir.length();
-        if len > 1e-3 {
-            let dir = dir / len;
-            let head_len = line_width * 4.0;
-            let a1 = rotate_vec2(dir, half);
-            let a2 = rotate_vec2(dir, -half);
-            out.push(Shape::line(
-                vec![pts[0], pts[0] + a1 * head_len],
-                egui_stroke,
-            ));
-            out.push(Shape::line(
-                vec![pts[0], pts[0] + a2 * head_len],
-                egui_stroke,
-            ));
+    match start_arrow {
+        Some(ArrowHeadStyle::Arrow) => {
+            let dir = pts[1] - pts[0];
+            let len = dir.length();
+            if len > 1e-3 {
+                let dir = dir / len;
+                let head_len = line_width * 4.0;
+                let a1 = rotate_vec2(dir, half);
+                let a2 = rotate_vec2(dir, -half);
+                out.push(Shape::line(
+                    vec![pts[0], pts[0] + a1 * head_len],
+                    egui_stroke,
+                ));
+                out.push(Shape::line(
+                    vec![pts[0], pts[0] + a2 * head_len],
+                    egui_stroke,
+                ));
+            }
         }
+        Some(ArrowHeadStyle::Dot) => {
+            let dir = pts[1] - pts[0];
+            let len = dir.length();
+            if len > 1e-3 {
+                let dir = dir / len;
+                let radius = (line_width * 1.5).max(1.0);
+                out.push(Shape::circle_filled(
+                    pts[0] + dir * radius,
+                    radius,
+                    egui_stroke.color,
+                ));
+            }
+        }
+        None => {}
     }
 
     // 终点箭头：尖端指向终点，两翼伸向线段体内（V 开口朝后，箭头朝前）。
-    if let Some(ArrowHeadStyle::Arrow) = end_arrow {
-        let last = pts[pts.len() - 1];
-        let dir = last - pts[pts.len() - 2];
-        let len = dir.length();
-        if len > 1e-3 {
-            let dir = dir / len;
-            let head_len = line_width * 4.0;
-            let a1 = rotate_vec2(dir, half);
-            let a2 = rotate_vec2(dir, -half);
-            out.push(Shape::line(vec![last, last - a1 * head_len], egui_stroke));
-            out.push(Shape::line(vec![last, last - a2 * head_len], egui_stroke));
+    let last = pts[pts.len() - 1];
+    let dir = last - pts[pts.len() - 2];
+    let len = dir.length();
+    if len > 1e-3 {
+        let dir = dir / len;
+        match end_arrow {
+            Some(ArrowHeadStyle::Arrow) => {
+                let head_len = line_width * 4.0;
+                let a1 = rotate_vec2(dir, half);
+                let a2 = rotate_vec2(dir, -half);
+                out.push(Shape::line(vec![last, last - a1 * head_len], egui_stroke));
+                out.push(Shape::line(vec![last, last - a2 * head_len], egui_stroke));
+            }
+            Some(ArrowHeadStyle::Dot) => {
+                let radius = (line_width * 1.5).max(1.0);
+                out.push(Shape::circle_filled(
+                    last - dir * radius,
+                    radius,
+                    egui_stroke.color,
+                ));
+            }
+            None => {}
         }
     }
 }
@@ -249,10 +332,17 @@ impl RoughStyler {
 
     /// 该轮廓是否为**曲线类**：抖动后需连成光滑曲线，而非逐边画抖动的直线段。
     ///
-    /// 椭圆由采样点近似，直接连段会露出多边形折角（手绘风下尤其刺眼），
-    /// 故走 [`RoughStyler::closed_catmull_rom`]；矩形/菱形/折线本来就是直边，保持逐边抖动。
+    /// 两类属于曲线：
+    /// - 椭圆：由采样点近似，直接连段会露出多边形折角（手绘风下尤其刺眼）；
+    /// - `Curved` 的 Polyline：Catmull-Rom 采样后本身就是曲线控制点。
+    ///
+    /// 矩形 / 菱形 / `Straight` 折线本来就是直边，保持逐边抖动。
     fn is_smooth(shape: &ShapeData) -> bool {
-        matches!(shape.shape_type, ShapeType::Ellipse)
+        match shape.shape_type {
+            ShapeType::Ellipse => true,
+            ShapeType::Polyline => matches!(shape.curve_type, CurveType::Curved),
+            ShapeType::Rectangle | ShapeType::Diamond => false,
+        }
     }
 
     /// 整圈抖动：给每个采样点加独立偏移，得到"手抖画歪"的轮廓点环。
@@ -286,16 +376,49 @@ impl RoughStyler {
             .collect()
     }
 
+    /// 同 [`RoughStyler::closed_catmull_rom`]，但用于**开曲线**：两端用重复点外推
+    /// （`p0 = p1`、`p3 = p2`），故首末点不被邻居拉偏。
+    fn open_catmull_rom(pts: &[Pos2]) -> Vec<[Pos2; 4]> {
+        let n = pts.len();
+        if n < 2 {
+            return Vec::new();
+        }
+        (0..n - 1)
+            .map(|i| {
+                let p0 = pts[i.saturating_sub(1)];
+                let p1 = pts[i];
+                let p2 = pts[i + 1];
+                let p3 = pts[(i + 2).min(n - 1)];
+                [p1, p1 + (p2 - p0) / 6.0, p2 - (p3 - p1) / 6.0, p2]
+            })
+            .collect()
+    }
+
+    /// 抖动贝塞尔序列：闭合轮廓用环绕式，开放曲线用端点外推式。
+    fn catmull_rom_beziers(pts: &[Pos2], closed: bool) -> Vec<[Pos2; 4]> {
+        if closed {
+            Self::closed_catmull_rom(pts)
+        } else {
+            Self::open_catmull_rom(pts)
+        }
+    }
+
     /// 闭合点环的抖动幅度（屏幕像素）：取相邻点平均间距换算回画布像素后乘
     /// [`RoughStyler::OFFSET_RATIO`]，再受 `MAX_OFFSET_CANVAS` 约束——
     /// 与 [`RoughStyler::sketch_edge`] 同一尺度，保证直线与曲线抖动观感一致。
-    fn curve_jitter_amp(pts: &[Pos2], zoom: f32) -> f32 {
+    ///
+    /// 开放曲线的周长不含"末点 → 首点"那一段（它并不存在），否则平均间距被
+    /// 虚增，抖动幅度会偏大。
+    fn curve_jitter_amp(pts: &[Pos2], zoom: f32, closed: bool) -> f32 {
         let n = pts.len();
         if n < 2 {
             return 0.0;
         }
         let zoom = zoom.max(1e-3);
-        let perimeter: f32 = (0..n).map(|i| (pts[i] - pts[(i + 1) % n]).length()).sum();
+        let seg_count = if closed { n } else { n - 1 };
+        let perimeter: f32 = (0..seg_count)
+            .map(|i| (pts[i] - pts[(i + 1) % n]).length())
+            .sum();
         let avg_canvas = perimeter / n as f32 / zoom;
         (avg_canvas * Self::OFFSET_RATIO).min(Self::MAX_OFFSET_CANVAS) * zoom * 0.5
     }
@@ -421,12 +544,12 @@ impl ShapeStyler for RoughStyler {
         let mut rng = SeededRng::new(shape.seed);
 
         if Self::is_smooth(shape) {
-            // 曲线类轮廓（椭圆）：整圈抖动后连成光滑闭合曲线。
-            // 若沿用逐边直线抖动，24（原 16）段的多边形折角会非常明显。
-            let amp = Self::curve_jitter_amp(&pts, zoom);
+            // 曲线类轮廓（椭圆、Curved 折线）：整圈抖动后连成光滑曲线。
+            // 若沿用逐边直线抖动，采样段之间的折角会非常明显。
+            let amp = Self::curve_jitter_amp(&pts, zoom, closed);
             for _ in 0..Self::PASSES {
                 let jittered = Self::jitter_points(&mut rng, &pts, amp);
-                for bez in Self::closed_catmull_rom(&jittered) {
+                for bez in Self::catmull_rom_beziers(&jittered, closed) {
                     Self::push_edge(&mut out, bez, stroke, line_width, stroke_color, zoom);
                 }
             }
@@ -754,6 +877,180 @@ mod tests {
         let shapes =
             CleanStyler.build_shapes(&rect(0), &StrokeStyle::default(), None, &identity(), 1.0);
         assert_eq!(shapes.len(), 1);
+    }
+
+    // ── Phase I-B：曲线 / 圆角 / Dot 箭头 ──
+
+    /// 三点开放折线，`Curved` + 未闭合。
+    fn curved_open_line() -> ShapeData {
+        ShapeData {
+            shape_type: ShapeType::Polyline,
+            base_size: (100.0, 40.0),
+            points: vec![(0.0, 40.0), (50.0, 0.0), (100.0, 40.0)],
+            start_arrow: None,
+            end_arrow: None,
+            closed: false,
+            curve_type: CurveType::Curved,
+            roundness: 0.0,
+            seed: 42,
+        }
+    }
+
+    #[test]
+    fn roundness_radius_is_clamped_to_half_of_short_side() {
+        // 比例语义：radius = min(w, h) * roundness
+        assert_eq!(roundness_radius((100.0, 40.0), 0.0), 0.0);
+        assert!((roundness_radius((100.0, 40.0), 0.5) - 20.0).abs() < 1e-5);
+        // 超过 0.5 会两头相吃，必须夹到短边一半
+        assert!((roundness_radius((100.0, 40.0), 1.0) - 20.0).abs() < 1e-5);
+        assert!((roundness_radius((100.0, 40.0), 0.25) - 10.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn rounded_rect_outline_is_convex_and_stays_inside_bounds() {
+        // 100×40 矩形、圆角比例 0.5 → 半径 20。轮廓必须全部落在 [0,w]×[0,h] 内，
+        // 且四角被"削掉"（(0,0) / (w,0) / (w,h) / (0,h) 不再出现在轮廓上）。
+        let pts = rounded_rect_points(100.0, 40.0, 20.0);
+        assert!(pts.len() > 4, "圆角轮廓必须比直角矩形点更多");
+        for (x, y) in &pts {
+            assert!((-1e-3..=100.0 + 1e-3).contains(x), "x 越界: {x}");
+            assert!((-1e-3..=40.0 + 1e-3).contains(y), "y 越界: {y}");
+        }
+        let corners = [(0.0, 0.0), (100.0, 0.0), (100.0, 40.0), (0.0, 40.0)];
+        for c in corners {
+            assert!(
+                !pts.iter()
+                    .any(|p| (p.0 - c.0).abs() < 1e-3 && (p.1 - c.1).abs() < 1e-3),
+                "圆角矩形不应还包含直角点 {c:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rounded_rect_zero_radius_falls_back_to_plain_rect() {
+        assert_eq!(
+            rounded_rect_points(100.0, 40.0, 0.0),
+            vec![(0.0, 0.0), (100.0, 0.0), (100.0, 40.0), (0.0, 40.0)]
+        );
+    }
+
+    #[test]
+    fn clean_styler_rect_roundness_changes_outline_point_count() {
+        let mut plain = rect(0);
+        let plain_shapes =
+            CleanStyler.build_shapes(&plain, &StrokeStyle::default(), None, &identity(), 1.0);
+        plain.roundness = 0.5;
+        let round_shapes =
+            CleanStyler.build_shapes(&plain, &StrokeStyle::default(), None, &identity(), 1.0);
+        assert_eq!(plain_shapes.len(), 1);
+        assert_eq!(round_shapes.len(), 1);
+        let count = |s: &Shape| match s {
+            Shape::Path(p) => p.points.len(),
+            other => panic!("expected Path, got {other:?}"),
+        };
+        assert_eq!(count(&plain_shapes[0]), 4);
+        assert!(count(&round_shapes[0]) > 4, "圆角应产生更多轮廓点");
+    }
+
+    #[test]
+    fn curved_polyline_is_sampled_into_more_points() {
+        // Curved 折线在采样后点远多于控制点；Straight 原样返回
+        let curved = curved_open_line();
+        let mut straight = curved_open_line();
+        straight.curve_type = CurveType::Straight;
+
+        let curved_pts = outline_points(&curved, 64);
+        let straight_pts = outline_points(&straight, 64);
+        assert_eq!(straight_pts.len(), 3, "Straight 直接用控制点");
+        assert_eq!(curved_pts.len(), 2 * CURVE_SAMPLES + 1);
+
+        // 端点必须落在原控制点上（Catmull-Rom 端点不外推）
+        assert!((curved_pts[0].0 - 0.0).abs() < 1e-3 && (curved_pts[0].1 - 40.0).abs() < 1e-3);
+        let last = curved_pts.last().unwrap();
+        assert!((last.0 - 100.0).abs() < 1e-3 && (last.1 - 40.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn curved_polyline_bulges_away_from_the_straight_chord() {
+        // 中点 (50,40) 在 Straight 下贴着弦；Curved 应把它推向控制点 (50,0)
+        let curved = curved_open_line();
+        let pts = outline_points(&curved, 64);
+        let mid = pts[pts.len() / 2];
+        assert!(mid.1 < 20.0, "曲线中段应明显偏离弦，实际 y={}", mid.1);
+    }
+
+    #[test]
+    fn dot_arrow_head_emits_a_filled_circle_at_each_end() {
+        let mut d = open_line();
+        d.start_arrow = Some(ArrowHeadStyle::Dot);
+        d.end_arrow = Some(ArrowHeadStyle::Dot);
+        let shapes = CleanStyler.build_shapes(&d, &StrokeStyle::default(), None, &identity(), 1.0);
+        // 1 条线 + 2 个圆点
+        assert_eq!(shapes.len(), 3);
+        let circles: Vec<_> = shapes
+            .iter()
+            .filter(|s| matches!(s, Shape::Circle(_)))
+            .collect();
+        assert_eq!(circles.len(), 2, "两端各一个圆点");
+    }
+
+    #[test]
+    fn dot_arrow_circle_sits_inside_the_segment() {
+        // 圆心沿线段内缩一个半径，故圆点相切于端点而不是盖住它：
+        // 起点 (0,0) → 终点 (100,0)，半径 = 线宽 2 × 1.5 = 3
+        let mut d = open_line();
+        d.start_arrow = Some(ArrowHeadStyle::Dot);
+        d.end_arrow = Some(ArrowHeadStyle::Dot);
+        let shapes = CleanStyler.build_shapes(&d, &StrokeStyle::default(), None, &identity(), 1.0);
+        let centers: Vec<Pos2> = shapes
+            .iter()
+            .filter_map(|s| match s {
+                Shape::Circle(c) => Some(c.center),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(centers.len(), 2);
+        assert!(
+            (centers[0].x - 3.0).abs() < 1e-3,
+            "起点圆心内缩: {:?}",
+            centers[0]
+        );
+        assert!(
+            (centers[1].x - 97.0).abs() < 1e-3,
+            "终点圆心内缩: {:?}",
+            centers[1]
+        );
+    }
+
+    #[test]
+    fn rough_styler_curved_polyline_is_smooth_and_deterministic() {
+        let stroke = StrokeStyle::default();
+        let d = curved_open_line();
+        let a = RoughStyler.build_shapes(&d, &stroke, None, &identity(), 1.0);
+        let b = RoughStyler.build_shapes(&d, &stroke, None, &identity(), 1.0);
+        assert_eq!(debug(&a), debug(&b), "同 seed 必须得到同一抖动");
+        // 开放曲线：段数 = (采样点数 - 1) × passes
+        let sampled = outline_points(&d, 24).len();
+        assert_eq!(a.len(), (sampled - 1) * RoughStyler::PASSES);
+        assert!(a.iter().all(|s| matches!(s, Shape::CubicBezier(_))));
+        for bez in beziers(&a) {
+            for p in bez {
+                assert!(p.x.is_finite() && p.y.is_finite(), "NaN/Inf 坐标: {p:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn rough_styler_curved_polyline_endpoints_stay_put() {
+        // 开放 Catmull-Rom 的端点用重复点外推，首末点不得被邻居拉偏
+        let d = curved_open_line();
+        let shapes = RoughStyler.build_shapes(&d, &StrokeStyle::default(), None, &identity(), 1.0);
+        let bez = beziers(&shapes);
+        let first = bez[0][0];
+        let last = bez[bez.len() - 1][3];
+        // 抖动幅度上限 8 画布像素（zoom = 1），端点只在该范围内漂移
+        assert!((first.x - 0.0).abs() < 8.0 && (first.y - 40.0).abs() < 8.0);
+        assert!((last.x - 100.0).abs() < 8.0 && (last.y - 40.0).abs() < 8.0);
     }
 
     #[test]

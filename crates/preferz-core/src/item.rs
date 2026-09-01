@@ -800,7 +800,7 @@ impl Item {
 }
 
 /// 曲线（Curved）每段的采样点数；16 足够平滑且廉价。
-const CURVE_SAMPLES: usize = 16;
+pub const CURVE_SAMPLES: usize = 16;
 
 /// 单段 Catmull-Rom 插值点（标准 α=0.5 的 centripetal 近似）。
 fn catmull_rom_point(
@@ -825,8 +825,14 @@ fn catmull_rom_point(
     (x, y)
 }
 
+/// 圆角矩形的每个角的采样段数。8 段在常见缩放下已看不出折角。
+pub const ROUNDED_CORNER_SEGMENTS: usize = 8;
+
 /// 把控制点采样成折线。开曲线端点用 clamp（首/末点复制）；闭曲线用环绕索引。
-fn catmull_rom_polyline(pts: &[(f32, f32)], closed: bool, samples: usize) -> Vec<(f32, f32)> {
+///
+/// 命中测试（[`Item::contains_canvas_point`]）与渲染（`binary` 层 `ui::stylers`）
+/// 共用此函数——两者必须采出同一条曲线，否则"看起来点在曲线上"却点不中。
+pub fn catmull_rom_polyline(pts: &[(f32, f32)], closed: bool, samples: usize) -> Vec<(f32, f32)> {
     let n = pts.len();
     if n < 2 || (!closed && n == 2) {
         return pts.to_vec();
