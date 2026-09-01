@@ -4824,7 +4824,11 @@ impl PReferZApp {
 
                 // 语言切换
                 ui.label(t(self.lang, T::SettingsLanguage));
-                egui::ComboBox::from_label("")
+                // egui 0.29.1 把 from_id_source 重命名为 id_salt，但 id_salt 仅经
+                // WidgetWithId trait 暴露且对 ComboBox 为私有字段，故用
+                // from_id_source 并局部抑制重命名告警；效果等价、跨小版本稳定。
+                #[allow(deprecated)]
+                egui::ComboBox::from_id_source("settings_language")
                     .selected_text(lang.display_name())
                     .show_ui(ui, |ui| {
                         for option in [Lang::En, Lang::Zh] {
@@ -4841,7 +4845,9 @@ impl PReferZApp {
 
                 // 主题切换（Phase G）：Light / Dark / Auto（跟随系统）。
                 ui.label(t(self.lang, T::SettingsTheme));
-                egui::ComboBox::from_label("")
+                // 同上：from_id_source 在 egui 0.29.1 已重命名，局部抑制告警。
+                #[allow(deprecated)]
+                egui::ComboBox::from_id_source("settings_theme")
                     .selected_text(theme.display_name())
                     .show_ui(ui, |ui| {
                         for option in [ThemeMode::Dark, ThemeMode::Light, ThemeMode::Auto] {
