@@ -73,6 +73,33 @@ impl ThemeMode {
         }
     }
 
+    /// 主文字色（标题 / 强调），随主题反色保证对比度。
+    pub fn text_primary(self, ctx: &Context) -> Color32 {
+        if self.is_dark(ctx) {
+            Color32::from_rgb(228, 228, 236)
+        } else {
+            Color32::from_rgb(28, 28, 36)
+        }
+    }
+
+    /// 次级文字（副标题 / 区块标题）。
+    pub fn text_secondary(self, ctx: &Context) -> Color32 {
+        if self.is_dark(ctx) {
+            Color32::from_rgb(150, 150, 160)
+        } else {
+            Color32::from_rgb(96, 96, 108)
+        }
+    }
+
+    /// 三级文字（提示 / 弱信息）。
+    pub fn text_tertiary(self, ctx: &Context) -> Color32 {
+        if self.is_dark(ctx) {
+            Color32::from_rgb(140, 140, 150)
+        } else {
+            Color32::from_rgb(120, 120, 130)
+        }
+    }
+
     /// 设置面板显示名。
     pub fn display_name(self) -> &'static str {
         match self {

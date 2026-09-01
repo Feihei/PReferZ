@@ -3285,7 +3285,7 @@ impl PReferZApp {
             egui::Align2::CENTER_CENTER,
             t(self.lang, T::WelcomeTitle),
             egui::FontId::proportional(42.0),
-            egui::Color32::from_rgb(220, 220, 230),
+            self.theme.text_primary(&ctx),
         );
         y += 50.0;
         ui.painter().text(
@@ -3293,7 +3293,7 @@ impl PReferZApp {
             egui::Align2::CENTER_CENTER,
             t(self.lang, T::WelcomeSubtitle),
             egui::FontId::proportional(15.0),
-            egui::Color32::from_rgb(150, 150, 160),
+            self.theme.text_secondary(&ctx),
         );
         y += 36.0;
 
@@ -3304,7 +3304,7 @@ impl PReferZApp {
                 egui::Align2::CENTER_CENTER,
                 t(self.lang, T::WelcomeRecentFiles),
                 egui::FontId::proportional(14.0),
-                egui::Color32::from_rgb(180, 180, 190),
+                self.theme.text_secondary(&ctx),
             );
             y += 22.0;
 
@@ -3331,7 +3331,7 @@ impl PReferZApp {
                 egui::Align2::CENTER_CENTER,
                 t(self.lang, T::WelcomeHint),
                 egui::FontId::proportional(14.0),
-                egui::Color32::from_rgb(140, 140, 150),
+                self.theme.text_tertiary(&ctx),
             );
         }
     }
