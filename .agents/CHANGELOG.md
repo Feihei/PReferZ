@@ -69,3 +69,20 @@
 - `74a5869` `fix(ui)`: 裁剪遮罩改单凸多边形压暗整图 + 亮区重绘，根除旋转图闪黑
   （遮罩改由「图片边→裁剪边」4 梯形拼合为「单凸多边形压暗 + 裁剪框内亮图重绘」，
   旋转下对角线不再逐帧重排抗锯齿；UV 以 `current_crop` 为基准避免已裁剪图二次偏移）
+
+## Phase G：明暗两套样式主题（2026-09-01，`8c0bac4`）
+
+> 决策点 D1/D2 拍板（见 plan.md）：主题三态预留 `Auto`（第一版仅手动切换）；画布底色与
+> 新建元素默认色随主题翻转。D6 拍板：移除键鼠改绑设置入口，派发架构保留。
+
+- 新增 `theme` 模块：`ThemeMode { Dark, Light, Auto }`（serde `lowercase`，缺省 `Dark`）；
+  `Auto` 运行时经 `ctx.system_theme()` 解析为具体模式，系统不可用回退 `Dark`
+- palette 语义色集中在 `theme` 模块：画布底色 `canvas_bg()`、新建元素默认描边色
+  `default_stroke_color()`，均随主题翻转；启动时用 `default_stroke_color_static()`（Auto 按 Dark）
+- `build_visuals(mode, bg_alpha, ctx)`：按主题构造 egui `Visuals`，并把 `bg_alpha` 重新施加到
+  panel/window/faint 填充，透明窗口效果在明暗两套主题下都生效（每帧在 `update()` 重建）
+- `UserConfig` 增 `theme` 字段（带 `#[serde(default)]`），持久化进 `~/.preferz/config.json`；
+  设置面板新增「主题」下拉（Dark/Light/Auto）
+- **D6**：移除设置面板里键鼠改绑入口（含 `poll_rebind_capture` 捕获逻辑与 `rebinding`/
+  `rebind_notice` 字段），`Action`/`Keymap` 查表派发层完整保留——后续 `default_map()` 出厂默认
+  对齐 Excalidraw（Phase K 剩余项）即可，无需用户自定义入口

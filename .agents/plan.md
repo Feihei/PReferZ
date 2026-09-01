@@ -29,6 +29,7 @@
 | Phase F | ✅ | 手绘风描边 RoughStyler（rough.js 同款，确定性种子） | [CHANGELOG.md](CHANGELOG.md) §Phase F |
 | Phase 6 收尾 | ✅ | 键鼠映射可配置（keymap + 派发层 + 设置面板）。2026-09-01 拍板：不再投入自定义，默认键位改对齐 Excalidraw（[ADR-0007](adr/0007-keymap-no-customization.md)） | [CHANGELOG.md](CHANGELOG.md) §Phase 6 |
 | 体验修复批次 | ✅ | 文字无背景 / 手绘椭圆光滑曲线 / Enter 编辑文字 / 绑定文本不可独立选中 | [CHANGELOG.md](CHANGELOG.md) §修复批次 |
+| Phase G | ✅ | 明暗两套样式主题（Light/Dark/Auto）+ D6 移除键鼠改绑设置入口（架构保留） | [CHANGELOG.md](CHANGELOG.md) §Phase G |
 
 ---
 
@@ -38,35 +39,35 @@
 
 **2026-09-01 全部通过**：旋转图片裁剪框跟随旋转 / Phase F 手绘风七项 / 文本三项反馈
 （`ed538cf`+`d6177b8`+`c05d1ae`）/ 绑定文本不可独立选中（`8eb996a`）/ 键鼠改绑 /
-配置持久化 / Slide 演示（E4）。
+配置持久化 / Slide 演示（E4）/ **裁剪遮罩闪黑已根除**（`74a5869`，旋转图拖动裁剪框不再闪）。
 
-新增待验收：
-
-- [ ] **裁剪遮罩闪烁黑影**：`bace60d` 仅跳过零宽梯形未根治（旋转图仍闪）；`74a5869` 改为单凸多边形压暗整图 + 亮区重绘，请复验旋转图进入裁剪、拖动裁剪框时不再闪黑
+新增待验收：（暂无）
 
 ---
 
 ## 下一步：对齐 Excalidraw（G / I / H）
 
-**状态**：⏳ 规划定稿待拍板（2026-09-01）
+**状态**：✅ D1–D6 已拍板（2026-09-01）；**Phase G 已交付**（`8c0bac4`），I/H 待实施。
 
 三个方向，实施顺序 **G → I → H**（侧栏属性项依赖 I 定型的字段集合，先做 H 会返工；G 完全独立可先行）：
 
-- [ ] **Phase G — 明暗两套样式主题**（小，独立）：`ThemeMode` 持久化 + palette 模块集中管理主题化颜色；UI chrome（egui Visuals）+ 画布语义（底色与新建元素默认色随主题翻转）
+- [x] **Phase G — 明暗两套样式主题**（小，独立）：`ThemeMode` 持久化 + palette 模块集中管理主题化颜色；UI chrome（egui Visuals）+ 画布语义（底色与新建元素默认色随主题翻转）。D6 键鼠改绑设置入口已移除（架构保留），见 CHANGELOG §Phase G
 - [ ] **Phase I — 图形元素类型统一**（大，动数据模型）：`CurveType { Straight, Curved }`（Catmull-Rom 推广出开曲线版本）；不规则多边形 = 闭合 Polyline 不新增类型；`ArrowHeadStyle` 扩展（Arrow/Dot）；矩形族 roundness；`.prz` serde default 迁移
 - [ ] **Phase H — 选中弹出属性侧栏**（中）：右侧 SidePanel 按 ItemKind 分节（Shape/Text/Pixmap/Frame）；改动全走 undo 栈，滑块连续修改合并命令；Text 节消费已预留的 `background` 字段
-- [ ] **Phase K — 默认快捷键对齐 Excalidraw**（小，可与任一阶段并行）：以 Excalidraw 官方键位为基准调整 `default_map()` 出厂默认；依据见 [ADR-0007](adr/0007-keymap-no-customization.md)（不做用户自定义，keymap 派发架构保留）
+- [ ] **Phase K — 默认快捷键对齐 Excalidraw**（小，可与任一阶段并行）：以 Excalidraw 官方键位为基准调整 `default_map()` 出厂默认；依据见 [ADR-0007](adr/0007-keymap-no-customization.md)（不做用户自定义，keymap 派发架构保留）。**D6 设置入口移除已完成**，仅剩默认键位对齐待做
 
-### 决策点（待拍板）
+### 决策点（2026-09-01 已拍板）
 
-| # | 问题 | 选项 | 倾向 |
-|---|---|---|---|
-| D1 | 主题三态 | 仅 Light/Dark vs 增 `Auto`（跟随系统） | 字段预留 `Auto`，第一版只做手动切换 |
-| D2 | 画布底色 | 跟主题走 vs 独立可设 | 跟主题走 |
-| D3 | 多选属性面板 | 显示交集 vs 禁用面板 | 显示交集可批量改（Excalidraw 同款） |
-| D4 | elbow 折线 | 本轮做 vs 排后 | 排后 |
-| D5 | hachure 填充 | 本轮做 vs 排后 | 排后，纯色先统一数据模型 |
-| D6 | keymap 设置面板去留 | 保留（已交付可用）vs Phase K 顺手移除入口 | 移除入口，`Action`/`Keymap` 派发架构保留 |
+> 全部按「倾向」列拍板：D1 预留 `Auto` 先做手动切换 / D2 画布底色跟主题走 / D3 多选显示交集可批量改 / D4 elbow 排后 / D5 hachure 排后 / D6 移除键鼠改绑设置入口（架构保留）。
+
+| # | 问题 | 选项 | 倾向 | 结论 |
+|---|---|---|---|---|
+| D1 | 主题三态 | 仅 Light/Dark vs 增 `Auto`（跟随系统） | 字段预留 `Auto`，第一版只做手动切换 | ✅ 按倾向 |
+| D2 | 画布底色 | 跟主题走 vs 独立可设 | 跟主题走 | ✅ 按倾向 |
+| D3 | 多选属性面板 | 显示交集 vs 禁用面板 | 显示交集可批量改（Excalidraw 同款） | ✅ 按倾向 |
+| D4 | elbow 折线 | 本轮做 vs 排后 | 排后 | ✅ 排后 |
+| D5 | hachure 填充 | 本轮做 vs 排后 | 排后，纯色先统一数据模型 | ✅ 排后 |
+| D6 | keymap 设置面板去留 | 保留（已交付可用）vs Phase K 顺手移除入口 | 移除入口，`Action`/`Keymap` 派发架构保留 | ✅ 移除入口（已实施） |
 
 ---
 
