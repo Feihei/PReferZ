@@ -62,4 +62,4 @@
 - `68394fa` `chore`: 忽略 `.workbuddy/` 项目数据目录
 - `0696777` `refactor`: main.rs 复用 lib 导出，消除重复编译同一份模块树（编译单元减半）
 - `f341f74` `chore`: 跟踪 Cargo.lock（二进制 crate 需可复现构建）
-- `8862638` `docs`: 对齐 Excalidraw 三方向实施规划（现移至 [`plans/`](plans/)）
+- `8862638` `docs`: 对齐 Excalidraw 三方向实施规划（G/I/H 概要与决策点 D1-D5 现收录在 [`plan.md`](plan.md)）

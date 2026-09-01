@@ -408,12 +408,11 @@ preferz/
 ├── LICENSE                 # MIT
 ├── .gitignore
 ├── AGENTS.md               # agent 工作约定
-├── docs/
+├── .agents/
 │   ├── plan.md             # 前瞻路线图
 │   ├── CHANGELOG.md        # 交付归档
 │   ├── adr/                # 架构决策记录
-│   ├── specs/              # 设计规格（本文档所在）
-│   └── plans/              # 执行中的实施计划
+│   └── specs/              # 设计规格（本文档所在）
 ├── assets/
 │   └── simhei.ttf          # 中文字体
 ├── crates/

@@ -1,7 +1,7 @@
 # PReferZ Roadmap（plan.md）
 
 > 本文档是 PReferZ 的**前瞻路线图**：顶部是已交付阶段一览（索引），主体是待验收项与下一步计划。
-> 各阶段**完整交付清单**见 [`CHANGELOG.md`](CHANGELOG.md)；设计规格见 [`specs/`](specs/)，架构决策见 [`adr/`](adr/)，阶段实施计划见 [`plans/`](plans/)。
+> 各阶段**完整交付清单**见 [`CHANGELOG.md`](CHANGELOG.md)；设计规格见 [`specs/`](specs/)，架构决策见 [`adr/`](adr/)。
 >
 > 工作流惯例：**规划文档先提交，实现拆独立 commit**（Conventional Commits）；质量门槛
 > `cargo fmt --check` / `clippy -D warnings` / `cargo test --workspace` 全绿才算交付。
@@ -55,7 +55,7 @@
 
 ## 下一步：对齐 Excalidraw（G / I / H）
 
-**状态**：⏳ 规划定稿待拍板（2026-09-01，[详细计划](plans/2026-09-01-excalidraw-alignment.md)）
+**状态**：⏳ 规划定稿待拍板（2026-09-01）
 
 三个方向，实施顺序 **G → I → H**（侧栏属性项依赖 I 定型的字段集合，先做 H 会返工；G 完全独立可先行）：
 

@@ -6,7 +6,7 @@
 
 A minimalist reference image aggregator desktop app written in Rust. Infinite canvas, pan/zoom, image import, transform handles, undo/redo, sticky notes, and `.prz` project save/load.
 
-For design / architecture details (crate layout, data models, phases), see [`docs/specs/preferz-spec.md`](./docs/specs/preferz-spec.md). Roadmap & delivery archive: [`docs/plan.md`](./docs/plan.md) / [`docs/CHANGELOG.md`](./docs/CHANGELOG.md).
+For design / architecture details (crate layout, data models, phases), see [`.agents/specs/preferz-spec.md`](./.agents/specs/preferz-spec.md). Roadmap & delivery archive: [`.agents/plan.md`](./.agents/plan.md) / [`.agents/CHANGELOG.md`](./.agents/CHANGELOG.md).
 
 ---
 
@@ -76,7 +76,7 @@ MIT
 
 Picture Reference Z - 一个用 Rust 编写的极简参考图聚合桌面应用。无限画布，平移/缩放，图片导入，变换手柄，撤销/重做，文本便签，`.prz` 工程存档。
 
-设计与架构细节（Crate 划分、数据模型、阶段计划）见 [`docs/specs/preferz-spec.md`](./docs/specs/preferz-spec.md)；路线图与交付归档见 [`docs/plan.md`](./docs/plan.md) / [`docs/CHANGELOG.md`](./docs/CHANGELOG.md)。
+设计与架构细节（Crate 划分、数据模型、阶段计划）见 [`.agents/specs/preferz-spec.md`](./.agents/specs/preferz-spec.md)；路线图与交付归档见 [`.agents/plan.md`](./.agents/plan.md) / [`.agents/CHANGELOG.md`](./.agents/CHANGELOG.md)。
 
 ### 快速开始
 
