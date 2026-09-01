@@ -113,6 +113,16 @@ CARGO_NET_OFFLINE=true cargo release patch --no-confirm
 - `scripts/release.ps1` — 发布脚本
 - `.github/workflows/release.yml` — GitHub Actions 构建 + Release
 
-## Spec
+## Docs
 
-Full design spec with phases, data models, and API details: `.agents/preferz-spec.md`. Read it before implementing any feature beyond a bug fix.
+Documentation follows the llaia layout, all under `docs/`:
+
+| Entry | Content |
+|---|---|
+| `docs/plan.md` | Forward-looking roadmap: pending acceptance items + next phases (Excalidraw alignment G/I/H) + decision points. **Read first when picking up work.** |
+| `docs/CHANGELOG.md` | Delivery archive of completed phases. Completed plan docs are distilled here, then removed. |
+| `docs/specs/` | Design specs: `preferz-spec.md` (full design spec with phases, data models, API details), `shapes-and-frame-slides-design.md`, `linear-object-design.md` |
+| `docs/adr/` | Architecture decision records (NNNN-title, one decision each) |
+| `docs/plans/` | Per-phase implementation plans still being executed |
+
+Read `docs/specs/preferz-spec.md` before implementing any feature beyond a bug fix. Completed work goes to `docs/CHANGELOG.md`; in-progress planning lives in `docs/plans/` and is summarized in `docs/plan.md`.

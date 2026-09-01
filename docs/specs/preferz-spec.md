@@ -408,9 +408,12 @@ preferz/
 ├── LICENSE                 # MIT
 ├── .gitignore
 ├── AGENTS.md               # agent 工作约定
-├── REVIEW-2026-07-11.md    # 代码审查报告 + 修复清单
-├── .agents/
-│   └── preferz-spec.md     # 本文档
+├── docs/
+│   ├── plan.md             # 前瞻路线图
+│   ├── CHANGELOG.md        # 交付归档
+│   ├── adr/                # 架构决策记录
+│   ├── specs/              # 设计规格（本文档所在）
+│   └── plans/              # 执行中的实施计划
 ├── assets/
 │   └── simhei.ttf          # 中文字体
 ├── crates/

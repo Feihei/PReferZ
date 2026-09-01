@@ -1,6 +1,6 @@
 //! 键盘快捷键映射：可序列化、可重绑定、可持久化。
 //!
-//! 设计要点见 `.agents/keymap-config-plan.md`。三条容易踩的约束：
+//! 设计要点见 `docs/CHANGELOG.md` §Phase 6（原 keymap-config-plan 已归档）。三条容易踩的约束：
 //!
 //! 1. [`KeyBind::on_release`] —— egui-winit 0.29 会在 `pressed=true` 时拦截
 //!    `Ctrl+V`（`is_paste_command`），导致 `key_pressed(V)` 永不触发。粘贴必须

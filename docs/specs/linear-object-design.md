@@ -1,9 +1,9 @@
 # PReferZ 线性对象统一重构设计（Line/Arrow → Polyline + 端点箭头）
 
 - 日期：2026-08-17
-- 状态：已评审（设计讨论定稿，待实施）
-- 配套：`.agents/shapes-and-frame-slides-design.md`（本文档取代其中 §3.1 / §4 / §5 关于 Line/Arrow 两变体的描述）
-- 关键决策：**不向后兼容**（移除 `ShapeType::Arrow`，旧 `.prz`/`.bee` 文件不做 serde 迁移）
+- 状态：已实施（Phase B 合入；详见 [CHANGELOG.md](../CHANGELOG.md) §Phase A–E）
+- 配套：`shapes-and-frame-slides-design.md`（同目录，本文档取代其中 §3.1 / §4 / §5 关于 Line/Arrow 两变体的描述）
+- 关键决策：**不向后兼容**（移除 `ShapeType::Arrow`，旧 `.prz`/`.bee` 文件不做 serde 迁移）——决策记录见 [ADR-0004](../adr/0004-prz-sole-format.md)
 
 ## 1. 背景与目标
 
