@@ -53,6 +53,8 @@
   改绑 + 冲突检测 + 恢复默认
 - 实现中修复两处错误：漏 import `KeyBind`（clippy 编译失败）；`rebind` 未沿用槽位
   `on_release` 导致 Ctrl+V 改绑后失效
+- 2026-09-01 复盘拍板（[ADR-0007](adr/0007-keymap-no-customization.md)）：**不做用户
+  自定义**，默认键位对齐 Excalidraw；后续见 plan.md Phase K 与决策点 D6（面板去留）
 
 ## 修复与工程批次（2026-08-29 ~ 2026-09-01）
 
@@ -63,3 +65,4 @@
 - `0696777` `refactor`: main.rs 复用 lib 导出，消除重复编译同一份模块树（编译单元减半）
 - `f341f74` `chore`: 跟踪 Cargo.lock（二进制 crate 需可复现构建）
 - `8862638` `docs`: 对齐 Excalidraw 三方向实施规划（G/I/H 概要与决策点 D1-D5 现收录在 [`plan.md`](plan.md)）
+- `bace60d` `fix(ui)`: 裁剪遮罩跳过亚像素退化梯形，消除旋转图片裁剪时贴边闪烁黑影
