@@ -47,12 +47,23 @@
 
 ## 下一步：对齐 Excalidraw（G / I / H）
 
-**状态**：✅ D1–D6 已拍板（2026-09-01）；**Phase G 已交付**（`8c0bac4`），I/H 待实施。
+**状态**：✅ D1–D6 已拍板（2026-09-01）；**Phase G 已交付**（`8c0bac4`）；**Phase I 已拍板待实施**（设计文档 [specs/phase-i-shape-unification.md](specs/phase-i-shape-unification.md)）；H/K 待实施。
 
 三个方向，实施顺序 **G → I → H**（侧栏属性项依赖 I 定型的字段集合，先做 H 会返工；G 完全独立可先行）：
 
 - [x] **Phase G — 明暗两套样式主题**（小，独立）：`ThemeMode` 持久化 + palette 模块集中管理主题化颜色；UI chrome（egui Visuals）+ 画布语义（底色与新建元素默认色随主题翻转）。D6 键鼠改绑设置入口已移除（架构保留），见 CHANGELOG §Phase G
-- [ ] **Phase I — 图形元素类型统一**（大，动数据模型）：`CurveType { Straight, Curved }`（Catmull-Rom 推广出开曲线版本）；不规则多边形 = 闭合 Polyline 不新增类型；`ArrowHeadStyle` 扩展（Arrow/Dot）；矩形族 roundness；`.prz` serde default 迁移
+- [x] **Phase I — 图形元素类型统一**（大，动数据模型）：`CurveType { Straight, Curved }`（Catmull-Rom 推广出开曲线版本）；不规则多边形 = 闭合 Polyline（`closed: bool`，不新增类型）；`ArrowHeadStyle` 扩展（Arrow/Dot）；矩形族 roundness；`.prz` 仅 `#[serde(default)]` 迁移（`USER_VERSION` 不变）。**已拍板待实施**（2026-09-01），设计文档 [specs/phase-i-shape-unification.md](specs/phase-i-shape-unification.md)。
+
+  **Phase I 决策点（2026-09-01 拍板）**
+
+  | # | 问题 | 结论 |
+  |---|---|---|
+  | I1 | 不规则多边形是否纳入 Phase I | ✅ 纳入：新增「多边形」工具（点击加点、双击/回车闭合），存为 closed Polyline |
+  | I2 | 曲线切换入口 | ✅ 样式面板「直线/曲线」分段控件（选中线性对象，走 undo），不新增工具按钮 |
+  | I3 | ArrowHeadStyle 范围 | ✅ 仅 Arrow + Dot |
+  | I4 | .prz 迁移策略 | ✅ 新字段 `#[serde(default)]`，`USER_VERSION` 不变 |
+  | — | 圆角范围 | 仅矩形族（按计划） |
+  | — | 排后项 | D4 elbow 折线 / D5 hachure 填充 不纳入 Phase I |
 - [ ] **Phase H — 选中弹出属性侧栏**（中）：右侧 SidePanel 按 ItemKind 分节（Shape/Text/Pixmap/Frame）；改动全走 undo 栈，滑块连续修改合并命令；Text 节消费已预留的 `background` 字段
 - [ ] **Phase K — 默认快捷键对齐 Excalidraw**（小，可与任一阶段并行）：以 Excalidraw 官方键位为基准调整 `default_map()` 出厂默认；依据见 [ADR-0007](adr/0007-keymap-no-customization.md)（不做用户自定义，keymap 派发架构保留）。**D6 设置入口移除已完成**，仅剩默认键位对齐待做
 
