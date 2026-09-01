@@ -82,6 +82,9 @@ enum Tool {
     },
     /// 幻灯片画框（Phase D）。
     Frame,
+    /// 多边形（Phase I）：点击加点、双击/Enter 闭合、Esc 取消。
+    /// 存为 `closed: true` 的 Polyline，不新增 ShapeType。
+    Polygon,
 }
 
 /// 应用运行模式。Present 为全屏幻灯片演示（Phase E）。
@@ -143,6 +146,19 @@ enum DragState {
     CreatingFrame {
         start: CanvasPoint,
         current: CanvasPoint,
+    },
+    /// 用多边形工具逐点点击创建（Phase I）。
+    ///
+    /// 与两点式工具不同：这是**多拍**交互——每次 pointer down 落一个顶点，
+    /// 双击 / Enter 闭合收尾，Esc 取消。释放（pointer released）不结束，
+    /// 否则点一下就断了。
+    CreatingPolygon {
+        /// 已落定的顶点（画布坐标）。
+        points: Vec<CanvasPoint>,
+        /// 当前指针位置（预览线段的浮动端点）。
+        current: CanvasPoint,
+        /// Shift 锁 45° 方向（作用于"上一个顶点 → current"这段）。
+        shift: bool,
     },
 }
 
@@ -762,6 +778,7 @@ impl eframe::App for PReferZApp {
                         "➤",
                         T::ToolArrow,
                     ),
+                    (Tool::Polygon, "⬟", T::ToolPolygon),
                     (Tool::Frame, "▢", T::ToolFrame),
                 ];
                 for (tool, icon, key) in tools {
@@ -1082,6 +1099,63 @@ impl eframe::App for PReferZApp {
                 ui.painter().rect_stroke(screen_rect, 0.0, stroke);
             }
 
+            // 指针状态：多边形预览要用到，故提到绘制预览之前声明
+            let pointer_pos = ctx.input(|i| i.pointer.latest_pos());
+
+            // 多边形工具预览（Phase I）：已落定顶点 + 到指针的"橡皮筋"线段 + 闭合虚线提示。
+            // 未按下时也要跟随指针（两点式工具的预览只在按住时更新），故在此同步 current。
+            if let DragState::CreatingPolygon { current, .. } = &mut self.drag {
+                if let Some(pos) = pointer_pos {
+                    *current = self.viewport.screen_to_canvas(pos);
+                }
+            }
+            let polygon_preview = match &self.drag {
+                DragState::CreatingPolygon {
+                    points,
+                    current,
+                    shift,
+                } => {
+                    let tip = points
+                        .last()
+                        .map(|last| Self::snap_polygon_point(*last, *current, *shift))
+                        .unwrap_or(*current);
+                    Some((points.clone(), tip))
+                }
+                _ => None,
+            };
+            if let Some((points, tip)) = polygon_preview {
+                let stroke = egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(100, 200, 255));
+                let mut screen_pts: Vec<egui::Pos2> = points
+                    .iter()
+                    .map(|p| self.viewport.canvas_to_screen(*p))
+                    .collect();
+                screen_pts.push(self.viewport.canvas_to_screen(tip));
+                if screen_pts.len() >= 2 {
+                    ui.painter().add(egui::Shape::line(screen_pts, stroke));
+                }
+                // ≥3 个顶点时才提示"再确认一下就闭合成面"：两点连不出面
+                if points.len() >= 3 {
+                    let a = self.viewport.canvas_to_screen(tip);
+                    let b = self.viewport.canvas_to_screen(points[0]);
+                    const CLOSE_HINT_DASHES: usize = 10;
+                    for i in 0..CLOSE_HINT_DASHES {
+                        let t0 = i as f32 / CLOSE_HINT_DASHES as f32;
+                        let t1 = (i as f32 + 0.5) / CLOSE_HINT_DASHES as f32;
+                        ui.painter()
+                            .line_segment([a.lerp(b, t0), a.lerp(b, t1)], stroke);
+                    }
+                }
+                // 顶点小方块：让"点了几个点"一眼可数
+                for p in points.iter() {
+                    let s = self.viewport.canvas_to_screen(*p);
+                    ui.painter().rect_filled(
+                        egui::Rect::from_center_size(s, egui::vec2(6.0, 6.0)),
+                        egui::Rounding::ZERO,
+                        egui::Color32::from_rgb(100, 200, 255),
+                    );
+                }
+            }
+
             // 鼠标中键拖拽平移
             if response.dragged_by(egui::PointerButton::Middle) {
                 self.viewport.pan_by_screen(response.drag_delta());
@@ -1099,7 +1173,10 @@ impl eframe::App for PReferZApp {
             // 空白 → 创建文本便签（spec L243 P2-5）
             // response.double_clicked() 已自动考虑上层 Window 遮挡
             if response.double_clicked() && self.editing_text.is_none() {
-                if let Some(pos) = ctx.input(|i| i.pointer.latest_pos()) {
+                // 多边形绘制中：双击 = 收尾闭合，优先于文本便签（绘制工具下不该建文本）
+                if matches!(self.drag, DragState::CreatingPolygon { .. }) {
+                    self.finish_create_polygon();
+                } else if let Some(pos) = ctx.input(|i| i.pointer.latest_pos()) {
                     // 克隆命中的 item 字段，避免 &self.scene 与 &mut self.editing_text 借用冲突
                     let hit_id = interaction::get_item_at(pos, &self.scene, &self.viewport)
                         .map(|item| item.id);
@@ -1120,7 +1197,6 @@ impl eframe::App for PReferZApp {
                 }
             }
 
-            let pointer_pos = ctx.input(|i| i.pointer.latest_pos());
             let primary_pressed = ctx.input(|i| i.pointer.primary_pressed());
             let primary_down = ctx.input(|i| i.pointer.primary_down());
             let primary_released = ctx.input(|i| i.pointer.primary_released());
@@ -1307,6 +1383,36 @@ impl PReferZApp {
                     start: start_canvas,
                     current: start_canvas,
                 };
+                return;
+            }
+            // 多拍工具：第一拍落首个顶点，后续每拍追加一个顶点（见 finish_create_polygon）
+            Tool::Polygon => {
+                let p = self.viewport.screen_to_canvas(screen_pos);
+                match &mut self.drag {
+                    DragState::CreatingPolygon {
+                        points,
+                        current,
+                        shift,
+                    } => {
+                        let last = *points.last().expect("CreatingPolygon 至少有一个顶点");
+                        let next = Self::snap_polygon_point(last, *current, *shift);
+                        // 双击的第二下会先落到 begin_drag：落点与上一顶点重合时
+                        // 视为"收尾"而非新增顶点（双击闭合的第二拍不该多加一个点）
+                        if (next - last).length() >= POLYLINE_CLOSE_DISTANCE {
+                            points.push(next);
+                        }
+                        *current = next;
+                        // 每拍重取 Shift：下一次按下时才改方向锁定，中途松开 Shift 不影响已落顶点
+                        *shift = additive;
+                    }
+                    _ => {
+                        self.drag = DragState::CreatingPolygon {
+                            points: vec![p],
+                            current: p,
+                            shift: additive,
+                        };
+                    }
+                }
                 return;
             }
             _ => {}
@@ -1547,6 +1653,8 @@ impl PReferZApp {
             DragState::CreatingFrame { current, .. } => {
                 let _ = current; // 由 match 后更新（需单独 &mut self.drag）
             }
+            // 多拍工具：current 由 match 后统一更新
+            DragState::CreatingPolygon { .. } => {}
             DragState::Idle => {}
         }
         // BoxSelect / CreatingShape 更新 current（match &self.drag 不可写，故单独 &mut）
@@ -1561,9 +1669,18 @@ impl PReferZApp {
         if let DragState::CreatingFrame { current, .. } = &mut self.drag {
             *current = self.viewport.screen_to_canvas(screen_pos);
         }
+        if let DragState::CreatingPolygon { current, .. } = &mut self.drag {
+            *current = self.viewport.screen_to_canvas(screen_pos);
+        }
     }
 
     fn end_drag(&mut self) {
+        // 多拍工具（多边形）不在此收尾：每次 pointer down 落一个顶点，
+        // 只有 Enter / 双击 / Esc 才结束。end_drag 靠 mem::replace 清空 drag，
+        // 直接返回以免把进行中的顶点序列抹掉。
+        if matches!(self.drag, DragState::CreatingPolygon { .. }) {
+            return;
+        }
         // 裁剪模式拖拽释放：清dragging 标志（应用通过 Enter 触发
         if let Some(crop) = self.crop_mode.as_mut() {
             if crop.dragging.is_some() {
@@ -1681,6 +1798,8 @@ impl PReferZApp {
                 }
                 self.transform_handles.end_drag();
             }
+            // 多边形在函数开头已提前 return（多拍工具不在释放时收尾），这里只为穷尽匹配
+            DragState::CreatingPolygon { .. } => {}
             DragState::Idle => {}
         }
     }
@@ -1805,6 +1924,80 @@ impl PReferZApp {
         self.flash(format!("已创建画框 #{}", number));
         // 默认回 Select
         self.tool = Tool::Select;
+    }
+
+    /// Shift 方向锁定：把 `from → to` 这段吸附到 45° 整数倍，保持长度不变。
+    /// 与 `finish_create_shape` 里的折线吸附同一套算法（阈值除外）。
+    fn snap_polygon_point(from: CanvasPoint, to: CanvasPoint, shift: bool) -> CanvasPoint {
+        if !shift {
+            return to;
+        }
+        let dx = to.x - from.x;
+        let dy = to.y - from.y;
+        let len = (dx * dx + dy * dy).sqrt();
+        if len < 1e-3 {
+            return from;
+        }
+        let angle =
+            (dy.atan2(dx) / std::f32::consts::FRAC_PI_4).round() * std::f32::consts::FRAC_PI_4;
+        from + CanvasVector::new(len * angle.cos(), len * angle.sin())
+    }
+
+    /// 多边形工具收尾（Phase I）：把已落定的顶点固化成一个 `closed: true` 的 Polyline。
+    ///
+    /// 顶点先归一化到"以 AABB 左上角为原点"的局部坐标，整体位置交给 `transform.pos`——
+    /// 与两点式折线共用 `Item::new_polyline` 的同一约定，于是后续移动/缩放/顶点拖拽
+    /// 都能复用既有的线性对象代码路径，不必为多边形单开分支。
+    ///
+    /// 收尾时机：Enter / 双击画布（见 `handle_shortcuts` 与 CentralPanel）。
+    /// 顶点不足 3 个时不产生 item（无法构成面），只回 Select 并给出提示。
+    fn finish_create_polygon(&mut self) {
+        let (mut points, current) = match std::mem::replace(&mut self.drag, DragState::Idle) {
+            DragState::CreatingPolygon {
+                points, current, ..
+            } => (points, current),
+            // 非多边形状态（防御性）：原样放回，避免吞掉别的拖拽
+            other => {
+                self.drag = other;
+                return;
+            }
+        };
+        // 橡皮筋末端算作最后一个顶点；指针停在上一顶点上（双击）时距离≈0，会被跳过
+        if let Some(last) = points.last() {
+            if (current - *last).length() >= 3.0 {
+                points.push(current);
+            }
+        }
+        self.tool = Tool::Select;
+        if points.len() < 3 {
+            self.flash(t(self.lang, T::PolygonTooFewPoints));
+            return;
+        }
+        let (min_x, min_y, max_x, max_y) =
+            points
+                .iter()
+                .fold((f32::MAX, f32::MAX, f32::MIN, f32::MIN), |acc, p| {
+                    (
+                        acc.0.min(p.x),
+                        acc.1.min(p.y),
+                        acc.2.max(p.x),
+                        acc.3.max(p.y),
+                    )
+                });
+        let local: Vec<(f32, f32)> = points.iter().map(|p| (p.x - min_x, p.y - min_y)).collect();
+        let item = Item::new_polyline(
+            local,
+            (max_x - min_x, max_y - min_y),
+            None,
+            None,
+            true,
+            min_x,
+            min_y,
+            self.default_stroke,
+        )
+        .with_rough(self.default_rough);
+        self.push_new_item(AddItem::new(item));
+        self.flash(t(self.lang, T::PolygonCreated));
     }
 }
 
@@ -3396,6 +3589,7 @@ fn drag_state_name(d: &DragState) -> &'static str {
         DragState::CreatingShape { .. } => "CreatingShape",
         DragState::LineEndpoint { .. } => "LineEndpoint",
         DragState::CreatingFrame { .. } => "CreatingFrame",
+        DragState::CreatingPolygon { .. } => "CreatingPolygon",
     }
 }
 
@@ -3444,6 +3638,145 @@ mod tests {
         );
         // 占位多于参数时保留原样，便于开发期发现漏填
         assert_eq!(fill("a {0} b {1}", &["X".to_string()]), "a X b {1}");
+    }
+
+    // ───────── 多边形工具（Phase I） ─────────
+
+    /// 构造一个已进入多边形绘制中状态的应用：直接摆好 DragState，不走 UI 事件。
+    fn app_creating_polygon(points: Vec<CanvasPoint>, current: CanvasPoint) -> PReferZApp {
+        let mut app = PReferZApp::new();
+        app.tool = Tool::Polygon;
+        app.drag = DragState::CreatingPolygon {
+            points,
+            current,
+            shift: false,
+        };
+        app
+    }
+
+    #[test]
+    fn snap_polygon_point_without_shift_returns_target_unchanged() {
+        let from = CanvasPoint::new(10.0, 10.0);
+        let to = CanvasPoint::new(100.0, 37.0);
+        assert_eq!(PReferZApp::snap_polygon_point(from, to, false), to);
+    }
+
+    #[test]
+    fn snap_polygon_point_with_shift_snaps_to_45_degrees_keeping_length() {
+        // 约 11° → 吸附到 0°；长度保持（不是投影，是等长转向）
+        let snapped = PReferZApp::snap_polygon_point(
+            CanvasPoint::new(0.0, 0.0),
+            CanvasPoint::new(100.0, 20.0),
+            true,
+        );
+        let len = (100.0f32 * 100.0 + 20.0f32 * 20.0).sqrt();
+        assert!(
+            (snapped.x - len).abs() < 1e-3 && snapped.y.abs() < 1e-3,
+            "应吸附到 0° 且保持长度 {len}，实际 {snapped:?}"
+        );
+    }
+
+    #[test]
+    fn snap_polygon_point_snaps_near_45_to_exact_diagonal() {
+        let snapped = PReferZApp::snap_polygon_point(
+            CanvasPoint::new(0.0, 0.0),
+            CanvasPoint::new(100.0, 90.0),
+            true,
+        );
+        assert!(
+            (snapped.x - snapped.y).abs() < 1e-3,
+            "应落在 45° 对角线上，实际 {snapped:?}"
+        );
+    }
+
+    #[test]
+    fn snap_polygon_point_degenerate_segment_returns_from() {
+        let from = CanvasPoint::new(5.0, 7.0);
+        assert_eq!(PReferZApp::snap_polygon_point(from, from, true), from);
+    }
+
+    #[test]
+    fn finish_create_polygon_builds_closed_polyline_in_aabb_local_space() {
+        let mut app = app_creating_polygon(
+            vec![
+                CanvasPoint::new(10.0, 20.0),
+                CanvasPoint::new(60.0, 20.0),
+                CanvasPoint::new(60.0, 70.0),
+            ],
+            // 与末顶点重合（双击收尾），不应追加成第四点
+            CanvasPoint::new(60.0, 70.0),
+        );
+        app.finish_create_polygon();
+        assert_eq!(app.scene.items.len(), 1);
+        let item = &app.scene.items[0];
+        // 整体位置 = AABB 左上角，局部坐标从 (0,0) 起算
+        assert_eq!((item.transform.pos.x, item.transform.pos.y), (10.0, 20.0));
+        match &item.kind {
+            ItemKind::Shape {
+                shape_type,
+                points,
+                closed,
+                base_size,
+                ..
+            } => {
+                assert_eq!(*shape_type, ShapeType::Polyline);
+                assert!(closed, "多边形工具产物恒为闭合折线");
+                assert_eq!(points.len(), 3);
+                assert_eq!(points[0], (0.0, 0.0));
+                assert_eq!(points[1], (50.0, 0.0));
+                assert_eq!(points[2], (50.0, 50.0));
+                assert_eq!(*base_size, (50.0, 50.0));
+            }
+            _ => panic!("多边形应为 Shape item"),
+        }
+        assert_eq!(app.tool, Tool::Select, "收尾后应回 Select");
+    }
+
+    #[test]
+    fn finish_create_polygon_appends_rubber_band_tip_when_far_from_last_vertex() {
+        // Enter 收尾时指针通常远离末顶点，此时橡皮筋末端应算作最后一个顶点
+        let mut app = app_creating_polygon(
+            vec![
+                CanvasPoint::new(0.0, 0.0),
+                CanvasPoint::new(50.0, 0.0),
+                CanvasPoint::new(50.0, 50.0),
+            ],
+            CanvasPoint::new(0.0, 50.0),
+        );
+        app.finish_create_polygon();
+        let item = &app.scene.items[0];
+        match &item.kind {
+            ItemKind::Shape { points, .. } => assert_eq!(points.len(), 4),
+            _ => panic!("多边形应为 Shape item"),
+        }
+    }
+
+    #[test]
+    fn finish_create_polygon_discards_fewer_than_three_points() {
+        let mut app = app_creating_polygon(
+            vec![CanvasPoint::new(0.0, 0.0), CanvasPoint::new(50.0, 0.0)],
+            CanvasPoint::new(50.0, 0.0),
+        );
+        app.finish_create_polygon();
+        assert!(app.scene.items.is_empty(), "两点连不出面，不应产生 item");
+        assert_eq!(app.tool, Tool::Select);
+        assert!(app.flash_status.is_some(), "应给出提示");
+    }
+
+    #[test]
+    fn finish_create_polygon_ignores_other_drag_states() {
+        let mut app = PReferZApp::new();
+        app.drag = DragState::BoxSelect {
+            start_canvas: CanvasPoint::new(0.0, 0.0),
+            current_canvas: CanvasPoint::new(10.0, 10.0),
+            additive: false,
+        };
+        app.finish_create_polygon();
+        assert!(
+            matches!(app.drag, DragState::BoxSelect { .. }),
+            "非多边形状态应原样保留，不能被吞掉"
+        );
+        assert!(app.scene.items.is_empty());
     }
 }
 
@@ -3631,7 +3964,20 @@ impl PReferZApp {
         }
         // 绘制工具激活：屏蔽其它场景快捷键，取消键回 Select
         if self.tool != Tool::Select {
+            // 多边形进行中：Enter 收尾闭合（Excalidraw 语义）。
+            // 裸 Enter 硬兜底同 cancel_pressed 的 Esc——Confirm 可被改绑，改坏了也得能收尾。
+            if matches!(self.drag, DragState::CreatingPolygon { .. })
+                && (self.keymap.pressed(Action::Confirm, ctx)
+                    || ctx.input(|i| i.key_pressed(egui::Key::Enter)))
+            {
+                self.finish_create_polygon();
+                return;
+            }
             if self.cancel_pressed(ctx) {
+                // 多边形进行中：Esc 丢弃全部已落顶点，而不只是退出工具
+                if matches!(self.drag, DragState::CreatingPolygon { .. }) {
+                    self.drag = DragState::Idle;
+                }
                 self.tool = Tool::Select;
             }
             return;
@@ -3762,6 +4108,8 @@ impl PReferZApp {
             Some(Tool::Linear {
                 end_arrow: Some(ArrowHeadStyle::Arrow),
             })
+        } else if pressed(Action::ToolPolygon) {
+            Some(Tool::Polygon)
         } else if pressed(Action::ToolFrame) {
             Some(Tool::Frame)
         } else {

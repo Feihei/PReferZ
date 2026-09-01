@@ -377,6 +377,7 @@ pub enum Action {
     ToolLine,
     ToolArrow,
     ToolFrame,
+    ToolPolygon,
     // 模式
     Crop,
     ColorPicker,
@@ -418,6 +419,7 @@ impl Action {
         Action::ToolLine,
         Action::ToolArrow,
         Action::ToolFrame,
+        Action::ToolPolygon,
         Action::Crop,
         Action::ColorPicker,
         Action::ContextMenu,
@@ -455,6 +457,10 @@ impl Action {
             ToolLine => vec![KeyBind::new(L)],
             ToolArrow => vec![KeyBind::new(A)],
             ToolFrame => vec![KeyBind::new(M)],
+            // 多边形（Phase I）：Excalidraw 没有独立的多边形工具（它是折线的闭合态），
+            // 故无官方键位可对。裸 P 在 Excalidraw 是 freedraw（本项目未实现），
+            // 占它会让 Excalidraw 用户按错，故用 Shift+P 让开那个字母位。
+            ToolPolygon => vec![KeyBind::new(P).shift()],
             Crop => vec![KeyBind::new(C)],
             ColorPicker => vec![KeyBind::new(I)],
             ContextMenu => vec![KeyBind::new(P).ctrl().shift()],

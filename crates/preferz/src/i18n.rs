@@ -132,6 +132,12 @@ pub enum T {
     ToolArrow,
     #[allow(dead_code)]
     ToolFrame,
+    /// 多边形工具（Phase I）。
+    ToolPolygon,
+    /// 多边形收尾反馈：顶点不足 3 个时无法成面（Phase I）。
+    PolygonTooFewPoints,
+    /// 多边形创建成功反馈（Phase I）。
+    PolygonCreated,
     Present,
     PresentNoFrames,
     StyleStrokeColor,
@@ -144,6 +150,15 @@ pub enum T {
     // ── 箭头样式 ──
     StyleArrowStart,
     StyleArrowEnd,
+    /// 箭头三态：无 / 箭头 / 圆点（Phase I）。
+    StyleArrowNone,
+    StyleArrowArrow,
+    StyleArrowDot,
+    // ── 曲线 / 圆角（Phase I）──
+    StyleCurve,
+    StyleCurveStraight,
+    StyleCurveCurved,
+    StyleRoundness,
     // ── 手绘风（Phase F）──
     StyleRough,
 }
@@ -262,6 +277,9 @@ fn translate_en(key: T) -> &'static str {
         T::ToolLine => "Line",
         T::ToolArrow => "Arrow",
         T::ToolFrame => "Frame",
+        T::ToolPolygon => "Polygon",
+        T::PolygonTooFewPoints => "A polygon needs at least 3 points — discarded.",
+        T::PolygonCreated => "Polygon created",
         T::Present => "Present slides ({0})",
         T::PresentNoFrames => "No frames to present. Create a frame first (Tool ▢).",
         T::StyleStrokeColor => "Stroke color",
@@ -273,6 +291,13 @@ fn translate_en(key: T) -> &'static str {
         T::StyleClosed => "Closed",
         T::StyleArrowStart => "Start arrow",
         T::StyleArrowEnd => "End arrow",
+        T::StyleArrowNone => "None",
+        T::StyleArrowArrow => "Arrow",
+        T::StyleArrowDot => "Dot",
+        T::StyleCurve => "Edges",
+        T::StyleCurveStraight => "Sharp",
+        T::StyleCurveCurved => "Round",
+        T::StyleRoundness => "Roundness",
         T::StyleRough => "Hand-drawn",
     }
 }
@@ -383,6 +408,9 @@ fn translate_zh(key: T) -> &'static str {
         T::ToolLine => "直线",
         T::ToolArrow => "箭头",
         T::ToolFrame => "画框",
+        T::ToolPolygon => "多边形",
+        T::PolygonTooFewPoints => "多边形至少需要 3 个顶点，已丢弃",
+        T::PolygonCreated => "已创建多边形",
         T::Present => "幻灯片放映 ({0})",
         T::PresentNoFrames => "没有可演示的画框，请先创建画框（工具 ▢）。",
         T::StyleStrokeColor => "描边颜色",
@@ -394,6 +422,13 @@ fn translate_zh(key: T) -> &'static str {
         T::StyleClosed => "闭合",
         T::StyleArrowStart => "起点箭头",
         T::StyleArrowEnd => "终点箭头",
+        T::StyleArrowNone => "无",
+        T::StyleArrowArrow => "箭头",
+        T::StyleArrowDot => "圆点",
+        T::StyleCurve => "边角",
+        T::StyleCurveStraight => "尖角",
+        T::StyleCurveCurved => "圆滑",
+        T::StyleRoundness => "圆角",
         T::StyleRough => "手绘",
     }
 }
@@ -422,6 +457,7 @@ pub fn action_label(lang: Lang, action: Action) -> &'static str {
             ToolLine => "Tool: line",
             ToolArrow => "Tool: arrow",
             ToolFrame => "Tool: frame",
+            ToolPolygon => "Tool: polygon",
             Crop => "Crop mode",
             ColorPicker => "Color picker",
             ContextMenu => "Show context menu",
@@ -452,6 +488,7 @@ pub fn action_label(lang: Lang, action: Action) -> &'static str {
             ToolLine => "工具：直线",
             ToolArrow => "工具：箭头",
             ToolFrame => "工具：画框",
+            ToolPolygon => "工具：多边形",
             Crop => "进入裁剪模式",
             ColorPicker => "切换取色器",
             ContextMenu => "显示右键菜单",
