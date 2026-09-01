@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::shape::{ArrowHeadStyle, ShapeType, StrokeStyle};
+use crate::shape::{ArrowHeadStyle, CurveType, ShapeType, StrokeStyle};
 use crate::spaces::{CanvasPoint, CanvasRect, CanvasVector};
 use crate::transform::Transform;
 
@@ -63,6 +63,14 @@ pub enum ItemKind {
         end_arrow: Option<ArrowHeadStyle>,
         /// 是否闭合（仅 Polyline 使用；矩形族忽略）。闭合时首尾相连，可填充。
         closed: bool,
+        /// 曲线模式（Phase I）。仅 Polyline 使用；`Curved` 经 Catmull-Rom 插值。
+        /// `#[serde(default)]`：旧存档无此字段按 `Straight` 加载。
+        #[serde(default)]
+        curve_type: CurveType,
+        /// 矩形族圆角比例 0..1（Phase I）。仅矩形族使用；`radius = min(w,h) * roundness`。
+        /// `#[serde(default)]`：旧存档无此字段按 0.0（直角）加载。
+        #[serde(default)]
+        roundness: f32,
         /// 手绘风描边抖动种子（Phase F）。同种子恒得同一抖动，保证重绘/存盘后形状不变。
         seed: u64,
         /// 手绘风描边开关（Phase F）。true 时由 RoughStyler 渲染抖动描边。
@@ -374,6 +382,8 @@ impl Item {
                 start_arrow: None,
                 end_arrow: None,
                 closed: false,
+                curve_type: CurveType::Straight,
+                roundness: 0.0,
                 seed: 0,
                 rough: false,
             },
@@ -408,6 +418,8 @@ impl Item {
                 start_arrow,
                 end_arrow,
                 closed,
+                curve_type: CurveType::Straight,
+                roundness: 0.0,
                 seed: 0,
                 rough: false,
             },
@@ -558,23 +570,29 @@ impl Item {
             points,
             stroke,
             closed,
+            curve_type,
             ..
         } = &self.kind
         {
             if matches!(shape_type, ShapeType::Polyline) {
-                // 线类：点到任一线段距离 ≤ max(线宽, 6.0) 视为命中
-                // （局部单位；旋转/缩放由逆变换处理）。闭合时补首尾闭合线段。
+                // 线类命中：点到任一（采样后）线段距离 ≤ max(线宽, 6.0)。
+                // 旋转/缩放由逆变换处理；曲线先经 Catmull-Rom 采样成折线再测距。
                 let threshold = stroke.width.max(6.0);
                 if points.len() >= 2 {
-                    let open_hit = points
+                    let pts = if matches!(curve_type, CurveType::Curved) {
+                        catmull_rom_polyline(points, *closed, CURVE_SAMPLES)
+                    } else {
+                        points.clone()
+                    };
+                    let seg_hit = pts
                         .windows(2)
                         .any(|seg| dist_point_segment(local, seg[0], seg[1]) <= threshold);
-                    if open_hit {
+                    if seg_hit {
                         return true;
                     }
-                    if *closed {
-                        return dist_point_segment(local, points[points.len() - 1], points[0])
-                            <= threshold;
+                    // 闭合图形：命中多边形内部也算（填充区域可点选）
+                    if *closed && point_in_polygon((local.x, local.y), &pts) {
+                        return true;
                     }
                 }
                 return false;
@@ -781,6 +799,82 @@ impl Item {
     }
 }
 
+/// 曲线（Curved）每段的采样点数；16 足够平滑且廉价。
+const CURVE_SAMPLES: usize = 16;
+
+/// 单段 Catmull-Rom 插值点（标准 α=0.5 的 centripetal 近似）。
+fn catmull_rom_point(
+    p0: (f32, f32),
+    p1: (f32, f32),
+    p2: (f32, f32),
+    p3: (f32, f32),
+    t: f32,
+) -> (f32, f32) {
+    let t2 = t * t;
+    let t3 = t2 * t;
+    let x = 0.5
+        * ((2.0 * p1.0)
+            + (-p0.0 + p2.0) * t
+            + (2.0 * p0.0 - 5.0 * p1.0 + 4.0 * p2.0 - p3.0) * t2
+            + (-p0.0 + 3.0 * p1.0 - 3.0 * p2.0 + p3.0) * t3);
+    let y = 0.5
+        * ((2.0 * p1.1)
+            + (-p0.1 + p2.1) * t
+            + (2.0 * p0.1 - 5.0 * p1.1 + 4.0 * p2.1 - p3.1) * t2
+            + (-p0.1 + 3.0 * p1.1 - 3.0 * p2.1 + p3.1) * t3);
+    (x, y)
+}
+
+/// 把控制点采样成折线。开曲线端点用 clamp（首/末点复制）；闭曲线用环绕索引。
+fn catmull_rom_polyline(pts: &[(f32, f32)], closed: bool, samples: usize) -> Vec<(f32, f32)> {
+    let n = pts.len();
+    if n < 2 || (!closed && n == 2) {
+        return pts.to_vec();
+    }
+    let seg_count = if closed { n } else { n - 1 };
+    let mut out = Vec::with_capacity(seg_count * samples + 1);
+    for i in 0..seg_count {
+        let p0 = if closed {
+            pts[(i as isize - 1).rem_euclid(n as isize) as usize]
+        } else {
+            pts[i.saturating_sub(1)]
+        };
+        let p1 = pts[i % n];
+        let p2 = pts[(i + 1) % n];
+        let p3 = if closed {
+            pts[(i + 2) % n]
+        } else {
+            pts[(i + 2).min(n - 1)]
+        };
+        for s in 0..samples {
+            let t = s as f32 / samples as f32;
+            out.push(catmull_rom_point(p0, p1, p2, p3, t));
+        }
+    }
+    out.push(pts[if closed { 0 } else { n - 1 }]);
+    out
+}
+
+/// 射线法判断点是否在多边形内（局部坐标）。
+fn point_in_polygon(p: (f32, f32), poly: &[(f32, f32)]) -> bool {
+    let n = poly.len();
+    if n < 3 {
+        return false;
+    }
+    let mut inside = false;
+    for i in 0..n {
+        let a = poly[i];
+        let b = poly[(i + 1) % n];
+        if (a.1 > p.1) != (b.1 > p.1) {
+            let x_intercept = a.0 + (p.1 - a.1) * (b.0 - a.0) / (b.1 - a.1);
+            if p.0 < x_intercept {
+                inside = !inside;
+            }
+        }
+    }
+    inside
+}
+
 /// 点到线段的最短距离（局部空间，供线类命中使用）。
 fn dist_point_segment(
     p: euclid::Point2D<f32, ItemLocalSpace>,
@@ -932,6 +1026,66 @@ mod tests {
         assert!(item.contains_canvas_point(CanvasPoint::new(2.0, 50.0)));
         // 距竖线 50 像素 → 未命中
         assert!(!item.contains_canvas_point(CanvasPoint::new(50.0, 50.0)));
+    }
+
+    #[test]
+    fn new_shape_defaults_curve_straight_roundness_zero() {
+        let s = Item::new_shape(
+            ShapeType::Rectangle,
+            (10.0, 10.0),
+            0.0,
+            0.0,
+            StrokeStyle::default(),
+            None,
+        );
+        match &s.kind {
+            ItemKind::Shape {
+                curve_type,
+                roundness,
+                ..
+            } => {
+                assert_eq!(*curve_type, CurveType::Straight);
+                assert_eq!(*roundness, 0.0);
+            }
+            _ => panic!("expected Shape kind"),
+        }
+    }
+
+    #[test]
+    fn closed_polygon_hits_interior_and_rejects_exterior() {
+        // 闭合三角形 (0,0)-(80,0)-(40,60)，内部点 (40,30) 距任一边 > 阈值，
+        // 仅靠 point-in-polygon 命中；外部点不命中。
+        let tri = Item::new_polyline(
+            vec![(0.0, 0.0), (80.0, 0.0), (40.0, 60.0)],
+            (80.0, 60.0),
+            None,
+            None,
+            true,
+            0.0,
+            0.0,
+            StrokeStyle::default(),
+        );
+        assert!(tri.contains_canvas_point(CanvasPoint::new(40.0, 30.0)));
+        assert!(!tri.contains_canvas_point(CanvasPoint::new(40.0, 100.0)));
+    }
+
+    #[test]
+    fn catmull_rom_open_preserves_endpoints_and_samples() {
+        let pts = vec![(0.0, 0.0), (10.0, 10.0), (20.0, 0.0)];
+        let out = catmull_rom_polyline(&pts, false, 8);
+        assert_eq!(out.len(), (pts.len() - 1) * 8 + 1);
+        assert!((out[0].0 - 0.0).abs() < 1e-3 && (out[0].1 - 0.0).abs() < 1e-3);
+        let last = out[out.len() - 1];
+        assert!((last.0 - 20.0).abs() < 1e-3 && (last.1 - 0.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn catmull_rom_closed_wraps_and_closes() {
+        let pts = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)];
+        let out = catmull_rom_polyline(&pts, true, 4);
+        assert_eq!(out.len(), pts.len() * 4 + 1);
+        // 闭合：末点回到首点
+        assert!((out[out.len() - 1].0 - 0.0).abs() < 1e-3);
     }
 
     #[test]

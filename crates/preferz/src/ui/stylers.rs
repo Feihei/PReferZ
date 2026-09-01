@@ -1,6 +1,8 @@
 use eframe::egui::{self, Color32, Pos2, Shape};
 use preferz_core::item::{ItemKind, ItemLocalSpace};
-use preferz_core::shape::{ArrowHeadStyle, DashStyle, SeededRng, ShapeType, StrokeStyle};
+use preferz_core::shape::{
+    ArrowHeadStyle, CurveType, DashStyle, SeededRng, ShapeType, StrokeStyle,
+};
 use preferz_core::spaces::ScreenSpace;
 
 /// Item 局部 → 屏幕 的变换矩阵类型（与 core 的 `ItemLocalToScreen` 等价）。
@@ -18,6 +20,10 @@ pub struct ShapeData {
     pub end_arrow: Option<ArrowHeadStyle>,
     /// 是否闭合（仅 Polyline 使用）。闭合时首尾相连，可填充，不显示箭头。
     pub closed: bool,
+    /// 曲线模式（Phase I）。仅 Polyline 使用；`Curved` 经 Catmull-Rom 插值。
+    pub curve_type: CurveType,
+    /// 矩形族圆角比例 0..1（Phase I）。仅矩形族使用。
+    pub roundness: f32,
     /// 手绘风抖动种子（Phase F）。同一 seed 恒得同一抖动；`CleanStyler` 忽略此字段。
     pub seed: u64,
 }
@@ -466,6 +472,8 @@ pub fn build_shape_visuals(kind: &ItemKind, to_screen: &LocalToScreen, zoom: f32
         start_arrow,
         end_arrow,
         closed,
+        curve_type,
+        roundness,
         seed,
         rough,
     } = kind
@@ -480,6 +488,8 @@ pub fn build_shape_visuals(kind: &ItemKind, to_screen: &LocalToScreen, zoom: f32
         start_arrow: *start_arrow,
         end_arrow: *end_arrow,
         closed: *closed,
+        curve_type: *curve_type,
+        roundness: *roundness,
         seed: *seed,
     };
     let fill_color = fill.map(color_from);
@@ -517,6 +527,8 @@ mod tests {
             start_arrow: None,
             end_arrow: None,
             closed: false,
+            curve_type: CurveType::Straight,
+            roundness: 0.0,
             seed,
         }
     }
@@ -529,6 +541,8 @@ mod tests {
             start_arrow: None,
             end_arrow: Some(ArrowHeadStyle::Arrow),
             closed: false,
+            curve_type: CurveType::Straight,
+            roundness: 0.0,
             seed: 42,
         }
     }
@@ -614,6 +628,8 @@ mod tests {
             start_arrow: None,
             end_arrow: None,
             closed: false,
+            curve_type: CurveType::Straight,
+            roundness: 0.0,
             seed,
         }
     }
@@ -718,6 +734,8 @@ mod tests {
             start_arrow: None,
             end_arrow: None,
             closed: false,
+            curve_type: CurveType::Straight,
+            roundness: 0.0,
             seed: 5,
         };
         let shapes =

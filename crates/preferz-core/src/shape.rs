@@ -9,10 +9,28 @@ pub enum ShapeType {
     Polyline,
 }
 
+/// 曲线模式（Phase I）。
+///
+/// `Straight` = 顶点直线相连；`Curved` = Catmull-Rom 插值（开/闭曲线，
+/// 见 [`crate::item`] 的采样辅助函数）。仅 Polyline 生效，矩形族忽略。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum CurveType {
+    /// 折线（默认）。
+    #[default]
+    Straight,
+    /// 平滑曲线。
+    Curved,
+}
+
 /// 端点箭头样式。`Option<ArrowHeadStyle>` 表示"该端无箭头"。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum ArrowHeadStyle {
-    Arrow, // 标准三角箭头
+    /// 标准三角箭头。
+    Arrow,
+    /// 圆点（Phase I 新增）。
+    Dot,
 }
 
 /// 描边线型。
@@ -149,9 +167,21 @@ mod tests {
 
     #[test]
     fn arrow_head_style_serde_roundtrip() {
-        let a = ArrowHeadStyle::Arrow;
-        let json = serde_json::to_string(&a).unwrap();
-        let back: ArrowHeadStyle = serde_json::from_str(&json).unwrap();
-        assert_eq!(a, back);
+        for a in [ArrowHeadStyle::Arrow, ArrowHeadStyle::Dot] {
+            let json = serde_json::to_string(&a).unwrap();
+            let back: ArrowHeadStyle = serde_json::from_str(&json).unwrap();
+            assert_eq!(a, back);
+        }
+    }
+
+    #[test]
+    fn curve_type_serde_roundtrip_and_default() {
+        for c in [CurveType::Straight, CurveType::Curved] {
+            let json = serde_json::to_string(&c).unwrap();
+            let back: CurveType = serde_json::from_str(&json).unwrap();
+            assert_eq!(c, back);
+        }
+        // 派生默认值为 Straight（旧文件缺该字段时按此加载）
+        assert_eq!(CurveType::default(), CurveType::Straight);
     }
 }

@@ -1,6 +1,6 @@
 use crate::item::{CropRect, ItemId, ItemKind};
 use crate::scene::{RenumberPlan, Scene};
-use crate::shape::ArrowHeadStyle;
+use crate::shape::{ArrowHeadStyle, CurveType};
 use crate::spaces::CanvasVector;
 use crate::transform::Transform;
 
@@ -195,6 +195,82 @@ impl Command for SetClosed {
         if let Some(item) = scene.get_item_mut(&self.item_id) {
             if let ItemKind::Shape { closed, .. } = &mut item.kind {
                 *closed = self.old_closed;
+            }
+        }
+    }
+}
+
+// ─────────────────────────── Set curve type ───────────────────────────
+
+/// 切换线性对象（Polyline）曲线模式（Straight / Curved，Phase I）。
+/// 样式面板切换触发：UI 未直接改 item，push 时正常 redo 应用（skip_first_redo = false）。
+pub struct SetCurveType {
+    item_id: ItemId,
+    old_curve: CurveType,
+    new_curve: CurveType,
+}
+
+impl SetCurveType {
+    pub fn new(item_id: ItemId, old_curve: CurveType, new_curve: CurveType) -> Self {
+        Self {
+            item_id,
+            old_curve,
+            new_curve,
+        }
+    }
+}
+
+impl Command for SetCurveType {
+    fn redo(&mut self, scene: &mut Scene) {
+        if let Some(item) = scene.get_item_mut(&self.item_id) {
+            if let ItemKind::Shape { curve_type, .. } = &mut item.kind {
+                *curve_type = self.new_curve;
+            }
+        }
+    }
+
+    fn undo(&mut self, scene: &mut Scene) {
+        if let Some(item) = scene.get_item_mut(&self.item_id) {
+            if let ItemKind::Shape { curve_type, .. } = &mut item.kind {
+                *curve_type = self.old_curve;
+            }
+        }
+    }
+}
+
+// ─────────────────────────── Set roundness ───────────────────────────
+
+/// 设置矩形族圆角比例（0..1，Phase I）。仅矩形族生效。
+/// 样式面板滑块触发：UI 未直接改 item，push 时正常 redo 应用（skip_first_redo = false）。
+pub struct SetRoundness {
+    item_id: ItemId,
+    old_roundness: f32,
+    new_roundness: f32,
+}
+
+impl SetRoundness {
+    pub fn new(item_id: ItemId, old_roundness: f32, new_roundness: f32) -> Self {
+        Self {
+            item_id,
+            old_roundness,
+            new_roundness,
+        }
+    }
+}
+
+impl Command for SetRoundness {
+    fn redo(&mut self, scene: &mut Scene) {
+        if let Some(item) = scene.get_item_mut(&self.item_id) {
+            if let ItemKind::Shape { roundness, .. } = &mut item.kind {
+                *roundness = self.new_roundness;
+            }
+        }
+    }
+
+    fn undo(&mut self, scene: &mut Scene) {
+        if let Some(item) = scene.get_item_mut(&self.item_id) {
+            if let ItemKind::Shape { roundness, .. } = &mut item.kind {
+                *roundness = self.old_roundness;
             }
         }
     }
