@@ -88,6 +88,21 @@ impl Scene {
             .collect()
     }
 
+    /// 该 item 是否为「绑定在存活容器上的文本」（Phase C 语义的逆查询）。
+    ///
+    /// 绑定文本不可被独立选中/拖动：渲染位置由容器矩形实时决定，其自身
+    /// transform 只是创建时的快照，直接操作只会造成选中框与文字错位。
+    /// 交互层应把命中它的点击重定向到容器（Excalidraw 同款语义）。
+    pub fn is_bound_text(&self, item: &Item) -> bool {
+        matches!(
+            &item.kind,
+            crate::item::ItemKind::Text {
+                container_id: Some(c),
+                ..
+            } if self.get_item(c).is_some()
+        )
+    }
+
     /// 返回画框（编号升序）。
     pub fn frames_by_number(&self) -> Vec<ItemId> {
         let mut frames: Vec<(u32, ItemId)> = self
@@ -283,6 +298,29 @@ mod tests {
         let ids = scene.texts_bound_to(sid);
         assert_eq!(ids.len(), 1);
         assert_eq!(ids[0], t_id);
+    }
+
+    #[test]
+    fn is_bound_text_requires_live_container() {
+        let s = shape();
+        let t = text(s.id);
+        let free = Item::new_text("free".into(), 0.0, 0.0, 20.0, [255; 4]);
+        let t_id = t.id;
+        let free_id = free.id;
+        let sid = s.id;
+        let mut scene = Scene::new();
+        scene.add_item(s);
+        scene.add_item(t);
+        scene.add_item(free);
+
+        // 容器在场景中 → 是绑定文本
+        assert!(scene.is_bound_text(scene.get_item(&t_id).unwrap()));
+        // 自由文本 → 不是
+        assert!(!scene.is_bound_text(scene.get_item(&free_id).unwrap()));
+
+        // 容器删除后（孤儿引用）→ 不再视为绑定文本
+        scene.remove_item(&sid);
+        assert!(!scene.is_bound_text(scene.get_item(&t_id).unwrap()));
     }
 
     #[test]

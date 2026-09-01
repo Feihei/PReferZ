@@ -1636,11 +1636,14 @@ impl PReferZApp {
                     self.scene.deselect_all();
                 }
                 // 先收集命中 id，再 select（避免同时 &self.items 和 &mut self.selection）
+                // 绑定文本不参与框选：它随容器联动（容器被框选时经 texts_bound_to
+                // 带上），单独框中它只会得到一个移动不了的可视快照选中框
                 let hits: Vec<ItemId> = self
                     .scene
                     .items
                     .iter()
                     .filter(|item| item.bounding_rect().intersects(&sel_rect))
+                    .filter(|item| !self.scene.is_bound_text(item))
                     .map(|item| item.id)
                     .collect();
                 for id in hits {
