@@ -503,10 +503,15 @@ impl Command for SetStrokeStyle {
 
 // ─────────────────────────── Set shape fill ───────────────────────────
 
+/// 一次填充色变更的批量条目：`(item_id, old_fill, new_fill)`。
+/// 起别名而非裸写三元组，否则 `Vec<(ItemId, Option<[u8;4]>, Option<[u8;4]>)>` 会
+/// 触发 `clippy::type_complexity`（其它批量命令的元组更短，未触及该阈值）。
+pub type FillChange = (ItemId, Option<[u8; 4]>, Option<[u8; 4]>);
+
 /// 批量设置 Shape 填充色（Phase H）。`None` = 透明。
 /// 每项自带 old/new，整批只占一条 undo 记录（D3）。
 pub struct SetShapeFill {
-    items: Vec<(ItemId, Option<[u8; 4]>, Option<[u8; 4]>)>,
+    items: Vec<FillChange>,
     preview_already_applied: bool,
 }
 
@@ -519,7 +524,7 @@ impl SetShapeFill {
     }
 
     /// 批量构造：`(item_id, old, new)` 三元组列表。
-    pub fn new_batch(items: Vec<(ItemId, Option<[u8; 4]>, Option<[u8; 4]>)>) -> Self {
+    pub fn new_batch(items: Vec<FillChange>) -> Self {
         Self {
             items,
             preview_already_applied: false,
@@ -532,7 +537,7 @@ impl SetShapeFill {
         self
     }
 
-    fn apply(scene: &mut Scene, items: &[(ItemId, Option<[u8; 4]>, Option<[u8; 4]>)], new: bool) {
+    fn apply(scene: &mut Scene, items: &[FillChange], new: bool) {
         for (id, old, new_fill) in items {
             let value = if new { *new_fill } else { *old };
             if let Some(item) = scene.get_item_mut(id) {
