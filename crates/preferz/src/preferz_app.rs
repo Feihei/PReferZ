@@ -1,6 +1,6 @@
-use crate::i18n::{action_label, t, Lang, T};
+use crate::i18n::{t, Lang, T};
 use crate::interaction;
-use crate::keymap::{Action, BindKey, KeyBind, Keymap, KeymapMap};
+use crate::keymap::{Action, Keymap, KeymapMap};
 use crate::theme::{self, ThemeMode};
 use crate::ui::stylers::{build_shape_visuals, item_local_to_screen};
 use crate::ui::widgets::transform_handles::{
@@ -435,10 +435,6 @@ pub struct PReferZApp {
     keymap: Keymap,
     /// 明暗主题（Light/Dark/Auto），持久化到 config.json（Phase G）。
     theme: ThemeMode,
-    /// 正在等待按键捕获的动作槽位（动作 + 该动作的第几个绑定）。
-    rebinding: Option<(Action, usize)>,
-    /// 最近一次改绑的冲突提示（D2-a：标红告知占用者）。
-    rebind_notice: Option<String>,
     /// 最近文件列表（Phase 6 §2.3 欢迎页）。
     recent_files: Vec<PathBuf>,
     /// 欢迎页点击的最近文件路径（待处理）。
@@ -525,8 +521,6 @@ impl PReferZApp {
             lang: cfg.lang,
             keymap: Keymap::from_partial(cfg.keymap),
             theme: cfg.theme,
-            rebinding: None,
-            rebind_notice: None,
             recent_files: load_recent_files(),
             pending_open_recent: None,
             logo_texture: None,
@@ -1236,11 +1230,8 @@ impl eframe::App for PReferZApp {
             self.render_settings_window(ctx);
         }
 
-        // 快捷
+        // 快捷键派发（改绑捕获入口已按 ADR-0007 / D6 移除，这里只保留查表派发）
         self.handle_shortcuts(ctx);
-        // 改绑捕获必须排在 handle_shortcuts 之后：否则刚捕获的组合会在同一帧里
-        // 顺带触发它新绑定的那个动作。
-        self.poll_rebind_capture(ctx);
 
         // 保存提示对话框（关闭/新建时若 dirty 弹出
         self.render_save_prompt(ctx);
@@ -3605,9 +3596,6 @@ impl PReferZApp {
     ///   把某个动作绑到字母键就会导致该字母打不进文本。
     /// - `Cancel` 走 [`Self::cancel_pressed`]（查表 + `Esc` 硬兜底），见 D1-a。
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
-        if self.rebinding.is_some() {
-            return;
-        }
         // 文本编辑中不派发场景快捷键（Esc/Enter 由 render_text_editor 自行处理）
         if self.editing_text.is_some() {
             return;
@@ -3790,46 +3778,6 @@ impl PReferZApp {
         fill(t(self.lang, key), &parts)
     }
 
-    /// 捕获一次按键并应用改绑（D2-a：冲突时覆盖，并提示被挤掉的动作）。
-    fn poll_rebind_capture(&mut self, ctx: &egui::Context) {
-        let Some((action, index)) = self.rebinding else {
-            return;
-        };
-        // 裸 Esc = 放弃改绑
-        let abort = ctx.input(|i| {
-            i.key_pressed(egui::Key::Escape)
-                && !i.modifiers.ctrl
-                && !i.modifiers.shift
-                && !i.modifiers.alt
-        });
-        if abort {
-            self.rebinding = None;
-            return;
-        }
-        let captured = ctx.input(|i| {
-            i.events.iter().find_map(|e| match e {
-                egui::Event::Key {
-                    key,
-                    pressed: true,
-                    modifiers,
-                    ..
-                } => BindKey::from_egui(*key).map(|k| (k, *modifiers)),
-                _ => None,
-            })
-        });
-        let Some((key, modifiers)) = captured else {
-            return;
-        };
-        let evicted = self.keymap.rebind_captured(action, index, key, modifiers);
-        self.rebinding = None;
-        self.rebind_notice = evicted.first().map(|other| {
-            fill(
-                t(self.lang, T::SettingsKeymapConflict),
-                &[action_label(self.lang, *other).to_string()],
-            )
-        });
-        self.persist_config();
-    }
     fn finish_import(&mut self, ctx: &egui::Context, outcome: ImportOutcome) {
         if let Some(e) = outcome.error {
             self.flash(format!("导入失败 {}: {}", outcome.path.display(), e));
@@ -4841,7 +4789,6 @@ impl PReferZApp {
         let mut frame_changed = false;
         let mut lang_changed = false;
         let mut theme_changed = false;
-        let mut keymap_changed = false;
         egui::Window::new(t(self.lang, T::SettingsTitle))
             .open(&mut open)
             .resizable(false)
@@ -4909,71 +4856,8 @@ impl PReferZApp {
                     });
                 ui.separator();
 
-                // 快捷键映射表（可改绑）。先快照绑定文本，避免闭包里同时借
-                // self 的可变与不可变部分。
-                let lang = self.lang;
-                let rows: Vec<(Action, Vec<(KeyBind, String)>)> = Action::ALL
-                    .iter()
-                    .map(|a| {
-                        (
-                            *a,
-                            self.keymap
-                                .bindings(*a)
-                                .iter()
-                                .map(|b| (*b, b.display()))
-                                .collect(),
-                        )
-                    })
-                    .collect();
-                let unbound_label = t(lang, T::SettingsKeymapUnbound).to_string();
-                let capturing_label = t(lang, T::SettingsKeymapCapturing).to_string();
-
-                ui.label(t(lang, T::SettingsShortcuts));
-                ui.label(t(lang, T::SettingsKeymapHint));
-                if ui.button(t(lang, T::SettingsKeymapRestore)).clicked() {
-                    self.keymap.reset();
-                    self.rebinding = None;
-                    self.rebind_notice = None;
-                    keymap_changed = true;
-                }
-                if let Some(notice) = self.rebind_notice.clone() {
-                    ui.colored_label(egui::Color32::RED, notice);
-                }
-                egui::ScrollArea::vertical()
-                    .max_height(220.0)
-                    .id_salt("keymap_scroll")
-                    .show(ui, |ui| {
-                        for (action, binds) in &rows {
-                            ui.horizontal(|ui| {
-                                ui.label(action_label(lang, *action));
-                                for (i, (bind, text)) in binds.iter().enumerate() {
-                                    let capturing = self.rebinding == Some((*action, i));
-                                    // 正常改绑路径总会挤掉对方，只有手改 config.json
-                                    // 才可能出现两个动作抢同一组合，这里标红提示。
-                                    let dup = self
-                                        .keymap
-                                        .owner_of(bind)
-                                        .is_some_and(|owner| owner != *action);
-                                    let label = if capturing {
-                                        capturing_label.clone()
-                                    } else if dup {
-                                        format!("{text} \u{26A0}")
-                                    } else {
-                                        text.clone()
-                                    };
-                                    if ui.button(label).clicked() {
-                                        self.rebinding = Some((*action, i));
-                                        self.rebind_notice = None;
-                                    }
-                                }
-                                // 被冲突挤空后给一个重新绑定的入口（D2-a）
-                                if binds.is_empty() && ui.button(unbound_label.clone()).clicked() {
-                                    self.rebinding = Some((*action, 0));
-                                    self.rebind_notice = None;
-                                }
-                            });
-                        }
-                    });
+                // 注：键鼠改绑设置入口已按 ADR-0007 / D6 移除（不做用户自定义）。
+                // `Action`/`Keymap` 派发架构保留，默认键位由 Phase K 对齐 Excalidraw。
             });
         self.settings_open = open;
         // 应用窗口形态切换
@@ -4993,9 +4877,6 @@ impl PReferZApp {
         if lang_changed {
             self.lang = lang;
             // 持久化到 config.json
-            self.persist_config();
-        }
-        if keymap_changed {
             self.persist_config();
         }
         if theme_changed {
