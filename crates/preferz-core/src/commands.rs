@@ -1,6 +1,6 @@
 use crate::item::{CropRect, ItemId, ItemKind};
 use crate::scene::{RenumberPlan, Scene};
-use crate::shape::{ArrowHeadStyle, CurveType};
+use crate::shape::{ArrowHeadStyle, CurveType, StrokeStyle, TextStyle};
 use crate::spaces::CanvasVector;
 use crate::transform::Transform;
 
@@ -104,17 +104,26 @@ impl Command for EditShapePoints {
 
 // ─────────────────────────── Set arrow heads ───────────────────────────
 
-/// 设置线性对象（Polyline）起/终点箭头样式命令。
+/// 一对起/终点箭头样式的快照。批量命令里用它替代散落的四个 Option，
+/// 免得 `Vec<(ItemId, Option<..>, Option<..>, Option<..>, Option<..>)>` 这种五元组。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ArrowHeads {
+    pub start: Option<ArrowHeadStyle>,
+    pub end: Option<ArrowHeadStyle>,
+}
+
+/// 批量设置线性对象（Polyline）起/终点箭头样式命令。
+///
+/// 每项自带 old/new，**整批只占一条 undo 记录**（D3：多选显示交集值、修改批量应用）。
+/// 单项场景用 [`Self::new`]，多选场景用 [`Self::new_batch`]。
 /// 样式面板开关触发：UI 未直接改 item，push 时正常 redo 应用（skip_first_redo = false）。
 pub struct SetArrowHeads {
-    item_id: ItemId,
-    old_start: Option<ArrowHeadStyle>,
-    old_end: Option<ArrowHeadStyle>,
-    new_start: Option<ArrowHeadStyle>,
-    new_end: Option<ArrowHeadStyle>,
+    items: Vec<(ItemId, ArrowHeads, ArrowHeads)>,
+    preview_already_applied: bool,
 }
 
 impl SetArrowHeads {
+    /// 单项便捷构造（保持旧的 5 参签名，调用点不必改）。
     pub fn new(
         item_id: ItemId,
         old_start: Option<ArrowHeadStyle>,
@@ -123,190 +132,508 @@ impl SetArrowHeads {
         new_end: Option<ArrowHeadStyle>,
     ) -> Self {
         Self {
-            item_id,
-            old_start,
-            old_end,
-            new_start,
-            new_end,
+            items: vec![(
+                item_id,
+                ArrowHeads {
+                    start: old_start,
+                    end: old_end,
+                },
+                ArrowHeads {
+                    start: new_start,
+                    end: new_end,
+                },
+            )],
+            preview_already_applied: false,
+        }
+    }
+
+    /// 批量构造：`(item_id, old, new)` 三元组列表。
+    pub fn new_batch(items: Vec<(ItemId, ArrowHeads, ArrowHeads)>) -> Self {
+        Self {
+            items,
+            preview_already_applied: false,
+        }
+    }
+
+    /// 声明是否为预览模式（滑块/连续控件在拖动中已直接改 item，释放时跳过首次 redo）。
+    pub fn with_preview_applied(mut self, applied: bool) -> Self {
+        self.preview_already_applied = applied;
+        self
+    }
+
+    fn apply(scene: &mut Scene, items: &[(ItemId, ArrowHeads, ArrowHeads)], new: bool) {
+        for (id, old, new_heads) in items {
+            let target = if new { new_heads } else { old };
+            if let Some(item) = scene.get_item_mut(id) {
+                if let ItemKind::Shape {
+                    start_arrow,
+                    end_arrow,
+                    ..
+                } = &mut item.kind
+                {
+                    *start_arrow = target.start;
+                    *end_arrow = target.end;
+                }
+            }
         }
     }
 }
 
 impl Command for SetArrowHeads {
     fn redo(&mut self, scene: &mut Scene) {
-        if let Some(item) = scene.get_item_mut(&self.item_id) {
-            if let ItemKind::Shape {
-                start_arrow,
-                end_arrow,
-                ..
-            } = &mut item.kind
-            {
-                *start_arrow = self.new_start;
-                *end_arrow = self.new_end;
-            }
-        }
+        let items = std::mem::take(&mut self.items);
+        Self::apply(scene, &items, true);
+        self.items = items;
     }
 
     fn undo(&mut self, scene: &mut Scene) {
-        if let Some(item) = scene.get_item_mut(&self.item_id) {
-            if let ItemKind::Shape {
-                start_arrow,
-                end_arrow,
-                ..
-            } = &mut item.kind
-            {
-                *start_arrow = self.old_start;
-                *end_arrow = self.old_end;
-            }
-        }
+        let items = std::mem::take(&mut self.items);
+        Self::apply(scene, &items, false);
+        self.items = items;
+    }
+
+    fn skip_first_redo(&self) -> bool {
+        self.preview_already_applied
     }
 }
 
 // ─────────────────────────── Set closed ───────────────────────────
 
-/// 切换线性对象（Polyline）闭合状态命令（闭合时首尾相连、可填充）。
-/// 样式面板开关触发：UI 未直接改 item，push 时正常 redo 应用（skip_first_redo = false）。
+/// 批量切换线性对象（Polyline）闭合状态命令（闭合时首尾相连、可填充）。
+/// 整批只占一条 undo 记录（D3）；单项用 [`Self::new`]，多选批量用 [`Self::new_batch`]。
 pub struct SetClosed {
-    item_id: ItemId,
-    old_closed: bool,
-    new_closed: bool,
+    items: Vec<(ItemId, bool, bool)>,
+    preview_already_applied: bool,
 }
 
 impl SetClosed {
     pub fn new(item_id: ItemId, old_closed: bool, new_closed: bool) -> Self {
         Self {
-            item_id,
-            old_closed,
-            new_closed,
+            items: vec![(item_id, old_closed, new_closed)],
+            preview_already_applied: false,
+        }
+    }
+
+    /// 批量构造：`(item_id, old, new)` 三元组列表。
+    pub fn new_batch(items: Vec<(ItemId, bool, bool)>) -> Self {
+        Self {
+            items,
+            preview_already_applied: false,
+        }
+    }
+
+    /// 声明是否为预览模式（UI 已直接改 item 时传 true，push 跳过首次 redo）。
+    pub fn with_preview_applied(mut self, applied: bool) -> Self {
+        self.preview_already_applied = applied;
+        self
+    }
+
+    fn apply(scene: &mut Scene, items: &[(ItemId, bool, bool)], new: bool) {
+        for (id, old, new_closed) in items {
+            let value = if new { *new_closed } else { *old };
+            if let Some(item) = scene.get_item_mut(id) {
+                if let ItemKind::Shape { closed, .. } = &mut item.kind {
+                    *closed = value;
+                }
+            }
         }
     }
 }
 
 impl Command for SetClosed {
     fn redo(&mut self, scene: &mut Scene) {
-        if let Some(item) = scene.get_item_mut(&self.item_id) {
-            if let ItemKind::Shape { closed, .. } = &mut item.kind {
-                *closed = self.new_closed;
-            }
-        }
+        let items = std::mem::take(&mut self.items);
+        Self::apply(scene, &items, true);
+        self.items = items;
     }
 
     fn undo(&mut self, scene: &mut Scene) {
-        if let Some(item) = scene.get_item_mut(&self.item_id) {
-            if let ItemKind::Shape { closed, .. } = &mut item.kind {
-                *closed = self.old_closed;
-            }
-        }
+        let items = std::mem::take(&mut self.items);
+        Self::apply(scene, &items, false);
+        self.items = items;
+    }
+
+    fn skip_first_redo(&self) -> bool {
+        self.preview_already_applied
     }
 }
 
 // ─────────────────────────── Set curve type ───────────────────────────
 
-/// 切换线性对象（Polyline）曲线模式（Straight / Curved，Phase I）。
-/// 样式面板切换触发：UI 未直接改 item，push 时正常 redo 应用（skip_first_redo = false）。
+/// 批量切换线性对象（Polyline）曲线模式（Straight / Curved，Phase I）。
+/// 整批只占一条 undo 记录（D3）；单项用 [`Self::new`]，多选批量用 [`Self::new_batch`]。
 pub struct SetCurveType {
-    item_id: ItemId,
-    old_curve: CurveType,
-    new_curve: CurveType,
+    items: Vec<(ItemId, CurveType, CurveType)>,
+    preview_already_applied: bool,
 }
 
 impl SetCurveType {
     pub fn new(item_id: ItemId, old_curve: CurveType, new_curve: CurveType) -> Self {
         Self {
-            item_id,
-            old_curve,
-            new_curve,
+            items: vec![(item_id, old_curve, new_curve)],
+            preview_already_applied: false,
+        }
+    }
+
+    /// 批量构造：`(item_id, old, new)` 三元组列表。
+    pub fn new_batch(items: Vec<(ItemId, CurveType, CurveType)>) -> Self {
+        Self {
+            items,
+            preview_already_applied: false,
+        }
+    }
+
+    /// 声明是否为预览模式（UI 已直接改 item 时传 true，push 跳过首次 redo）。
+    pub fn with_preview_applied(mut self, applied: bool) -> Self {
+        self.preview_already_applied = applied;
+        self
+    }
+
+    fn apply(scene: &mut Scene, items: &[(ItemId, CurveType, CurveType)], new: bool) {
+        for (id, old, new_curve) in items {
+            let value = if new { *new_curve } else { *old };
+            if let Some(item) = scene.get_item_mut(id) {
+                if let ItemKind::Shape { curve_type, .. } = &mut item.kind {
+                    *curve_type = value;
+                }
+            }
         }
     }
 }
 
 impl Command for SetCurveType {
     fn redo(&mut self, scene: &mut Scene) {
-        if let Some(item) = scene.get_item_mut(&self.item_id) {
-            if let ItemKind::Shape { curve_type, .. } = &mut item.kind {
-                *curve_type = self.new_curve;
-            }
-        }
+        let items = std::mem::take(&mut self.items);
+        Self::apply(scene, &items, true);
+        self.items = items;
     }
 
     fn undo(&mut self, scene: &mut Scene) {
-        if let Some(item) = scene.get_item_mut(&self.item_id) {
-            if let ItemKind::Shape { curve_type, .. } = &mut item.kind {
-                *curve_type = self.old_curve;
-            }
-        }
+        let items = std::mem::take(&mut self.items);
+        Self::apply(scene, &items, false);
+        self.items = items;
+    }
+
+    fn skip_first_redo(&self) -> bool {
+        self.preview_already_applied
     }
 }
 
 // ─────────────────────────── Set roundness ───────────────────────────
 
-/// 设置矩形族圆角比例（0..1，Phase I）。仅矩形族生效。
-/// 样式面板滑块触发：UI 未直接改 item，push 时正常 redo 应用（skip_first_redo = false）。
+/// 批量设置矩形族圆角比例（0..1，Phase I）。仅矩形族生效。
+/// 整批只占一条 undo 记录（D3）；单项用 [`Self::new`]，多选批量用 [`Self::new_batch`]。
 pub struct SetRoundness {
-    item_id: ItemId,
-    old_roundness: f32,
-    new_roundness: f32,
+    items: Vec<(ItemId, f32, f32)>,
+    preview_already_applied: bool,
 }
 
 impl SetRoundness {
     pub fn new(item_id: ItemId, old_roundness: f32, new_roundness: f32) -> Self {
         Self {
-            item_id,
-            old_roundness,
-            new_roundness,
+            items: vec![(item_id, old_roundness, new_roundness)],
+            preview_already_applied: false,
+        }
+    }
+
+    /// 批量构造：`(item_id, old, new)` 三元组列表（滑块拖动结束时一次性入栈）。
+    pub fn new_batch(items: Vec<(ItemId, f32, f32)>) -> Self {
+        Self {
+            items,
+            preview_already_applied: false,
+        }
+    }
+
+    /// 声明是否为预览模式（滑块拖动中 UI 已直接改 item，释放时传 true）。
+    pub fn with_preview_applied(mut self, applied: bool) -> Self {
+        self.preview_already_applied = applied;
+        self
+    }
+
+    fn apply(scene: &mut Scene, items: &[(ItemId, f32, f32)], new: bool) {
+        for (id, old, new_roundness) in items {
+            let value = if new { *new_roundness } else { *old };
+            if let Some(item) = scene.get_item_mut(id) {
+                if let ItemKind::Shape { roundness, .. } = &mut item.kind {
+                    *roundness = value;
+                }
+            }
         }
     }
 }
 
 impl Command for SetRoundness {
     fn redo(&mut self, scene: &mut Scene) {
-        if let Some(item) = scene.get_item_mut(&self.item_id) {
-            if let ItemKind::Shape { roundness, .. } = &mut item.kind {
-                *roundness = self.new_roundness;
-            }
-        }
+        let items = std::mem::take(&mut self.items);
+        Self::apply(scene, &items, true);
+        self.items = items;
     }
 
     fn undo(&mut self, scene: &mut Scene) {
-        if let Some(item) = scene.get_item_mut(&self.item_id) {
-            if let ItemKind::Shape { roundness, .. } = &mut item.kind {
-                *roundness = self.old_roundness;
-            }
-        }
+        let items = std::mem::take(&mut self.items);
+        Self::apply(scene, &items, false);
+        self.items = items;
+    }
+
+    fn skip_first_redo(&self) -> bool {
+        self.preview_already_applied
     }
 }
 
 // ─────────────────────────── Set rough ───────────────────────────
 
-/// 切换 Shape 手绘风描边命令（Phase F）。开启时由 RoughStyler 渲染抖动描边。
+/// 批量切换 Shape 手绘风描边命令（Phase F）。开启时由 RoughStyler 渲染抖动描边。
 /// 经 `Item::set_rough` 写入，顺带在 seed 为 0 时生成随机种子。
+/// 整批只占一条 undo 记录（D3）；单项用 [`Self::new`]，多选批量用 [`Self::new_batch`]。
 pub struct SetRough {
-    item_id: ItemId,
-    old_rough: bool,
-    new_rough: bool,
+    items: Vec<(ItemId, bool, bool)>,
+    preview_already_applied: bool,
 }
 
 impl SetRough {
     pub fn new(item_id: ItemId, old_rough: bool, new_rough: bool) -> Self {
         Self {
-            item_id,
-            old_rough,
-            new_rough,
+            items: vec![(item_id, old_rough, new_rough)],
+            preview_already_applied: false,
+        }
+    }
+
+    /// 批量构造：`(item_id, old, new)` 三元组列表。
+    pub fn new_batch(items: Vec<(ItemId, bool, bool)>) -> Self {
+        Self {
+            items,
+            preview_already_applied: false,
+        }
+    }
+
+    /// 声明是否为预览模式（UI 已直接改 item 时传 true，push 跳过首次 redo）。
+    pub fn with_preview_applied(mut self, applied: bool) -> Self {
+        self.preview_already_applied = applied;
+        self
+    }
+
+    fn apply(scene: &mut Scene, items: &[(ItemId, bool, bool)], new: bool) {
+        for (id, old, new_rough) in items {
+            let value = if new { *new_rough } else { *old };
+            if let Some(item) = scene.get_item_mut(id) {
+                item.set_rough(value);
+            }
         }
     }
 }
 
 impl Command for SetRough {
     fn redo(&mut self, scene: &mut Scene) {
-        if let Some(item) = scene.get_item_mut(&self.item_id) {
-            item.set_rough(self.new_rough);
-        }
+        let items = std::mem::take(&mut self.items);
+        Self::apply(scene, &items, true);
+        self.items = items;
     }
 
     fn undo(&mut self, scene: &mut Scene) {
-        if let Some(item) = scene.get_item_mut(&self.item_id) {
-            item.set_rough(self.old_rough);
+        let items = std::mem::take(&mut self.items);
+        Self::apply(scene, &items, false);
+        self.items = items;
+    }
+
+    fn skip_first_redo(&self) -> bool {
+        self.preview_already_applied
+    }
+}
+
+// ─────────────────────────── Set stroke style ───────────────────────────
+
+/// 批量设置 Shape 描边样式（颜色 / 线宽 / 线型，Phase H）。
+/// 每项自带 old/new，整批只占一条 undo 记录（D3）。
+pub struct SetStrokeStyle {
+    items: Vec<(ItemId, StrokeStyle, StrokeStyle)>,
+    preview_already_applied: bool,
+}
+
+impl SetStrokeStyle {
+    pub fn new(item_id: ItemId, old_stroke: StrokeStyle, new_stroke: StrokeStyle) -> Self {
+        Self {
+            items: vec![(item_id, old_stroke, new_stroke)],
+            preview_already_applied: false,
         }
+    }
+
+    /// 批量构造：`(item_id, old, new)` 三元组列表。
+    pub fn new_batch(items: Vec<(ItemId, StrokeStyle, StrokeStyle)>) -> Self {
+        Self {
+            items,
+            preview_already_applied: false,
+        }
+    }
+
+    /// 声明是否为预览模式（滑块拖动中 UI 已直接改 item，释放时传 true）。
+    pub fn with_preview_applied(mut self, applied: bool) -> Self {
+        self.preview_already_applied = applied;
+        self
+    }
+
+    fn apply(scene: &mut Scene, items: &[(ItemId, StrokeStyle, StrokeStyle)], new: bool) {
+        for (id, old, new_stroke) in items {
+            let value = if new { *new_stroke } else { *old };
+            if let Some(item) = scene.get_item_mut(id) {
+                if let ItemKind::Shape { stroke, .. } = &mut item.kind {
+                    *stroke = value;
+                }
+            }
+        }
+    }
+}
+
+impl Command for SetStrokeStyle {
+    fn redo(&mut self, scene: &mut Scene) {
+        let items = std::mem::take(&mut self.items);
+        Self::apply(scene, &items, true);
+        self.items = items;
+    }
+
+    fn undo(&mut self, scene: &mut Scene) {
+        let items = std::mem::take(&mut self.items);
+        Self::apply(scene, &items, false);
+        self.items = items;
+    }
+
+    fn skip_first_redo(&self) -> bool {
+        self.preview_already_applied
+    }
+}
+
+// ─────────────────────────── Set shape fill ───────────────────────────
+
+/// 批量设置 Shape 填充色（Phase H）。`None` = 透明。
+/// 每项自带 old/new，整批只占一条 undo 记录（D3）。
+pub struct SetShapeFill {
+    items: Vec<(ItemId, Option<[u8; 4]>, Option<[u8; 4]>)>,
+    preview_already_applied: bool,
+}
+
+impl SetShapeFill {
+    pub fn new(item_id: ItemId, old_fill: Option<[u8; 4]>, new_fill: Option<[u8; 4]>) -> Self {
+        Self {
+            items: vec![(item_id, old_fill, new_fill)],
+            preview_already_applied: false,
+        }
+    }
+
+    /// 批量构造：`(item_id, old, new)` 三元组列表。
+    pub fn new_batch(items: Vec<(ItemId, Option<[u8; 4]>, Option<[u8; 4]>)>) -> Self {
+        Self {
+            items,
+            preview_already_applied: false,
+        }
+    }
+
+    /// 声明是否为预览模式（UI 已直接改 item 时传 true，push 跳过首次 redo）。
+    pub fn with_preview_applied(mut self, applied: bool) -> Self {
+        self.preview_already_applied = applied;
+        self
+    }
+
+    fn apply(scene: &mut Scene, items: &[(ItemId, Option<[u8; 4]>, Option<[u8; 4]>)], new: bool) {
+        for (id, old, new_fill) in items {
+            let value = if new { *new_fill } else { *old };
+            if let Some(item) = scene.get_item_mut(id) {
+                if let ItemKind::Shape { fill, .. } = &mut item.kind {
+                    *fill = value;
+                }
+            }
+        }
+    }
+}
+
+impl Command for SetShapeFill {
+    fn redo(&mut self, scene: &mut Scene) {
+        let items = std::mem::take(&mut self.items);
+        Self::apply(scene, &items, true);
+        self.items = items;
+    }
+
+    fn undo(&mut self, scene: &mut Scene) {
+        let items = std::mem::take(&mut self.items);
+        Self::apply(scene, &items, false);
+        self.items = items;
+    }
+
+    fn skip_first_redo(&self) -> bool {
+        self.preview_already_applied
+    }
+}
+
+// ─────────────────────────── Set text style ───────────────────────────
+
+/// 批量设置 Text item 样式（字号 / 颜色 / 背景，Phase H）。
+///
+/// 命令层按**整份样式快照**存 old/new，UI 上三个控件任一变化都走同一条路径，
+/// 因此一次改动只产生一条 undo 记录。背景消费 `ItemKind::Text::background`
+/// 这个预留字段（默认 `None` = 不画底色）。
+pub struct SetTextStyle {
+    items: Vec<(ItemId, TextStyle, TextStyle)>,
+    preview_already_applied: bool,
+}
+
+impl SetTextStyle {
+    pub fn new(item_id: ItemId, old_style: TextStyle, new_style: TextStyle) -> Self {
+        Self {
+            items: vec![(item_id, old_style, new_style)],
+            preview_already_applied: false,
+        }
+    }
+
+    /// 批量构造：`(item_id, old, new)` 三元组列表。
+    pub fn new_batch(items: Vec<(ItemId, TextStyle, TextStyle)>) -> Self {
+        Self {
+            items,
+            preview_already_applied: false,
+        }
+    }
+
+    /// 声明是否为预览模式（滑块拖动中 UI 已直接改 item，释放时传 true）。
+    pub fn with_preview_applied(mut self, applied: bool) -> Self {
+        self.preview_already_applied = applied;
+        self
+    }
+
+    fn apply(scene: &mut Scene, items: &[(ItemId, TextStyle, TextStyle)], new: bool) {
+        for (id, old, new_style) in items {
+            let value = if new { *new_style } else { *old };
+            if let Some(item) = scene.get_item_mut(id) {
+                if let ItemKind::Text {
+                    font_size,
+                    color,
+                    background,
+                    measured_size,
+                    ..
+                } = &mut item.kind
+                {
+                    *font_size = value.font_size;
+                    *color = value.color;
+                    *background = value.background;
+                    // 字号变了，缓存的测量尺寸作废，下一帧重测（否则变换框尺寸滞后）
+                    *measured_size = None;
+                }
+            }
+        }
+    }
+}
+
+impl Command for SetTextStyle {
+    fn redo(&mut self, scene: &mut Scene) {
+        let items = std::mem::take(&mut self.items);
+        Self::apply(scene, &items, true);
+        self.items = items;
+    }
+
+    fn undo(&mut self, scene: &mut Scene) {
+        let items = std::mem::take(&mut self.items);
+        Self::apply(scene, &items, false);
+        self.items = items;
+    }
+
+    fn skip_first_redo(&self) -> bool {
+        self.preview_already_applied
     }
 }
 
@@ -966,7 +1293,7 @@ impl Command for RenumberFrame {
 mod tests {
     use super::*;
     use crate::item::Item;
-    use crate::shape::{ShapeType, StrokeStyle};
+    use crate::shape::{DashStyle, ShapeType, StrokeStyle};
 
     fn shape_in(scene: &mut Scene) -> ItemId {
         let item = Item::new_shape(
@@ -1026,5 +1353,255 @@ mod tests {
         let mut cmd = SetRough::new(id, false, true);
         cmd.redo(&mut scene);
         assert!(!scene.get_item(&id).unwrap().rough());
+    }
+
+    // ───────── 批量命令（Phase H / D3：多选一次改动一条 undo） ─────────
+
+    fn two_shapes(scene: &mut Scene) -> (ItemId, ItemId) {
+        (shape_in(scene), shape_in(scene))
+    }
+
+    fn text_in(scene: &mut Scene) -> ItemId {
+        let item = Item::new_text("hi".to_string(), 0.0, 0.0, 16.0, [255, 255, 255, 255]);
+        let id = item.id;
+        scene.add_item(item);
+        id
+    }
+
+    fn roundness_of(scene: &Scene, id: ItemId) -> f32 {
+        match &scene.get_item(&id).unwrap().kind {
+            ItemKind::Shape { roundness, .. } => *roundness,
+            _ => panic!("expected Shape kind"),
+        }
+    }
+
+    fn curve_of(scene: &Scene, id: ItemId) -> CurveType {
+        match &scene.get_item(&id).unwrap().kind {
+            ItemKind::Shape { curve_type, .. } => *curve_type,
+            _ => panic!("expected Shape kind"),
+        }
+    }
+
+    fn closed_of(scene: &Scene, id: ItemId) -> bool {
+        match &scene.get_item(&id).unwrap().kind {
+            ItemKind::Shape { closed, .. } => *closed,
+            _ => panic!("expected Shape kind"),
+        }
+    }
+
+    fn arrows_of(scene: &Scene, id: ItemId) -> (Option<ArrowHeadStyle>, Option<ArrowHeadStyle>) {
+        match &scene.get_item(&id).unwrap().kind {
+            ItemKind::Shape {
+                start_arrow,
+                end_arrow,
+                ..
+            } => (*start_arrow, *end_arrow),
+            _ => panic!("expected Shape kind"),
+        }
+    }
+
+    fn stroke_of(scene: &Scene, id: ItemId) -> StrokeStyle {
+        match &scene.get_item(&id).unwrap().kind {
+            ItemKind::Shape { stroke, .. } => *stroke,
+            _ => panic!("expected Shape kind"),
+        }
+    }
+
+    fn fill_of(scene: &Scene, id: ItemId) -> Option<[u8; 4]> {
+        match &scene.get_item(&id).unwrap().kind {
+            ItemKind::Shape { fill, .. } => *fill,
+            _ => panic!("expected Shape kind"),
+        }
+    }
+
+    #[test]
+    fn set_rough_batch_toggles_every_item() {
+        let mut scene = Scene::new();
+        let (a, b) = two_shapes(&mut scene);
+        let mut cmd = SetRough::new_batch(vec![(a, false, true), (b, false, true)]);
+        cmd.redo(&mut scene);
+        assert!(scene.get_item(&a).unwrap().rough());
+        assert!(scene.get_item(&b).unwrap().rough());
+        cmd.undo(&mut scene);
+        assert!(!scene.get_item(&a).unwrap().rough());
+        assert!(!scene.get_item(&b).unwrap().rough());
+    }
+
+    #[test]
+    fn set_roundness_batch_undo_restores_each_items_own_old_value() {
+        let mut scene = Scene::new();
+        let (a, b) = two_shapes(&mut scene);
+        // 两个 item 旧值不同，undo 必须各回各的，不能统一写回某个值
+        let mut cmd = SetRoundness::new_batch(vec![(a, 0.0, 0.5), (b, 0.25, 0.5)]);
+        cmd.redo(&mut scene);
+        assert_eq!(roundness_of(&scene, a), 0.5);
+        assert_eq!(roundness_of(&scene, b), 0.5);
+        cmd.undo(&mut scene);
+        assert_eq!(roundness_of(&scene, a), 0.0);
+        assert_eq!(roundness_of(&scene, b), 0.25);
+    }
+
+    #[test]
+    fn set_curve_type_batch_applies_and_undoes() {
+        let mut scene = Scene::new();
+        let (a, b) = two_shapes(&mut scene);
+        let mut cmd = SetCurveType::new_batch(vec![
+            (a, CurveType::Straight, CurveType::Curved),
+            (b, CurveType::Straight, CurveType::Curved),
+        ]);
+        cmd.redo(&mut scene);
+        assert_eq!(curve_of(&scene, a), CurveType::Curved);
+        assert_eq!(curve_of(&scene, b), CurveType::Curved);
+        cmd.undo(&mut scene);
+        assert_eq!(curve_of(&scene, a), CurveType::Straight);
+        assert_eq!(curve_of(&scene, b), CurveType::Straight);
+    }
+
+    #[test]
+    fn set_closed_batch_applies_and_undoes() {
+        let mut scene = Scene::new();
+        let (a, b) = two_shapes(&mut scene);
+        let mut cmd = SetClosed::new_batch(vec![(a, false, true), (b, false, true)]);
+        cmd.redo(&mut scene);
+        assert!(closed_of(&scene, a));
+        assert!(closed_of(&scene, b));
+        cmd.undo(&mut scene);
+        assert!(!closed_of(&scene, a));
+        assert!(!closed_of(&scene, b));
+    }
+
+    #[test]
+    fn set_arrow_heads_batch_sets_both_ends_per_item() {
+        let mut scene = Scene::new();
+        let (a, b) = two_shapes(&mut scene);
+        let old = ArrowHeads::default();
+        let new = ArrowHeads {
+            start: Some(ArrowHeadStyle::Dot),
+            end: Some(ArrowHeadStyle::Arrow),
+        };
+        let mut cmd = SetArrowHeads::new_batch(vec![(a, old, new), (b, old, new)]);
+        cmd.redo(&mut scene);
+        assert_eq!(arrows_of(&scene, a), (new.start, new.end));
+        assert_eq!(arrows_of(&scene, b), (new.start, new.end));
+        cmd.undo(&mut scene);
+        assert_eq!(arrows_of(&scene, a), (None, None));
+        assert_eq!(arrows_of(&scene, b), (None, None));
+    }
+
+    #[test]
+    fn set_stroke_style_batch_applies_and_undoes() {
+        let mut scene = Scene::new();
+        let (a, b) = two_shapes(&mut scene);
+        let old = StrokeStyle::default();
+        let new = StrokeStyle {
+            color: [255, 0, 0, 255],
+            width: 4.0,
+            dash: DashStyle::Dashed,
+        };
+        let mut cmd = SetStrokeStyle::new_batch(vec![(a, old, new), (b, old, new)]);
+        cmd.redo(&mut scene);
+        assert_eq!(stroke_of(&scene, a), new);
+        assert_eq!(stroke_of(&scene, b), new);
+        cmd.undo(&mut scene);
+        assert_eq!(stroke_of(&scene, a), old);
+        assert_eq!(stroke_of(&scene, b), old);
+    }
+
+    #[test]
+    fn set_shape_fill_batch_none_clears_fill_on_undo_restores() {
+        let mut scene = Scene::new();
+        let (a, b) = two_shapes(&mut scene);
+        let old = Some([1, 2, 3, 4]);
+        let mut cmd = SetShapeFill::new_batch(vec![(a, old, None), (b, None, Some([9, 9, 9, 9]))]);
+        cmd.redo(&mut scene);
+        assert_eq!(fill_of(&scene, a), None);
+        assert_eq!(fill_of(&scene, b), Some([9, 9, 9, 9]));
+        cmd.undo(&mut scene);
+        assert_eq!(fill_of(&scene, a), old);
+        assert_eq!(fill_of(&scene, b), None);
+    }
+
+    #[test]
+    fn set_text_style_batch_updates_size_color_and_background() {
+        let mut scene = Scene::new();
+        let id = text_in(&mut scene);
+        let old = TextStyle {
+            font_size: 16.0,
+            color: [255, 255, 255, 255],
+            background: None,
+        };
+        let new = TextStyle {
+            font_size: 32.0,
+            color: [10, 20, 30, 255],
+            background: Some([0, 0, 0, 128]),
+        };
+        let mut cmd = SetTextStyle::new_batch(vec![(id, old, new)]);
+        cmd.redo(&mut scene);
+        match &scene.get_item(&id).unwrap().kind {
+            ItemKind::Text {
+                font_size,
+                color,
+                background,
+                ..
+            } => {
+                assert_eq!(*font_size, 32.0);
+                assert_eq!(*color, [10, 20, 30, 255]);
+                assert_eq!(*background, Some([0, 0, 0, 128]));
+            }
+            _ => panic!("expected Text kind"),
+        }
+        cmd.undo(&mut scene);
+        match &scene.get_item(&id).unwrap().kind {
+            ItemKind::Text {
+                font_size,
+                color,
+                background,
+                ..
+            } => {
+                assert_eq!(*font_size, 16.0);
+                assert_eq!(*color, [255, 255, 255, 255]);
+                assert_eq!(*background, None);
+            }
+            _ => panic!("expected Text kind"),
+        }
+    }
+
+    #[test]
+    fn set_text_style_invalidates_measured_size_cache() {
+        let mut scene = Scene::new();
+        let id = text_in(&mut scene);
+        if let ItemKind::Text { measured_size, .. } = &mut scene.get_item_mut(&id).unwrap().kind {
+            *measured_size = Some((40.0, 20.0));
+        }
+        let old = TextStyle {
+            font_size: 16.0,
+            color: [255; 4],
+            background: None,
+        };
+        let mut new = old;
+        new.font_size = 48.0;
+        let mut cmd = SetTextStyle::new(id, old, new);
+        cmd.redo(&mut scene);
+        match &scene.get_item(&id).unwrap().kind {
+            // 字号变了，缓存尺寸必须作废，否则变换框仍按旧字号画
+            ItemKind::Text { measured_size, .. } => assert_eq!(*measured_size, None),
+            _ => panic!("expected Text kind"),
+        }
+    }
+
+    #[test]
+    fn batch_commands_skip_first_redo_only_when_declared() {
+        let mut scene = Scene::new();
+        let (a, _) = two_shapes(&mut scene);
+        assert!(
+            !SetRoundness::new(a, 0.0, 0.5).skip_first_redo(),
+            "默认应为 false（UI 未预改 item）"
+        );
+        assert!(
+            SetRoundness::new(a, 0.0, 0.5)
+                .with_preview_applied(true)
+                .skip_first_redo(),
+            "滑块拖动释放固化时应为 true（预览已直接改过 item）"
+        );
     }
 }

@@ -60,6 +60,21 @@ impl Default for StrokeStyle {
     }
 }
 
+/// Text item 的可编辑样式快照（Phase H）。
+///
+/// 单独成结构是为了让 `SetTextStyle` 命令用 `(old, new)` 一对值描述整次改动，
+/// 而不是为字号 / 颜色 / 背景各开一条命令——侧栏里拖一次滑块只该产生一条 undo 记录。
+/// 三个字段在 UI 上分属不同控件，但命令层按"整份样式"快照，改哪一项都走同一条路径。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TextStyle {
+    /// 字号（屏幕像素，与 `ItemKind::Text::font_size` 同单位）。
+    pub font_size: f32,
+    /// 文字颜色 RGBA。
+    pub color: [u8; 4],
+    /// 文字背景色；`None` = 全透明（默认，与 Excalidraw 一致）。
+    pub background: Option<[u8; 4]>,
+}
+
 /// 确定性伪随机数发生器（xorshift64\*）。
 ///
 /// 手绘风描边的抖动必须**可复现**：同一 `seed` 恒产生同一序列，
