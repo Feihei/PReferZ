@@ -64,7 +64,7 @@
   | I4 | .prz 迁移策略 | ✅ 新字段 `#[serde(default)]`，`USER_VERSION` 不变 |
   | — | 圆角范围 | 仅矩形族（按计划） |
   | — | 排后项 | D4 elbow 折线 / D5 hachure 填充 不纳入 Phase I |
-- [ ] **Phase H — 选中弹出属性侧栏**（中）：右侧 SidePanel 按 ItemKind 分节（Shape/Text/Pixmap/Frame）；改动全走 undo 栈，滑块连续修改合并命令；Text 节消费已预留的 `background` 字段
+- [x] **Phase H — 选中弹出属性侧栏**（中）：右侧 SidePanel 按 ItemKind 分节（Shape/Text/Pixmap/Frame）；改动全走 undo 栈，滑块连续修改合并命令；Text 节消费已预留的 `background` 字段。已交付（`2026-09-02`），见 CHANGELOG §Phase H
 - [ ] **Phase K — 默认快捷键对齐 Excalidraw**（小，可与任一阶段并行）：以 Excalidraw 官方键位为基准调整 `default_map()` 出厂默认；依据见 [ADR-0007](adr/0007-keymap-no-customization.md)（不做用户自定义，keymap 派发架构保留）。**D6 设置入口移除已完成**，仅剩默认键位对齐待做
 
 ### 决策点（2026-09-01 已拍板）
