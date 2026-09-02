@@ -12,10 +12,11 @@ use eframe::egui;
 use image::GenericImageView;
 use preferz_core::arrange::{plan_arrange, ArrangeMode};
 use preferz_core::commands::{
-    AddItem, ArrangeItems, ArrowHeads, CropItems, DeleteItems, EditShapePoints, EditTextContent,
-    FillChange, FillState, FlipItems, MoveItems, NormalizeItems, RenumberFrame, ReorderItems,
-    SetArrowHeads, SetClosed, SetCurveType, SetFrameNumber, SetPixmapProps, SetPixmapStyle,
-    SetRough, SetRoundness, SetShapeFill, SetStrokeStyle, SetTextStyle, TransformItem,
+    AddItem, AddItems, ArrangeItems, ArrowHeads, CropItems, DeleteItems, EditShapePoints,
+    EditTextContent, FillChange, FillState, FlipItems, MoveItems, NormalizeItems, RenumberFrame,
+    ReorderItems, SetArrowHeads, SetClosed, SetCurveType, SetFrameNumber, SetPixmapProps,
+    SetPixmapStyle, SetRough, SetRoundness, SetShapeFill, SetStrokeStyle, SetTextStyle,
+    TransformItem,
 };
 use preferz_core::shape::{
     ArrowHeadStyle, CurveType, DashStyle, FillStyle, PixmapStyle, ShapeType, StrokeStyle, TextStyle,
@@ -119,6 +120,16 @@ enum DragState {
     MoveItems {
         start_canvas: CanvasPoint,
         start_transforms: Vec<(ItemId, preferz_core::Transform)>,
+        /// Ctrl+拖动复制：本次拖拽新建的副本 id。释放时按**最终位置**入 undo，
+        /// 一次撤销即可撤掉整个「复制 + 移动」（plan.md 快赢项 #11）。
+        duplicate_ids: Option<Vec<ItemId>>,
+        /// 复制前的原选区（仅 `duplicate_ids = Some` 时有意义）。用于 Ctrl+点击
+        /// 未移动时回滚选区——副本与原件重叠，应删掉副本并恢复原件选中。
+        original_ids: Vec<ItemId>,
+        /// Shift+按在**已选中**的 item 上：按下时先不取消选中，留给 `end_drag`
+        /// 判定——没拖动就当作点击、取消选中；拖动了则是轴约束移动。
+        /// 否则 Shift+拖动会被原有 toggle 逻辑直接取消选中，约束移动永远用不上。
+        pending_deselect: Option<ItemId>,
     },
     /// 框选（spec L240）。空白处左键拖拽成矩形，Shift 加选。
     BoxSelect {
@@ -1312,7 +1323,8 @@ impl eframe::App for PReferZApp {
             if primary_down && drag_in_progress {
                 if let Some(pos) = pointer_pos {
                     let free_scale = ctx.input(|i| i.modifiers.ctrl);
-                    self.update_drag_preview(pos, free_scale);
+                    let axis_lock = ctx.input(|i| i.modifiers.shift);
+                    self.update_drag_preview(pos, free_scale, axis_lock);
                     ctx.request_repaint();
                 }
             }
@@ -1614,11 +1626,16 @@ impl PReferZApp {
         // 2) 命中 item：选中并开始移动拖
         if let Some(item) = interaction::get_item_at(screen_pos, &self.scene, &self.viewport) {
             let id = item.id;
+            let mut pending_deselect = None;
             if additive {
-                // Shift 加选：toggle，若取消选中则不开始拖
-                self.scene.toggle_selection(id);
-                if !self.scene.selection.contains(&id) {
-                    return;
+                if self.scene.selection.contains(&id) {
+                    // Shift 按在**已选中**的 item 上：既可能是"Shift+点击取消选中"，
+                    // 也可能是"Shift+拖动做轴约束移动"——两者要到释放时才能区分，
+                    // 这里先记下来交给 end_drag 判定。若在此直接 toggle，
+                    // Shift+拖动会先取消选中，轴约束移动就永远触发不到。
+                    pending_deselect = Some(id);
+                } else {
+                    self.scene.toggle_selection(id);
                 }
             } else if !self.scene.selection.contains(&id) {
                 // 非加选且未选中：替换选中为该
@@ -1642,7 +1659,30 @@ impl PReferZApp {
             }
             collected.sort();
             collected.dedup();
-            let start_transforms: Vec<(ItemId, preferz_core::Transform)> = collected
+
+            // Ctrl+拖动 = 复制移动（plan #11）：先建副本、选区切到副本，原件留原地。
+            // 取"按下即建副本"（plan 倾向），避免释放时才复制造成落点跳变。
+            let duplicate_ids = if free_scale && !collected.is_empty() {
+                let dups = self.scene.duplicate_items(&collected, CanvasVector::zero());
+                let ids: Vec<ItemId> = dups.iter().map(|it| it.id).collect();
+                for dup in dups {
+                    self.scene.add_item(dup);
+                }
+                self.scene.deselect_all();
+                for nid in &ids {
+                    self.scene.select(*nid);
+                }
+                Some(ids)
+            } else {
+                None
+            };
+            // 复制前的原选区（Ctrl 未移动时需要回滚）
+            let original_ids = collected.clone();
+
+            // 被拖动的是副本（复制拖动）还是原选中集；两者都从 scene 现取 transform，
+            // 保证与上面可能发生的改选保持一致。
+            let drag_ids = duplicate_ids.clone().unwrap_or(collected);
+            let start_transforms: Vec<(ItemId, preferz_core::Transform)> = drag_ids
                 .into_iter()
                 .filter_map(|sid| self.scene.get_item(&sid).map(|it| (sid, it.transform)))
                 .collect();
@@ -1650,6 +1690,9 @@ impl PReferZApp {
             self.drag = DragState::MoveItems {
                 start_canvas,
                 start_transforms,
+                duplicate_ids,
+                original_ids,
+                pending_deselect,
             };
             return;
         }
@@ -1663,7 +1706,7 @@ impl PReferZApp {
         };
     }
 
-    fn update_drag_preview(&mut self, screen_pos: egui::Pos2, free_scale: bool) {
+    fn update_drag_preview(&mut self, screen_pos: egui::Pos2, free_scale: bool, axis_lock: bool) {
         // 裁剪模式拖拽：直接更crop_mode.rect，不进入 DragState
         if let Some(crop) = self.crop_mode.as_mut() {
             if let Some(handle) = crop.dragging {
@@ -1721,9 +1764,20 @@ impl PReferZApp {
             DragState::MoveItems {
                 start_canvas,
                 start_transforms,
+                ..
             } => {
                 let current_canvas = self.viewport.screen_to_canvas(screen_pos);
-                let delta = current_canvas - *start_canvas;
+                let mut delta = current_canvas - *start_canvas;
+                if axis_lock {
+                    // Shift 轴约束：只保留位移较大的那一轴，另一轴清零
+                    // （PowerPoint / Excalidraw 同款）。视口只有平移与缩放、无旋转，
+                    // 画布轴与屏幕轴同向，故在画布空间取轴即可。
+                    if delta.x.abs() >= delta.y.abs() {
+                        delta.y = 0.0;
+                    } else {
+                        delta.x = 0.0;
+                    }
+                }
                 for (id, start_tf) in start_transforms {
                     if let Some(item) = self.scene.get_item_mut(id) {
                         item.transform.pos = start_tf.pos + delta;
@@ -1828,24 +1882,67 @@ impl PReferZApp {
                 self.transform_handles.end_drag();
             }
             DragState::MoveItems {
-                start_canvas,
                 start_transforms,
+                duplicate_ids,
+                original_ids,
+                pending_deselect,
+                ..
             } => {
-                // 用第一item 的当前位置反delta
-                let delta_opt = start_transforms.first().and_then(|(id, start_tf)| {
-                    self.scene
-                        .get_item(id)
-                        .map(|it| it.transform.pos - start_tf.pos)
-                });
-                if let Some(delta) = delta_opt {
-                    if delta.x.abs() > 1e-4 || delta.y.abs() > 1e-4 {
-                        let ids: Vec<ItemId> = start_transforms.iter().map(|(i, _)| *i).collect();
-                        let cmd = MoveItems::new(ids, delta);
-                        self.push_cmd(Box::new(cmd));
-                        self.flash(format!("移动: ({:.0}, {:.0})", delta.x, delta.y));
+                if let Some(ids) = duplicate_ids {
+                    // Ctrl+拖动复制：副本已在场景中（预览已移动到最终位置）。
+                    let items: Vec<Item> = ids
+                        .iter()
+                        .filter_map(|id| self.scene.get_item(id).cloned())
+                        .collect();
+                    // 用任一副本相对其 start_tf 判断是否真的移动了
+                    let moved =
+                        ids.first()
+                            .and_then(|id| {
+                                start_transforms.iter().find(|(i, _)| i == id).and_then(
+                                    |(_, st)| {
+                                        self.scene.get_item(id).map(|it| it.transform.pos - st.pos)
+                                    },
+                                )
+                            })
+                            .map(|d| d.x.abs() > 1e-4 || d.y.abs() > 1e-4)
+                            .unwrap_or(false);
+                    if moved && !items.is_empty() {
+                        // 一次 undo 撤掉整个「复制 + 移动」
+                        let n = items.len();
+                        self.push_cmd(Box::new(AddItems::new(items).with_preview_applied(true)));
+                        self.flash(fill(t(self.lang, T::FlashDuplicated), &[n.to_string()]));
+                    } else {
+                        // 没移动：删掉重叠副本，恢复原件选区（Ctrl+点击 ≠ 复制）
+                        for id in &ids {
+                            self.scene.remove_item(id);
+                        }
+                        self.scene.deselect_all();
+                        for oid in &original_ids {
+                            self.scene.select(*oid);
+                        }
+                    }
+                } else {
+                    // 普通移动 / Shift 轴约束移动：用第一 item 反 delta
+                    let delta_opt = start_transforms.first().and_then(|(id, start_tf)| {
+                        self.scene
+                            .get_item(id)
+                            .map(|it| it.transform.pos - start_tf.pos)
+                    });
+                    if let Some(delta) = delta_opt {
+                        if delta.x.abs() > 1e-4 || delta.y.abs() > 1e-4 {
+                            let ids: Vec<ItemId> =
+                                start_transforms.iter().map(|(i, _)| *i).collect();
+                            let cmd = MoveItems::new(ids, delta);
+                            self.push_cmd(Box::new(cmd));
+                            self.flash(format!("移动: ({:.0}, {:.0})", delta.x, delta.y));
+                        } else if let Some(pid) = pending_deselect {
+                            // Shift+点击已选中项且没拖动 → 取消选中
+                            self.scene.selection.remove(&pid);
+                        }
+                    } else if let Some(pid) = pending_deselect {
+                        self.scene.selection.remove(&pid);
                     }
                 }
-                let _ = start_canvas;
             }
             DragState::BoxSelect {
                 start_canvas,
@@ -5040,6 +5137,11 @@ impl PReferZApp {
             self.delete_selected();
         }
 
+        // 原位复制选中项（Ctrl+D）：副本偏移 10px 画布，一次 undo 撤销
+        if self.keymap.pressed(Action::DuplicateInPlace, ctx) && !self.scene.selection.is_empty() {
+            self.duplicate_in_place();
+        }
+
         let do_undo = self.keymap.pressed(Action::Undo, ctx);
         if do_undo && self.perform_undo() {
             self.flash(t(self.lang, T::FlashUndo).to_string());
@@ -5665,6 +5767,48 @@ impl PReferZApp {
         self.push_cmd(Box::new(cmd));
         self.scene.selection.clear();
         self.flash(format!("已删除 {} 项", ids.len()));
+    }
+
+    /// 原位复制选中项（plan.md 快赢项 #11，Excalidraw 同款 `Ctrl+D`）。
+    /// 选区带容器联动（封闭形状的绑定文本、画框成员），副本偏移 10px 画布避免完全重叠；
+    /// 副本已经入场景，push `AddItems(preview_applied=true)`，一次 undo 撤掉整个复制。
+    fn duplicate_in_place(&mut self) {
+        let selected: Vec<ItemId> = self.scene.selection.iter().cloned().collect();
+        if selected.is_empty() {
+            return;
+        }
+        // 容器联动：与拖拽一致
+        let mut collected = selected.clone();
+        for sid in &selected {
+            collected.extend(self.scene.texts_bound_to(*sid));
+            if self
+                .scene
+                .get_item(sid)
+                .map(|it| it.is_frame())
+                .unwrap_or(false)
+            {
+                collected.extend(self.scene.frame_members(*sid));
+            }
+        }
+        collected.sort();
+        collected.dedup();
+        let dups = self
+            .scene
+            .duplicate_items(&collected, CanvasVector::new(10.0, 10.0));
+        let n = dups.len();
+        if n == 0 {
+            return;
+        }
+        for dup in &dups {
+            self.scene.add_item(dup.clone());
+        }
+        // 选区切到副本
+        self.scene.deselect_all();
+        for dup in &dups {
+            self.scene.select(dup.id);
+        }
+        self.push_cmd(Box::new(AddItems::new(dups).with_preview_applied(true)));
+        self.flash(fill(t(self.lang, T::FlashDuplicated), &[n.to_string()]));
     }
 
     fn bring_to_front(&mut self) {

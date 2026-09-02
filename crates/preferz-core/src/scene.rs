@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
 use crate::item::{Item, ItemId};
-use crate::spaces::CanvasRect;
+use crate::spaces::{CanvasRect, CanvasVector};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Scene {
@@ -86,6 +86,39 @@ impl Scene {
             })
             .map(|it| it.id)
             .collect()
+    }
+
+    /// 克隆一批 item 用于复制（Ctrl+拖动 / Ctrl+D），返回**尚未加入场景**的副本。
+    ///
+    /// - 每个副本分配新 `Uuid`，`transform.pos` 加上 `offset`；
+    /// - 副本的 `z` 沿用原件（真正的 z 由 `add_item` 在入场景时重排）；
+    /// - `Text.container_id` 会按 old→new 映射改写：容器也在本次复制集内则指向
+    ///   新容器（复制封闭图形时其绑定文字跟着走），否则置 `None` 退化为自由文本
+    ///   （不能让副本文字仍绑在没被复制的原件容器上）。
+    ///
+    /// 传入顺序即返回顺序，便于调用方建立一一对应的 id 映射。
+    pub fn duplicate_items(&self, ids: &[ItemId], offset: CanvasVector) -> Vec<Item> {
+        use std::collections::HashMap;
+
+        let id_map: HashMap<ItemId, ItemId> =
+            ids.iter().map(|id| (*id, uuid::Uuid::new_v4())).collect();
+
+        let mut out = Vec::with_capacity(ids.len());
+        for id in ids {
+            let Some(src) = self.get_item(id) else {
+                continue;
+            };
+            let mut dup = src.clone();
+            dup.id = id_map[id];
+            dup.transform.pos += offset;
+            if let crate::item::ItemKind::Text { container_id, .. } = &mut dup.kind {
+                if let Some(old_cid) = *container_id {
+                    *container_id = id_map.get(&old_cid).copied();
+                }
+            }
+            out.push(dup);
+        }
+        out
     }
 
     /// 该 item 是否为「绑定在存活容器上的文本」（Phase C 语义的逆查询）。
@@ -335,6 +368,66 @@ mod tests {
         scene.cleanup_orphan_containers();
         let t_item = scene.get_item(&t_id).unwrap();
         match &t_item.kind {
+            crate::item::ItemKind::Text { container_id, .. } => assert_eq!(*container_id, None),
+            _ => panic!("expected Text"),
+        }
+    }
+
+    /// 复制：副本应带新 id 并整体偏移，且不改动原场景。
+    #[test]
+    fn duplicate_items_assigns_new_ids_and_offsets() {
+        let s = shape();
+        let s_id = s.id;
+        let mut scene = Scene::new();
+        scene.add_item(s);
+
+        let dups = scene.duplicate_items(&[s_id], CanvasVector::new(10.0, -20.0));
+        assert_eq!(dups.len(), 1);
+        assert_ne!(dups[0].id, s_id, "副本必须换 id，否则与原件冲突");
+        assert_eq!(dups[0].transform.pos.x, 10.0);
+        assert_eq!(dups[0].transform.pos.y, -20.0);
+        // 原场景未被改动（副本尚未入场景）
+        assert_eq!(scene.items.len(), 1);
+        assert_eq!(scene.get_item(&s_id).unwrap().transform.pos.x, 0.0);
+    }
+
+    /// 容器与其绑定文本一起复制时，副本文本应改绑到副本容器。
+    #[test]
+    fn duplicate_items_remaps_container_id_within_set() {
+        let s = shape();
+        let s_id = s.id;
+        let t = text(s_id);
+        let t_id = t.id;
+        let mut scene = Scene::new();
+        scene.add_item(s);
+        scene.add_item(t);
+
+        let dups = scene.duplicate_items(&[s_id, t_id], CanvasVector::zero());
+        assert_eq!(dups.len(), 2);
+        let new_container = dups[0].id;
+        let dup_text = &dups[1];
+        match &dup_text.kind {
+            crate::item::ItemKind::Text { container_id, .. } => {
+                assert_eq!(*container_id, Some(new_container));
+            }
+            _ => panic!("expected Text"),
+        }
+    }
+
+    /// 只复制绑定文本（容器不在复制集）时，副本应退化为自由文本，
+    /// 不能继续指向没被复制的原容器。
+    #[test]
+    fn duplicate_items_drops_container_id_outside_set() {
+        let s = shape();
+        let s_id = s.id;
+        let t = text(s_id);
+        let t_id = t.id;
+        let mut scene = Scene::new();
+        scene.add_item(s);
+        scene.add_item(t);
+
+        let dups = scene.duplicate_items(&[t_id], CanvasVector::zero());
+        match &dups[0].kind {
             crate::item::ItemKind::Text { container_id, .. } => assert_eq!(*container_id, None),
             _ => panic!("expected Text"),
         }

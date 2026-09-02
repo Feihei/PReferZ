@@ -113,6 +113,7 @@ pub enum T {
     FlashExportedNImages,      // 已导出 {n} 个图片到 {path}
     FlashExportFailed,         // 导出失败: {err}
     FlashProcessing,           // 处理中...（进度条默认）
+    FlashDuplicated,           // 已复制 {0} 个元素（Ctrl+拖动 / Ctrl+D）
     // ── 欢迎页 ──
     WelcomeTitle, // PReferZ（固定不翻译）
     WelcomeSubtitle,
@@ -282,6 +283,7 @@ fn translate_en(key: T) -> &'static str {
         T::FlashExportedNImages => "Exported", // 后接数量+路径
         T::FlashExportFailed => "Export failed", // 后接错误
         T::FlashProcessing => "Processing...",
+        T::FlashDuplicated => "Duplicated {0} elements",
         // 欢迎页
         T::WelcomeTitle => "PReferZ",
         T::WelcomeSubtitle => "Reference image board · right-click to start",
@@ -427,6 +429,7 @@ fn translate_zh(key: T) -> &'static str {
         T::FlashExportedNImages => "已导出",
         T::FlashExportFailed => "导出失败",
         T::FlashProcessing => "处理中...",
+        T::FlashDuplicated => "已复制 {0} 个元素",
         // 欢迎页
         T::WelcomeTitle => "PReferZ",
         T::WelcomeSubtitle => "参考图板 · 右键打开菜单开始",
@@ -535,6 +538,7 @@ pub fn action_label(lang: Lang, action: Action) -> &'static str {
             Cancel => "Cancel (crop / tool / picker)",
             Confirm => "Confirm (apply crop)",
             EditText => "Edit text of selection",
+            DuplicateInPlace => "Duplicate in place",
         },
         Lang::Zh => match action {
             NewCanvas => "新建画布",
@@ -566,6 +570,7 @@ pub fn action_label(lang: Lang, action: Action) -> &'static str {
             Cancel => "取消（裁剪 / 工具 / 取色器）",
             Confirm => "确认（应用裁剪）",
             EditText => "编辑选中项的文字",
+            DuplicateInPlace => "原位复制",
         },
     }
 }

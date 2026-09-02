@@ -1004,6 +1004,56 @@ impl Command for AddItem {
     }
 }
 
+/// 批量添加 item（Ctrl+拖动复制 / Ctrl+D 原位复制）。
+///
+/// 与 `AddItem` 的差别只在批量：`MoveItems` 等命令都是批量语义，复制多元素时
+/// 逐条 `AddItem` 会让一次 undo 只撤掉一个副本。
+///
+/// `preview_already_applied` 对应 Ctrl+拖动：副本在按下时已插入场景并跟着指针
+/// 移动，push 命令时不该再加一次（skip_first_redo = true），且命令里存的必须是
+/// **最终位置**的快照，这样一次 undo 就能撤掉整个「复制 + 移动」。
+pub struct AddItems {
+    items: Vec<crate::item::Item>,
+    preview_already_applied: bool,
+}
+
+impl AddItems {
+    pub fn new(items: Vec<crate::item::Item>) -> Self {
+        Self {
+            items,
+            preview_already_applied: false,
+        }
+    }
+
+    /// 副本已在场景中（交互预览已应用）时用此项：push 时跳过首次 redo。
+    pub fn with_preview_applied(mut self, applied: bool) -> Self {
+        self.preview_already_applied = applied;
+        self
+    }
+
+    pub fn item_ids(&self) -> Vec<ItemId> {
+        self.items.iter().map(|it| it.id).collect()
+    }
+}
+
+impl Command for AddItems {
+    fn redo(&mut self, scene: &mut Scene) {
+        for item in &self.items {
+            scene.add_item(item.clone());
+        }
+    }
+
+    fn undo(&mut self, scene: &mut Scene) {
+        for item in &self.items {
+            scene.remove_item(&item.id);
+        }
+    }
+
+    fn skip_first_redo(&self) -> bool {
+        self.preview_already_applied
+    }
+}
+
 // ─────────────────────────── Reorder ───────────────────────────
 
 /// 置顶/置底多个 item。

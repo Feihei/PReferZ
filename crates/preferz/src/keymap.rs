@@ -396,6 +396,9 @@ pub enum Action {
     /// 与 `Confirm` 默认同为 Enter —— 裁剪模式下 Enter 由 `Confirm` 先消费
     /// （`handle_shortcuts` 的分支顺序保证），两者不冲突，也能各自改绑。
     EditText,
+    /// 原位复制选中项（Excalidraw 同款 `Ctrl+D`）。副本偏移 10px 画布以防完全重叠，
+    /// 一次 undo 即可撤销。裸 D 仍是菱形工具，修饰键严格匹配下两者不冲突。
+    DuplicateInPlace,
 }
 
 impl Action {
@@ -430,6 +433,7 @@ impl Action {
         Action::Cancel,
         Action::Confirm,
         Action::EditText,
+        Action::DuplicateInPlace,
     ];
 
     /// 出厂默认绑定。一个动作可有多个绑定（如翻页的三组键）。
@@ -481,6 +485,8 @@ impl Action {
             Confirm => vec![KeyBind::new(Enter)],
             // Excalidraw 语义：选中对象后按 Enter 直接进入文字编辑
             EditText => vec![KeyBind::new(Enter)],
+            // 原位复制：Ctrl+D（裸 D 仍是菱形工具，修饰键严格匹配不冲突）
+            DuplicateInPlace => vec![KeyBind::new(D).ctrl()],
         }
     }
 }
