@@ -72,7 +72,7 @@
 
 ## Phase G：明暗两套样式主题（2026-09-01，`8c0bac4`）
 
-> 决策点 D1/D2 拍板（见 plan.md）：主题三态预留 `Auto`（第一版仅手动切换）；画布底色与
+> 决策点 D1/D2 拍板（见下方 §决策点归档）：主题三态预留 `Auto`（第一版仅手动切换）；画布底色与
 > 新建元素默认色随主题翻转。D6 拍板：移除键鼠改绑设置入口，派发架构保留。
 
 - 新增 `theme` 模块：`ThemeMode { Dark, Light, Auto }`（serde `lowercase`，缺省 `Dark`）；
@@ -89,7 +89,7 @@
 
 ## Phase I：图形元素类型统一（实施中，2026-09-01 起）
 
-> 决策点 I1–I4 拍板（见 plan.md）；设计文档 [`specs/phase-i-shape-unification.md`](specs/phase-i-shape-unification.md)。
+> 决策点 I1–I4 拍板（见下方 §决策点归档）；设计文档 [`specs/phase-i-shape-unification.md`](specs/phase-i-shape-unification.md)。
 > 分四子阶段交付：A 数据模型 / B 渲染 / C 工具与 UI / D i18n+fileio+验收。
 
 ### 子阶段 A — 数据模型（已交付，`ddc6209`）
@@ -171,3 +171,31 @@
   加点拖拽的 undo orig 用**插入前**点集，undo 一步即移除新顶点；
   点击中点未拖动则静默移除插入顶点、不产生空命令
 - 质量门全绿：`cargo fmt --check` / `clippy -D warnings` / `cargo test --workspace`（125 测试）
+
+---
+
+## 决策点归档（D1–D6 / I1–I4）
+
+> 原列于 plan.md，G/I/H/K 交付后蒸馏归档于此，使 CHANGELOG 自包含、plan.md 仅保留前瞻内容。
+
+### D 系列（2026-09-01 拍板，主题 / 多选 / 折线 / 填充 / 键位）
+
+| # | 问题 | 选项 | 倾向 | 结论 |
+|---|---|---|---|---|
+| D1 | 主题三态 | 仅 Light/Dark vs 增 `Auto`（跟随系统） | 字段预留 `Auto`，第一版只做手动切换 | ✅ 按倾向 |
+| D2 | 画布底色 | 跟主题走 vs 独立可设 | 跟主题走 | ✅ 按倾向 |
+| D3 | 多选属性面板 | 显示交集 vs 禁用面板 | 显示交集可批量改（Excalidraw 同款） | ✅ 按倾向 |
+| D4 | elbow 折线 | 本轮做 vs 排后 | 排后 | ✅ 排后 |
+| D5 | hachure 填充 | 本轮做 vs 排后 | 排后，纯色先统一数据模型 | ✅ 排后 |
+| D6 | keymap 设置面板去留 | 保留（已交付可用）vs Phase K 顺手移除入口 | 移除入口，`Action`/`Keymap` 派发架构保留 | ✅ 移除入口（已实施） |
+
+### I 系列（2026-09-01 拍板，图形元素类型统一）
+
+| # | 问题 | 结论 |
+|---|---|---|
+| I1 | 不规则多边形是否纳入 Phase I | ✅ 纳入：新增「多边形」工具（点击加点、双击/回车闭合），存为 closed Polyline |
+| I2 | 曲线切换入口 | ✅ 样式面板「直线/曲线」分段控件（选中线性对象，走 undo），不新增工具按钮 |
+| I3 | ArrowHeadStyle 范围 | ✅ 仅 Arrow + Dot |
+| I4 | .prz 迁移策略 | ✅ 新字段 `#[serde(default)]`，`USER_VERSION` 不变 |
+| — | 圆角范围 | 仅矩形族（按计划） |
+| — | 排后项 | D4 elbow 折线 / D5 hachure 填充 不纳入 Phase I |

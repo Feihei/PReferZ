@@ -45,40 +45,80 @@
 
 ---
 
-## 下一步：对齐 Excalidraw（G / I / H）
+## 下一步：Excalidraw 打磨批次（Phase L 候选）
 
-**状态**：✅ D1–D6 已拍板（2026-09-01）；**Phase G 已交付**（`8c0bac4`）；**Phase I 已拍板待实施**（设计文档 [specs/phase-i-shape-unification.md](specs/phase-i-shape-unification.md)）；H/K 待实施。
+> **状态**：G / I / H / K 已全部交付（见 [CHANGELOG](CHANGELOG.md) §Phase G/I/H/K + §手工验收反馈批次）；
+> 决策点 D1–D6 / I1–I4 已归档（见 [CHANGELOG §决策点归档](CHANGELOG.md)）。
+> 本批次为对齐 Excalidraw 的观感/交互打磨项，**尚未实施**，按下方编号逐步评审、集体拍板后开工。
+> 实施顺序建议：**5/6 先（编辑器基础）→ 1/2/3（样式面板补全）→ 4（多边形编辑）→ 7（连接符，依赖 5）→ 8/9（数据/图表，较重）→ 10（徒手，独立）**。
 
-三个方向，实施顺序 **G → I → H**（侧栏属性项依赖 I 定型的字段集合，先做 H 会返工；G 完全独立可先行）：
+| # | 打磨项 | 一句话方案 | 关键依赖 / 决策点 |
+|---|---|---|---|
+| 1 | 绑定文字对齐 + 字号 + 字体切换 | Text 加 H/V 对齐枚举 + 字体族（黑体/手写），侧栏加对齐分段与字号滑块 | 手写字体：真实嵌入 TTF vs 伪手写渲染（体积）；垂直对齐是否仅绑定文字 |
+| 2 | 调色板对齐 + 填充半透明 | `FILL_PICKS` 改为与描边同 5 色（黑红绿蓝橙）；填充加不透明度滑块（RGBA alpha） | 填充默认透明度取值；top picks 描边/填充共用同组 5 色 |
+| 3 | stroke width / sloppiness / edges 倒角 | `rough: bool` → `Sloppiness{Architect,Artist,Cartoonist}` 三档；edges（sharp/round）限定矩形族 | sloppiness 档位；edges 是否扩展到非矩形（倾向否） |
+| 4 | 多边形节点增删 + 首尾重合自动闭合 | 顶点删除（Alt+拖出）+ 端点追加（拖末端点延伸）；首尾距 < 阈值自动 `closed` | 删除手势；阈值复用 `POLYLINE_CLOSE_DISTANCE` |
+| 5 | 直线/箭头端点吸附图形边缘 | 拖端点邻近 Shape 轮廓吸附 + 绑定模型（端点随形状移动） | 吸附阈值；绑定存储位置；与 #7 共用 |
+| 6 | 多元素对齐、分布 | `arrange.rs` 增 align（6 向）+ distribute（等间距），顶部工具栏按钮 | 分布基准（边界/中心）；参考系（选区/画布） |
+| 7 | Ctrl+箭头 添加连接符 + 下一元素 | 选中 Shape + Ctrl+方向 → 生成绑定 Arrow + 新 Shape（流程图） | 新元素类型/间距；复用 #5 绑定 |
+| 8 | 两列数据粘贴成柱状/折线图 | 剪贴板 2 列 TSV/CSV → 生成 Chart item（柱状/折线） | 图表用新 ItemKind+ChartStyler vs Pixmap 位图；单/多系列 |
+| 9 | mermaid 代码转图表 | mermaid 子集 → nodes+edges（复用 #5/#6/#7） | 解析器：受限自研 Rust（零依赖，倾向）vs WASM mermaid |
+| 10 | 徒手绘制（7 快捷键）墨迹模仿 | 新增 `Tool::Freehand` + `Num7`；`ItemKind::Freedraw` 平滑墨迹 | 压感（egui 无，倾向恒定宽+抖动）；点抽稀（RDP） |
 
-- [x] **Phase G — 明暗两套样式主题**（小，独立）：`ThemeMode` 持久化 + palette 模块集中管理主题化颜色；UI chrome（egui Visuals）+ 画布语义（底色与新建元素默认色随主题翻转）。D6 键鼠改绑设置入口已移除（架构保留），见 CHANGELOG §Phase G
-- [x] **Phase I — 图形元素类型统一**（大，动数据模型）：`CurveType { Straight, Curved }`（Catmull-Rom 推广出开曲线版本）；不规则多边形 = 闭合 Polyline（`closed: bool`，不新增类型）；`ArrowHeadStyle` 扩展（Arrow/Dot）；矩形族 roundness；`.prz` 仅 `#[serde(default)]` 迁移（`USER_VERSION` 不变）。**已拍板**（2026-09-01），设计文档 [specs/phase-i-shape-unification.md](specs/phase-i-shape-unification.md)。**四子阶段全部交付**：A 数据模型（`ddc6209`）/ B 渲染（曲线采样+闭合填充+Dot头+圆角，`b9a2248`）/ C 工具与 UI（多边形工具+样式面板控件，`c67f799`）/ D i18n+fileio 旧文件加载校验（`753f2cf` 顺带补 i18n，本回合补 `closed` serde default + 旧 .prz 字段缺省单测）。仅剩**手工 GUI 验收**（用户跑 `cargo run`）。
+### 各项细节与决策点
 
-  **Phase I 决策点（2026-09-01 拍板）**
+**① 绑定文字对齐 + 字号 + 字体切换**
+- 现状：`ItemKind::Text`（TextStyle）已有 `font_size`/`color`/`background`，但**无对齐字段**；绑定文字（容器封闭 Shape）由渲染层自动居中，无 H/V 控制；字体仅内嵌 simhei（黑体）一种。
+- 方案：core 加 `TextAlignH{Left,Center,Right}` + `TextAlignV{Top,Middle,Bottom}`（`#[serde(default)]=Center`）；字体族 `FontFamily{Handwriting,Normal}`——手写体需新增第二种嵌入 TTF（体积评估，见 `.issues`）或伪手写渲染（复用 RoughStyler 思路）。侧栏 Text 节加对齐分段控件 + 字号滑块（已有）+ 字体族切换。
+- 决策点：手写体实现方式（真实 TTF vs 伪手写）；字号范围；垂直对齐是否仅绑定文字（自由文字默认 top-left）。
 
-  | # | 问题 | 结论 |
-  |---|---|---|
-  | I1 | 不规则多边形是否纳入 Phase I | ✅ 纳入：新增「多边形」工具（点击加点、双击/回车闭合），存为 closed Polyline |
-  | I2 | 曲线切换入口 | ✅ 样式面板「直线/曲线」分段控件（选中线性对象，走 undo），不新增工具按钮 |
-  | I3 | ArrowHeadStyle 范围 | ✅ 仅 Arrow + Dot |
-  | I4 | .prz 迁移策略 | ✅ 新字段 `#[serde(default)]`，`USER_VERSION` 不变 |
-  | — | 圆角范围 | 仅矩形族（按计划） |
-  | — | 排后项 | D4 elbow 折线 / D5 hachure 填充 不纳入 Phase I |
-- [x] **Phase H — 选中弹出属性侧栏**（中）：右侧 SidePanel 按 ItemKind 分节（Shape/Text/Pixmap/Frame）；改动全走 undo 栈，滑块连续修改合并命令；Text 节消费已预留的 `background` 字段。已交付（`2026-09-02`），见 CHANGELOG §Phase H
-- [x] **Phase K — 默认快捷键对齐 Excalidraw**（小，可与任一阶段并行）：以 Excalidraw 官方键位为基准调整 `default_map()` 出厂默认；依据见 [ADR-0007](adr/0007-keymap-no-customization.md)（不做用户自定义，keymap 派发架构保留）。**已交付**（`2026-09-02`，keymap 双绑定：Frame=F、适应画布=Shift+1、6 个工具字母+数字 1–6 双绑），见 CHANGELOG §Phase K
+**② 调色板对齐 + 填充半透明**
+- 现状：`STROKE_PICKS` 已是 `["#1e1e1e","#e03131","#2f9e44","#1971c2","#f08c00"]`（黑红绿蓝橙，恰好对齐 Excalidraw）；`FILL_PICKS` 是 4 个粉彩色，**与 5 标准色不对齐**。
+- 方案：`FILL_PICKS` 改为与 `STROKE_PICKS` 同 5 色；填充增**不透明度滑块**（fill 已是 RGBA，暴露 alpha 0–100%，默认取 Excalidraw 观感值）。侧栏填充节走 `apply_continuous` + `FillState`。
+- 决策点：填充默认透明度；top picks 描边/填充共用同组 5 色（Excalidraw 是共用）。
 
-### 决策点（2026-09-01 已拍板）
+**③ stroke width / sloppiness / edges 倒角**
+- 现状：`StrokeStyle.width` 已有（0.5–12 连续）；`rough: bool` 仅开/关；矩形 `roundness` 已有（仅矩形族）。**缺 sloppiness 多档**与通用 edges 倒角。
+- 方案：`rough: bool` → `Sloppiness{Architect,Artist,Cartoonist}`（3 档映射到 RoughStyler 抖动幅度；`#[serde(default)]`=Architect 即原 false 语义），`SetRough` 改 `SetSloppiness`；edges（sharp/round）分段控件，仅矩形显示。
+- 决策点：sloppiness 档位（对齐 Excalidraw 3 档）；edges 是否扩展非矩形（倾向否）。
 
-> 全部按「倾向」列拍板：D1 预留 `Auto` 先做手动切换 / D2 画布底色跟主题走 / D3 多选显示交集可批量改 / D4 elbow 排后 / D5 hachure 排后 / D6 移除键鼠改绑设置入口（架构保留）。
+**④ 多边形节点增删 + 首尾重合自动闭合**
+- 现状：反馈 #5 已做段中点拖拽**插入**顶点（SegmentMid）；但删顶点、端点追加、首尾重合自动闭合缺失。
+- 方案：transform_handles 增顶点删除（Alt+拖出画布即删，≥3 点保持）；端点追加（拖末端点超阈值即 append）；首尾距 < `POLYLINE_CLOSE_DISTANCE`(8px) 自动 `closed=true`（保留手动 closed 选项）。core 加 `DeleteVertex`/`AppendVertex` 命令。
+- 决策点：删除手势（Alt+click vs 拖出）；阈值复用现有常量。
 
-| # | 问题 | 选项 | 倾向 | 结论 |
-|---|---|---|---|---|
-| D1 | 主题三态 | 仅 Light/Dark vs 增 `Auto`（跟随系统） | 字段预留 `Auto`，第一版只做手动切换 | ✅ 按倾向 |
-| D2 | 画布底色 | 跟主题走 vs 独立可设 | 跟主题走 | ✅ 按倾向 |
-| D3 | 多选属性面板 | 显示交集 vs 禁用面板 | 显示交集可批量改（Excalidraw 同款） | ✅ 按倾向 |
-| D4 | elbow 折线 | 本轮做 vs 排后 | 排后 | ✅ 排后 |
-| D5 | hachure 填充 | 本轮做 vs 排后 | 排后，纯色先统一数据模型 | ✅ 排后 |
-| D6 | keymap 设置面板去留 | 保留（已交付可用）vs Phase K 顺手移除入口 | 移除入口，`Action`/`Keymap` 派发架构保留 | ✅ 移除入口（已实施） |
+**⑤ 直线/箭头端点吸附图形边缘**
+- 现状：LineEndpoint 拖拽无吸附、未绑定形状。
+- 方案：拖端点邻近 Shape 轮廓（点到轮廓距离 < 阈值）吸附到最近点，core 记 `binding: Option<(ItemId, side)>`；形状移动时联动更新绑定端点（Scene 遍历）。Excalidraw 语义：箭头绑 shape，移动 shape 箭头跟随。
+- 决策点：吸附阈值；绑定存储（端点元数据 vs 独立表）；直线是否也可绑（倾向是）。
+
+**⑥ 多元素对齐、分布**
+- 现状：`arrange.rs` 只有 `ArrangeMode::{Linear,Optimal,Grid}`（装箱），**无 align/distribute**。侧栏已有 Arrange（Linear/Grid/Optimal）按钮。
+- 方案：core 增 `align_selected(scene, axis, edge)`（Left/HCenter/Right × Top/VCenter/Bottom）+ `distribute_selected(scene, axis)`（等间距）；选中多元素时顶部工具栏显示对齐/分布按钮行；命令复用现有 `ArrangeItems` 批处理。
+- 决策点：分布基准（边界 vs 中心）；参考系（选区包围盒 vs 画布）。
+
+**⑦ Ctrl+箭头 添加连接符 + 下一元素（流程图）**
+- 现状：无。
+- 方案：选中单一 Shape 时 `Ctrl+方向`沿该向生成绑定 Arrow + 新 Shape（默认矩形，带绑定文本占位）；新 Shape 位 = 源边界 + 间距。复用 #5 绑定模型。新增 `Action::AddConnectedShape` + 方向键。
+- 决策点：新元素类型（默认矩形 vs 当前工具默认）；间距；是否自动命名。
+
+**⑧ 两列数据粘贴成柱状/折线图**
+- 现状：粘贴仅图片（Ctrl+V 释放沿）；无数据→图表。
+- 方案：检测剪贴板文本为 2 列（TSV/CSV，≥2 行）弹「柱状/折线」选择，生成 `ItemKind::Chart`（新增）+ 独立 `ChartStyler` 离屏绘制（egui painter，零依赖）。先单系列，多系列排后。
+- 决策点：新 ItemKind+渲染器 vs 生成 Pixmap 位图（编辑性 vs 简单）；坐标轴/图例范围；粘贴触发 vs 工具栏。
+
+**⑨ mermaid 代码转图表**
+- 现状：无。
+- 方案：文本框/菜单输入 mermaid → 解析为 nodes（Shape）+ edges（Arrow，含 #5 绑定）。解析器选型：
+  - (a) WASM mermaid（重，违零依赖/小包目标）；
+  - (b) 受限自研 Rust 解析器（支持 `graph TD`/`flowchart` 的 node/edge/label 子集，零依赖，可控但覆盖有限）——**倾向 (b)**；
+  - 复用 #5/#6/#7 生成结果。
+- 决策点：解析器选 (b) 受限自研 vs 接受 WASM；先支持 flowchart 子集。
+
+**⑩ 徒手绘制（7 快捷键）墨迹模仿**
+- 现状：`Tool` 无 Freehand；Phase K 注释裸 P 让开给 freedraw、数字 7 空闲。
+- 方案：新增 `Tool::Freehand` + `Action::ToolFreehand` 绑 `Num7`（Excalidraw freedraw=7）；core 新增 `ItemKind::Freedraw`（点序列 + 宽度）；渲染为平滑墨迹（Catmull-Rom 穿采样点，手绘抖动可选）；按下采集、移动追加、松开定型走 undo；点序列 RDP 抽稀。
+- 决策点：压感（egui 无输入，倾向恒定宽 + 末端收笔）；点采样密度/抽稀。
 
 ---
 
