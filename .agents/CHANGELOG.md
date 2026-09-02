@@ -141,3 +141,33 @@
   `Paste` = `Ctrl+V` 释放沿、`Confirm`/`EditText` = `Enter`（白名单共用）、`Redo` 双绑、`PresentNext` 三绑均不变
 - 不变式维持：`no_duplicate_bindings_in_defaults` 测试绿——`Shift+1`（Fit）与 `Num1`（Select）因修饰键严格匹配不冲突
 - 质量门全绿：`cargo fmt --check` / `clippy -D warnings` / `cargo test --workspace`
+
+## 手工验收反馈批次（2026-09-02，Feihei 实测 5 项）
+
+- **数字快捷键 1–6 不生效**（`7e840db`）：根因为旧 `~/.preferz/config.json` 持久化了
+  Phase K 之前的全量默认表，`Keymap::from_partial` 只补缺失动作 → 新数字绑定永不加载。
+  D6 移除改绑入口后持久化 keymap 只可能是过期默认值，故加载时忽略 keymap 字段
+  恒用出厂默认（`Keymap::new()`，字段保留兼容解析）
+- **绘制工具状态侧栏**（`073a4f1`）：移除底部 style_panel；无选中且绘制工具激活时
+  右侧栏显示「新建元素默认样式」（描边色/宽/线型/填充/手绘风；Frame 不显示，
+  线/箭头无填充节）。选中 item 时仍显示原 per-item 属性侧栏
+- **Excalidraw 式调色板**（`073a4f1`）：新控件 `ui/widgets/palette.rs`——
+  open-color 五档全色板 + top picks 行（描边 `STROKE_PICKS` / 填充 `FILL_PICKS`）+
+  自定义取色入口；暗色主题套 Excalidraw 同款 `invert(93%) hue-rotate(180°)` 纯数学滤镜
+  （逐式移植自 `.ref/excalidraw` colors.ts）。侧栏描边/填充色与默认样式面板共用
+- **填充四态 + 立即生效**（`783c96f` + `073a4f1`）：core 新增 `FillStyle { Solid, Hachure,
+  CrossHatch }`（`#[serde(default)]`，旧文件 fill=Some → Solid 语义不变），
+  `SetShapeFill` 扩展为颜色+样式整份快照（`FillState`）；Item 增 `with_fill_style`。
+  UI 四态图标选择器（无/纯色/斜线/交叉线）替代旧 "No fill" checkbox；选非 None 样式时
+  fill 为空则立即取**各自描边色**（多选逐 item 判断），不再要求先选颜色。
+  渲染：hachure = rough.js 同款 -41° 平行线（扫描线求交，gap=4×线宽），
+  cross-hatch = ±90° 两组；CleanStyler 填充层走精确几何，RoughStyler 抖动端点
+  （独立 xorshift 种子，确定性）。CleanStyler 填充层在 `fill: None` 时跳过
+  （修复 3 处单测回归：无填充回到单轮廓形状）
+- **线类段中点拖拽加点**（`57aa574`）：`Handle::SegmentMid(usize)`——选中线/箭头/多边形时
+  段中点显示小号浅黄手柄，拖拽即在段中间插入顶点并进入既有 LineEndpoint 拖拽
+  （Straight → 折线；Curved → Catmull-Rom 控制点）；闭合多边形含收尾段。
+  `DragState::LineEndpoint` 新增 `base_pos`（被拖顶点拖拽起始位置）：
+  加点拖拽的 undo orig 用**插入前**点集，undo 一步即移除新顶点；
+  点击中点未拖动则静默移除插入顶点、不产生空命令
+- 质量门全绿：`cargo fmt --check` / `clippy -D warnings` / `cargo test --workspace`（125 测试）
