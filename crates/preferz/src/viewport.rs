@@ -20,6 +20,9 @@ pub struct ViewportState {
     pub max_zoom: f32,
     /// 画布面板在屏幕上的矩形（由 CentralPanel 每帧更新）。
     pub screen_rect: egui::Rect,
+    /// 画布面板矩形是否已从占位默认值初始化过。
+    /// 首帧直接采用实际矩形、不补偿 pan，避免启动时内容被平移。
+    rect_initialized: bool,
 }
 
 impl Default for ViewportState {
@@ -30,14 +33,29 @@ impl Default for ViewportState {
             min_zoom: 0.01,
             max_zoom: 100.0,
             screen_rect: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::Vec2::new(800.0, 600.0)),
+            rect_initialized: false,
         }
     }
 }
 
 impl ViewportState {
     /// 设置画布面板的屏幕矩形（CentralPanel 每帧调用）。
+    ///
+    /// 当矩形中心因侧栏开合/窗口缩放而移动时，反向平移 `pan` 抵消，
+    /// 使画布内容的**可见位置**保持不变（修：无侧栏点击元素后侧栏弹出、
+    /// 内容整体平移）。首帧（占位默认值→实际矩形）不补偿，避免启动跳变。
     pub fn set_screen_rect(&mut self, rect: egui::Rect) {
+        if self.rect_initialized {
+            let old_center = self.screen_rect.center();
+            let new_center = rect.center();
+            let d = new_center - old_center;
+            // 中心移动 d 时，pan 同向移动 d/zoom 可令同一画布点的屏幕坐标不变：
+            // screen(W) = (W - pan)·zoom + center ⇒ 抵消 center 的位移。
+            self.pan.x += d.x / self.zoom;
+            self.pan.y += d.y / self.zoom;
+        }
         self.screen_rect = rect;
+        self.rect_initialized = true;
     }
 
     /// 屏幕中心点（egui 坐标）。
@@ -133,5 +151,34 @@ impl ViewportState {
     pub fn reset(&mut self) {
         self.zoom = 1.0;
         self.pan = CanvasVector::zero();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 右侧栏开合导致 CentralPanel 中心平移时，pan 应反向补偿，
+    /// 使同一画布点的屏幕坐标保持不变（修：无侧栏点击元素后侧栏弹出、内容平移）。
+    #[test]
+    fn set_screen_rect_compensates_pan_on_center_shift() {
+        let mut vp = ViewportState::default();
+        let r0 = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 800.0));
+        // 首帧：直接采用矩形、不补偿（避免启动跳变）
+        vp.set_screen_rect(r0);
+        assert_eq!(vp.pan.x, 0.0);
+        assert_eq!(vp.pan.y, 0.0);
+
+        // 宽度收窄 120（右侧栏出现）→ 中心左移 60
+        let r1 = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(880.0, 800.0));
+        let w = vp.screen_to_canvas(r0.center());
+        vp.set_screen_rect(r1);
+
+        // 同一画布点仍应渲染在原屏幕位置
+        let after = vp.canvas_to_screen(w);
+        assert!((after.x - r0.center().x).abs() < 1e-4);
+        assert!((after.y - r0.center().y).abs() < 1e-4);
+        // pan 被补偿 -60（zoom=1）
+        assert!((vp.pan.x + 60.0).abs() < 1e-4);
     }
 }
