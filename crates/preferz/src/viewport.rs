@@ -30,8 +30,10 @@ impl Default for ViewportState {
         Self {
             pan: CanvasVector::zero(),
             zoom: 1.0,
-            min_zoom: 0.01,
-            max_zoom: 100.0,
+            // 10% – 1000%：比原来的 1% – 10000% 更贴合实际使用范围，
+            // 缩放到底/到顶不会退化成几个像素或糊成一片。
+            min_zoom: 0.1,
+            max_zoom: 10.0,
             screen_rect: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::Vec2::new(800.0, 600.0)),
             rect_initialized: false,
         }
@@ -180,5 +182,35 @@ mod tests {
         assert!((after.y - r0.center().y).abs() < 1e-4);
         // pan 被补偿 -60（zoom=1）
         assert!((vp.pan.x + 60.0).abs() < 1e-4);
+    }
+
+    /// 默认缩放范围应为 10%–1000%，起始 100%（plan.md 快赢项 #12）。
+    #[test]
+    fn default_zoom_bounds_are_10_to_1000_percent() {
+        let vp = ViewportState::default();
+        assert_eq!(vp.zoom, 1.0);
+        assert_eq!(vp.min_zoom, 0.1);
+        assert_eq!(vp.max_zoom, 10.0);
+    }
+
+    /// 连续滚轮缩放不应越界：缩到底停在 10%，放到顶停在 1000%。
+    #[test]
+    fn zoom_at_clamps_to_bounds() {
+        let mut vp = ViewportState::default();
+        let center = egui::Pos2::new(500.0, 400.0);
+        vp.set_screen_rect(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(1000.0, 800.0),
+        ));
+
+        for _ in 0..200 {
+            vp.zoom_at(-2.0, center);
+        }
+        assert!((vp.zoom - vp.min_zoom).abs() < 1e-6, "zoom={}", vp.zoom);
+
+        for _ in 0..200 {
+            vp.zoom_at(2.0, center);
+        }
+        assert!((vp.zoom - vp.max_zoom).abs() < 1e-6, "zoom={}", vp.zoom);
     }
 }
