@@ -62,6 +62,8 @@ pub enum ItemKind {
         /// 终点箭头样式（仅 Polyline 使用；矩形族忽略）。
         end_arrow: Option<ArrowHeadStyle>,
         /// 是否闭合（仅 Polyline 使用；矩形族忽略）。闭合时首尾相连，可填充。
+        /// `#[serde(default)]`：旧存档无此字段按 `false`（开放）加载（Phase I 子阶段 D 补）。
+        #[serde(default)]
         closed: bool,
         /// 曲线模式（Phase I）。仅 Polyline 使用；`Curved` 经 Catmull-Rom 插值。
         /// `#[serde(default)]`：旧存档无此字段按 `Straight` 加载。
@@ -1280,6 +1282,38 @@ mod tests {
         let kind: ItemKind = serde_json::from_str(json).unwrap();
         match &kind {
             ItemKind::Shape { rough, .. } => assert!(!*rough),
+            _ => panic!("expected Shape kind"),
+        }
+    }
+
+    #[test]
+    fn shape_serde_backward_compat_without_phase_i_fields() {
+        // Phase I 前的 Shape JSON 缺 curve_type / closed / roundness（I4 决策：新字段全 `#[serde(default)]`），
+        // 应加载为 Straight / false / 0.0 而不报错——保证旧 .prz 直接打开。
+        let json = r#"{
+            "Shape": {
+                "shape_type": "Rectangle",
+                "base_size": [10.0, 20.0],
+                "points": [],
+                "stroke": {"color": [255,255,255,255], "width": 2.0, "dash": "Solid"},
+                "fill": null,
+                "start_arrow": null,
+                "end_arrow": null,
+                "seed": 0
+            }
+        }"#;
+        let kind: ItemKind = serde_json::from_str(json).unwrap();
+        match &kind {
+            ItemKind::Shape {
+                curve_type,
+                closed,
+                roundness,
+                ..
+            } => {
+                assert_eq!(*curve_type, CurveType::Straight);
+                assert!(!*closed);
+                assert_eq!(*roundness, 0.0);
+            }
             _ => panic!("expected Shape kind"),
         }
     }
