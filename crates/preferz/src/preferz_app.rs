@@ -144,7 +144,11 @@ enum DragState {
         /// points 下标（任意顶点，开放折线/闭合多边形共用）。
         endpoint: usize,
         start_canvas: CanvasPoint,
+        /// 拖拽开始前的点集快照：普通顶点拖拽 = 拖拽前 points（兼作 undo orig）；
+        /// 段中点加点拖拽 = **插入前**的点集（undo 时恢复即移除新顶点）。
         start_points: Vec<(f32, f32)>,
+        /// 被拖顶点在拖拽开始时的位置（加点拖拽时即段中点）。
+        base_pos: (f32, f32),
     },
     /// 用 Frame 工具拖拽创建画框（两点式：start → current）。
     CreatingFrame {
@@ -1303,7 +1307,7 @@ impl eframe::App for PReferZApp {
                             egui::CursorIcon::ResizeNorthWest
                         }
                         Handle::Rotate => egui::CursorIcon::Grab,
-                        Handle::Endpoint(_) => egui::CursorIcon::Grab,
+                        Handle::Endpoint(_) | Handle::SegmentMid(_) => egui::CursorIcon::Grab,
                         Handle::FlipH => egui::CursorIcon::ResizeHorizontal,
                         Handle::FlipV => egui::CursorIcon::ResizeVertical,
                         Handle::None => {
@@ -1549,15 +1553,54 @@ impl PReferZApp {
                             ItemKind::Shape { points, .. } => points.clone(),
                             _ => Vec::new(),
                         };
+                        let base_pos = start_points.get(endpoint).copied().unwrap_or((0.0, 0.0));
                         let start_canvas = self.viewport.screen_to_canvas(screen_pos);
                         self.drag = DragState::LineEndpoint {
                             item_id: item.id,
                             endpoint,
                             start_canvas,
                             start_points,
+                            base_pos,
                         };
                         self.transform_handles.active_handle = h;
                         self.transform_handles.is_dragging = true;
+                        return;
+                    }
+                    // 线性对象段中点：在段中间插入顶点（预览），随即进入端点拖拽。
+                    // start_points 保存插入前的点集，undo 一步即可移除新顶点。
+                    if let Handle::SegmentMid(seg) = h {
+                        let prep = match &item.kind {
+                            ItemKind::Shape { points, .. } => {
+                                let n = points.len();
+                                if n < 2 {
+                                    None
+                                } else {
+                                    let a = points[seg];
+                                    let b = points[(seg + 1) % n];
+                                    let mid = ((a.0 + b.0) * 0.5, (a.1 + b.1) * 0.5);
+                                    let insert_idx = if seg + 1 < n { seg + 1 } else { n };
+                                    Some((points.clone(), insert_idx, mid))
+                                }
+                            }
+                            _ => None,
+                        };
+                        if let Some((start_points, insert_idx, mid)) = prep {
+                            if let Some(it) = self.scene.get_item_mut(&item.id) {
+                                if let ItemKind::Shape { points, .. } = &mut it.kind {
+                                    points.insert(insert_idx, mid);
+                                }
+                            }
+                            let start_canvas = self.viewport.screen_to_canvas(screen_pos);
+                            self.drag = DragState::LineEndpoint {
+                                item_id: item.id,
+                                endpoint: insert_idx,
+                                start_canvas,
+                                start_points,
+                                base_pos: mid,
+                            };
+                            self.transform_handles.active_handle = h;
+                            self.transform_handles.is_dragging = true;
+                        }
                         return;
                     }
                     // 翻转边手柄：点击即触发翻转，不进入拖拽（spec L239「翻转边」）
@@ -1690,8 +1733,8 @@ impl PReferZApp {
                         }
                         // 翻转手柄begin_drag 中已即时处理，不会进入拖拽预
                         Handle::FlipH | Handle::FlipV | Handle::None => {}
-                        // 线类顶点begin_drag 中已进入 LineEndpoint 拖拽，不会到达这里
-                        Handle::Endpoint(_) => {}
+                        // 线类顶点/段中点begin_drag 中已进入 LineEndpoint 拖拽，不会到达这里
+                        Handle::Endpoint(_) | Handle::SegmentMid(_) => {}
                     }
                 }
             }
@@ -1714,12 +1757,13 @@ impl PReferZApp {
                 item_id,
                 endpoint,
                 start_canvas,
-                start_points,
+                start_points: _,
+                base_pos,
             } => {
                 let item_id = *item_id;
                 let endpoint = *endpoint;
                 let start_canvas = *start_canvas;
-                let start_points = start_points.clone();
+                let base_pos = *base_pos;
                 let current_canvas = self.viewport.screen_to_canvas(screen_pos);
                 let delta_canvas = current_canvas - start_canvas;
                 if let Some(item) = self.scene.get_item_mut(&item_id) {
@@ -1731,10 +1775,9 @@ impl PReferZApp {
                     if let Some(delta_local) = delta_local {
                         if let ItemKind::Shape { points, .. } = &mut item.kind {
                             if let Some(p) = points.get_mut(endpoint) {
-                                *p = (
-                                    start_points[endpoint].0 + delta_local.x,
-                                    start_points[endpoint].1 + delta_local.y,
-                                );
+                                // 以拖拽开始时的顶点位置为基准（段中点加点时该点
+                                // 不在 start_points 里，故单独存 base_pos）
+                                *p = (base_pos.0 + delta_local.x, base_pos.1 + delta_local.y);
                             }
                         }
                     }
@@ -1871,9 +1914,10 @@ impl PReferZApp {
             }
             DragState::LineEndpoint {
                 item_id,
-                endpoint: _,
+                endpoint,
                 start_canvas: _,
                 start_points,
+                base_pos,
             } => {
                 // 预览已直接改 points；释放时若有变化则固化到 undo 栈
                 let new_points = match self.scene.get_item(&item_id) {
@@ -1884,8 +1928,21 @@ impl PReferZApp {
                     None => Vec::new(),
                 };
                 if !new_points.is_empty() && new_points != start_points {
-                    let cmd = EditShapePoints::new(item_id, start_points, new_points);
-                    self.push_cmd(Box::new(cmd));
+                    if new_points.len() != start_points.len()
+                        && new_points.get(endpoint) == Some(&base_pos)
+                    {
+                        // 点击了段中点但未拖动：移除插入的顶点，不产生空命令
+                        if let Some(item) = self.scene.get_item_mut(&item_id) {
+                            if let ItemKind::Shape { points, .. } = &mut item.kind {
+                                if points.len() == new_points.len() {
+                                    points.remove(endpoint);
+                                }
+                            }
+                        }
+                    } else {
+                        let cmd = EditShapePoints::new(item_id, start_points, new_points);
+                        self.push_cmd(Box::new(cmd));
+                    }
                 }
                 self.transform_handles.end_drag();
             }

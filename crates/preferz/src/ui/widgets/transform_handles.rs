@@ -30,6 +30,10 @@ pub enum Handle {
     FlipV,
     /// 线性对象顶点控制点（Polyline，局部坐标 points 的下标；开放折线/闭合多边形共用）。
     Endpoint(usize),
+    /// 线性对象段中点手柄（拖拽即在段中间插入顶点并进入端点拖拽）。
+    /// `usize` 为段起始顶点在 points 中的下标：段 i 连接 points[i] → points[i+1]
+    /// （闭合多边形的收尾段 i = n-1 连接 points[n-1] → points[0]）。
+    SegmentMid(usize),
 }
 
 /// 是否为线性对象（Polyline）：选中态用顶点控制点，而非变换边框。
@@ -165,7 +169,7 @@ impl TransformHandles {
         show_flip: bool,
         show_rotate: bool,
     ) -> Handle {
-        // 线类：只有顶点控制点
+        // 线类：顶点控制点优先，其次段中点（拖拽加点）
         if is_line(item) {
             let eps = Self::line_endpoint_screen_positions(item, viewport);
             let handle_size = Self::handle_size() * 2.0;
@@ -173,6 +177,22 @@ impl TransformHandles {
                 let r = egui::Rect::from_center_size(*p, egui::Vec2::splat(handle_size));
                 if r.contains(screen_pos) {
                     return Handle::Endpoint(i);
+                }
+            }
+            // 段中点：开放折线 n-1 段，闭合多边形含收尾段
+            let n = eps.len();
+            if n >= 2 {
+                let closed = matches!(item.kind, ItemKind::Shape { closed: true, .. });
+                let seg_count = if closed { n } else { n - 1 };
+                let mid_size = Self::handle_size() * 1.4;
+                for i in 0..seg_count {
+                    let a = eps[i];
+                    let b = eps[(i + 1) % n];
+                    let m = (a + b.to_vec2()) * 0.5;
+                    let r = egui::Rect::from_center_size(m, egui::Vec2::splat(mid_size));
+                    if r.contains(screen_pos) {
+                        return Handle::SegmentMid(i);
+                    }
                 }
             }
             return Handle::None;
@@ -231,14 +251,27 @@ impl TransformHandles {
         show_flip: bool,
         show_rotate: bool,
     ) {
-        // 线类：仅绘制顶点控制点（不显示变换边框）
+        // 线类：顶点控制点（黄色方块）+ 段中点手柄（小号浅黄，提示可拖拽加点）
         if is_line(item) {
             let eps = Self::line_endpoint_screen_positions(item, viewport);
             let handle_size = Self::handle_size();
             let fill = egui::Color32::YELLOW;
-            for p in eps {
-                let r = egui::Rect::from_center_size(p, egui::Vec2::splat(handle_size));
+            for p in &eps {
+                let r = egui::Rect::from_center_size(*p, egui::Vec2::splat(handle_size));
                 painter.rect_filled(r, egui::Rounding::same(1.0), fill);
+            }
+            let n = eps.len();
+            if n >= 2 {
+                let closed = matches!(item.kind, ItemKind::Shape { closed: true, .. });
+                let seg_count = if closed { n } else { n - 1 };
+                let mid_fill = egui::Color32::from_rgb(255, 225, 130);
+                for i in 0..seg_count {
+                    let a = eps[i];
+                    let b = eps[(i + 1) % n];
+                    let m = (a + b.to_vec2()) * 0.5;
+                    let r = egui::Rect::from_center_size(m, egui::Vec2::splat(6.0));
+                    painter.rect_filled(r, egui::Rounding::same(1.0), mid_fill);
+                }
             }
             return;
         }
