@@ -50,7 +50,7 @@
 > **状态**：G / I / H / K 已全部交付（见 [CHANGELOG](CHANGELOG.md) §Phase G/I/H/K + §手工验收反馈批次）；
 > 决策点 D1–D6 / I1–I4 已归档（见 [CHANGELOG §决策点归档](CHANGELOG.md)）。
 > 本批次为对齐 Excalidraw 的观感/交互打磨项，**尚未实施**，按下方编号逐步评审、集体拍板后开工。
-> 实施顺序建议：**5/6 先（编辑器基础）→ 1/2/3（样式面板补全）→ 4（多边形编辑）→ 7（连接符，依赖 5）→ 8/9（数据/图表，较重）→ 10（徒手，独立）**；**11/12 为独立快赢（拖拽修饰键 / 缩放钳制默认值），可随时插入，不阻塞其他项**。
+> 实施顺序建议：**5/6/⑬ 先（编辑器基础：吸附 / 对齐分布 / 编组解组）→ 1/2/3（样式面板补全）→ 4（多边形编辑）→ 7（连接符，依赖 5）→ 8/9（数据/图表，较重）→ 10（徒手，独立）**；**11/12 为独立快赢（拖拽修饰键 / 缩放钳制默认值），可随时插入，不阻塞其他项**。
 
 | # | 打磨项 | 一句话方案 | 关键依赖 / 决策点 |
 |---|---|---|---|
@@ -66,6 +66,7 @@
 | 10 | 徒手绘制（7 快捷键）墨迹模仿 | 新增 `Tool::Freehand` + `Num7`；`ItemKind::Freedraw` 平滑墨迹 | 压感（egui 无，倾向恒定宽+抖动）；点抽稀（RDP） |
 | 11 | 选中拖动修饰键 + Ctrl+D 原位复制 | Ctrl+拖动=复制并移动副本；Shift+拖动=水平/垂直约束（PowerPoint 风）；Ctrl+D=原位复制 | 复制时机（按下即建副本 vs 释放结算）；约束基准轴 |
 | 12 | 最大/最小缩放限制 | 默认 100%，最小 10%（0.1x），最大 1000%（10x）；`min_zoom`/`max_zoom` 改默认值 | 钳制已就位（`zoom_at` 已 clamp）；状态栏已有缩放%显示 |
+| 13 | 元素编组 / 解组 | `Item.group_id: Option<Uuid>`（单组，持久化）；点击组成员全选、移动整体；`Ctrl+G` 编组 / `Ctrl+Shift+G` 解组 | 单组 vs 多组嵌套；点击命中即选整组；编组前先建选区 |
 
 ### 各项细节与决策点
 
@@ -134,6 +135,19 @@
 - 现状：`ViewportState` 已有 `min_zoom=0.01`/`max_zoom=100.0`，`zoom_at` 已 `clamp(min,max)`，状态栏显示 `缩放: {:.2}x`。仅默认值不符需求。
 - 方案：默认值改为 `zoom=1.0`（100%）、`min_zoom=0.1`（10%）、`max_zoom=10.0`（1000%）。`ViewportMeta` 持久化/加载后若越界需 clamp（与现有 clamp 一致）；缩放按钮/快捷键触发的 `zoom_at` 已自动受限。状态栏 `%` 显示随之正确。
 - 决策点：无（纯默认值调整 + 确认加载后 clamp）。
+
+**⑬ 元素编组 / 解组（Group / Ungroup）**
+- 现状：`Scene.items` 为扁平列表；`selection` 为 `ItemId` 集合；**无 group 概念**（grep `group/parent/children` 仅命中无关项）。点击命中单个元素即选单个；移动走 `DragState::MoveItems` 对 `selection` 整集平移。
+- 方案：
+  - core 加 `Item.group_id: Option<Uuid>`（`#[serde(default)]=None`，向后兼容旧 .prz）；`Scene` 增 `group(&[ItemId])`（给选中项赋同一新 `Uuid`）、`ungroup(&[ItemId])`（清空）、`group_members_of(item_id)`（同组其余项）。
+  - 点击命中：若命中项 `group_id.is_some()`，选区扩展为**整组**（含命中项），使 `MoveItems` 自然整体平移；`transform_handles` 仅渲染组包围盒（不逐成员画手柄，避免杂乱）。
+  - 动作：`Action::Group` 绑 `Ctrl+G`、`Action::Ungroup` 绑 `Ctrl+Shift+G`（Excalidraw 同款）；经新命令 `SetGroup(ids, Option<Uuid>, Option<Uuid>)` 入 undo 栈（编组=赋新 id，解组=置 None，组内单元素删/拖出如何处置为决策点）。
+  - 序列化：`.prz` items 多一列 `group_id`（TEXT/UUID 字符串，可空）；`BeeFile` 写/读补该列；旧文件缺该列按 `None` 加载（`#[serde(default)]` 已覆盖）。
+- 决策点：
+  - **单组 vs 多组嵌套**：Excalidraw 允许元素属多组（嵌套），但实现复杂；**倾向单组**（一个元素至多一个 group_id），覆盖绝大多数用例，编组前需先 `ungroup` 旧组。
+  - **点击整组 vs 点单成员**：倾向"点击组内任一成员即选整组"（Excalidraw 默认），双击穿透选单成员可作为排后增强。
+  - **组内元素的删除/拖出**：移动整组不变；若删/拖出某成员，默认保留其余成员的 group_id（同组继续存在）；彻底解组需显式 `Ctrl+Shift+G`。
+  - **与 ⑪/⑥ 的关系**：编组后 `Ctrl+D` 原位复制、对齐/分布均作用于整组（选区=整组），无需特殊处理；建议 ⑬ 排在 ⑥ 之后实施，使多元素操作统一以组为粒度。
 
 ---
 
