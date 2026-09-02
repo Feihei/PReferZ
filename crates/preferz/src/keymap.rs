@@ -448,15 +448,19 @@ impl Action {
             // 粘贴必须用释放沿，见模块文档第 1 条
             Paste => vec![KeyBind::new(V).ctrl().on_release()],
             DeleteSelected => vec![KeyBind::new(Delete)],
-            FitToScreen => vec![KeyBind::new(F)],
+            // 适应画布 → 对齐 Excalidraw「缩放到适应/Zoom to fit」= Shift+1。
+            // 裸 F 让给画框（见下）。
+            FitToScreen => vec![KeyBind::new(Num1).shift()],
             TogglePresent => vec![KeyBind::new(F5)],
-            ToolSelect => vec![KeyBind::new(V)],
-            ToolRect => vec![KeyBind::new(R)],
-            ToolEllipse => vec![KeyBind::new(O)],
-            ToolDiamond => vec![KeyBind::new(D)],
-            ToolLine => vec![KeyBind::new(L)],
-            ToolArrow => vec![KeyBind::new(A)],
-            ToolFrame => vec![KeyBind::new(M)],
+            // 以下 6 个工具对齐 Excalidraw：字母键 + 数字键 1–6 双绑定。
+            ToolSelect => vec![KeyBind::new(V), KeyBind::new(Num1)],
+            ToolRect => vec![KeyBind::new(R), KeyBind::new(Num2)],
+            ToolEllipse => vec![KeyBind::new(O), KeyBind::new(Num4)],
+            ToolDiamond => vec![KeyBind::new(D), KeyBind::new(Num3)],
+            ToolLine => vec![KeyBind::new(L), KeyBind::new(Num6)],
+            ToolArrow => vec![KeyBind::new(A), KeyBind::new(Num5)],
+            // 画框 → 对齐 Excalidraw frame = F（裸 F 从 FitToScreen 让出）。
+            ToolFrame => vec![KeyBind::new(F)],
             // 多边形（Phase I）：Excalidraw 没有独立的多边形工具（它是折线的闭合态），
             // 故无官方键位可对。裸 P 在 Excalidraw 是 freedraw（本项目未实现），
             // 占它会让 Excalidraw 用户按错，故用 Shift+P 让开那个字母位。
