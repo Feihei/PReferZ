@@ -1007,33 +1007,8 @@ impl eframe::App for PReferZApp {
         // 右侧属性侧栏（Phase H）：选中项 per-item 编辑，按 ItemKind 分节。
         self.render_props_panel(ctx);
 
-        // 状态栏（持续状态 + flash 消息）
-        egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
-            let file_name = self
-                .current_file
-                .as_ref()
-                .and_then(|p| p.file_name())
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| "未保存".to_string());
-            let persistent = format!(
-                "{} | 缩放: {:.2}x | 平移: ({:.0}, {:.0}) | items: {} | 选中: {}",
-                file_name,
-                self.viewport.zoom,
-                self.viewport.pan.x,
-                self.viewport.pan.y,
-                self.scene.items.len(),
-                self.scene.selection.len(),
-            );
-            if let Some((msg, _)) = &self.flash_status {
-                ui.horizontal(|ui| {
-                    ui.label(&persistent);
-                    ui.separator();
-                    ui.colored_label(egui::Color32::LIGHT_GREEN, msg);
-                });
-            } else {
-                ui.label(&persistent);
-            }
-        });
+        // 注：底部状态栏已移除，缩放百分数 / 语言切换 / flash 提示改由画布之上的
+        // 悬浮 HUD 承载（`render_hud`），在 CentralPanel 之后调用。
 
         // Debug 面板（仅 debug 构建显示，release 自动隐藏）
         if cfg!(debug_assertions) {
@@ -1367,6 +1342,11 @@ impl eframe::App for PReferZApp {
                 }
             }
         });
+
+        // 悬浮 HUD（缩放百分数 + 语言切换 + flash toast）：
+        // 必须在 CentralPanel 之后绘制，才能盖在画布之上，并让画布的
+        // `response.hovered()` 自动排除 HUD 占用的区域（避免穿透触发画布拖拽）。
+        self.render_hud(ctx);
 
         // 文本编辑 overlay（spec L243 P2-5）
         self.render_text_editor(ctx);
@@ -4501,6 +4481,63 @@ impl PReferZApp {
                 apply(&mut item.kind);
             }
         }
+    }
+
+    /// 悬浮 HUD：右下角胶囊（缩放百分数 + 语言切换）+ 底部居中 flash toast。
+    ///
+    /// 替代原底部 `TopBottomPanel` 状态栏，让画布吃满窗口高度。
+    /// 用 `egui::Area` 而非 `Window`：无标题栏、不可拖动、不抢焦点，纯浮层。
+    /// `interactable(true)` 让语言按钮可点；HUD 未覆盖的区域仍透传给画布，
+    /// 画布的 `pointer_on_canvas` 守卫会自动排除被浮层遮挡的部分。
+    fn render_hud(&mut self, ctx: &egui::Context) {
+        let zoom_pct = format!("{:.0}%", self.viewport.zoom * 100.0);
+        let lang = self.lang;
+        egui::Area::new(egui::Id::new("hud_zoom_lang"))
+            .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-12.0, -12.0))
+            .order(egui::Order::Foreground)
+            .interactable(true)
+            .show(ctx, |ui| {
+                // popup frame 自带主题化背景 + 描边，明暗主题下都可读。
+                egui::Frame::popup(ui.style())
+                    .inner_margin(egui::Margin::symmetric(10.0, 5.0))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(&zoom_pct).monospace());
+                            ui.separator();
+                            // 按钮显示当前语言，点击切到另一种（hover 提示目标语言）。
+                            if ui
+                                .small_button(lang.short_name())
+                                .on_hover_text(lang.toggled().display_name())
+                                .clicked()
+                            {
+                                self.lang = lang.toggled();
+                                self.persist_config();
+                            }
+                        });
+                    });
+            });
+
+        self.render_flash_toast(ctx);
+    }
+
+    /// flash 提示的悬浮 toast。原由状态栏承载，随状态栏移除后移到画布底部居中。
+    /// `interactable(false)`：纯提示，不拦截画布指针事件。
+    fn render_flash_toast(&self, ctx: &egui::Context) {
+        let Some((msg, _)) = self.flash_status.as_ref() else {
+            return;
+        };
+        let msg = msg.clone();
+        egui::Area::new(egui::Id::new("flash_toast"))
+            .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -16.0))
+            .order(egui::Order::Foreground)
+            .interactable(false)
+            .show(ctx, |ui| {
+                egui::Frame::popup(ui.style())
+                    .inner_margin(egui::Margin::symmetric(12.0, 6.0))
+                    .show(ui, |ui| {
+                        ui.colored_label(egui::Color32::LIGHT_GREEN, msg);
+                    });
+            });
     }
 
     #[cfg_attr(not(debug_assertions), allow(dead_code))]

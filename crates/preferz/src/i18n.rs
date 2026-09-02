@@ -22,6 +22,22 @@ impl Lang {
             Lang::Zh => "中文",
         }
     }
+
+    /// 悬浮 HUD 语言按钮用的极短标签（`EN` / `中`），比 `display_name` 省地方。
+    pub fn short_name(self) -> &'static str {
+        match self {
+            Lang::En => "EN",
+            Lang::Zh => "中",
+        }
+    }
+
+    /// 切换到另一种语言。
+    pub fn toggled(self) -> Lang {
+        match self {
+            Lang::En => Lang::Zh,
+            Lang::Zh => Lang::En,
+        }
+    }
 }
 
 /// 翻译 key。新增文案在此追加变体，然后在 `translate` 中提供两种语言文案。
