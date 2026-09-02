@@ -41,7 +41,15 @@
 （`ed538cf`+`d6177b8`+`c05d1ae`）/ 绑定文本不可独立选中（`8eb996a`）/ 键鼠改绑 /
 配置持久化 / Slide 演示（E4）/ **裁剪遮罩闪黑已根除**（`74a5869`，旋转图拖动裁剪框不再闪）。
 
-新增待验收：（暂无）
+新增待验收：**手工验收反馈批次（2026-09-02，Feihei 实测 5 项）**
+
+| # | 问题 | 方案 |
+|---|---|---|
+| 1 | Excalidraw 数字快捷键 1–6 不生效 | 根因：旧 `~/.preferz/config.json` 持久化了 Phase K 之前的默认表，`from_partial` 只补缺失项 → 新数字绑定永不加载。D6 已移除改绑入口，持久化 keymap 只可能是过期默认值 → 加载时忽略 `config.json` 的 keymap 字段，恒用出厂默认（字段保留兼容解析） |
+| 2 | 绘制工具状态下也要有侧栏 | 移除底部 style_panel；绘制工具激活时右侧栏显示「新建元素默认样式」（与 Phase H 属性侧栏同套控件） |
+| 3 | 颜色选择改 Excalidraw 式调色板 | 移植 Excalidraw `COLOR_PALETTE`（open-color 五档）+ top picks 行；暗色主题套用 Excalidraw 的 invert(93%)+hue-rotate(180°) 滤镜；保留自定义取色入口。侧栏与工具默认样式共用一个 palette 控件 |
+| 4 | 填充改 4 样式 + 立即生效 | 数据模型：`Shape.fill_style: FillStyle { Solid, Hachure, CrossHatch }`（`#[serde(default)]`，旧文件 fill=Some → Solid 语义不变）；渲染补 hachure（-41° 平行线裁剪）与 cross-hatch，手绘风下抖动；UI 四态选择器（无/纯色/斜线/交叉线），选非 None 时 fill 为空则立即取**各自描边色**——不再要求先选颜色；"No fill" 文案歧义随旧 checkbox 一并移除 |
+| 5 | 直线/箭头中点拖拽变折线/曲线 | 选中线类对象时段中点出现编辑手柄，拖拽即在段中间插入顶点并进入既有 LineEndpoint 拖拽（Straight → 折线；Curved → Catmull-Rom 控制点弯曲）；闭合多边形含收尾段 |
 
 ---
 
