@@ -748,7 +748,11 @@ impl PReferZApp {
             frameless: false,
             bg_alpha: 1.0,
             lang: cfg.lang,
-            keymap: Keymap::from_partial(cfg.keymap),
+            // 恒用出厂默认（Phase K 数字快捷键修复）：D6 移除改绑入口后，持久化的
+            // keymap 只可能是旧版本的过期默认表——`from_partial` 只补缺失动作，
+            // 老配置里全量存在（如 ToolRect 只有 R 没有 Num2），会把新默认值永久
+            // 挡在门外。字段仍保留在 Config 里以便兼容解析，但不再消费。
+            keymap: Keymap::new(),
             theme: cfg.theme,
             recent_files: load_recent_files(),
             pending_open_recent: None,
@@ -5958,11 +5962,12 @@ impl PReferZApp {
         }
     }
 
-    /// 把当前配置（语言 + 快捷键）落盘到 `~/.preferz/config.json`。
+    /// 把当前配置（语言 + 主题）落盘到 `~/.preferz/config.json`。
+    /// keymap 不再持久化（改绑入口已随 D6 移除，见 `PReferZApp::new`）。
     fn persist_config(&self) {
         save_config(&UserConfig {
             lang: self.lang,
-            keymap: self.keymap.as_map().clone(),
+            keymap: KeymapMap::default(),
             theme: self.theme,
         });
     }
@@ -6453,8 +6458,9 @@ fn config_path() -> Option<PathBuf> {
 struct UserConfig {
     #[serde(default)]
     lang: Lang,
-    /// 部分表：缺失的动作由 [`Keymap::from_partial`] 用默认值补齐，
-    /// 因此新增 Action 变体不会让老配置文件解析失败。
+    /// 旧版本遗留：不再消费（启动恒用 `Keymap::new()`，见 `PReferZApp::new`）。
+    /// 保留字段是为了老配置文件能正常解析；序列化时写空表，避免把过期默认值
+    /// 继续散播给未来的版本。
     #[serde(default)]
     keymap: KeymapMap,
     /// 主题模式（Light/Dark/Auto），缺省回退 `Dark`。
