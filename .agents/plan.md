@@ -64,8 +64,8 @@
 | 8 | 两列数据粘贴成柱状/折线图 | 剪贴板 2 列 TSV/CSV → 生成 Chart item（柱状/折线） | 图表用新 ItemKind+ChartStyler vs Pixmap 位图；单/多系列 |
 | 9 | mermaid 代码转图表 | mermaid 子集 → nodes+edges（复用 #5/#6/#7） | 解析器：受限自研 Rust（零依赖，倾向）vs WASM mermaid |
 | 10 | 徒手绘制（7 快捷键）墨迹模仿 | 新增 `Tool::Freehand` + `Num7`；`ItemKind::Freedraw` 平滑墨迹 | 压感（egui 无，倾向恒定宽+抖动）；点抽稀（RDP） |
-| 11 | 选中拖动修饰键 + Ctrl+D 原位复制 | Ctrl+拖动=复制并移动副本；Shift+拖动=水平/垂直约束（PowerPoint 风）；Ctrl+D=原位复制 | 复制时机（按下即建副本 vs 释放结算）；约束基准轴 |
-| 12 | 最大/最小缩放限制 | 默认 100%，最小 10%（0.1x），最大 1000%（10x）；`min_zoom`/`max_zoom` 改默认值 | 钳制已就位（`zoom_at` 已 clamp）；状态栏已有缩放%显示 |
+| 11 | ✅ 选中拖动修饰键 + Ctrl+D 原位复制 | Ctrl+拖动=复制并移动副本；Shift+拖动=水平/垂直约束（PowerPoint 风）；Ctrl+D=原位复制 | 已交付（2026-09-03）：按下即建副本；约束基准=画布轴（视口无旋转，与屏幕轴同向）；Ctrl+D 偏移 10px |
+| 12 | ✅ 最大/最小缩放限制 | 默认 100%，最小 10%（0.1x），最大 1000%（10x）；`min_zoom`/`max_zoom` 改默认值 | 已交付（2026-09-03）：默认值 0.1/10.0；`.prz` 元数据越界时 clamp |
 | 13 | 元素编组 / 解组 | `Item.group_id: Option<Uuid>`（单组，持久化）；点击组成员全选、移动整体；`Ctrl+G` 编组 / `Ctrl+Shift+G` 解组 | 单组 vs 多组嵌套；点击命中即选整组；编组前先建选区 |
 
 ### 各项细节与决策点
@@ -123,18 +123,9 @@
 - 方案：新增 `Tool::Freehand` + `Action::ToolFreehand` 绑 `Num7`（Excalidraw freedraw=7）；core 新增 `ItemKind::Freedraw`（点序列 + 宽度）；渲染为平滑墨迹（Catmull-Rom 穿采样点，手绘抖动可选）；按下采集、移动追加、松开定型走 undo；点序列 RDP 抽稀。
 - 决策点：压感（egui 无输入，倾向恒定宽 + 末端收笔）；点采样密度/抽稀。
 
-11. **选中拖动修饰键 + Ctrl+D 原位复制（PowerPoint 风）**
-- 现状：选中元素拖动走 `DragState::MoveItems`（start 仅记 `start_canvas`/`start_transforms`，**未读 Ctrl/Shift**），update 直接 `pos = start + delta`；无原位复制动作。
-- 方案：
-  - **Ctrl+拖动 = 复制移动**：`begin_drag` 检测到 Ctrl 时，先对选中项执行 `CreateItems`（克隆，新 UUID + 偏移 0），改选克隆集，再对克隆集跑 MoveItems；释放走 `CreateItems`+`MoveItems` 合并或单条命令（决策点：按下即建副本 vs 释放时结算）。
-  - **Shift+拖动 = 轴约束**：update 阶段取 `delta` 两轴中绝对值较大者为约束轴，另一轴清零（纯水平/垂直），与 Excalidraw/PowerPoint 一致。
-  - **Ctrl+D = 原位复制**：新增 `Action::DuplicateInPlace`，对选中项执行 `CreateItems`（偏移固定小位移，如 10px 画布），入 undo 栈。
-- 决策点：复制时机（按下即副本 vs 释放结算，倾向按下即建避免抖动）；约束基准（屏幕轴 vs 画布轴，倾向屏幕轴）；Ctrl+D 偏移量。
+11. **选中拖动修饰键 + Ctrl+D 原位复制（PowerPoint 风）** — ✅ 已交付，见 [CHANGELOG §拖拽修饰键 + Ctrl+D 原位复制](CHANGELOG.md)。
 
-12. **最大/最小缩放限制**
-- 现状：`ViewportState` 已有 `min_zoom=0.01`/`max_zoom=100.0`，`zoom_at` 已 `clamp(min,max)`，状态栏显示 `缩放: {:.2}x`。仅默认值不符需求。
-- 方案：默认值改为 `zoom=1.0`（100%）、`min_zoom=0.1`（10%）、`max_zoom=10.0`（1000%）。`ViewportMeta` 持久化/加载后若越界需 clamp（与现有 clamp 一致）；缩放按钮/快捷键触发的 `zoom_at` 已自动受限。状态栏 `%` 显示随之正确。
-- 决策点：无（纯默认值调整 + 确认加载后 clamp）。
+12. **最大/最小缩放限制** — ✅ 已交付，见 [CHANGELOG §缩放范围限制](CHANGELOG.md)。
 
 13. **元素编组 / 解组（Group / Ungroup）**
 - 现状：`Scene.items` 为扁平列表；`selection` 为 `ItemId` 集合；**无 group 概念**（grep `group/parent/children` 仅命中无关项）。点击命中单个元素即选单个；移动走 `DragState::MoveItems` 对 `selection` 整集平移。

@@ -174,6 +174,35 @@
 
 ---
 
+## 拖拽修饰键 + Ctrl+D 原位复制（plan #11，2026-09-03）
+
+Excalidraw 打磨批次快赢项 #11，三处协同改动：
+
+- **core**：新增 `AddItems` 批量命令（`preview_already_applied` 跳过首次 redo，用于预览已落地的副本）；
+  `Scene::duplicate_items(ids, offset)` 克隆选中项、生成新 UUID、修正绑定文本的 `container_id`
+  （容器内副本改绑容器副本，容器外的绑定文本退化为自由文本）。3 个单测覆盖 id 重映射。
+- **Shift 轴约束**（`DragState::MoveItems` 增 `pending_deselect`）：Shift+拖动取 `delta` 两轴中绝对值
+  较大者为约束轴、另一轴清零（PowerPoint/Excalidraw 同款）。Shift+点击**已选中**项不再立即取消选中，
+  改为释放时判定——没移动则取消选中、移动则轴约束移动（否则 Shift+拖动永远触发不到约束）。
+- **Ctrl+拖动复制移动**：`begin_drag` 检测 Ctrl 即按"起点"克隆副本入场景、改选副本集，预览移动副本；
+  释放时按**最终位置** push `AddItems(preview_applied)`，一次 undo 撤掉整个「复制+移动」。
+  Ctrl+点击未移动则不建副本（删掉重叠副本 + 恢复原件选区），避免误生成隐身副本。
+- **Ctrl+D 原位复制**：新增 `Action::DuplicateInPlace` 绑 `Ctrl+D`（裸 D 仍是菱形工具，修饰键严格匹配不冲突）；
+  `duplicate_in_place()` 带容器联动复制、偏移 10px 画布、选区切到副本、push `AddItems(preview_applied)`。
+- i18n 增 `FlashDuplicated`（三语，含计数 `{0}`）。
+
+---
+
+## 缩放范围限制（plan #12，2026-09-03）
+
+- `ViewportState` 默认 `zoom=1.0`、`min_zoom=0.1`（10%）、`max_zoom=10.0`（1000%）；
+  原默认 1%–10000% 过于极端（缩到底剩几个像素、放到顶糊成一片，滚轮要转很久才有可见反应）。
+- `.prz` 元数据 `ViewportMeta` 加载时按新范围 `clamp`——旧文件可能存越界值，不收敛会在越界区间"空转"好几圈。
+- Present 模式仍不 clamp 上限（小 frame 需放大填充），退出演示恢复 `saved_zoom`，不受新范围影响。
+- 单测覆盖 clamp 边界。
+
+---
+
 ## 决策点归档（D1–D6 / I1–I4）
 
 > 原列于 plan.md，G/I/H/K 交付后蒸馏归档于此，使 CHANGELOG 自包含、plan.md 仅保留前瞻内容。
