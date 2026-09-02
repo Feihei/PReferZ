@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::shape::{ArrowHeadStyle, CurveType, ShapeType, StrokeStyle};
+use crate::shape::{ArrowHeadStyle, CurveType, FillStyle, ShapeType, StrokeStyle};
 use crate::spaces::{CanvasPoint, CanvasRect, CanvasVector};
 use crate::transform::Transform;
 
@@ -56,7 +56,11 @@ pub enum ItemKind {
         /// 线性对象顶点，局部坐标（矩形族为空 Vec；N ≥ 2）。
         points: Vec<(f32, f32)>,
         stroke: StrokeStyle,
-        fill: Option<[u8; 4]>, // RGBA；None = 透明
+        fill: Option<[u8; 4]>, // RGBA；None = 无填充（Excalidraw "transparent"）
+        /// 填充样式（仅闭合图形生效；fill 为 None 时无意义）。
+        /// `#[serde(default)]`：旧存档缺该字段按 Solid 加载（历史 fill=Some 即纯色）。
+        #[serde(default)]
+        fill_style: FillStyle,
         /// 起点箭头样式（仅 Polyline 使用；矩形族忽略）。
         start_arrow: Option<ArrowHeadStyle>,
         /// 终点箭头样式（仅 Polyline 使用；矩形族忽略）。
@@ -381,6 +385,7 @@ impl Item {
                 points: Vec::new(),
                 stroke,
                 fill,
+                fill_style: FillStyle::Solid,
                 start_arrow: None,
                 end_arrow: None,
                 closed: false,
@@ -417,6 +422,7 @@ impl Item {
                 points,
                 stroke,
                 fill: None,
+                fill_style: FillStyle::Solid,
                 start_arrow,
                 end_arrow,
                 closed,
@@ -450,6 +456,15 @@ impl Item {
                 *seed = Uuid::new_v4().as_u128() as u64;
             }
         }
+    }
+
+    /// builder：设置填充样式（仅 Shape 生效）。颜色由 `fill` 字段独立表达，
+    /// "无填充" = `fill: None`，本方法只写样式值。
+    pub fn with_fill_style(mut self, style: FillStyle) -> Self {
+        if let ItemKind::Shape { fill_style, .. } = &mut self.kind {
+            *fill_style = style;
+        }
+        self
     }
 
     /// Item 未旋转/缩放前的原始尺寸（item 局部空间的宽高，单位：画布空间像素）。

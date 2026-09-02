@@ -1,6 +1,6 @@
 use crate::item::{CropRect, ItemId, ItemKind};
 use crate::scene::{RenumberPlan, Scene};
-use crate::shape::{ArrowHeadStyle, CurveType, PixmapStyle, StrokeStyle, TextStyle};
+use crate::shape::{ArrowHeadStyle, CurveType, FillStyle, PixmapStyle, StrokeStyle, TextStyle};
 use crate::spaces::CanvasVector;
 use crate::transform::Transform;
 
@@ -503,12 +503,19 @@ impl Command for SetStrokeStyle {
 
 // ─────────────────────────── Set shape fill ───────────────────────────
 
-/// 一次填充色变更的批量条目：`(item_id, old_fill, new_fill)`。
-/// 起别名而非裸写三元组，否则 `Vec<(ItemId, Option<[u8;4]>, Option<[u8;4]>)>` 会
-/// 触发 `clippy::type_complexity`（其它批量命令的元组更短，未触及该阈值）。
-pub type FillChange = (ItemId, Option<[u8; 4]>, Option<[u8; 4]>);
+/// 填充状态快照：颜色 + 样式。`color: None` = 无填充（此时 style 无意义，
+/// 与 Excalidraw "transparent" 同语义）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FillState {
+    pub color: Option<[u8; 4]>,
+    pub style: FillStyle,
+}
 
-/// 批量设置 Shape 填充色（Phase H）。`None` = 透明。
+/// 一次填充变更的批量条目：`(item_id, old, new)`。
+/// 起别名而非裸写，避免触发 `clippy::type_complexity`。
+pub type FillChange = (ItemId, FillState, FillState);
+
+/// 批量设置 Shape 填充（Phase H 为颜色，本批次扩展为颜色+样式）。
 /// 每项自带 old/new，整批只占一条 undo 记录（D3）。
 pub struct SetShapeFill {
     items: Vec<FillChange>,
@@ -516,7 +523,7 @@ pub struct SetShapeFill {
 }
 
 impl SetShapeFill {
-    pub fn new(item_id: ItemId, old_fill: Option<[u8; 4]>, new_fill: Option<[u8; 4]>) -> Self {
+    pub fn new(item_id: ItemId, old_fill: FillState, new_fill: FillState) -> Self {
         Self {
             items: vec![(item_id, old_fill, new_fill)],
             preview_already_applied: false,
@@ -541,8 +548,12 @@ impl SetShapeFill {
         for (id, old, new_fill) in items {
             let value = if new { *new_fill } else { *old };
             if let Some(item) = scene.get_item_mut(id) {
-                if let ItemKind::Shape { fill, .. } = &mut item.kind {
-                    *fill = value;
+                if let ItemKind::Shape {
+                    fill, fill_style, ..
+                } = &mut item.kind
+                {
+                    *fill = value.color;
+                    *fill_style = value.style;
                 }
             }
         }
@@ -1647,14 +1658,57 @@ mod tests {
     fn set_shape_fill_batch_none_clears_fill_on_undo_restores() {
         let mut scene = Scene::new();
         let (a, b) = two_shapes(&mut scene);
-        let old = Some([1, 2, 3, 4]);
-        let mut cmd = SetShapeFill::new_batch(vec![(a, old, None), (b, None, Some([9, 9, 9, 9]))]);
+        let solid = |c: Option<[u8; 4]>| FillState {
+            color: c,
+            style: FillStyle::Solid,
+        };
+        let old = solid(Some([1, 2, 3, 4]));
+        let mut cmd = SetShapeFill::new_batch(vec![
+            (a, old, solid(None)),
+            (b, solid(None), solid(Some([9, 9, 9, 9]))),
+        ]);
         cmd.redo(&mut scene);
         assert_eq!(fill_of(&scene, a), None);
         assert_eq!(fill_of(&scene, b), Some([9, 9, 9, 9]));
         cmd.undo(&mut scene);
-        assert_eq!(fill_of(&scene, a), old);
+        assert_eq!(fill_of(&scene, a), old.color);
         assert_eq!(fill_of(&scene, b), None);
+    }
+
+    #[test]
+    fn set_shape_fill_roundtrips_style() {
+        // 填充样式（Hachure 等）随颜色一起走 old/new 快照
+        let mut scene = Scene::new();
+        let (a, _b) = two_shapes(&mut scene);
+        let old = FillState {
+            color: None,
+            style: FillStyle::Solid,
+        };
+        let new = FillState {
+            color: Some([200, 30, 30, 255]),
+            style: FillStyle::Hachure,
+        };
+        let mut cmd = SetShapeFill::new(a, old, new);
+        cmd.redo(&mut scene);
+        match &scene.get_item(&a).unwrap().kind {
+            ItemKind::Shape {
+                fill, fill_style, ..
+            } => {
+                assert_eq!(*fill, new.color);
+                assert_eq!(*fill_style, FillStyle::Hachure);
+            }
+            _ => panic!("expected Shape kind"),
+        }
+        cmd.undo(&mut scene);
+        match &scene.get_item(&a).unwrap().kind {
+            ItemKind::Shape {
+                fill, fill_style, ..
+            } => {
+                assert_eq!(*fill, None);
+                assert_eq!(*fill_style, FillStyle::Solid);
+            }
+            _ => panic!("expected Shape kind"),
+        }
     }
 
     #[test]

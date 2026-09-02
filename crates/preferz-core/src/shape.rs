@@ -42,6 +42,24 @@ pub enum DashStyle {
     Dotted,
 }
 
+/// 填充样式（Excalidraw 同款四态中的三种有填充样式；"无填充"由
+/// `fill: None` 表达）。仅闭合图形生效。
+///
+/// serde 默认值为 `Solid`：旧存档只有 `fill`（Some = 纯色填充）没有本字段，
+/// 缺省按 `Solid` 加载即与历史行为一致；新建元素 `fill` 恒为 `None`，
+/// 字段值在用户选择填充样式时才被写入。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum FillStyle {
+    /// 纯色填充。
+    #[default]
+    Solid,
+    /// 斜线填充（rough.js 同款 -41° 平行线）。
+    Hachure,
+    /// 交叉线填充（斜线两遍，第二遍旋转 90°）。
+    CrossHatch,
+}
+
 /// 描边样式（画布空间像素；颜色 RGBA）。
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct StrokeStyle {
@@ -210,5 +228,16 @@ mod tests {
         }
         // 派生默认值为 Straight（旧文件缺该字段时按此加载）
         assert_eq!(CurveType::default(), CurveType::Straight);
+    }
+
+    #[test]
+    fn fill_style_serde_roundtrip_and_default() {
+        for f in [FillStyle::Solid, FillStyle::Hachure, FillStyle::CrossHatch] {
+            let json = serde_json::to_string(&f).unwrap();
+            let back: FillStyle = serde_json::from_str(&json).unwrap();
+            assert_eq!(f, back);
+        }
+        // 旧存档缺 fill_style 字段时按 Solid 加载（历史 fill=Some 即纯色填充）
+        assert_eq!(FillStyle::default(), FillStyle::Solid);
     }
 }
