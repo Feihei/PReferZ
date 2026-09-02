@@ -75,6 +75,18 @@ pub struct TextStyle {
     pub background: Option<[u8; 4]>,
 }
 
+/// Pixmap item 的可编辑样式快照（Phase H）。
+///
+/// 与 [`TextStyle`] 同理：不透明度与灰度在 UI 上是两个控件，但命令层按整份快照
+/// 存 old/new，一次改动只产生一条 undo 记录。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PixmapStyle {
+    /// 不透明度 0..1（1.0 = 完全不透明）。
+    pub opacity: f32,
+    /// 是否以灰度显示。
+    pub grayscale: bool,
+}
+
 /// 确定性伪随机数发生器（xorshift64\*）。
 ///
 /// 手绘风描边的抖动必须**可复现**：同一 `seed` 恒产生同一序列，

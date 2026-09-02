@@ -1,6 +1,6 @@
 use crate::item::{CropRect, ItemId, ItemKind};
 use crate::scene::{RenumberPlan, Scene};
-use crate::shape::{ArrowHeadStyle, CurveType, StrokeStyle, TextStyle};
+use crate::shape::{ArrowHeadStyle, CurveType, PixmapStyle, StrokeStyle, TextStyle};
 use crate::spaces::CanvasVector;
 use crate::transform::Transform;
 
@@ -625,6 +625,137 @@ impl SetTextStyle {
 }
 
 impl Command for SetTextStyle {
+    fn redo(&mut self, scene: &mut Scene) {
+        let items = std::mem::take(&mut self.items);
+        Self::apply(scene, &items, true);
+        self.items = items;
+    }
+
+    fn undo(&mut self, scene: &mut Scene) {
+        let items = std::mem::take(&mut self.items);
+        Self::apply(scene, &items, false);
+        self.items = items;
+    }
+
+    fn skip_first_redo(&self) -> bool {
+        self.preview_already_applied
+    }
+}
+
+// ─────────────────────────── Set pixmap style ───────────────────────────
+
+/// 批量设置 Pixmap item 样式（不透明度 / 灰度，Phase H）。
+///
+/// 与 [`SetTextStyle`] 同理：两个控件共享一条 undo 记录。
+/// 只覆盖这两个字段——裁剪矩形（`crop`）有自己的交互（裁剪模式）与命令
+/// [`SetPixmapProps`]，不并入此处的"样式"概念。
+pub struct SetPixmapStyle {
+    items: Vec<(ItemId, PixmapStyle, PixmapStyle)>,
+    preview_already_applied: bool,
+}
+
+impl SetPixmapStyle {
+    pub fn new(item_id: ItemId, old_style: PixmapStyle, new_style: PixmapStyle) -> Self {
+        Self {
+            items: vec![(item_id, old_style, new_style)],
+            preview_already_applied: false,
+        }
+    }
+
+    /// 批量构造：`(item_id, old, new)` 三元组列表。
+    pub fn new_batch(items: Vec<(ItemId, PixmapStyle, PixmapStyle)>) -> Self {
+        Self {
+            items,
+            preview_already_applied: false,
+        }
+    }
+
+    /// 声明是否为预览模式（滑块拖动中 UI 已直接改 item，释放时传 true）。
+    pub fn with_preview_applied(mut self, applied: bool) -> Self {
+        self.preview_already_applied = applied;
+        self
+    }
+
+    fn apply(scene: &mut Scene, items: &[(ItemId, PixmapStyle, PixmapStyle)], new: bool) {
+        for (id, old, new_style) in items {
+            let value = if new { *new_style } else { *old };
+            if let Some(item) = scene.get_item_mut(id) {
+                if let ItemKind::Pixmap {
+                    opacity, grayscale, ..
+                } = &mut item.kind
+                {
+                    *opacity = value.opacity;
+                    *grayscale = value.grayscale;
+                }
+            }
+        }
+    }
+}
+
+impl Command for SetPixmapStyle {
+    fn redo(&mut self, scene: &mut Scene) {
+        let items = std::mem::take(&mut self.items);
+        Self::apply(scene, &items, true);
+        self.items = items;
+    }
+
+    fn undo(&mut self, scene: &mut Scene) {
+        let items = std::mem::take(&mut self.items);
+        Self::apply(scene, &items, false);
+        self.items = items;
+    }
+
+    fn skip_first_redo(&self) -> bool {
+        self.preview_already_applied
+    }
+}
+
+// ─────────────────────────── Set frame number ───────────────────────────
+
+/// 批量设置画框编号（Phase H）。
+///
+/// 侧栏的编号控件用它；整批改号只占一条 undo 记录。
+/// 注意它**不做重排**——改完可能与其他画框撞号，那是 [`RenumberFrame`] 的职责。
+pub struct SetFrameNumber {
+    items: Vec<(ItemId, u32, u32)>,
+    preview_already_applied: bool,
+}
+
+impl SetFrameNumber {
+    pub fn new(item_id: ItemId, old_number: u32, new_number: u32) -> Self {
+        Self {
+            items: vec![(item_id, old_number, new_number)],
+            preview_already_applied: false,
+        }
+    }
+
+    /// 批量构造：`(item_id, old, new)` 三元组列表。
+    pub fn new_batch(items: Vec<(ItemId, u32, u32)>) -> Self {
+        Self {
+            items,
+            preview_already_applied: false,
+        }
+    }
+
+    /// 声明是否为预览模式（UI 已直接改 item 时传 true，push 跳过首次 redo）。
+    pub fn with_preview_applied(mut self, applied: bool) -> Self {
+        self.preview_already_applied = applied;
+        self
+    }
+
+    fn apply(scene: &mut Scene, items: &[(ItemId, u32, u32)], new: bool) {
+        for (id, old, new_number) in items {
+            let value = if new { *new_number } else { *old };
+            if let Some(item) = scene.get_item_mut(id) {
+                if let ItemKind::Frame { number, .. } = &mut item.kind {
+                    *number = value;
+                }
+            }
+        }
+    }
+}
+
+impl Command for SetFrameNumber {
     fn redo(&mut self, scene: &mut Scene) {
         let items = std::mem::take(&mut self.items);
         Self::apply(scene, &items, true);

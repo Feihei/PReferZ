@@ -159,8 +159,23 @@ pub enum T {
     StyleCurveStraight,
     StyleCurveCurved,
     StyleRoundness,
+    // ── 属性侧栏（Phase H）──
+    /// 面板标题里的选中数量：`已选 {0} 项`。
+    PropsSelectedCount,
+    /// 选中项类型不一致时的提示。
+    PropsMixedSelection,
+    /// 多选时某属性值各不相同的标注（Excalidraw 的 "Mixed"）。
+    PropsMixedValue,
+    /// 分节标题：形状 / 文字 / 图片 / 画框。
+    PropsSectionShape,
+    PropsSectionText,
+    PropsSectionPixmap,
+    PropsSectionFrame,
     // ── 手绘风（Phase F）──
     StyleRough,
+    // ── 属性侧栏文字/图片节（Phase H）──
+    StyleTextBackground,
+    StyleGrayscale,
 }
 
 /// 查表翻译。未命中的 key 返回 debug 字符串（开发期易发现遗漏）。
@@ -298,7 +313,16 @@ fn translate_en(key: T) -> &'static str {
         T::StyleCurveStraight => "Sharp",
         T::StyleCurveCurved => "Round",
         T::StyleRoundness => "Roundness",
+        T::PropsSelectedCount => "{0} selected",
+        T::PropsMixedSelection => "Mixed types — no shared properties to edit.",
+        T::PropsMixedValue => "Mixed",
+        T::PropsSectionShape => "Shape",
+        T::PropsSectionText => "Text",
+        T::PropsSectionPixmap => "Image",
+        T::PropsSectionFrame => "Frame",
         T::StyleRough => "Hand-drawn",
+        T::StyleTextBackground => "Background",
+        T::StyleGrayscale => "Grayscale",
     }
 }
 
@@ -429,7 +453,16 @@ fn translate_zh(key: T) -> &'static str {
         T::StyleCurveStraight => "尖角",
         T::StyleCurveCurved => "圆滑",
         T::StyleRoundness => "圆角",
+        T::PropsSelectedCount => "已选 {0} 项",
+        T::PropsMixedSelection => "选中了不同类型的元素，没有可批量编辑的共有属性",
+        T::PropsMixedValue => "不一致",
+        T::PropsSectionShape => "形状",
+        T::PropsSectionText => "文字",
+        T::PropsSectionPixmap => "图片",
+        T::PropsSectionFrame => "画框",
         T::StyleRough => "手绘",
+        T::StyleTextBackground => "背景",
+        T::StyleGrayscale => "灰度",
     }
 }
 

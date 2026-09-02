@@ -11,11 +11,14 @@ use eframe::egui;
 use image::GenericImageView;
 use preferz_core::arrange::{plan_arrange, ArrangeMode};
 use preferz_core::commands::{
-    AddItem, ArrangeItems, CropItems, DeleteItems, EditShapePoints, EditTextContent, FlipItems,
-    MoveItems, NormalizeItems, RenumberFrame, ReorderItems, SetArrowHeads, SetClosed,
-    SetPixmapProps, SetRough, TransformItem,
+    AddItem, ArrangeItems, ArrowHeads, CropItems, DeleteItems, EditShapePoints, EditTextContent,
+    FillChange, FlipItems, MoveItems, NormalizeItems, RenumberFrame, ReorderItems, SetArrowHeads,
+    SetClosed, SetCurveType, SetFrameNumber, SetPixmapProps, SetPixmapStyle, SetRough,
+    SetRoundness, SetShapeFill, SetStrokeStyle, SetTextStyle, TransformItem,
 };
-use preferz_core::shape::{ArrowHeadStyle, DashStyle, ShapeType, StrokeStyle};
+use preferz_core::shape::{
+    ArrowHeadStyle, CurveType, DashStyle, PixmapStyle, ShapeType, StrokeStyle, TextStyle,
+};
 use preferz_core::spaces::{CanvasPoint, CanvasRect, CanvasSize, CanvasVector};
 use preferz_core::{Command, CropRect, Item, ItemId, ItemKind, Scene};
 use preferz_fileio::{PrzFile, ViewportMeta};
@@ -457,6 +460,13 @@ pub struct PReferZApp {
     pending_open_recent: Option<PathBuf>,
     /// 欢迎页 logo 纹理（懒加载，复用 assets/icon.png）。
     logo_texture: Option<egui::TextureHandle>,
+    /// 属性侧栏里进行中的连续编辑（滑块/取色器拖动中的旧值快照，Phase H）。
+    /// `Some` 表示有一段尚未入栈的连续改动，见 [`PropEdit`]。
+    prop_edit_pending: Option<PropEdit>,
+    /// 本帧是否有属性控件在变更（Phase H）。面板末尾据此决定是否提交
+    /// 待合并的连续编辑——必须整帧没人变才提交，否则同一帧内后一个
+    /// 未变化的控件会把前一个控件的编辑提前结算掉。
+    prop_changed_this_frame: bool,
 }
 
 /// 保存提示对话框的触发场景#[derive(Clone, Copy, PartialEq)]
@@ -485,6 +495,209 @@ enum CropHandle {
     TopRight,
     BottomLeft,
     BottomRight,
+}
+
+// ─────────────────────────── 属性侧栏（Phase H） ───────────────────────────
+
+/// 多选属性的取值结果（D3）。
+///
+/// Excalidraw 同款语义：所有选中项一致则显示该值；不一致时仍显示一个代表值
+/// （首个持有该属性的 item 的值），但修改会**批量应用到所有选中项**，
+/// 而不是禁用控件——禁用会让"统一改成同一个值"这件最常见的事做不了。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Prop<T> {
+    /// 所有选中项一致。
+    Same(T),
+    /// 值不一致；携带首个持有该属性的 item 的值，仅供显示。
+    Mixed(T),
+}
+
+impl<T: Copy> Prop<T> {
+    fn value(self) -> T {
+        match self {
+            Prop::Same(v) | Prop::Mixed(v) => v,
+        }
+    }
+
+    fn is_mixed(self) -> bool {
+        matches!(self, Prop::Mixed(_))
+    }
+}
+
+/// 取选中项某属性的交集：`read` 返回 `None` 表示该 item 没有这个属性（跳过）。
+/// 没有任何选中项持有该属性时返回 `None`，调用方据此隐藏该控件。
+fn prop<T: PartialEq + Copy>(
+    scene: &Scene,
+    ids: &[ItemId],
+    read: impl Fn(&Item) -> Option<T>,
+) -> Option<Prop<T>> {
+    let mut first: Option<T> = None;
+    let mut mixed = false;
+    for id in ids {
+        let Some(item) = scene.get_item(id) else {
+            continue;
+        };
+        let Some(v) = read(item) else { continue };
+        match first {
+            None => first = Some(v),
+            Some(f) if f == v => {}
+            Some(_) => mixed = true,
+        }
+    }
+    first.map(|f| if mixed { Prop::Mixed(f) } else { Prop::Same(f) })
+}
+
+/// 待合并成一条 undo 命令的连续编辑（Phase H）。
+///
+/// egui 的滑块 / 取色器在拖动期间**每帧**都报 `changed()`，逐帧入栈会把 undo 历史冲垮。
+/// 故变更期间直接改 item（不入栈）并记下起始快照，变更停止后的第一帧
+/// 用「变更前 → 当前」合成**一条**批量命令——整段拖动一次 undo。
+struct PropEdit {
+    kind: PropKind,
+    items: Vec<(ItemId, PropValue)>,
+}
+
+/// 连续编辑涉及的属性种类；决定合成哪条批量命令。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PropKind {
+    /// 描边（颜色 / 线宽 / 线型任一变化都整份快照）。
+    Stroke,
+    /// 填充色。
+    Fill,
+    /// 矩形圆角比例。
+    Roundness,
+    /// 文字样式（字号 / 颜色 / 背景整份快照）。
+    TextStyle,
+    /// 图片样式（不透明度 / 灰度整份快照）。
+    Pixmap,
+}
+
+/// 属性值的统一载体：让 [`PropEdit`] 不必为每种属性各写一个类型。
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum PropValue {
+    Float(f32),
+    Stroke(StrokeStyle),
+    Fill(Option<[u8; 4]>),
+    Text(TextStyle),
+    Pixmap(PixmapStyle),
+}
+
+/// 用「变更前快照 + 当前 scene 值」合成一条批量命令。
+///
+/// 返回 `None` 表示没有有效条目（item 已被删除、或快照与 item 当前类型对不上），
+/// 此时不入栈，免得 undo 历史里塞进一条什么都没做的记录。
+fn prop_cmd(pending: PropEdit, scene: &Scene) -> Option<Box<dyn Command>> {
+    match pending.kind {
+        PropKind::Stroke => {
+            let items: Vec<(ItemId, StrokeStyle, StrokeStyle)> = {
+                pending
+                    .items
+                    .iter()
+                    .filter_map(|(id, old)| match (old, scene.get_item(id)) {
+                        (PropValue::Stroke(old), Some(item)) => match &item.kind {
+                            ItemKind::Shape { stroke, .. } => Some((*id, *old, *stroke)),
+                            _ => None,
+                        },
+                        _ => None,
+                    })
+                    .collect()
+            };
+            (!items.is_empty()).then(|| {
+                Box::new(SetStrokeStyle::new_batch(items).with_preview_applied(true))
+                    as Box<dyn Command>
+            })
+        }
+        PropKind::Fill => {
+            let items: Vec<FillChange> = pending
+                .items
+                .iter()
+                .filter_map(|(id, old)| match (old, scene.get_item(id)) {
+                    (PropValue::Fill(old), Some(item)) => match &item.kind {
+                        ItemKind::Shape { fill, .. } => Some((*id, *old, *fill)),
+                        _ => None,
+                    },
+                    _ => None,
+                })
+                .collect();
+            (!items.is_empty()).then(|| {
+                Box::new(SetShapeFill::new_batch(items).with_preview_applied(true))
+                    as Box<dyn Command>
+            })
+        }
+        PropKind::Roundness => {
+            let items: Vec<(ItemId, f32, f32)> = pending
+                .items
+                .iter()
+                .filter_map(|(id, old)| match (old, scene.get_item(id)) {
+                    (PropValue::Float(old), Some(item)) => match &item.kind {
+                        ItemKind::Shape { roundness, .. } => Some((*id, *old, *roundness)),
+                        _ => None,
+                    },
+                    _ => None,
+                })
+                .collect();
+            (!items.is_empty()).then(|| {
+                Box::new(SetRoundness::new_batch(items).with_preview_applied(true))
+                    as Box<dyn Command>
+            })
+        }
+        PropKind::TextStyle => {
+            let items: Vec<(ItemId, TextStyle, TextStyle)> = pending
+                .items
+                .iter()
+                .filter_map(|(id, old)| match (old, scene.get_item(id)) {
+                    (PropValue::Text(old), Some(item)) => match &item.kind {
+                        ItemKind::Text {
+                            font_size,
+                            color,
+                            background,
+                            ..
+                        } => Some((
+                            *id,
+                            *old,
+                            TextStyle {
+                                font_size: *font_size,
+                                color: *color,
+                                background: *background,
+                            },
+                        )),
+                        _ => None,
+                    },
+                    _ => None,
+                })
+                .collect();
+            (!items.is_empty()).then(|| {
+                Box::new(SetTextStyle::new_batch(items).with_preview_applied(true))
+                    as Box<dyn Command>
+            })
+        }
+        PropKind::Pixmap => {
+            let items: Vec<(ItemId, PixmapStyle, PixmapStyle)> = pending
+                .items
+                .iter()
+                .filter_map(|(id, old)| match (old, scene.get_item(id)) {
+                    (PropValue::Pixmap(old), Some(item)) => match &item.kind {
+                        ItemKind::Pixmap {
+                            opacity, grayscale, ..
+                        } => Some((
+                            *id,
+                            *old,
+                            PixmapStyle {
+                                opacity: *opacity,
+                                grayscale: *grayscale,
+                            },
+                        )),
+                        _ => None,
+                    },
+                    _ => None,
+                })
+                .collect();
+            (!items.is_empty()).then(|| {
+                Box::new(SetPixmapStyle::new_batch(items).with_preview_applied(true))
+                    as Box<dyn Command>
+            })
+        }
+    }
 }
 
 impl PReferZApp {
@@ -540,6 +753,8 @@ impl PReferZApp {
             recent_files: load_recent_files(),
             pending_open_recent: None,
             logo_texture: None,
+            prop_edit_pending: None,
+            prop_changed_this_frame: false,
         }
     }
 
@@ -648,41 +863,6 @@ impl PReferZApp {
         items.sort_by_key(|b| std::cmp::Reverse(b.z));
         items
     }
-
-    /// 选中线性对象（Polyline）的箭头与闭合状态：(item_id, start_arrow, end_arrow, closed)。
-    /// 从选中项中找第一个线性对象；无则返回 None。
-    fn selected_linear_arrows(
-        &self,
-    ) -> Option<(ItemId, Option<ArrowHeadStyle>, Option<ArrowHeadStyle>, bool)> {
-        for id in self.scene.selection.iter() {
-            if let Some(item) = self.scene.get_item(id) {
-                if let ItemKind::Shape {
-                    shape_type: ShapeType::Polyline,
-                    start_arrow,
-                    end_arrow,
-                    closed,
-                    ..
-                } = &item.kind
-                {
-                    return Some((item.id, *start_arrow, *end_arrow, *closed));
-                }
-            }
-        }
-        None
-    }
-
-    /// 选中态中第一个 Shape 的 id 与手绘风开关（Phase F 样式面板用）。
-    /// 选中多个 Shape 时只取第一个——与 `selected_linear_arrows` 一致的单值编辑语义。
-    fn selected_shape_rough(&self) -> Option<(ItemId, bool)> {
-        for id in self.scene.selection.iter() {
-            if let Some(item) = self.scene.get_item(id) {
-                if matches!(item.kind, ItemKind::Shape { .. }) {
-                    return Some((item.id, item.rough()));
-                }
-            }
-        }
-        None
-    }
 }
 
 impl Default for PReferZApp {
@@ -699,6 +879,9 @@ const POLYLINE_CLOSE_DISTANCE: f32 = 8.0;
 
 impl eframe::App for PReferZApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // 每帧重置连续编辑标记；本帧结束时据此决定是否结算待合并的拖拽编辑（Phase H）。
+        self.prop_changed_this_frame = false;
+
         // 主题 + 背景透明度：按当前主题构造 Visuals，并把 bg_alpha 施加到 chrome 填充色
         // （panel/window/faint），使透明窗口效果在明暗两套主题下都生效。
         {
@@ -798,131 +981,60 @@ impl eframe::App for PReferZApp {
                 }
             });
 
-        // 样式面板：绘制工具激活时显示新建默认样式（spec §5.1）；
-        // 选中线性对象时也显示，用于编辑起/终点箭头；选中任意 Shape 时显示手绘开关（per-item）。
-        // 在 CentralPanel 之前渲染：让画布交互区域正确排除底部面板，
-        // 避免点击复选框时指针事件穿透到画布导致选中被清空、面板消失。
-        let selected_linear = self.selected_linear_arrows();
-        let selected_shape = self.selected_shape_rough();
-        if self.tool != Tool::Select || selected_linear.is_some() || selected_shape.is_some() {
+        // 样式面板：仅绘制工具激活时显示「新建元素默认样式」（spec §5.1）。
+        // per-item 属性编辑统一移到右侧属性侧栏（Phase H），避免两套控件重复编辑同一字段。
+        // 在 CentralPanel 之前渲染：让画布交互区域正确排除底部面板。
+        if self.tool != Tool::Select {
             egui::TopBottomPanel::bottom("style_panel").show(ctx, |ui| {
-                if self.tool != Tool::Select {
-                    ui.horizontal(|ui| {
-                        ui.label(t(self.lang, T::StyleStrokeColor));
-                        let mut col = egui::Color32::from_rgba_unmultiplied(
-                            self.default_stroke.color[0],
-                            self.default_stroke.color[1],
-                            self.default_stroke.color[2],
-                            self.default_stroke.color[3],
-                        );
-                        if ui.color_edit_button_srgba(&mut col).changed() {
-                            self.default_stroke.color = [col.r(), col.g(), col.b(), col.a()];
-                        }
-                        ui.separator();
-                        ui.label(t(self.lang, T::StyleStrokeWidth));
-                        ui.add(
-                            egui::Slider::new(&mut self.default_stroke.width, 0.5..=12.0)
-                                .logarithmic(true),
-                        );
-                        ui.separator();
-                        for (dash, label) in [
-                            (DashStyle::Solid, T::StyleDashSolid),
-                            (DashStyle::Dashed, T::StyleDashDashed),
-                            (DashStyle::Dotted, T::StyleDashDotted),
-                        ] {
-                            let active = self.default_stroke.dash == dash;
-                            if ui.selectable_label(active, t(self.lang, label)).clicked() {
-                                self.default_stroke.dash = dash;
-                            }
-                        }
-                        ui.separator();
-                        let mut fill_checked = self.default_fill.is_some();
-                        if ui
-                            .checkbox(&mut fill_checked, t(self.lang, T::StyleFillNone))
-                            .changed()
-                        {
-                            self.default_fill = if fill_checked {
-                                Some([100, 180, 255, 60])
-                            } else {
-                                None
-                            };
-                        }
-                        ui.separator();
-                        // 手绘风：新建形状的默认开关（Phase F）
-                        ui.checkbox(&mut self.default_rough, t(self.lang, T::StyleRough));
-                    });
-                }
-                // 编辑选中线性对象：闭合开关 + 起/终点箭头开关（undo 走 SetClosed / SetArrowHeads）
-                if let Some((item_id, start_arrow, end_arrow, closed)) = selected_linear {
-                    ui.separator();
-                    ui.horizontal(|ui| {
-                        ui.label(t(self.lang, T::StyleClosed));
-                        let mut checked = closed;
-                        if ui.checkbox(&mut checked, "").changed() && checked != closed {
-                            let cmd = SetClosed::new(item_id, closed, checked);
-                            self.push_cmd(Box::new(cmd));
-                        }
-                    });
-                    // 开放折线才有起/终点箭头；闭合图形首尾相连，箭头无意义
-                    if !closed {
-                        ui.separator();
-                        ui.horizontal(|ui| {
-                            ui.label(t(self.lang, T::StyleArrowStart));
-                            let mut checked = start_arrow.is_some();
-                            if ui.checkbox(&mut checked, "").changed() {
-                                let new = if checked {
-                                    Some(ArrowHeadStyle::Arrow)
-                                } else {
-                                    None
-                                };
-                                let cmd = SetArrowHeads::new(
-                                    item_id,
-                                    start_arrow,
-                                    end_arrow,
-                                    new,
-                                    end_arrow,
-                                );
-                                self.push_cmd(Box::new(cmd));
-                            }
-                            ui.separator();
-                            ui.label(t(self.lang, T::StyleArrowEnd));
-                            let mut checked = end_arrow.is_some();
-                            if ui.checkbox(&mut checked, "").changed() {
-                                let new = if checked {
-                                    Some(ArrowHeadStyle::Arrow)
-                                } else {
-                                    None
-                                };
-                                let cmd = SetArrowHeads::new(
-                                    item_id,
-                                    start_arrow,
-                                    end_arrow,
-                                    start_arrow,
-                                    new,
-                                );
-                                self.push_cmd(Box::new(cmd));
-                            }
-                        });
+                ui.horizontal(|ui| {
+                    ui.label(t(self.lang, T::StyleStrokeColor));
+                    let mut col = egui::Color32::from_rgba_unmultiplied(
+                        self.default_stroke.color[0],
+                        self.default_stroke.color[1],
+                        self.default_stroke.color[2],
+                        self.default_stroke.color[3],
+                    );
+                    if ui.color_edit_button_srgba(&mut col).changed() {
+                        self.default_stroke.color = [col.r(), col.g(), col.b(), col.a()];
                     }
-                }
-                // 编辑选中 Shape：手绘风开关（Phase F，undo 走 SetRough）。
-                // 对矩形族与线性对象一视同仁，故单独成块而非塞进上面的线性分支。
-                if let Some((item_id, rough)) = selected_shape {
                     ui.separator();
-                    ui.horizontal(|ui| {
-                        let mut checked = rough;
-                        if ui
-                            .checkbox(&mut checked, t(self.lang, T::StyleRough))
-                            .changed()
-                            && checked != rough
-                        {
-                            let cmd = SetRough::new(item_id, rough, checked);
-                            self.push_cmd(Box::new(cmd));
+                    ui.label(t(self.lang, T::StyleStrokeWidth));
+                    ui.add(
+                        egui::Slider::new(&mut self.default_stroke.width, 0.5..=12.0)
+                            .logarithmic(true),
+                    );
+                    ui.separator();
+                    for (dash, label) in [
+                        (DashStyle::Solid, T::StyleDashSolid),
+                        (DashStyle::Dashed, T::StyleDashDashed),
+                        (DashStyle::Dotted, T::StyleDashDotted),
+                    ] {
+                        let active = self.default_stroke.dash == dash;
+                        if ui.selectable_label(active, t(self.lang, label)).clicked() {
+                            self.default_stroke.dash = dash;
                         }
-                    });
-                }
+                    }
+                    ui.separator();
+                    let mut fill_checked = self.default_fill.is_some();
+                    if ui
+                        .checkbox(&mut fill_checked, t(self.lang, T::StyleFillNone))
+                        .changed()
+                    {
+                        self.default_fill = if fill_checked {
+                            Some([100, 180, 255, 60])
+                        } else {
+                            None
+                        };
+                    }
+                    ui.separator();
+                    // 手绘风：新建形状的默认开关（Phase F）
+                    ui.checkbox(&mut self.default_rough, t(self.lang, T::StyleRough));
+                });
             });
         }
+
+        // 右侧属性侧栏（Phase H）：选中项 per-item 编辑，按 ItemKind 分节。
+        self.render_props_panel(ctx);
 
         // 状态栏（持续状态 + flash 消息）
         egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
@@ -1333,6 +1445,18 @@ impl eframe::App for PReferZApp {
                         ui.add_space(4.0);
                     });
                 });
+        }
+
+        // 连续编辑结算（Phase H）：整帧无控件变化时，把待合并编辑合成为一条 undo 命令。
+        // 拖动中（本帧仍有控件变更）则保留，等下一帧无变更时再结算——整段拖动一次 undo。
+        if let Some(pending) = self.prop_edit_pending.take() {
+            if !self.prop_changed_this_frame {
+                if let Some(cmd) = prop_cmd(pending, &self.scene) {
+                    self.push_cmd(cmd);
+                }
+            } else {
+                self.prop_edit_pending = Some(pending);
+            }
         }
     }
 }
@@ -3526,6 +3650,717 @@ impl PReferZApp {
                 egui::FontId::proportional(14.0),
                 self.theme.text_tertiary(&ctx),
             );
+        }
+    }
+
+    /// 右侧属性侧栏（Phase H）：选中项的 per-item 编辑，按 ItemKind 分节。
+    ///
+    /// D3 语义（见 [`prop`]）：多选时显示交集值；值不一致仍显示代表值，但改动
+    /// 批量应用到所有选中项。连续控件（滑块 / 取色器）经 [`PropEdit`] 合并成一条 undo 命令。
+    fn render_props_panel(&mut self, ctx: &egui::Context) {
+        if self.scene.selection.is_empty() {
+            return;
+        }
+        let ids: Vec<ItemId> = self.scene.selection.iter().copied().collect();
+        let lang = self.lang;
+        egui::SidePanel::right("props_panel")
+            .default_width(230.0)
+            .resizable(true)
+            .show(ctx, |ui| {
+                ui.label(fill(t(lang, T::PropsSelectedCount), &[ids.len().to_string()]));
+                ui.separator();
+
+                let shape_ids: Vec<ItemId> = ids
+                    .iter()
+                    .copied()
+                    .filter(|id| {
+                        matches!(self.scene.get_item(id), Some(item) if matches!(item.kind, ItemKind::Shape { .. }))
+                    })
+                    .collect();
+                if !shape_ids.is_empty() {
+                    ui.label(t(lang, T::PropsSectionShape));
+                    self.render_shape_props(ui, lang, &shape_ids);
+                    ui.separator();
+                }
+
+                let text_ids: Vec<ItemId> = ids
+                    .iter()
+                    .copied()
+                    .filter(|id| {
+                        matches!(self.scene.get_item(id), Some(item) if matches!(item.kind, ItemKind::Text { .. }))
+                    })
+                    .collect();
+                if !text_ids.is_empty() {
+                    ui.label(t(lang, T::PropsSectionText));
+                    self.render_text_props(ui, lang, &text_ids);
+                    ui.separator();
+                }
+
+                let pixmap_ids: Vec<ItemId> = ids
+                    .iter()
+                    .copied()
+                    .filter(|id| {
+                        matches!(self.scene.get_item(id), Some(item) if matches!(item.kind, ItemKind::Pixmap { .. }))
+                    })
+                    .collect();
+                if !pixmap_ids.is_empty() {
+                    ui.label(t(lang, T::PropsSectionPixmap));
+                    self.render_pixmap_props(ui, lang, &pixmap_ids);
+                    ui.separator();
+                }
+
+                let frame_ids: Vec<ItemId> = ids
+                    .iter()
+                    .copied()
+                    .filter(|id| {
+                        matches!(self.scene.get_item(id), Some(item) if matches!(item.kind, ItemKind::Frame { .. }))
+                    })
+                    .collect();
+                if !frame_ids.is_empty() {
+                    ui.label(t(lang, T::PropsSectionFrame));
+                    self.render_frame_props(ui, lang, &frame_ids);
+                }
+            });
+    }
+
+    /// 形状节：描边 / 填充 / 圆角 / 曲线 / 闭合 / 箭头 / 手绘风（Phase H）。
+    fn render_shape_props(&mut self, ui: &mut egui::Ui, lang: Lang, ids: &[ItemId]) {
+        // 描边颜色
+        if let Some(p) = prop(&self.scene, ids, |it| match &it.kind {
+            ItemKind::Shape { stroke, .. } => Some(stroke.color),
+            _ => None,
+        }) {
+            let c = p.value();
+            let mut col = egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]);
+            if ui.color_edit_button_srgba(&mut col).changed() {
+                let new = [col.r(), col.g(), col.b(), col.a()];
+                self.apply_continuous(
+                    ids,
+                    PropKind::Stroke,
+                    |k| match k {
+                        ItemKind::Shape { stroke, .. } => Some(PropValue::Stroke(*stroke)),
+                        _ => None,
+                    },
+                    |k| {
+                        if let ItemKind::Shape { stroke, .. } = k {
+                            stroke.color = new;
+                        }
+                    },
+                );
+            }
+            if p.is_mixed() {
+                ui.label(t(lang, T::PropsMixedValue));
+            }
+        }
+        // 描边宽度
+        if let Some(p) = prop(&self.scene, ids, |it| match &it.kind {
+            ItemKind::Shape { stroke, .. } => Some(stroke.width),
+            _ => None,
+        }) {
+            let mut w = p.value();
+            if ui
+                .add(egui::Slider::new(&mut w, 0.5..=12.0).logarithmic(true))
+                .changed()
+            {
+                self.apply_continuous(
+                    ids,
+                    PropKind::Stroke,
+                    |k| match k {
+                        ItemKind::Shape { stroke, .. } => Some(PropValue::Stroke(*stroke)),
+                        _ => None,
+                    },
+                    |k| {
+                        if let ItemKind::Shape { stroke, .. } = k {
+                            stroke.width = w;
+                        }
+                    },
+                );
+            }
+            if p.is_mixed() {
+                ui.label(t(lang, T::PropsMixedValue));
+            }
+        }
+        // 线型
+        if let Some(p) = prop(&self.scene, ids, |it| match &it.kind {
+            ItemKind::Shape { stroke, .. } => Some(stroke.dash),
+            _ => None,
+        }) {
+            ui.horizontal(|ui| {
+                for (dash, label) in [
+                    (DashStyle::Solid, T::StyleDashSolid),
+                    (DashStyle::Dashed, T::StyleDashDashed),
+                    (DashStyle::Dotted, T::StyleDashDotted),
+                ] {
+                    let active = p.value() == dash;
+                    if ui.selectable_label(active, t(lang, label)).clicked() {
+                        self.apply_continuous(
+                            ids,
+                            PropKind::Stroke,
+                            |k| match k {
+                                ItemKind::Shape { stroke, .. } => Some(PropValue::Stroke(*stroke)),
+                                _ => None,
+                            },
+                            |k| {
+                                if let ItemKind::Shape { stroke, .. } = k {
+                                    stroke.dash = dash;
+                                }
+                            },
+                        );
+                    }
+                }
+            });
+        }
+        // 填充
+        if let Some(p) = prop(&self.scene, ids, |it| match &it.kind {
+            ItemKind::Shape { fill, .. } => Some(*fill),
+            _ => None,
+        }) {
+            let mut checked = p.value().is_some();
+            if ui
+                .checkbox(&mut checked, t(lang, T::StyleFillNone))
+                .changed()
+            {
+                let new: Option<[u8; 4]> = if checked {
+                    Some([100, 180, 255, 60])
+                } else {
+                    None
+                };
+                self.apply_continuous(
+                    ids,
+                    PropKind::Fill,
+                    |k| match k {
+                        ItemKind::Shape { fill, .. } => Some(PropValue::Fill(*fill)),
+                        _ => None,
+                    },
+                    |k| {
+                        if let ItemKind::Shape { fill, .. } = k {
+                            *fill = new;
+                        }
+                    },
+                );
+            }
+            if let Some(existing) = p.value() {
+                let mut col = egui::Color32::from_rgba_unmultiplied(
+                    existing[0],
+                    existing[1],
+                    existing[2],
+                    existing[3],
+                );
+                if ui.color_edit_button_srgba(&mut col).changed() {
+                    let new = [col.r(), col.g(), col.b(), col.a()];
+                    self.apply_continuous(
+                        ids,
+                        PropKind::Fill,
+                        |k| match k {
+                            ItemKind::Shape { fill, .. } => Some(PropValue::Fill(*fill)),
+                            _ => None,
+                        },
+                        |k| {
+                            if let ItemKind::Shape { fill, .. } = k {
+                                *fill = Some(new);
+                            }
+                        },
+                    );
+                }
+            }
+        }
+        // 圆角（仅矩形族）
+        let rect_ids: Vec<ItemId> = ids
+            .iter()
+            .copied()
+            .filter(|id| {
+                matches!(self.scene.get_item(id), Some(item) if matches!(item.kind, ItemKind::Shape { shape_type: ShapeType::Rectangle, .. }))
+            })
+            .collect();
+        if !rect_ids.is_empty() {
+            if let Some(p) = prop(&self.scene, &rect_ids, |it| match &it.kind {
+                ItemKind::Shape { roundness, .. } => Some(*roundness),
+                _ => None,
+            }) {
+                let mut r = p.value();
+                if ui.add(egui::Slider::new(&mut r, 0.0..=1.0)).changed() {
+                    self.apply_continuous(
+                        &rect_ids,
+                        PropKind::Roundness,
+                        |k| match k {
+                            ItemKind::Shape { roundness, .. } => Some(PropValue::Float(*roundness)),
+                            _ => None,
+                        },
+                        |k| {
+                            if let ItemKind::Shape { roundness, .. } = k {
+                                *roundness = r;
+                            }
+                        },
+                    );
+                }
+                if p.is_mixed() {
+                    ui.label(t(lang, T::PropsMixedValue));
+                }
+            }
+        }
+        // 手绘风（离散，整批改命令）
+        if let Some(p) = prop(&self.scene, ids, |it| match &it.kind {
+            ItemKind::Shape { rough, .. } => Some(*rough),
+            _ => None,
+        }) {
+            let mut checked = p.value();
+            if ui.checkbox(&mut checked, t(lang, T::StyleRough)).changed() && checked != p.value() {
+                let items: Vec<(ItemId, bool, bool)> = ids
+                    .iter()
+                    .filter_map(|id| {
+                        self.scene.get_item(id).and_then(|it| match &it.kind {
+                            ItemKind::Shape { rough, .. } => Some((*id, *rough, checked)),
+                            _ => None,
+                        })
+                    })
+                    .collect();
+                if !items.is_empty() {
+                    self.push_cmd(Box::new(SetRough::new_batch(items)));
+                }
+            }
+        }
+        // 线性对象专用：曲线 / 闭合 / 箭头
+        let poly_ids: Vec<ItemId> = ids
+            .iter()
+            .copied()
+            .filter(|id| {
+                matches!(self.scene.get_item(id), Some(item) if matches!(item.kind, ItemKind::Shape { shape_type: ShapeType::Polyline, .. }))
+            })
+            .collect();
+        if !poly_ids.is_empty() {
+            if let Some(p) = prop(&self.scene, &poly_ids, |it| match &it.kind {
+                ItemKind::Shape { curve_type, .. } => Some(*curve_type),
+                _ => None,
+            }) {
+                let straight = p.value() == CurveType::Straight;
+                ui.horizontal(|ui| {
+                    if ui
+                        .selectable_label(straight, t(lang, T::StyleCurveStraight))
+                        .clicked()
+                        && !straight
+                    {
+                        self.push_poly_curve(&poly_ids, CurveType::Straight);
+                    }
+                    if ui
+                        .selectable_label(!straight, t(lang, T::StyleCurveCurved))
+                        .clicked()
+                        && straight
+                    {
+                        self.push_poly_curve(&poly_ids, CurveType::Curved);
+                    }
+                });
+            }
+            if let Some(p) = prop(&self.scene, &poly_ids, |it| match &it.kind {
+                ItemKind::Shape { closed, .. } => Some(*closed),
+                _ => None,
+            }) {
+                let mut checked = p.value();
+                if ui.checkbox(&mut checked, t(lang, T::StyleClosed)).changed()
+                    && checked != p.value()
+                {
+                    let items: Vec<(ItemId, bool, bool)> = poly_ids
+                        .iter()
+                        .filter_map(|id| {
+                            self.scene.get_item(id).and_then(|it| match &it.kind {
+                                ItemKind::Shape { closed, .. } => Some((*id, *closed, checked)),
+                                _ => None,
+                            })
+                        })
+                        .collect();
+                    if !items.is_empty() {
+                        self.push_cmd(Box::new(SetClosed::new_batch(items)));
+                    }
+                }
+            }
+            // 起/终点箭头（仅开放折线；闭合图形首尾相连，箭头无意义）
+            let all_closed = poly_ids.iter().all(|id| {
+                matches!(self.scene.get_item(id), Some(item) if matches!(item.kind, ItemKind::Shape { closed: true, .. }))
+            });
+            if !all_closed {
+                if let Some(p) = prop(&self.scene, &poly_ids, |it| match &it.kind {
+                    ItemKind::Shape {
+                        start_arrow,
+                        end_arrow,
+                        closed: false,
+                        ..
+                    } => Some((*start_arrow, *end_arrow)),
+                    _ => None,
+                }) {
+                    let (start, end) = p.value();
+                    let mut sc = start.is_some();
+                    if ui.checkbox(&mut sc, t(lang, T::StyleArrowStart)).changed() {
+                        let new_start = if sc {
+                            Some(ArrowHeadStyle::Arrow)
+                        } else {
+                            None
+                        };
+                        let items: Vec<(ItemId, ArrowHeads, ArrowHeads)> = poly_ids
+                            .iter()
+                            .filter_map(|id| {
+                                self.scene.get_item(id).and_then(|it| match &it.kind {
+                                    ItemKind::Shape {
+                                        start_arrow,
+                                        end_arrow,
+                                        closed: false,
+                                        ..
+                                    } => Some((
+                                        *id,
+                                        ArrowHeads {
+                                            start: *start_arrow,
+                                            end: *end_arrow,
+                                        },
+                                        ArrowHeads {
+                                            start: new_start,
+                                            end: *end_arrow,
+                                        },
+                                    )),
+                                    _ => None,
+                                })
+                            })
+                            .collect();
+                        if !items.is_empty() {
+                            self.push_cmd(Box::new(SetArrowHeads::new_batch(items)));
+                        }
+                    }
+                    let mut ec = end.is_some();
+                    if ui.checkbox(&mut ec, t(lang, T::StyleArrowEnd)).changed() {
+                        let new_end = if ec {
+                            Some(ArrowHeadStyle::Arrow)
+                        } else {
+                            None
+                        };
+                        let items: Vec<(ItemId, ArrowHeads, ArrowHeads)> = poly_ids
+                            .iter()
+                            .filter_map(|id| {
+                                self.scene.get_item(id).and_then(|it| match &it.kind {
+                                    ItemKind::Shape {
+                                        start_arrow,
+                                        end_arrow,
+                                        closed: false,
+                                        ..
+                                    } => Some((
+                                        *id,
+                                        ArrowHeads {
+                                            start: *start_arrow,
+                                            end: *end_arrow,
+                                        },
+                                        ArrowHeads {
+                                            start: *start_arrow,
+                                            end: new_end,
+                                        },
+                                    )),
+                                    _ => None,
+                                })
+                            })
+                            .collect();
+                        if !items.is_empty() {
+                            self.push_cmd(Box::new(SetArrowHeads::new_batch(items)));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// 文字节：字号 / 颜色 / 背景（Phase H）。
+    fn render_text_props(&mut self, ui: &mut egui::Ui, lang: Lang, ids: &[ItemId]) {
+        if let Some(p) = prop(&self.scene, ids, |it| match &it.kind {
+            ItemKind::Text { font_size, .. } => Some(*font_size),
+            _ => None,
+        }) {
+            let mut fs = p.value();
+            if ui.add(egui::Slider::new(&mut fs, 6.0..=200.0)).changed() {
+                self.apply_continuous(
+                    ids,
+                    PropKind::TextStyle,
+                    |k| match k {
+                        ItemKind::Text {
+                            font_size,
+                            color,
+                            background,
+                            ..
+                        } => Some(PropValue::Text(TextStyle {
+                            font_size: *font_size,
+                            color: *color,
+                            background: *background,
+                        })),
+                        _ => None,
+                    },
+                    |k| {
+                        if let ItemKind::Text { font_size, .. } = k {
+                            *font_size = fs;
+                        }
+                    },
+                );
+            }
+            if p.is_mixed() {
+                ui.label(t(lang, T::PropsMixedValue));
+            }
+        }
+        if let Some(p) = prop(&self.scene, ids, |it| match &it.kind {
+            ItemKind::Text { color, .. } => Some(*color),
+            _ => None,
+        }) {
+            let c = p.value();
+            let mut col = egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]);
+            if ui.color_edit_button_srgba(&mut col).changed() {
+                let new = [col.r(), col.g(), col.b(), col.a()];
+                self.apply_continuous(
+                    ids,
+                    PropKind::TextStyle,
+                    |k| match k {
+                        ItemKind::Text {
+                            font_size,
+                            color,
+                            background,
+                            ..
+                        } => Some(PropValue::Text(TextStyle {
+                            font_size: *font_size,
+                            color: *color,
+                            background: *background,
+                        })),
+                        _ => None,
+                    },
+                    |k| {
+                        if let ItemKind::Text { color, .. } = k {
+                            *color = new;
+                        }
+                    },
+                );
+            }
+            if p.is_mixed() {
+                ui.label(t(lang, T::PropsMixedValue));
+            }
+        }
+        if let Some(p) = prop(&self.scene, ids, |it| match &it.kind {
+            ItemKind::Text { background, .. } => Some(*background),
+            _ => None,
+        }) {
+            let mut checked = p.value().is_some();
+            if ui
+                .checkbox(&mut checked, t(lang, T::StyleTextBackground))
+                .changed()
+            {
+                let new: Option<[u8; 4]> = if checked {
+                    Some([255, 255, 255, 220])
+                } else {
+                    None
+                };
+                self.apply_continuous(
+                    ids,
+                    PropKind::TextStyle,
+                    |k| match k {
+                        ItemKind::Text {
+                            font_size,
+                            color,
+                            background,
+                            ..
+                        } => Some(PropValue::Text(TextStyle {
+                            font_size: *font_size,
+                            color: *color,
+                            background: *background,
+                        })),
+                        _ => None,
+                    },
+                    |k| {
+                        if let ItemKind::Text { background, .. } = k {
+                            *background = new;
+                        }
+                    },
+                );
+            }
+            if let Some(existing) = p.value() {
+                let mut col = egui::Color32::from_rgba_unmultiplied(
+                    existing[0],
+                    existing[1],
+                    existing[2],
+                    existing[3],
+                );
+                if ui.color_edit_button_srgba(&mut col).changed() {
+                    let new = [col.r(), col.g(), col.b(), col.a()];
+                    self.apply_continuous(
+                        ids,
+                        PropKind::TextStyle,
+                        |k| match k {
+                            ItemKind::Text {
+                                font_size,
+                                color,
+                                background,
+                                ..
+                            } => Some(PropValue::Text(TextStyle {
+                                font_size: *font_size,
+                                color: *color,
+                                background: *background,
+                            })),
+                            _ => None,
+                        },
+                        |k| {
+                            if let ItemKind::Text { background, .. } = k {
+                                *background = Some(new);
+                            }
+                        },
+                    );
+                }
+            }
+        }
+    }
+
+    /// 图片节：不透明度 / 灰度（Phase H）。
+    fn render_pixmap_props(&mut self, ui: &mut egui::Ui, lang: Lang, ids: &[ItemId]) {
+        if let Some(p) = prop(&self.scene, ids, |it| match &it.kind {
+            ItemKind::Pixmap { opacity, .. } => Some(*opacity),
+            _ => None,
+        }) {
+            let mut o = p.value();
+            if ui.add(egui::Slider::new(&mut o, 0.0..=1.0)).changed() {
+                self.apply_continuous(
+                    ids,
+                    PropKind::Pixmap,
+                    |k| match k {
+                        ItemKind::Pixmap {
+                            opacity, grayscale, ..
+                        } => Some(PropValue::Pixmap(PixmapStyle {
+                            opacity: *opacity,
+                            grayscale: *grayscale,
+                        })),
+                        _ => None,
+                    },
+                    |k| {
+                        if let ItemKind::Pixmap { opacity, .. } = k {
+                            *opacity = o;
+                        }
+                    },
+                );
+            }
+            if p.is_mixed() {
+                ui.label(t(lang, T::PropsMixedValue));
+            }
+        }
+        if let Some(p) = prop(&self.scene, ids, |it| match &it.kind {
+            ItemKind::Pixmap { grayscale, .. } => Some(*grayscale),
+            _ => None,
+        }) {
+            let mut checked = p.value();
+            if ui
+                .checkbox(&mut checked, t(lang, T::StyleGrayscale))
+                .changed()
+                && checked != p.value()
+            {
+                self.apply_continuous(
+                    ids,
+                    PropKind::Pixmap,
+                    |k| match k {
+                        ItemKind::Pixmap {
+                            opacity, grayscale, ..
+                        } => Some(PropValue::Pixmap(PixmapStyle {
+                            opacity: *opacity,
+                            grayscale: *grayscale,
+                        })),
+                        _ => None,
+                    },
+                    |k| {
+                        if let ItemKind::Pixmap { grayscale, .. } = k {
+                            *grayscale = checked;
+                        }
+                    },
+                );
+            }
+        }
+    }
+
+    /// 画框节：编号（Phase H）。
+    fn render_frame_props(&mut self, ui: &mut egui::Ui, lang: Lang, ids: &[ItemId]) {
+        if let Some(p) = prop(&self.scene, ids, |it| match &it.kind {
+            ItemKind::Frame { number, .. } => Some(*number),
+            _ => None,
+        }) {
+            let mut n = p.value();
+            if ui
+                .add(egui::DragValue::new(&mut n).range(0..=9999))
+                .changed()
+            {
+                let items: Vec<(ItemId, u32, u32)> = ids
+                    .iter()
+                    .filter_map(|id| {
+                        self.scene.get_item(id).and_then(|it| match &it.kind {
+                            ItemKind::Frame { number, .. } => Some((*id, *number, n)),
+                            _ => None,
+                        })
+                    })
+                    .collect();
+                if !items.is_empty() {
+                    self.push_cmd(Box::new(SetFrameNumber::new_batch(items)));
+                }
+            }
+            if p.is_mixed() {
+                ui.label(t(lang, T::PropsMixedValue));
+            }
+        }
+    }
+
+    /// 线性对象批量切换曲线模式（离散，整批改命令）。
+    fn push_poly_curve(&mut self, ids: &[ItemId], new_curve: CurveType) {
+        let items: Vec<(ItemId, CurveType, CurveType)> = ids
+            .iter()
+            .filter_map(|id| {
+                self.scene.get_item(id).and_then(|it| match &it.kind {
+                    ItemKind::Shape { curve_type, .. } => Some((*id, *curve_type, new_curve)),
+                    _ => None,
+                })
+            })
+            .collect();
+        if !items.is_empty() {
+            self.push_cmd(Box::new(SetCurveType::new_batch(items)));
+        }
+    }
+
+    /// 连续编辑的「开帧」入口：记录变更前快照并标记本帧有变更（Phase H）。
+    ///
+    /// 若已有不同种类的待合并编辑，先结算它，再开启本次编辑；同种类则保留首次快照
+    /// （拖动期间整段只取一处 old 值），由 [`Self::update`] 帧末统一结算成一条命令。
+    fn ensure_prop_edit(&mut self, kind: PropKind, snapshot: Vec<(ItemId, PropValue)>) {
+        if let Some(p) = self.prop_edit_pending.take() {
+            if p.kind != kind {
+                if let Some(cmd) = prop_cmd(p, &self.scene) {
+                    self.push_cmd(cmd);
+                }
+            } else {
+                self.prop_edit_pending = Some(p);
+            }
+        }
+        if self.prop_edit_pending.is_none() {
+            self.prop_edit_pending = Some(PropEdit {
+                kind,
+                items: snapshot,
+            });
+        }
+        self.prop_changed_this_frame = true;
+    }
+
+    /// 连续控件通用路径：取变更前快照 → 直接改 item（不入栈）→ 标记待合并（Phase H）。
+    ///
+    /// `snap` 从每个选中项的当前状态抽出旧值（用于合成 undo 的旧端）；`apply` 把新值
+    /// 写到每个选中项。整段拖动在 [`Self::update`] 帧末被合成为**一条**批量命令。
+    fn apply_continuous(
+        &mut self,
+        ids: &[ItemId],
+        kind: PropKind,
+        snap: impl Fn(&ItemKind) -> Option<PropValue>,
+        apply: impl Fn(&mut ItemKind),
+    ) {
+        let items: Vec<(ItemId, PropValue)> = ids
+            .iter()
+            .filter_map(|id| {
+                self.scene
+                    .get_item(id)
+                    .and_then(|it| snap(&it.kind).map(|v| (*id, v)))
+            })
+            .collect();
+        self.ensure_prop_edit(kind, items);
+        for id in ids {
+            if let Some(item) = self.scene.get_item_mut(id) {
+                apply(&mut item.kind);
+            }
         }
     }
 
