@@ -146,6 +146,14 @@ pub enum T {
     StyleDashDashed,
     StyleDashDotted,
     StyleFillNone,
+    /// 填充节标题。
+    StyleFillLabel,
+    /// 填充样式三态（无填充复用 StyleFillNone）。
+    StyleFillSolid,
+    StyleFillHachure,
+    StyleFillCrossHatch,
+    /// 绘制工具激活时的默认样式侧栏标题。
+    PropsDefaultsTitle,
     StyleClosed,
     // ── 箭头样式 ──
     StyleArrowStart,
@@ -303,6 +311,11 @@ fn translate_en(key: T) -> &'static str {
         T::StyleDashDashed => "Dashed",
         T::StyleDashDotted => "Dotted",
         T::StyleFillNone => "No fill",
+        T::StyleFillLabel => "Fill",
+        T::StyleFillSolid => "Solid",
+        T::StyleFillHachure => "Hachure",
+        T::StyleFillCrossHatch => "Cross-hatch",
+        T::PropsDefaultsTitle => "Default style for new elements",
         T::StyleClosed => "Closed",
         T::StyleArrowStart => "Start arrow",
         T::StyleArrowEnd => "End arrow",
@@ -443,6 +456,11 @@ fn translate_zh(key: T) -> &'static str {
         T::StyleDashDashed => "虚线",
         T::StyleDashDotted => "点线",
         T::StyleFillNone => "无填充",
+        T::StyleFillLabel => "填充",
+        T::StyleFillSolid => "纯色",
+        T::StyleFillHachure => "斜线",
+        T::StyleFillCrossHatch => "交叉线",
+        T::PropsDefaultsTitle => "新建元素默认样式",
         T::StyleClosed => "闭合",
         T::StyleArrowStart => "起点箭头",
         T::StyleArrowEnd => "终点箭头",

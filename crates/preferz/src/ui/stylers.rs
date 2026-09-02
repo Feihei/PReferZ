@@ -3,7 +3,7 @@ use preferz_core::item::{
     catmull_rom_polyline, ItemKind, ItemLocalSpace, CURVE_SAMPLES, ROUNDED_CORNER_SEGMENTS,
 };
 use preferz_core::shape::{
-    ArrowHeadStyle, CurveType, DashStyle, SeededRng, ShapeType, StrokeStyle,
+    ArrowHeadStyle, CurveType, DashStyle, FillStyle, SeededRng, ShapeType, StrokeStyle,
 };
 use preferz_core::spaces::ScreenSpace;
 
@@ -26,7 +26,7 @@ pub struct ShapeData {
     pub curve_type: CurveType,
     /// 矩形族圆角比例 0..1（Phase I）。仅矩形族使用。
     pub roundness: f32,
-    /// 手绘风抖动种子（Phase F）。同一 seed 恒得同一抖动；`CleanStyler` 忽略此字段。
+    /// 手绘风描边抖动种子（Phase F）。同一 seed 恒得同一抖动；`CleanStyler` 忽略此字段。
     pub seed: u64,
 }
 
@@ -38,6 +38,7 @@ pub trait ShapeStyler {
         shape: &ShapeData,
         stroke: &StrokeStyle,
         fill: Option<Color32>,
+        fill_style: FillStyle,
         to_screen: &LocalToScreen,
         zoom: f32,
     ) -> Vec<Shape>;
@@ -235,6 +236,96 @@ fn dash_lengths(dash: DashStyle, zoom: f32, line_width: f32) -> (f32, f32) {
     }
 }
 
+// ─────────────────────────── Hachure 填充（Excalidraw 同款） ───────────────────────────
+
+/// 斜线填充的默认角度（度，屏幕坐标系）。rough.js / Excalidraw 同款默认值。
+const HACHURE_ANGLE_DEG: f32 = -41.0;
+
+/// 斜线填充的行距：rough.js 同款 `hachureGap = 4 × 线宽`，并给个下限防止细线贴死。
+fn hachure_gap(line_width: f32) -> f32 {
+    (line_width * 4.0).max(4.0)
+}
+
+/// 生成沿 `angle_deg` 方向的斜线填充线段（屏幕空间）。
+///
+/// 算法：把多边形旋转 `-angle`，使填充线方向变为水平；对每条水平扫描线求与
+/// 多边形各边的交点横坐标，排序后两两配对（穿入/穿出交替），再旋回。
+/// 对凸/凹简单多边形均适用（凹多边形一条扫描线可得 >2 个交点，配对后为多段）。
+fn hachure_segments(pts: &[Pos2], angle_deg: f32, gap: f32) -> Vec<[Pos2; 2]> {
+    if pts.len() < 3 || gap <= 1e-3 {
+        return Vec::new();
+    }
+    let rad = angle_deg.to_radians();
+    let (sin, cos) = rad.sin_cos();
+    // 旋转 -angle：填充线方向变为水平 x 轴
+    let fwd = |p: &Pos2| egui::pos2(p.x * cos + p.y * sin, -p.x * sin + p.y * cos);
+    // 旋回 +angle
+    let back = |p: &Pos2| egui::pos2(p.x * cos - p.y * sin, p.x * sin + p.y * cos);
+
+    let rp: Vec<Pos2> = pts.iter().map(fwd).collect();
+    let ymin = rp.iter().map(|p| p.y).fold(f32::MAX, f32::min);
+    let ymax = rp.iter().map(|p| p.y).fold(f32::MIN, f32::max);
+
+    let mut segs = Vec::new();
+    let mut y = ymin + gap * 0.5;
+    while y < ymax {
+        let mut xs: Vec<f32> = Vec::new();
+        for i in 0..rp.len() {
+            let a = rp[i];
+            let b = rp[(i + 1) % rp.len()];
+            // 半开区间 [min, max) 避免顶点被相邻两条边重复计入
+            if (a.y <= y && b.y > y) || (b.y <= y && a.y > y) {
+                let t = (y - a.y) / (b.y - a.y);
+                xs.push(a.x + (b.x - a.x) * t);
+            }
+        }
+        xs.sort_by(f32::total_cmp);
+        for pair in xs.chunks(2) {
+            if let [x0, x1] = pair {
+                segs.push([back(&egui::pos2(*x0, y)), back(&egui::pos2(*x1, y))]);
+            }
+        }
+        y += gap;
+    }
+    segs
+}
+
+/// 斜线段列表 → egui 形状（颜色即填充色，线宽同描边）。
+fn hachure_shapes(
+    pts: &[Pos2],
+    angle_deg: f32,
+    gap: f32,
+    line_width: f32,
+    color: Color32,
+) -> Vec<Shape> {
+    let stroke = egui::Stroke::new(line_width, color);
+    hachure_segments(pts, angle_deg, gap)
+        .into_iter()
+        .map(|seg| Shape::line_segment(seg, stroke))
+        .collect()
+}
+
+/// 闭合多边形填充。走 epaint 的 PathShape（耳切三角化），凹多边形也正确——
+/// `Shape::convex_polygon` 只适配凸形，多边形工具可产出凹形。
+fn closed_filled_path(pts: Vec<Pos2>, fill: Color32) -> Shape {
+    Shape::Path(egui::epaint::PathShape {
+        points: pts,
+        closed: true,
+        fill,
+        stroke: egui::epaint::PathStroke::NONE,
+    })
+}
+
+/// 闭合多边形描边（不填充）。
+fn closed_stroked_path(pts: Vec<Pos2>, stroke: egui::epaint::PathStroke) -> Shape {
+    Shape::Path(egui::epaint::PathShape {
+        points: pts,
+        closed: true,
+        fill: Color32::TRANSPARENT,
+        stroke,
+    })
+}
+
 // ─────────────────────────── CleanStyler ───────────────────────────
 
 /// 简洁实现：精确几何 + 实线/虚线/圆点，epaint 原生。
@@ -251,6 +342,7 @@ impl ShapeStyler for CleanStyler {
         shape: &ShapeData,
         stroke: &StrokeStyle,
         fill: Option<Color32>,
+        fill_style: FillStyle,
         to_screen: &LocalToScreen,
         zoom: f32,
     ) -> Vec<Shape> {
@@ -285,23 +377,48 @@ impl ShapeStyler for CleanStyler {
             return out;
         }
 
-        let fill_color = fill.unwrap_or(Color32::TRANSPARENT);
-        let path_stroke = egui::epaint::PathStroke::new(line_width, stroke_color);
-        match stroke.dash {
-            DashStyle::Solid => vec![Shape::convex_polygon(pts, fill_color, path_stroke)],
-            DashStyle::Dashed | DashStyle::Dotted => {
-                let mut out = vec![Shape::convex_polygon(
-                    pts.clone(),
+        let mut out = Vec::new();
+
+        // 填充层（在轮廓之下）：纯色 = 实心多边形；斜线/交叉线 = 平行线段，
+        // 不铺底色（Excalidraw 同款观感），颜色即填充色。无填充（None）时跳过。
+        if let Some(fill_color) = fill {
+            match fill_style {
+                FillStyle::Solid => out.push(closed_filled_path(pts.clone(), fill_color)),
+                FillStyle::Hachure => out.extend(hachure_shapes(
+                    &pts,
+                    HACHURE_ANGLE_DEG,
+                    hachure_gap(line_width),
+                    line_width,
                     fill_color,
-                    egui::epaint::PathStroke::NONE,
-                )];
+                )),
+                FillStyle::CrossHatch => {
+                    for angle in [HACHURE_ANGLE_DEG, HACHURE_ANGLE_DEG + 90.0] {
+                        out.extend(hachure_shapes(
+                            &pts,
+                            angle,
+                            hachure_gap(line_width),
+                            line_width,
+                            fill_color,
+                        ));
+                    }
+                }
+            }
+        }
+
+        // 轮廓层
+        match stroke.dash {
+            DashStyle::Solid => out.push(closed_stroked_path(
+                pts,
+                egui::epaint::PathStroke::new(line_width, stroke_color),
+            )),
+            DashStyle::Dashed | DashStyle::Dotted => {
                 // 闭合路径：首点追加到末尾
                 pts.push(pts[0]);
                 let (d, g) = dash_lengths(stroke.dash, zoom, line_width);
                 out.extend(Shape::dashed_line(&pts, egui_stroke, d, g));
-                out
             }
         }
+        out
     }
 }
 
@@ -516,6 +633,7 @@ impl ShapeStyler for RoughStyler {
         shape: &ShapeData,
         stroke: &StrokeStyle,
         fill: Option<Color32>,
+        fill_style: FillStyle,
         to_screen: &LocalToScreen,
         zoom: f32,
     ) -> Vec<Shape> {
@@ -530,14 +648,40 @@ impl ShapeStyler for RoughStyler {
         let closed = is_closed(shape);
         let mut out = Vec::new();
 
-        // 填充保持精确几何：本轮只手绘化描边，填充仍是与 CleanStyler 一致的凸多边形。
+        // 填充层：纯色 = 精确实心多边形（与 CleanStyler 一致）；斜线/交叉线 =
+        // 端点抖动的斜线段（手绘观感），抖动用独立种子的 rng，与描边抖动解耦。
         if closed {
             if let Some(f) = fill {
-                out.push(Shape::convex_polygon(
-                    pts.clone(),
-                    f,
-                    egui::epaint::PathStroke::NONE,
-                ));
+                match fill_style {
+                    FillStyle::Solid => out.push(closed_filled_path(pts.clone(), f)),
+                    FillStyle::Hachure | FillStyle::CrossHatch => {
+                        let angles: &[f32] = match fill_style {
+                            FillStyle::CrossHatch => &[HACHURE_ANGLE_DEG, HACHURE_ANGLE_DEG + 90.0],
+                            _ => &[HACHURE_ANGLE_DEG],
+                        };
+                        let mut fill_rng = SeededRng::new(shape.seed ^ 0x6841_4355_4C4C_5F53); // "hACULL_S"
+                        let amp = hachure_gap(line_width) * 0.15;
+                        for angle in angles {
+                            let segs = hachure_segments(&pts, *angle, hachure_gap(line_width));
+                            for [a, b] in segs {
+                                for _ in 0..Self::PASSES {
+                                    let a = a + egui::vec2(
+                                        fill_rng.signed() * amp,
+                                        fill_rng.signed() * amp,
+                                    );
+                                    let b = b + egui::vec2(
+                                        fill_rng.signed() * amp,
+                                        fill_rng.signed() * amp,
+                                    );
+                                    out.push(Shape::line_segment(
+                                        [a, b],
+                                        egui::Stroke::new(line_width, f),
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -592,6 +736,7 @@ pub fn build_shape_visuals(kind: &ItemKind, to_screen: &LocalToScreen, zoom: f32
         points,
         stroke,
         fill,
+        fill_style,
         start_arrow,
         end_arrow,
         closed,
@@ -618,9 +763,9 @@ pub fn build_shape_visuals(kind: &ItemKind, to_screen: &LocalToScreen, zoom: f32
     let fill_color = fill.map(color_from);
 
     if *rough {
-        RoughStyler.build_shapes(&data, stroke, fill_color, to_screen, zoom)
+        RoughStyler.build_shapes(&data, stroke, fill_color, *fill_style, to_screen, zoom)
     } else {
-        CleanStyler.build_shapes(&data, stroke, fill_color, to_screen, zoom)
+        CleanStyler.build_shapes(&data, stroke, fill_color, *fill_style, to_screen, zoom)
     }
 }
 
@@ -678,16 +823,18 @@ mod tests {
     fn rough_styler_is_deterministic_for_same_seed() {
         let d = rect(0xABCD);
         let stroke = StrokeStyle::default();
-        let a = RoughStyler.build_shapes(&d, &stroke, None, &identity(), 1.0);
-        let b = RoughStyler.build_shapes(&d, &stroke, None, &identity(), 1.0);
+        let a = RoughStyler.build_shapes(&d, &stroke, None, FillStyle::Solid, &identity(), 1.0);
+        let b = RoughStyler.build_shapes(&d, &stroke, None, FillStyle::Solid, &identity(), 1.0);
         assert_eq!(debug(&a), debug(&b), "同 seed 必须得到同一抖动");
     }
 
     #[test]
     fn rough_styler_differs_for_different_seed() {
         let stroke = StrokeStyle::default();
-        let a = RoughStyler.build_shapes(&rect(1), &stroke, None, &identity(), 1.0);
-        let b = RoughStyler.build_shapes(&rect(2), &stroke, None, &identity(), 1.0);
+        let a =
+            RoughStyler.build_shapes(&rect(1), &stroke, None, FillStyle::Solid, &identity(), 1.0);
+        let b =
+            RoughStyler.build_shapes(&rect(2), &stroke, None, FillStyle::Solid, &identity(), 1.0);
         assert_ne!(debug(&a), debug(&b), "不同 seed 应得到不同抖动");
     }
 
@@ -695,7 +842,8 @@ mod tests {
     fn rough_styler_rect_emits_two_passes_per_edge() {
         let stroke = StrokeStyle::default();
         // 矩形 4 条边 × 2 passes = 8 条贝塞尔；无填充故不加凸多边形。
-        let shapes = RoughStyler.build_shapes(&rect(7), &stroke, None, &identity(), 1.0);
+        let shapes =
+            RoughStyler.build_shapes(&rect(7), &stroke, None, FillStyle::Solid, &identity(), 1.0);
         assert_eq!(shapes.len(), 8);
         assert!(shapes.iter().all(|s| matches!(s, Shape::CubicBezier(_))));
     }
@@ -707,6 +855,7 @@ mod tests {
             &rect(7),
             &stroke,
             Some(Color32::from_rgb(10, 20, 30)),
+            FillStyle::Solid,
             &identity(),
             1.0,
         );
@@ -718,7 +867,14 @@ mod tests {
     #[test]
     fn rough_styler_keeps_arrow_heads_crisp() {
         let stroke = StrokeStyle::default();
-        let shapes = RoughStyler.build_shapes(&open_line(), &stroke, None, &identity(), 1.0);
+        let shapes = RoughStyler.build_shapes(
+            &open_line(),
+            &stroke,
+            None,
+            FillStyle::Solid,
+            &identity(),
+            1.0,
+        );
         // 1 条边 × 2 passes + 2 笔箭头 = 4
         assert_eq!(shapes.len(), 4);
         assert_eq!(
@@ -737,7 +893,8 @@ mod tests {
             width: 2.0,
             dash: DashStyle::Dashed,
         };
-        let shapes = RoughStyler.build_shapes(&rect(7), &stroke, None, &identity(), 1.0);
+        let shapes =
+            RoughStyler.build_shapes(&rect(7), &stroke, None, FillStyle::Solid, &identity(), 1.0);
         // dash 模式下每条边采样为折线，产生 ≥1 个 shape；不出现贝塞尔
         assert!(!shapes.is_empty());
         assert!(shapes.iter().all(|s| !matches!(s, Shape::CubicBezier(_))));
@@ -771,7 +928,14 @@ mod tests {
     #[test]
     fn rough_styler_ellipse_is_smooth_curve() {
         let stroke = StrokeStyle::default();
-        let shapes = RoughStyler.build_shapes(&ellipse(100.0, 3), &stroke, None, &identity(), 1.0);
+        let shapes = RoughStyler.build_shapes(
+            &ellipse(100.0, 3),
+            &stroke,
+            None,
+            FillStyle::Solid,
+            &identity(),
+            1.0,
+        );
         // 24 段 × 2 passes = 48 条贝塞尔；曲线轮廓不得退化成直线段拼接
         assert_eq!(shapes.len(), 48);
         assert!(shapes.iter().all(|s| matches!(s, Shape::CubicBezier(_))));
@@ -798,10 +962,31 @@ mod tests {
     #[test]
     fn rough_styler_ellipse_stays_deterministic_and_seed_sensitive() {
         let stroke = StrokeStyle::default();
-        let a = RoughStyler.build_shapes(&ellipse(100.0, 9), &stroke, None, &identity(), 1.0);
-        let b = RoughStyler.build_shapes(&ellipse(100.0, 9), &stroke, None, &identity(), 1.0);
+        let a = RoughStyler.build_shapes(
+            &ellipse(100.0, 9),
+            &stroke,
+            None,
+            FillStyle::Solid,
+            &identity(),
+            1.0,
+        );
+        let b = RoughStyler.build_shapes(
+            &ellipse(100.0, 9),
+            &stroke,
+            None,
+            FillStyle::Solid,
+            &identity(),
+            1.0,
+        );
         assert_eq!(debug(&a), debug(&b));
-        let c = RoughStyler.build_shapes(&ellipse(100.0, 10), &stroke, None, &identity(), 1.0);
+        let c = RoughStyler.build_shapes(
+            &ellipse(100.0, 10),
+            &stroke,
+            None,
+            FillStyle::Solid,
+            &identity(),
+            1.0,
+        );
         assert_ne!(debug(&a), debug(&c));
     }
 
@@ -810,7 +995,14 @@ mod tests {
         // 抖动幅度受 MAX_OFFSET_CANVAS 约束：既不会抖成一团，也不会抖飞出圆周太远。
         // 局部坐标经 identity 变换直接落到屏幕，故圆心 (200,200)、半径 200。
         let stroke = StrokeStyle::default();
-        let shapes = RoughStyler.build_shapes(&ellipse(400.0, 11), &stroke, None, &identity(), 1.0);
+        let shapes = RoughStyler.build_shapes(
+            &ellipse(400.0, 11),
+            &stroke,
+            None,
+            FillStyle::Solid,
+            &identity(),
+            1.0,
+        );
         let center = egui::pos2(200.0, 200.0);
         for p in beziers(&shapes).iter().flat_map(|seg| seg.iter()) {
             let d = (*p - center).length();
@@ -825,7 +1017,14 @@ mod tests {
             width: 2.0,
             dash: DashStyle::Dashed,
         };
-        let shapes = RoughStyler.build_shapes(&ellipse(100.0, 4), &stroke, None, &identity(), 1.0);
+        let shapes = RoughStyler.build_shapes(
+            &ellipse(100.0, 4),
+            &stroke,
+            None,
+            FillStyle::Solid,
+            &identity(),
+            1.0,
+        );
         assert!(!shapes.is_empty());
         assert!(shapes.iter().all(|s| !matches!(s, Shape::CubicBezier(_))));
     }
@@ -837,6 +1036,7 @@ mod tests {
             &ellipse(0.0, 5),
             &StrokeStyle::default(),
             None,
+            FillStyle::Solid,
             &identity(),
             1.0,
         );
@@ -861,8 +1061,14 @@ mod tests {
             roundness: 0.0,
             seed: 5,
         };
-        let shapes =
-            RoughStyler.build_shapes(&degenerate, &StrokeStyle::default(), None, &identity(), 1.0);
+        let shapes = RoughStyler.build_shapes(
+            &degenerate,
+            &StrokeStyle::default(),
+            None,
+            FillStyle::Solid,
+            &identity(),
+            1.0,
+        );
         for s in &shapes {
             if let Shape::CubicBezier(b) = s {
                 for p in b.points {
@@ -874,8 +1080,14 @@ mod tests {
 
     #[test]
     fn clean_styler_rect_is_single_polygon() {
-        let shapes =
-            CleanStyler.build_shapes(&rect(0), &StrokeStyle::default(), None, &identity(), 1.0);
+        let shapes = CleanStyler.build_shapes(
+            &rect(0),
+            &StrokeStyle::default(),
+            None,
+            FillStyle::Solid,
+            &identity(),
+            1.0,
+        );
         assert_eq!(shapes.len(), 1);
     }
 
@@ -937,11 +1149,23 @@ mod tests {
     #[test]
     fn clean_styler_rect_roundness_changes_outline_point_count() {
         let mut plain = rect(0);
-        let plain_shapes =
-            CleanStyler.build_shapes(&plain, &StrokeStyle::default(), None, &identity(), 1.0);
+        let plain_shapes = CleanStyler.build_shapes(
+            &plain,
+            &StrokeStyle::default(),
+            None,
+            FillStyle::Solid,
+            &identity(),
+            1.0,
+        );
         plain.roundness = 0.5;
-        let round_shapes =
-            CleanStyler.build_shapes(&plain, &StrokeStyle::default(), None, &identity(), 1.0);
+        let round_shapes = CleanStyler.build_shapes(
+            &plain,
+            &StrokeStyle::default(),
+            None,
+            FillStyle::Solid,
+            &identity(),
+            1.0,
+        );
         assert_eq!(plain_shapes.len(), 1);
         assert_eq!(round_shapes.len(), 1);
         let count = |s: &Shape| match s {
@@ -984,7 +1208,14 @@ mod tests {
         let mut d = open_line();
         d.start_arrow = Some(ArrowHeadStyle::Dot);
         d.end_arrow = Some(ArrowHeadStyle::Dot);
-        let shapes = CleanStyler.build_shapes(&d, &StrokeStyle::default(), None, &identity(), 1.0);
+        let shapes = CleanStyler.build_shapes(
+            &d,
+            &StrokeStyle::default(),
+            None,
+            FillStyle::Solid,
+            &identity(),
+            1.0,
+        );
         // 1 条线 + 2 个圆点
         assert_eq!(shapes.len(), 3);
         let circles: Vec<_> = shapes
@@ -1001,7 +1232,14 @@ mod tests {
         let mut d = open_line();
         d.start_arrow = Some(ArrowHeadStyle::Dot);
         d.end_arrow = Some(ArrowHeadStyle::Dot);
-        let shapes = CleanStyler.build_shapes(&d, &StrokeStyle::default(), None, &identity(), 1.0);
+        let shapes = CleanStyler.build_shapes(
+            &d,
+            &StrokeStyle::default(),
+            None,
+            FillStyle::Solid,
+            &identity(),
+            1.0,
+        );
         let centers: Vec<Pos2> = shapes
             .iter()
             .filter_map(|s| match s {
@@ -1026,8 +1264,8 @@ mod tests {
     fn rough_styler_curved_polyline_is_smooth_and_deterministic() {
         let stroke = StrokeStyle::default();
         let d = curved_open_line();
-        let a = RoughStyler.build_shapes(&d, &stroke, None, &identity(), 1.0);
-        let b = RoughStyler.build_shapes(&d, &stroke, None, &identity(), 1.0);
+        let a = RoughStyler.build_shapes(&d, &stroke, None, FillStyle::Solid, &identity(), 1.0);
+        let b = RoughStyler.build_shapes(&d, &stroke, None, FillStyle::Solid, &identity(), 1.0);
         assert_eq!(debug(&a), debug(&b), "同 seed 必须得到同一抖动");
         // 开放曲线：段数 = (采样点数 - 1) × passes
         let sampled = outline_points(&d, 24).len();
@@ -1044,7 +1282,14 @@ mod tests {
     fn rough_styler_curved_polyline_endpoints_stay_put() {
         // 开放 Catmull-Rom 的端点用重复点外推，首末点不得被邻居拉偏
         let d = curved_open_line();
-        let shapes = RoughStyler.build_shapes(&d, &StrokeStyle::default(), None, &identity(), 1.0);
+        let shapes = RoughStyler.build_shapes(
+            &d,
+            &StrokeStyle::default(),
+            None,
+            FillStyle::Solid,
+            &identity(),
+            1.0,
+        );
         let bez = beziers(&shapes);
         let first = bez[0][0];
         let last = bez[bez.len() - 1][3];

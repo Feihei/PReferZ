@@ -3,6 +3,7 @@ use crate::interaction;
 use crate::keymap::{Action, Keymap, KeymapMap};
 use crate::theme::{self, ThemeMode};
 use crate::ui::stylers::{build_shape_visuals, item_local_to_screen};
+use crate::ui::widgets::palette;
 use crate::ui::widgets::transform_handles::{
     should_show_flip, should_show_rotate, Handle, TransformHandles,
 };
@@ -12,12 +13,12 @@ use image::GenericImageView;
 use preferz_core::arrange::{plan_arrange, ArrangeMode};
 use preferz_core::commands::{
     AddItem, ArrangeItems, ArrowHeads, CropItems, DeleteItems, EditShapePoints, EditTextContent,
-    FillChange, FlipItems, MoveItems, NormalizeItems, RenumberFrame, ReorderItems, SetArrowHeads,
-    SetClosed, SetCurveType, SetFrameNumber, SetPixmapProps, SetPixmapStyle, SetRough,
-    SetRoundness, SetShapeFill, SetStrokeStyle, SetTextStyle, TransformItem,
+    FillChange, FillState, FlipItems, MoveItems, NormalizeItems, RenumberFrame, ReorderItems,
+    SetArrowHeads, SetClosed, SetCurveType, SetFrameNumber, SetPixmapProps, SetPixmapStyle,
+    SetRough, SetRoundness, SetShapeFill, SetStrokeStyle, SetTextStyle, TransformItem,
 };
 use preferz_core::shape::{
-    ArrowHeadStyle, CurveType, DashStyle, PixmapStyle, ShapeType, StrokeStyle, TextStyle,
+    ArrowHeadStyle, CurveType, DashStyle, FillStyle, PixmapStyle, ShapeType, StrokeStyle, TextStyle,
 };
 use preferz_core::spaces::{CanvasPoint, CanvasRect, CanvasSize, CanvasVector};
 use preferz_core::{Command, CropRect, Item, ItemId, ItemKind, Scene};
@@ -408,8 +409,10 @@ pub struct PReferZApp {
     tool: Tool,
     /// 绘制形状默认描边样式（样式面板 A8 可调）。
     default_stroke: StrokeStyle,
-    /// 绘制形状默认填充色（None = 透明；样式面板 A8 可调）。
+    /// 绘制形状默认填充色（`None` = 跟随描边色；默认样式侧栏可调）。
     default_fill: Option<[u8; 4]>,
+    /// 绘制形状默认填充样式（`None` = 无填充；Excalidraw 四态默认，默认样式侧栏可调）。
+    default_fill_style: Option<FillStyle>,
     /// 新建形状是否默认手绘风描边（Phase F；样式面板可调）。
     default_rough: bool,
     drag: DragState,
@@ -577,7 +580,7 @@ enum PropKind {
 enum PropValue {
     Float(f32),
     Stroke(StrokeStyle),
-    Fill(Option<[u8; 4]>),
+    Fill(FillState),
     Text(TextStyle),
     Pixmap(PixmapStyle),
 }
@@ -613,7 +616,16 @@ fn prop_cmd(pending: PropEdit, scene: &Scene) -> Option<Box<dyn Command>> {
                 .iter()
                 .filter_map(|(id, old)| match (old, scene.get_item(id)) {
                     (PropValue::Fill(old), Some(item)) => match &item.kind {
-                        ItemKind::Shape { fill, .. } => Some((*id, *old, *fill)),
+                        ItemKind::Shape {
+                            fill, fill_style, ..
+                        } => Some((
+                            *id,
+                            *old,
+                            FillState {
+                                color: *fill,
+                                style: *fill_style,
+                            },
+                        )),
                         _ => None,
                     },
                     _ => None,
@@ -728,6 +740,7 @@ impl PReferZApp {
                 }
             },
             default_fill: None,
+            default_fill_style: None,
             default_rough: false,
             drag: DragState::Idle,
             editing_text: None,
@@ -985,58 +998,8 @@ impl eframe::App for PReferZApp {
                 }
             });
 
-        // 样式面板：仅绘制工具激活时显示「新建元素默认样式」（spec §5.1）。
-        // per-item 属性编辑统一移到右侧属性侧栏（Phase H），避免两套控件重复编辑同一字段。
-        // 在 CentralPanel 之前渲染：让画布交互区域正确排除底部面板。
-        if self.tool != Tool::Select {
-            egui::TopBottomPanel::bottom("style_panel").show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(t(self.lang, T::StyleStrokeColor));
-                    let mut col = egui::Color32::from_rgba_unmultiplied(
-                        self.default_stroke.color[0],
-                        self.default_stroke.color[1],
-                        self.default_stroke.color[2],
-                        self.default_stroke.color[3],
-                    );
-                    if ui.color_edit_button_srgba(&mut col).changed() {
-                        self.default_stroke.color = [col.r(), col.g(), col.b(), col.a()];
-                    }
-                    ui.separator();
-                    ui.label(t(self.lang, T::StyleStrokeWidth));
-                    ui.add(
-                        egui::Slider::new(&mut self.default_stroke.width, 0.5..=12.0)
-                            .logarithmic(true),
-                    );
-                    ui.separator();
-                    for (dash, label) in [
-                        (DashStyle::Solid, T::StyleDashSolid),
-                        (DashStyle::Dashed, T::StyleDashDashed),
-                        (DashStyle::Dotted, T::StyleDashDotted),
-                    ] {
-                        let active = self.default_stroke.dash == dash;
-                        if ui.selectable_label(active, t(self.lang, label)).clicked() {
-                            self.default_stroke.dash = dash;
-                        }
-                    }
-                    ui.separator();
-                    let mut fill_checked = self.default_fill.is_some();
-                    if ui
-                        .checkbox(&mut fill_checked, t(self.lang, T::StyleFillNone))
-                        .changed()
-                    {
-                        self.default_fill = if fill_checked {
-                            Some([100, 180, 255, 60])
-                        } else {
-                            None
-                        };
-                    }
-                    ui.separator();
-                    // 手绘风：新建形状的默认开关（Phase F）
-                    ui.checkbox(&mut self.default_rough, t(self.lang, T::StyleRough));
-                });
-            });
-        }
-
+        // 「新建元素默认样式」不再占用底部面板：绘制工具激活且无选中时，
+        // 由 render_props_panel 在右侧栏渲染（与选中属性侧栏同一位置，避免两套控件）。
         // 右侧属性侧栏（Phase H）：选中项 per-item 编辑，按 ItemKind 分节。
         self.render_props_panel(ctx);
 
@@ -2013,15 +1976,20 @@ impl PReferZApp {
         } else {
             (w, h)
         };
+        // 填充默认值：选了填充样式但未选填充色时，跟随描边色（Excalidraw 语义）
+        let fill = self
+            .default_fill_style
+            .map(|_| self.default_fill.unwrap_or(self.default_stroke.color));
         let item = Item::new_shape(
             shape_type,
             (bw, bh),
             min_x,
             min_y,
             self.default_stroke,
-            self.default_fill,
+            fill,
         )
-        .with_rough(self.default_rough);
+        .with_rough(self.default_rough)
+        .with_fill_style(self.default_fill_style.unwrap_or(FillStyle::Solid));
         self.push_new_item(AddItem::new(item));
         self.flash("已创建图形");
         // 默认回 Select
@@ -3663,10 +3631,16 @@ impl PReferZApp {
     /// 批量应用到所有选中项。连续控件（滑块 / 取色器）经 [`PropEdit`] 合并成一条 undo 命令。
     fn render_props_panel(&mut self, ctx: &egui::Context) {
         if self.scene.selection.is_empty() {
+            // 无选中且绘制工具激活：右侧栏显示「新建元素默认样式」
+            // （原底部样式面板移入侧栏；Frame 无样式可调，不显示）。
+            if self.tool != Tool::Select && self.tool != Tool::Frame {
+                self.render_defaults_panel(ctx);
+            }
             return;
         }
         let ids: Vec<ItemId> = self.scene.selection.iter().copied().collect();
         let lang = self.lang;
+        let dark = self.theme.is_dark(ctx);
         egui::SidePanel::right("props_panel")
             .default_width(230.0)
             .resizable(true)
@@ -3683,7 +3657,7 @@ impl PReferZApp {
                     .collect();
                 if !shape_ids.is_empty() {
                     ui.label(t(lang, T::PropsSectionShape));
-                    self.render_shape_props(ui, lang, &shape_ids);
+                    self.render_shape_props(ui, lang, dark, &shape_ids);
                     ui.separator();
                 }
 
@@ -3727,17 +3701,79 @@ impl PReferZApp {
             });
     }
 
+    /// 「新建元素默认样式」侧栏：绘制工具激活且无选中时显示（原底部样式面板）。
+    ///
+    /// 控件直接改 `default_*` 字段（非 item 属性，不走 undo 栈）；
+    /// 填充节仅对能产生封闭图形的工具显示（线 / 箭头无填充）。
+    fn render_defaults_panel(&mut self, ctx: &egui::Context) {
+        let lang = self.lang;
+        let dark = self.theme.is_dark(ctx);
+        let show_fill = matches!(self.tool, Tool::Shape(_) | Tool::Polygon);
+        egui::SidePanel::right("defaults_panel")
+            .default_width(230.0)
+            .resizable(true)
+            .show(ctx, |ui| {
+                ui.label(t(lang, T::PropsDefaultsTitle));
+                ui.separator();
+                // 描边颜色（Excalidraw 式调色板）
+                let mut stroke = self.default_stroke.color;
+                if palette::color_palette_button(ui, &mut stroke, dark) {
+                    self.default_stroke.color = stroke;
+                }
+                ui.add_space(4.0);
+                // 描边宽度
+                ui.label(t(lang, T::StyleStrokeWidth));
+                ui.add(
+                    egui::Slider::new(&mut self.default_stroke.width, 0.5..=12.0).logarithmic(true),
+                );
+                // 线型
+                ui.horizontal(|ui| {
+                    for (dash, label) in [
+                        (DashStyle::Solid, T::StyleDashSolid),
+                        (DashStyle::Dashed, T::StyleDashDashed),
+                        (DashStyle::Dotted, T::StyleDashDotted),
+                    ] {
+                        let active = self.default_stroke.dash == dash;
+                        if ui.selectable_label(active, t(lang, label)).clicked() {
+                            self.default_stroke.dash = dash;
+                        }
+                    }
+                });
+                // 填充（闭合图形类工具）
+                if show_fill {
+                    ui.add_space(4.0);
+                    ui.label(t(lang, T::StyleFillLabel));
+                    ui.horizontal(|ui| {
+                        if let Some(new_style) =
+                            palette::fill_style_picker(ui, lang, self.default_fill_style)
+                        {
+                            self.default_fill_style = new_style;
+                        }
+                    });
+                    if self.default_fill_style.is_some() {
+                        // 未显式选过填充色时按钮显示描边色（实际创建时同样跟随描边色）
+                        let mut fill = self.default_fill.unwrap_or(self.default_stroke.color);
+                        if palette::fill_color_palette_button(ui, &mut fill, dark) {
+                            self.default_fill = Some(fill);
+                        }
+                    }
+                }
+                // 手绘风：新建形状的默认开关（Phase F）
+                ui.add_space(4.0);
+                ui.checkbox(&mut self.default_rough, t(lang, T::StyleRough));
+            });
+    }
+
     /// 形状节：描边 / 填充 / 圆角 / 曲线 / 闭合 / 箭头 / 手绘风（Phase H）。
-    fn render_shape_props(&mut self, ui: &mut egui::Ui, lang: Lang, ids: &[ItemId]) {
-        // 描边颜色
+    fn render_shape_props(&mut self, ui: &mut egui::Ui, lang: Lang, dark: bool, ids: &[ItemId]) {
+        // 描边颜色（Excalidraw 式调色板）
         if let Some(p) = prop(&self.scene, ids, |it| match &it.kind {
             ItemKind::Shape { stroke, .. } => Some(stroke.color),
             _ => None,
         }) {
-            let c = p.value();
-            let mut col = egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]);
-            if ui.color_edit_button_srgba(&mut col).changed() {
-                let new = [col.r(), col.g(), col.b(), col.a()];
+            let mut col = p.value();
+            if palette::color_palette_button(ui, &mut col, dark) {
+                let new = col;
                 self.apply_continuous(
                     ids,
                     PropKind::Stroke,
@@ -3814,49 +3850,91 @@ impl PReferZApp {
                 }
             });
         }
-        // 填充
-        if let Some(p) = prop(&self.scene, ids, |it| match &it.kind {
-            ItemKind::Shape { fill, .. } => Some(*fill),
+        // 填充（Excalidraw 四态：无 / 纯色 / 斜线 / 交叉线）。
+        // 线 / 箭头（未闭合 Polyline）无填充节；闭合折线（多边形）有。
+        let fill_ids: Vec<ItemId> = ids
+            .iter()
+            .copied()
+            .filter(|id| {
+                matches!(self.scene.get_item(id), Some(item) if match &item.kind {
+                    ItemKind::Shape { shape_type, closed, .. } => {
+                        !matches!(shape_type, ShapeType::Polyline) || *closed
+                    }
+                    _ => false,
+                })
+            })
+            .collect();
+        if let Some(p) = prop(&self.scene, &fill_ids, |it| match &it.kind {
+            ItemKind::Shape {
+                fill, fill_style, ..
+            } => Some(FillState {
+                color: *fill,
+                style: *fill_style,
+            }),
             _ => None,
         }) {
-            let mut checked = p.value().is_some();
-            if ui
-                .checkbox(&mut checked, t(lang, T::StyleFillNone))
-                .changed()
-            {
-                let new: Option<[u8; 4]> = if checked {
-                    Some([100, 180, 255, 60])
-                } else {
-                    None
-                };
-                self.apply_continuous(
-                    ids,
-                    PropKind::Fill,
-                    |k| match k {
-                        ItemKind::Shape { fill, .. } => Some(PropValue::Fill(*fill)),
-                        _ => None,
-                    },
-                    |k| {
-                        if let ItemKind::Shape { fill, .. } = k {
-                            *fill = new;
-                        }
-                    },
-                );
-            }
-            if let Some(existing) = p.value() {
-                let mut col = egui::Color32::from_rgba_unmultiplied(
-                    existing[0],
-                    existing[1],
-                    existing[2],
-                    existing[3],
-                );
-                if ui.color_edit_button_srgba(&mut col).changed() {
-                    let new = [col.r(), col.g(), col.b(), col.a()];
+            let state = p.value();
+            let current_style = if state.color.is_some() {
+                Some(state.style)
+            } else {
+                None
+            };
+            ui.horizontal(|ui| {
+                ui.label(t(lang, T::StyleFillLabel));
+                if let Some(new_style) = palette::fill_style_picker(ui, lang, current_style) {
                     self.apply_continuous(
-                        ids,
+                        &fill_ids,
                         PropKind::Fill,
                         |k| match k {
-                            ItemKind::Shape { fill, .. } => Some(PropValue::Fill(*fill)),
+                            ItemKind::Shape {
+                                fill, fill_style, ..
+                            } => Some(PropValue::Fill(FillState {
+                                color: *fill,
+                                style: *fill_style,
+                            })),
+                            _ => None,
+                        },
+                        |k| {
+                            if let ItemKind::Shape {
+                                fill,
+                                fill_style,
+                                stroke,
+                                ..
+                            } = k
+                            {
+                                match new_style {
+                                    Some(s) => {
+                                        *fill_style = s;
+                                        // 无填充 → 有填充：默认跟随描边色（Excalidraw 语义）
+                                        if fill.is_none() {
+                                            *fill = Some(stroke.color);
+                                        }
+                                    }
+                                    None => {
+                                        *fill = None;
+                                        *fill_style = FillStyle::Solid;
+                                    }
+                                }
+                            }
+                        },
+                    );
+                }
+            });
+            // 填充颜色（仅有填充时显示；Excalidraw 同款调色板）
+            if let Some(c) = state.color {
+                let mut col = c;
+                if palette::fill_color_palette_button(ui, &mut col, dark) {
+                    let new = col;
+                    self.apply_continuous(
+                        &fill_ids,
+                        PropKind::Fill,
+                        |k| match k {
+                            ItemKind::Shape {
+                                fill, fill_style, ..
+                            } => Some(PropValue::Fill(FillState {
+                                color: *fill,
+                                style: *fill_style,
+                            })),
                             _ => None,
                         },
                         |k| {
