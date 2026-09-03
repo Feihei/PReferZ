@@ -333,26 +333,19 @@ impl Item {
         let r = self.bounding_rect();
         let min = r.min();
         let max = r.max();
-        let inside_x = canvas_pos.x >= min.x - threshold && canvas_pos.x <= max.x + threshold;
-        let inside_y = canvas_pos.y >= min.y - threshold && canvas_pos.y <= max.y + threshold;
-        if !(inside_x && inside_y) {
+        // 扩展矩形（含阈值松弛）：点须落在此范围内。
+        let in_x = canvas_pos.x >= min.x - threshold && canvas_pos.x <= max.x + threshold;
+        let in_y = canvas_pos.y >= min.y - threshold && canvas_pos.y <= max.y + threshold;
+        if !(in_x && in_y) {
             return false;
         }
-        let dx = if canvas_pos.x < min.x {
-            min.x - canvas_pos.x
-        } else if canvas_pos.x > max.x {
-            canvas_pos.x - max.x
-        } else {
-            0.0
-        };
-        let dy = if canvas_pos.y < min.y {
-            min.y - canvas_pos.y
-        } else if canvas_pos.y > max.y {
-            canvas_pos.y - max.y
-        } else {
-            0.0
-        };
-        dx <= threshold && dy <= threshold
+        // 内缩矩形（阈值内缩）：点落在内缩矩形内部 = 远离边框 = 非边框命中。
+        // 旧实现用 `dx <= threshold && dy <= threshold`，但内部点 dx=dy=0 也满足，
+        // 导致整个 frame 内部都被判为边框命中，吞掉框内成员的点击（issue #1）。
+        let inner_x = canvas_pos.x > min.x + threshold && canvas_pos.x < max.x - threshold;
+        let inner_y = canvas_pos.y > min.y + threshold && canvas_pos.y < max.y - threshold;
+        // 边框命中 = 在扩展矩形内 且 不在内缩矩形内。
+        !(inner_x && inner_y)
     }
 
     /// 修改画框编号（非画框无副作用）。
@@ -920,6 +913,50 @@ fn dist_point_segment(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 构造一个画框：transform.pos = (pos_x, pos_y)，base_size = (w, h)，scale 1。
+    /// AABB = (pos_x, pos_y) .. (pos_x+w, pos_y+h)。
+    fn make_frame(pos_x: f32, pos_y: f32, w: f32, h: f32) -> Item {
+        Item::new_frame(1, (w, h), pos_x, pos_y, None)
+    }
+
+    #[test]
+    fn frame_border_hit_only_on_border_band() {
+        // 画框 AABB (100,100)-(300,250)，阈值 6。
+        let frame = make_frame(100.0, 100.0, 200.0, 150.0);
+        let t = 6.0;
+
+        // 内部点（曾因 dx=dy=0 被旧实现误判为边框命中，导致框内成员无法选中）。
+        assert!(
+            !frame.frame_border_hit(CanvasPoint::new(200.0, 175.0), t),
+            "内部点不应命中边框"
+        );
+        assert!(
+            !frame.frame_border_hit(CanvasPoint::new(290.0, 240.0), t),
+            "靠近角但仍在内部的点不应命中边框"
+        );
+
+        // 左边缘上的点 -> 命中。
+        assert!(
+            frame.frame_border_hit(CanvasPoint::new(100.0, 175.0), t),
+            "左边缘点应命中边框"
+        );
+        // 边缘内侧 3px（阈值内）-> 命中。
+        assert!(
+            frame.frame_border_hit(CanvasPoint::new(103.0, 175.0), t),
+            "边缘内侧阈值内应命中边框"
+        );
+        // 边缘外侧 5px（阈值内）-> 命中。
+        assert!(
+            frame.frame_border_hit(CanvasPoint::new(95.0, 175.0), t),
+            "边缘外侧阈值内应命中边框"
+        );
+        // 完全在外侧且超出阈值 -> 不命中。
+        assert!(
+            !frame.frame_border_hit(CanvasPoint::new(50.0, 175.0), t),
+            "框外远点不应命中边框"
+        );
+    }
 
     fn make_line(points: Vec<(f32, f32)>, pos_x: f32, pos_y: f32) -> Item {
         let mut min_x = f32::MAX;

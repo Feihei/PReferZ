@@ -1686,6 +1686,22 @@ impl PReferZApp {
                 for dup in dups {
                     self.scene.add_item(dup);
                 }
+                // 复制的画框须压到成员之下（与 finish_create_frame 一致）：否则它 z
+                // 最高会盖住框内成员命中（frame_border_hit 已修，但近边框仍会误选
+                // frame）。直接 mutate 不入 undo——最终状态由下方 AddItems 记录。
+                let frame_dup_ids: Vec<ItemId> = ids
+                    .iter()
+                    .filter(|id| {
+                        self.scene
+                            .get_item(id)
+                            .map(|it| it.is_frame())
+                            .unwrap_or(false)
+                    })
+                    .copied()
+                    .collect();
+                if !frame_dup_ids.is_empty() {
+                    ReorderItems::new(frame_dup_ids, false).redo(&mut self.scene);
+                }
                 self.scene.deselect_all();
                 for nid in &ids {
                     self.scene.select(*nid);

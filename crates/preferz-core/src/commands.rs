@@ -1038,8 +1038,10 @@ impl AddItems {
 
 impl Command for AddItems {
     fn redo(&mut self, scene: &mut Scene) {
+        // 用 preserve_z：Ctrl 复制的画框已在交互期被压到成员之下（z 最低），
+        // 这里保留其 z，避免 redo 后画框被 add_item 重置为最高 z 而重新盖住成员。
         for item in &self.items {
-            scene.add_item(item.clone());
+            scene.add_item_preserve_z(item.clone());
         }
     }
 
