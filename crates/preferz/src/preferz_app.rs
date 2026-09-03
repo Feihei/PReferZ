@@ -4636,22 +4636,38 @@ impl PReferZApp {
     /// 画布的 `pointer_on_canvas` 守卫会自动排除被浮层遮挡的部分。
     fn render_hud(&mut self, ctx: &egui::Context) {
         let zoom_pct = format!("{:.0}%", self.viewport.zoom * 100.0);
-        let lang = self.lang;
-        egui::Area::new(egui::Id::new("hud_zoom_lang"))
+        egui::Area::new(egui::Id::new("hud_zoom"))
             .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-12.0, -12.0))
             .order(egui::Order::Foreground)
             .interactable(true)
             .show(ctx, |ui| {
                 // popup frame 自带主题化背景 + 描边，明暗主题下都可读。
+                // 行内布局 + 关闭 wrap：窄屏/缩放数值下也保持单行、宽度自适应内容。
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                 egui::Frame::popup(ui.style())
                     .inner_margin(egui::Margin::symmetric(10.0, 5.0))
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             ui.label(egui::RichText::new(&zoom_pct).monospace());
-                            ui.separator();
-                            // 按钮显示当前语言，点击切到另一种（hover 提示目标语言）。
+                        });
+                    });
+            });
+
+        // 语言切换：左下角独立悬浮，按钮显示目标语言（中文界面显示 EN，
+        // 英文界面显示 中），点击切到该语言（hover 提示目标语言全名）。
+        let lang = self.lang;
+        egui::Area::new(egui::Id::new("hud_lang"))
+            .anchor(egui::Align2::LEFT_BOTTOM, egui::vec2(12.0, -12.0))
+            .order(egui::Order::Foreground)
+            .interactable(true)
+            .show(ctx, |ui| {
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+                egui::Frame::popup(ui.style())
+                    .inner_margin(egui::Margin::symmetric(10.0, 5.0))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
                             if ui
-                                .small_button(lang.short_name())
+                                .small_button(lang.toggled().short_name())
                                 .on_hover_text(lang.toggled().display_name())
                                 .clicked()
                             {
