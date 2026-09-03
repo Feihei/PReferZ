@@ -403,6 +403,9 @@ impl BackgroundOps {
 pub struct PReferZApp {
     scene: Scene,
     viewport: ViewportState,
+    /// 双击图片「适应视口」前的视口快照（zoom, pan）。
+    /// 再次双击同一图片（已处于适配视图）时恢复到此视图（.issues #2）。
+    view_fit_prev: Option<(f32, CanvasVector)>,
     undo_stack: UndoStack,
     /// 临时状态消息（已导），会在若干帧后清空，避免覆盖持续状态（B5）
     flash_status: Option<(String, std::time::Instant)>,
@@ -734,6 +737,7 @@ impl PReferZApp {
         Self {
             scene: Scene::new(),
             viewport: ViewportState::default(),
+            view_fit_prev: None,
             undo_stack: UndoStack::new(),
             flash_status: None,
             context_menu_open: false,
@@ -1260,9 +1264,22 @@ impl eframe::App for PReferZApp {
                             )
                         });
                     match hit {
+                        // 双击图片：已处于该图片的适配视图 → 回到上一视图；否则适配视口。
                         Some((_, true, rect)) => {
-                            self.viewport.fit_to_content(rect);
-                            self.flash(t(self.lang, T::FlashFitToCanvas).to_string());
+                            let (target_zoom, target_pan) = self.compute_fit(rect);
+                            let already_fit = (self.viewport.zoom - target_zoom).abs() < 1e-3
+                                && (self.viewport.pan - target_pan).length() < 1e-2;
+                            if already_fit {
+                                if let Some((z, p)) = self.view_fit_prev.take() {
+                                    self.viewport.zoom = z;
+                                    self.viewport.pan = p;
+                                    self.flash(t(self.lang, T::FlashFitRestore).to_string());
+                                }
+                            } else {
+                                self.view_fit_prev = Some((self.viewport.zoom, self.viewport.pan));
+                                self.viewport.fit_to_content(rect);
+                                self.flash(t(self.lang, T::FlashFitToCanvas).to_string());
+                            }
                         }
                         // 命中可承载文本的 item → 编辑/新建文本
                         Some((id, false, _)) if self.start_text_edit(id) => {}
@@ -5921,6 +5938,19 @@ impl PReferZApp {
         let cmd = ReorderItems::new(ids, false);
         self.push_cmd(Box::new(cmd));
         self.flash(t(self.lang, T::FlashSentToBack).to_string());
+    }
+
+    /// 计算把 `content_rect` 适配到当前视口（90% 填充）的目标 (zoom, pan)，
+    /// 与 [`ViewportState::fit_to_content`] 同公式。用于判断"当前是否已是该内容
+    /// 的适配视图"，从而支持双击图片在"适配↔上一视图"间切换（.issues #2）。
+    fn compute_fit(&self, content_rect: CanvasRect) -> (f32, CanvasVector) {
+        let content_w = content_rect.width().max(1.0);
+        let content_h = content_rect.height().max(1.0);
+        let screen_w = self.viewport.screen_rect.width().max(1.0);
+        let screen_h = self.viewport.screen_rect.height().max(1.0);
+        let scale = (screen_w / content_w).min(screen_h / content_h) * 0.9;
+        let scale = scale.clamp(self.viewport.min_zoom, self.viewport.max_zoom);
+        (scale, content_rect.center().to_vector())
     }
 
     fn fit_to_screen(&mut self) {
