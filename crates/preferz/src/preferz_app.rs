@@ -955,6 +955,9 @@ impl eframe::App for PReferZApp {
         // poll 后台任务结果（导入/加载/保存/导出）。
         self.poll_background(ctx);
 
+        // 懒重建缺失纹理：undo 恢复 / 共享纹理删除后兜底（修 .issues #1 灰方块）。
+        self.ensure_pixmap_textures(ctx);
+
         // 处理欢迎页最近文件点击
         if let Some(path) = self.pending_open_recent.take() {
             self.add_recent_and_load(ctx, path);
@@ -1239,6 +1242,7 @@ impl eframe::App for PReferZApp {
             }
 
             // 双击：Text item → 编辑；封闭 Shape → 创建/编辑绑定文本；
+            // Pixmap → 视口适应该图片（.issues #2，Excalidraw 同款）；
             // 空白 → 创建文本便签（spec L243 P2-5）
             // response.double_clicked() 已自动考虑上层 Window 遮挡
             if response.double_clicked() && self.editing_text.is_none() {
@@ -1246,21 +1250,35 @@ impl eframe::App for PReferZApp {
                 if matches!(self.drag, DragState::CreatingPolygon { .. }) {
                     self.finish_create_polygon();
                 } else if let Some(pos) = ctx.input(|i| i.pointer.latest_pos()) {
-                    // 克隆命中的 item 字段，避免 &self.scene 与 &mut self.editing_text 借用冲突
-                    let hit_id = interaction::get_item_at(pos, &self.scene, &self.viewport)
-                        .map(|item| item.id);
-                    // 命中可承载文本的 item → 编辑/新建文本；否则（图片或空白）新建自由文本
-                    if !hit_id.is_some_and(|id| self.start_text_edit(id)) {
-                        let canvas_pos = self.viewport.screen_to_canvas(pos);
-                        self.editing_text = Some(EditingText {
-                            editing_item_id: None,
-                            canvas_pos,
-                            buffer: String::new(),
-                            font_size: 24.0,
-                            color: [255, 255, 255, 255],
-                            first_frame: true,
-                            container_id: None,
+                    // 一次性取全命中信息（id + 是否图片 + 包围盒），避免借用冲突
+                    let hit =
+                        interaction::get_item_at(pos, &self.scene, &self.viewport).map(|item| {
+                            (
+                                item.id,
+                                matches!(item.kind, ItemKind::Pixmap { .. }),
+                                item.bounding_rect(),
+                            )
                         });
+                    match hit {
+                        Some((_, true, rect)) => {
+                            self.viewport.fit_to_content(rect);
+                            self.flash(t(self.lang, T::FlashFitToCanvas).to_string());
+                        }
+                        // 命中可承载文本的 item → 编辑/新建文本
+                        Some((id, false, _)) if self.start_text_edit(id) => {}
+                        // 其余（线/箭头/空白）→ 新建自由文本
+                        _ => {
+                            let canvas_pos = self.viewport.screen_to_canvas(pos);
+                            self.editing_text = Some(EditingText {
+                                editing_item_id: None,
+                                canvas_pos,
+                                buffer: String::new(),
+                                font_size: 24.0,
+                                color: [255, 255, 255, 255],
+                                first_frame: true,
+                                container_id: None,
+                            });
+                        }
                     }
                     self.drag = DragState::Idle;
                 }
@@ -2883,6 +2901,36 @@ impl PReferZApp {
                 Default::default(),
             );
             self.grayscale_texture_cache.insert(tex_id, handle);
+        }
+    }
+
+    /// 懒重建缺失的 Pixmap 纹理（修 .issues #1 灰方块）。
+    ///
+    /// 删除 Pixmap 时只驱逐 GPU 纹理句柄、保留 RGBA 像素缓存（见 `delete_selected`）：
+    /// undo 恢复 item 后此处按缓存重新上传纹理；共享同一 texture_id 的副本/原件
+    /// 也不会因为一次删除而集体变灰。每帧调用，缺纹理的场景通常为空，开销可忽略。
+    fn ensure_pixmap_textures(&mut self, ctx: &egui::Context) {
+        let missing: Vec<u64> = self
+            .scene
+            .items
+            .iter()
+            .filter_map(|it| match &it.kind {
+                ItemKind::Pixmap { texture_id, .. } => Some(*texture_id),
+                _ => None,
+            })
+            .filter(|tid| !self.texture_cache.contains_key(tid))
+            .collect();
+        for tid in missing {
+            let Some(rgba) = self.rgba_pixel_cache.get(&tid).cloned() else {
+                continue;
+            };
+            let Some((w, h)) = self.rgba_size_cache.get(&tid).copied() else {
+                continue;
+            };
+            let color_image =
+                egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &rgba);
+            let handle = ctx.load_texture(format!("img_{}", tid), color_image, Default::default());
+            self.texture_cache.insert(tid, handle);
         }
     }
 
@@ -5750,23 +5798,34 @@ impl PReferZApp {
         }
         ids.sort();
         ids.dedup();
-        // 清理纹理缓存与字节缓存（Pixmap
-        for id in &ids {
-            if let Some(item) = self.scene.get_item(id) {
-                if let ItemKind::Pixmap { texture_id, .. } = &item.kind {
-                    self.texture_cache.remove(texture_id);
-                    self.grayscale_texture_cache.remove(texture_id);
-                    self.image_data_cache.remove(texture_id);
-                    self.rgba_pixel_cache.remove(texture_id);
-                    self.rgba_size_cache.remove(texture_id);
-                }
-            }
-        }
+        // 先快照被删 Pixmap 的 texture_id（命令执行后 item 就查不到了）
+        let deleted_tex_ids: Vec<u64> = ids
+            .iter()
+            .filter_map(|id| self.scene.get_item(id))
+            .filter_map(|it| match &it.kind {
+                ItemKind::Pixmap { texture_id, .. } => Some(*texture_id),
+                _ => None,
+            })
+            .collect();
         // DeleteItems 命令（修 S1/W8），undo 已支持快照恢复（P1-3
         let cmd = DeleteItems::new(ids.clone());
         self.push_cmd(Box::new(cmd));
         self.scene.selection.clear();
         self.flash(format!("已删除 {} 项", ids.len()));
+        // 纹理驱逐（修 .issues #1 删副本后原件变灰方块）：
+        // - 副本与原件共享同一 texture_id，删除后只要场景里仍有 item 引用该纹理
+        //   就不能驱逐——否则其余引用者立刻变灰方块、裁剪/取色等编辑功能一并失效；
+        // - 场景无引用时也只驱逐 GPU 纹理句柄，保留字节/像素缓存：undo 恢复 item 后
+        //   `ensure_pixmap_textures` 按 rgba 缓存懒重建纹理，保存 sqlar 仍需原始字节。
+        for tid in deleted_tex_ids {
+            let still_used = self.scene.items.iter().any(
+                |it| matches!(&it.kind, ItemKind::Pixmap { texture_id, .. } if *texture_id == tid),
+            );
+            if !still_used {
+                self.texture_cache.remove(&tid);
+                self.grayscale_texture_cache.remove(&tid);
+            }
+        }
     }
 
     /// 原位复制选中项（plan.md 快赢项 #11，Excalidraw 同款 `Ctrl+D`）。
