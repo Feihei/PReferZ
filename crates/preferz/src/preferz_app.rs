@@ -10,7 +10,10 @@ use crate::ui::widgets::transform_handles::{
 use crate::viewport::ViewportState;
 use eframe::egui;
 use image::GenericImageView;
-use preferz_core::arrange::{plan_arrange, ArrangeMode};
+use preferz_core::arrange::{
+    plan_align, plan_arrange, plan_distribute, AlignMode, ArrangeMode, DistributeAxis,
+    DistributeMode,
+};
 use preferz_core::commands::{
     AddItem, AddItems, ArrangeItems, ArrowHeads, CropItems, DeleteItems, EditShapePoints,
     EditTextContent, FillChange, FillState, FlipItems, MoveItems, NormalizeItems, RenumberFrame,
@@ -3664,6 +3667,68 @@ impl PReferZApp {
                                         self.arrange_selected(ArrangeMode::Optimal);
                                         self.context_menu_open = false;
                                     }
+                                    // 对齐 / 分布（plan #6）：与属性栏同一套动作
+                                    ui.separator();
+                                    ui.menu_button(
+                                        format!("\u{21D4} {}", t(self.lang, T::PropsSectionAlign)),
+                                        |ui| {
+                                            for (mode, key) in [
+                                                (AlignMode::Left, T::AlignLeft),
+                                                (AlignMode::HCenter, T::AlignHCenter),
+                                                (AlignMode::Right, T::AlignRight),
+                                                (AlignMode::Top, T::AlignTop),
+                                                (AlignMode::VCenter, T::AlignVCenter),
+                                                (AlignMode::Bottom, T::AlignBottom),
+                                            ] {
+                                                if ui.button(t(self.lang, key)).clicked() {
+                                                    self.align_selected(mode);
+                                                    self.context_menu_open = false;
+                                                }
+                                            }
+                                        },
+                                    );
+                                    ui.menu_button(
+                                        format!("\u{22EF} {}", t(self.lang, T::Distribute)),
+                                        |ui| {
+                                            let enabled = self.scene.selection.len() >= 3;
+                                            for (axis, dist_mode, key) in [
+                                                (
+                                                    DistributeAxis::Horizontal,
+                                                    DistributeMode::Gap,
+                                                    T::DistributeHGap,
+                                                ),
+                                                (
+                                                    DistributeAxis::Horizontal,
+                                                    DistributeMode::Centers,
+                                                    T::DistributeHCenters,
+                                                ),
+                                                (
+                                                    DistributeAxis::Vertical,
+                                                    DistributeMode::Gap,
+                                                    T::DistributeVGap,
+                                                ),
+                                                (
+                                                    DistributeAxis::Vertical,
+                                                    DistributeMode::Centers,
+                                                    T::DistributeVCenters,
+                                                ),
+                                            ] {
+                                                let resp = ui.add_enabled(
+                                                    enabled,
+                                                    egui::Button::new(t(self.lang, key)),
+                                                );
+                                                if resp.clicked() {
+                                                    self.distribute_selected(axis, dist_mode);
+                                                    self.context_menu_open = false;
+                                                } else if !enabled {
+                                                    resp.on_disabled_hover_text(t(
+                                                        self.lang,
+                                                        T::FlashDistributeNeedThree,
+                                                    ));
+                                                }
+                                            }
+                                        },
+                                    );
                                 },
                             );
                         }
@@ -3863,6 +3928,13 @@ impl PReferZApp {
                 ui.label(fill(t(lang, T::PropsSelectedCount), &[ids.len().to_string()]));
                 ui.separator();
 
+                // 对齐 / 分布（plan #6）：≥2 项才有意义，放在各类型节之前（对所有类型通用）
+                if ids.len() >= 2 {
+                    ui.label(t(lang, T::PropsSectionAlign));
+                    self.render_align_section(ui, lang, &ids);
+                    ui.separator();
+                }
+
                 let shape_ids: Vec<ItemId> = ids
                     .iter()
                     .copied()
@@ -3914,6 +3986,71 @@ impl PReferZApp {
                     self.render_frame_props(ui, lang, &frame_ids);
                 }
             });
+    }
+
+    /// 对齐 / 分布按钮组（plan #6）：属性栏顶部，选中 ≥2 项时显示。
+    ///
+    /// 参考系为**选区包围盒**（见 `plan_align` / `plan_distribute`）：对齐贴向该框的
+    /// 对应边/中线，分布保持首尾元素不动、只调整中间项。分布要求 ≥3 项，不足时禁用。
+    fn render_align_section(&mut self, ui: &mut egui::Ui, lang: Lang, ids: &[ItemId]) {
+        // 6 向对齐：两行（水平 3 个 + 垂直 3 个），图标按钮 + tooltip 说明
+        const ALIGNS: [(AlignMode, &str, T); 6] = [
+            (AlignMode::Left, "\u{21E4}", T::AlignLeft),       // ⇤
+            (AlignMode::HCenter, "\u{2194}", T::AlignHCenter), // ↔
+            (AlignMode::Right, "\u{21E5}", T::AlignRight),     // ⇥
+            (AlignMode::Top, "\u{21E1}", T::AlignTop),         // ⇡
+            (AlignMode::VCenter, "\u{2195}", T::AlignVCenter), // ↕
+            (AlignMode::Bottom, "\u{21E3}", T::AlignBottom),   // ⇣
+        ];
+        for row in ALIGNS.chunks(3) {
+            ui.horizontal(|ui| {
+                for (mode, icon, key) in row {
+                    let btn = egui::Button::new(*icon).min_size(egui::vec2(34.0, 24.0));
+                    if ui.add(btn).on_hover_text(t(lang, *key)).clicked() {
+                        self.align_selected(*mode);
+                    }
+                }
+            });
+        }
+
+        // 分布：轴向 × 基准 = 4 个（等距 = 边界空隙相等；等心 = 中心距相等）
+        ui.add_space(2.0);
+        ui.label(t(lang, T::Distribute));
+        let can_distribute = ids.len() >= 3;
+        const DISTRIBUTES: [(DistributeAxis, DistributeMode, T); 4] = [
+            (
+                DistributeAxis::Horizontal,
+                DistributeMode::Gap,
+                T::DistributeHGap,
+            ),
+            (
+                DistributeAxis::Horizontal,
+                DistributeMode::Centers,
+                T::DistributeHCenters,
+            ),
+            (
+                DistributeAxis::Vertical,
+                DistributeMode::Gap,
+                T::DistributeVGap,
+            ),
+            (
+                DistributeAxis::Vertical,
+                DistributeMode::Centers,
+                T::DistributeVCenters,
+            ),
+        ];
+        for row in DISTRIBUTES.chunks(2) {
+            ui.horizontal(|ui| {
+                for (axis, mode, key) in row {
+                    let resp = ui.add_enabled(can_distribute, egui::Button::new(t(lang, *key)));
+                    if resp.clicked() {
+                        self.distribute_selected(*axis, *mode);
+                    } else if !can_distribute {
+                        resp.on_disabled_hover_text(t(lang, T::FlashDistributeNeedThree));
+                    }
+                }
+            });
+        }
     }
 
     /// 「新建元素默认样式」侧栏：绘制工具激活且无选中时显示（原底部样式面板）。
@@ -6287,6 +6424,61 @@ impl PReferZApp {
             ArrangeMode::Optimal => "最优装箱",
         };
         self.flash(format!("排列：{}", mode_name));
+    }
+
+    /// 多元素对齐（plan #6）。参考系 = 选区包围盒；命令复用 `ArrangeItems` 入 undo 栈。
+    fn align_selected(&mut self, mode: AlignMode) {
+        let ids: Vec<ItemId> = self.scene.selection.iter().copied().collect();
+        if ids.len() < 2 {
+            return;
+        }
+        let moves = plan_align(&self.scene, &ids, mode);
+        if moves.is_empty() {
+            return; // 已经在位：不产生无意义 undo 条目
+        }
+        self.push_cmd(Box::new(
+            ArrangeItems::new(moves).with_preview_applied(false),
+        ));
+        let name = match mode {
+            AlignMode::Left => T::AlignLeft,
+            AlignMode::HCenter => T::AlignHCenter,
+            AlignMode::Right => T::AlignRight,
+            AlignMode::Top => T::AlignTop,
+            AlignMode::VCenter => T::AlignVCenter,
+            AlignMode::Bottom => T::AlignBottom,
+        };
+        self.flash(format!(
+            "{}：{}",
+            t(self.lang, T::PropsSectionAlign),
+            t(self.lang, name)
+        ));
+    }
+
+    /// 多元素分布（plan #6）。首尾元素不动，中间按 `mode` 均分；要求 ≥3 项。
+    fn distribute_selected(&mut self, axis: DistributeAxis, mode: DistributeMode) {
+        let ids: Vec<ItemId> = self.scene.selection.iter().copied().collect();
+        if ids.len() < 3 {
+            self.flash(t(self.lang, T::FlashDistributeNeedThree).to_string());
+            return;
+        }
+        let moves = plan_distribute(&self.scene, &ids, axis, mode);
+        if moves.is_empty() {
+            return;
+        }
+        self.push_cmd(Box::new(
+            ArrangeItems::new(moves).with_preview_applied(false),
+        ));
+        let name = match (axis, mode) {
+            (DistributeAxis::Horizontal, DistributeMode::Gap) => T::DistributeHGap,
+            (DistributeAxis::Horizontal, DistributeMode::Centers) => T::DistributeHCenters,
+            (DistributeAxis::Vertical, DistributeMode::Gap) => T::DistributeVGap,
+            (DistributeAxis::Vertical, DistributeMode::Centers) => T::DistributeVCenters,
+        };
+        self.flash(format!(
+            "{}：{}",
+            t(self.lang, T::Distribute),
+            t(self.lang, name)
+        ));
     }
 
     /// 归一化选中 Pixmap item 尺寸（spec §2.2 归一化尺寸）

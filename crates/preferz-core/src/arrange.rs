@@ -1,12 +1,57 @@
 use crate::item::{Item, ItemId};
 use crate::scene::Scene;
-use crate::spaces::CanvasVector;
+use crate::spaces::{CanvasRect, CanvasVector};
+use std::cmp::Ordering;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ArrangeMode {
     Linear,
     Optimal,
     Grid,
+}
+
+/// 一次移动：`(item_id, old_pos, new_pos)`。
+type ItemMove = (ItemId, CanvasVector, CanvasVector);
+
+/// 位置容差（画布单位）：小于此值的位移视为「无需移动」，不产生 undo 条目。
+const MOVE_EPSILON: f32 = 1e-4;
+
+/// 多元素对齐方式（6 向）。
+///
+/// 参考系为**选中项整体包围盒**（`plan.md` #6 决策点）：所有参与项贴向同一个框的
+/// 对应边/中线，而不是各自贴向不同的锚。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AlignMode {
+    /// 左对齐：各元素 AABB 左边界对齐到选区框左边界。
+    Left,
+    /// 水平居中：各元素 AABB 水平中心对齐到选区框水平中心。
+    HCenter,
+    /// 右对齐。
+    Right,
+    /// 顶对齐。
+    Top,
+    /// 垂直居中。
+    VCenter,
+    /// 底对齐。
+    Bottom,
+}
+
+/// 多元素分布的轴向。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DistributeAxis {
+    Horizontal,
+    Vertical,
+}
+
+/// 多元素分布的基准（`plan.md` #6 决策点：两种都做）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DistributeMode {
+    /// 等间距：相邻元素的**边界空隙**相等（首尾元素不动）。
+    /// Excalidraw / PowerPoint「横向分布」同款，元素大小不一时视觉最自然。
+    Gap,
+    /// 等中心距：相邻元素的**中心点**间距相等（首尾元素不动）。
+    /// 元素大小差异大时中心节奏均匀，但视觉空隙不均。
+    Centers,
 }
 
 /// 一次排列产生的移动列表 `(item_id, old_pos, new_pos)`。
@@ -25,6 +70,166 @@ pub fn plan_arrange(
         ArrangeMode::Optimal => arrange_optimal(&items, spacing),
         ArrangeMode::Grid => arrange_grid(&items, spacing),
     }
+}
+
+// ─────────────────────────── 对齐 / 分布 ───────────────────────────
+
+/// 规划一次多元素**对齐**（`plan.md` #6）。
+///
+/// 参考系 = 参与项 AABB 的并集（选区包围盒）；`mode` 决定贴向哪条边/中线。
+/// 返回 `(id, old_pos, new_pos)`，UI 层应包成
+/// [`crate::commands::ArrangeItems`] 入 undo 栈。
+///
+/// 少于 2 个可对齐项时返回空（1 个元素对齐没有意义，不该产生 undo 条目）。
+pub fn plan_align(scene: &Scene, ids: &[ItemId], mode: AlignMode) -> Vec<ItemMove> {
+    let entries = alignable_entries(scene, ids);
+    if entries.len() < 2 {
+        return Vec::new();
+    }
+    let rects: Vec<CanvasRect> = entries.iter().map(|(_, r)| *r).collect();
+    let Some(bounds) = union_rects(&rects) else {
+        return Vec::new();
+    };
+
+    let mut moves = Vec::with_capacity(entries.len());
+    for (item, r) in entries {
+        let delta = match mode {
+            AlignMode::Left => CanvasVector::new(bounds.min_x() - r.min_x(), 0.0),
+            AlignMode::HCenter => CanvasVector::new(bounds.center().x - r.center().x, 0.0),
+            AlignMode::Right => CanvasVector::new(bounds.max_x() - r.max_x(), 0.0),
+            AlignMode::Top => CanvasVector::new(0.0, bounds.min_y() - r.min_y()),
+            AlignMode::VCenter => CanvasVector::new(0.0, bounds.center().y - r.center().y),
+            AlignMode::Bottom => CanvasVector::new(0.0, bounds.max_y() - r.max_y()),
+        };
+        push_move(&mut moves, item, delta);
+    }
+    moves
+}
+
+/// 规划一次多元素**分布**（`plan.md` #6）。
+///
+/// - `Gap`：首尾外边界之间等分空隙（相邻边界间隙相等）；
+/// - `Centers`：首尾中心之间等分中心距。
+///
+/// 两种模式都**保持首尾元素不动**，仅调整中间项，符合 Excalidraw 行为。
+/// 少于 3 个可分布项时返回空（2 个元素无需"分布"）。
+pub fn plan_distribute(
+    scene: &Scene,
+    ids: &[ItemId],
+    axis: DistributeAxis,
+    mode: DistributeMode,
+) -> Vec<ItemMove> {
+    let mut entries = alignable_entries(scene, ids);
+    if entries.len() < 3 {
+        return Vec::new();
+    }
+    // 沿轴向按起点排序，确定谁是"首"、谁是"尾"
+    entries.sort_by(|a, b| {
+        let (ka, kb) = (axis_min(a.1, axis), axis_min(b.1, axis));
+        ka.partial_cmp(&kb).unwrap_or(Ordering::Equal)
+    });
+
+    let n = entries.len();
+    let mut moves = Vec::with_capacity(n);
+    match mode {
+        DistributeMode::Gap => {
+            // 首尾外边界固定，中间按 (span - Σ尺寸) / (n-1) 的间隙铺开
+            let start = axis_min(entries[0].1, axis);
+            let end = axis_max(entries[n - 1].1, axis);
+            let sum_size: f32 = entries.iter().map(|(_, r)| axis_size(*r, axis)).sum();
+            let gap = (end - start - sum_size) / (n - 1) as f32;
+            let mut cursor = start;
+            for (item, r) in entries {
+                let delta = axis_delta(axis, axis_min(r, axis) - cursor);
+                push_move(&mut moves, item, delta);
+                cursor += axis_size(r, axis) + gap;
+            }
+        }
+        DistributeMode::Centers => {
+            // 首尾中心固定，中心距等分
+            let c0 = axis_center(entries[0].1, axis);
+            let c1 = axis_center(entries[n - 1].1, axis);
+            let step = (c1 - c0) / (n - 1) as f32;
+            for (i, (item, r)) in entries.iter().enumerate() {
+                let target = c0 + step * i as f32;
+                let delta = axis_delta(axis, axis_center(*r, axis) - target);
+                push_move(&mut moves, item, delta);
+            }
+        }
+    }
+    moves
+}
+
+/// 参与对齐/分布的项：`ids` 中真实存在、且**不是绑定文本**的 item。
+///
+/// 绑定文本（容器封闭 Shape 上的文字）位置由容器实时决定，独立平移会与容器错位
+/// （Phase C 语义：不可独立选中/移动），因此一律排除——包括不参与包围盒计算。
+fn alignable_entries<'a>(scene: &'a Scene, ids: &[ItemId]) -> Vec<(&'a Item, CanvasRect)> {
+    let mut out = Vec::with_capacity(ids.len());
+    for id in ids {
+        if let Some(item) = scene.get_item(id) {
+            if scene.is_bound_text(item) {
+                continue;
+            }
+            out.push((item, item.bounding_rect()));
+        }
+    }
+    out
+}
+
+fn union_rects(rects: &[CanvasRect]) -> Option<CanvasRect> {
+    let mut acc: Option<CanvasRect> = None;
+    for r in rects {
+        acc = Some(match acc {
+            Some(b) => b.union(r),
+            None => *r,
+        });
+    }
+    acc
+}
+
+fn axis_min(r: CanvasRect, axis: DistributeAxis) -> f32 {
+    match axis {
+        DistributeAxis::Horizontal => r.min_x(),
+        DistributeAxis::Vertical => r.min_y(),
+    }
+}
+
+fn axis_max(r: CanvasRect, axis: DistributeAxis) -> f32 {
+    match axis {
+        DistributeAxis::Horizontal => r.max_x(),
+        DistributeAxis::Vertical => r.max_y(),
+    }
+}
+
+fn axis_size(r: CanvasRect, axis: DistributeAxis) -> f32 {
+    match axis {
+        DistributeAxis::Horizontal => r.width(),
+        DistributeAxis::Vertical => r.height(),
+    }
+}
+
+fn axis_center(r: CanvasRect, axis: DistributeAxis) -> f32 {
+    match axis {
+        DistributeAxis::Horizontal => r.center().x,
+        DistributeAxis::Vertical => r.center().y,
+    }
+}
+
+/// 把「沿轴向的偏差量」转成带符号位移：`offset` 为 当前值 - 目标值。
+fn axis_delta(axis: DistributeAxis, offset: f32) -> CanvasVector {
+    match axis {
+        DistributeAxis::Horizontal => CanvasVector::new(-offset, 0.0),
+        DistributeAxis::Vertical => CanvasVector::new(0.0, -offset),
+    }
+}
+
+/// 位移超过容差才记录，避免给"已经在位"的元素塞无意义 undo 条目。
+fn push_move(moves: &mut Vec<ItemMove>, item: &Item, delta: CanvasVector) {
+    if delta.length() <= MOVE_EPSILON {
+        return;
+    }
+    moves.push((item.id, item.transform.pos, item.transform.pos + delta));
 }
 
 fn arrange_linear(items: &[&Item], spacing: f32) -> Vec<(ItemId, CanvasVector, CanvasVector)> {
@@ -351,5 +556,230 @@ mod tests {
 
     fn assert_eq_float(a: f32, b: f32) {
         assert!((a - b).abs() < 1e-5, "float mismatch: {} vs {}", a, b);
+    }
+
+    // ── 对齐 / 分布（plan #6）──
+
+    fn apply_moves(scene: &mut Scene, moves: &[ItemMove]) {
+        for (id, _old, new) in moves {
+            if let Some(it) = scene.get_item_mut(id) {
+                it.transform.pos = *new;
+            }
+        }
+    }
+
+    fn sorted_edges(scene: &Scene, ids: &[ItemId], axis: DistributeAxis) -> Vec<(f32, f32)> {
+        let mut v: Vec<(f32, f32)> = ids
+            .iter()
+            .filter_map(|id| scene.get_item(id))
+            .map(|it| {
+                let r = it.bounding_rect();
+                match axis {
+                    DistributeAxis::Horizontal => (r.min_x(), r.max_x()),
+                    DistributeAxis::Vertical => (r.min_y(), r.max_y()),
+                }
+            })
+            .collect();
+        v.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        v
+    }
+
+    /// 三个不同宽度的 item 横向排开（起点 x = 0 / 30 / 200），用于验证分布。
+    fn distribute_fixture() -> (Scene, Vec<ItemId>) {
+        let mut scene = Scene::new();
+        let a = make_pixmap_item(20, 20, 0.0, 0.0);
+        let b = make_pixmap_item(60, 20, 30.0, 0.0);
+        let c = make_pixmap_item(20, 20, 200.0, 0.0);
+        let ids = vec![a.id, b.id, c.id];
+        scene.add_item(a);
+        scene.add_item(b);
+        scene.add_item(c);
+        (scene, ids)
+    }
+
+    #[test]
+    fn align_left_moves_items_to_selection_left_edge() {
+        let mut scene = Scene::new();
+        let a = make_pixmap_item(100, 80, 0.0, 0.0);
+        let b = make_pixmap_item(40, 40, 50.0, 10.0);
+        let (a_id, b_id) = (a.id, b.id);
+        scene.add_item(a);
+        scene.add_item(b);
+
+        let moves = plan_align(&scene, &[a_id, b_id], AlignMode::Left);
+        // 只有 b 需要移动（a 已在选区左边界上）
+        assert_eq!(moves.len(), 1);
+        assert_eq!(moves[0].0, b_id);
+        assert_eq_float(moves[0].1.x, 50.0);
+        assert_eq_float(moves[0].2.x, 0.0);
+        // 纵向不动
+        assert_eq_float(moves[0].2.y, 10.0);
+    }
+
+    #[test]
+    fn align_right_and_hcenter_align_opposite_edges() {
+        let mut scene = Scene::new();
+        let a = make_pixmap_item(100, 80, 0.0, 0.0); // 右边界 100，中心 50
+        let b = make_pixmap_item(40, 40, 50.0, 0.0); // 右边界 90，中心 70
+        let (a_id, b_id) = (a.id, b.id);
+        scene.add_item(a);
+        scene.add_item(b);
+
+        // 右对齐：选区右边界 100 → b 右移 10
+        let moves = plan_align(&scene, &[a_id, b_id], AlignMode::Right);
+        assert_eq!(moves.len(), 1);
+        assert_eq_float(moves[0].2.x, 60.0);
+
+        // 水平居中：选区中心 50 → b 中心 70 需左移 20
+        let moves = plan_align(&scene, &[a_id, b_id], AlignMode::HCenter);
+        assert_eq!(moves.len(), 1);
+        assert_eq_float(moves[0].2.x, 30.0);
+    }
+
+    #[test]
+    fn align_vcenter_uses_vertical_axis_only() {
+        let mut scene = Scene::new();
+        let a = make_pixmap_item(100, 80, 0.0, 0.0); // 纵向中心 40
+        let b = make_pixmap_item(40, 40, 0.0, 100.0); // 纵向中心 120
+        let (a_id, b_id) = (a.id, b.id);
+        scene.add_item(a);
+        scene.add_item(b);
+
+        // 选区纵向 0..140 → 中心 70：a（中心 40）下移 30，b（中心 120）上移 50
+        let moves = plan_align(&scene, &[a_id, b_id], AlignMode::VCenter);
+        assert_eq!(moves.len(), 2);
+        let new_a = moves.iter().find(|(id, _, _)| *id == a_id).unwrap().2;
+        let new_b = moves.iter().find(|(id, _, _)| *id == b_id).unwrap().2;
+        assert_eq_float(new_a.y, 30.0);
+        assert_eq_float(new_b.y, 50.0);
+        // 横向完全不动
+        assert_eq_float(new_a.x, 0.0);
+        assert_eq_float(new_b.x, 0.0);
+    }
+
+    #[test]
+    fn align_requires_two_items() {
+        let mut scene = Scene::new();
+        let a = make_pixmap_item(100, 80, 7.0, 3.0);
+        let a_id = a.id;
+        scene.add_item(a);
+        assert!(plan_align(&scene, &[a_id], AlignMode::Left).is_empty());
+    }
+
+    #[test]
+    fn align_skips_bound_text() {
+        use crate::shape::ShapeType;
+        let mut scene = Scene::new();
+        let container = Item::new_shape(
+            ShapeType::Rectangle,
+            (100.0, 60.0),
+            0.0,
+            0.0,
+            crate::shape::StrokeStyle::default(),
+            None,
+        );
+        let c_id = container.id;
+        let text = Item::new_text_in("hi".into(), 10.0, 10.0, 20.0, [255; 4], c_id);
+        let t_id = text.id;
+        let other = make_pixmap_item(50, 50, 80.0, 0.0);
+        let o_id = other.id;
+        scene.add_item(container);
+        scene.add_item(text);
+        scene.add_item(other);
+
+        let moves = plan_align(&scene, &[c_id, t_id, o_id], AlignMode::Top);
+        assert!(
+            !moves.iter().any(|(id, _, _)| *id == t_id),
+            "绑定文本不参与对齐：其位置由容器决定"
+        );
+    }
+
+    #[test]
+    fn distribute_gap_equalizes_boundary_gaps_and_keeps_ends() {
+        let (mut scene, ids) = distribute_fixture();
+        let before = sorted_edges(&scene, &ids, DistributeAxis::Horizontal);
+        assert_eq_float(before[0].0, 0.0);
+        assert_eq_float(before[2].1, 220.0);
+
+        let moves = plan_distribute(
+            &scene,
+            &ids,
+            DistributeAxis::Horizontal,
+            DistributeMode::Gap,
+        );
+        apply_moves(&mut scene, &moves);
+
+        let after = sorted_edges(&scene, &ids, DistributeAxis::Horizontal);
+        // 首尾不动
+        assert_eq_float(after[0].0, 0.0);
+        assert_eq_float(after[2].1, 220.0);
+        // 中间空隙相等：(220 - 0 - (20+60+20)) / 2 = 60
+        let gap0 = after[1].0 - after[0].1;
+        let gap1 = after[2].0 - after[1].1;
+        assert_eq_float(gap0, 60.0);
+        assert_eq_float(gap1, 60.0);
+    }
+
+    #[test]
+    fn distribute_centers_equalizes_center_spacing() {
+        let (mut scene, ids) = distribute_fixture();
+        let moves = plan_distribute(
+            &scene,
+            &ids,
+            DistributeAxis::Horizontal,
+            DistributeMode::Centers,
+        );
+        apply_moves(&mut scene, &moves);
+
+        let mut centers: Vec<f32> = ids
+            .iter()
+            .filter_map(|id| scene.get_item(id))
+            .map(|it| it.bounding_rect().center().x)
+            .collect();
+        centers.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        // 首尾中心 10 / 210 → 等分步长 100
+        assert_eq_float(centers[0], 10.0);
+        assert_eq_float(centers[1] - centers[0], 100.0);
+        assert_eq_float(centers[2] - centers[1], 100.0);
+    }
+
+    #[test]
+    fn distribute_vertical_axis_moves_y_only() {
+        let mut scene = Scene::new();
+        let a = make_pixmap_item(20, 20, 0.0, 0.0);
+        let b = make_pixmap_item(20, 60, 0.0, 30.0);
+        let c = make_pixmap_item(20, 20, 0.0, 200.0);
+        let ids = vec![a.id, b.id, c.id];
+        scene.add_item(a);
+        scene.add_item(b);
+        scene.add_item(c);
+
+        let moves = plan_distribute(&scene, &ids, DistributeAxis::Vertical, DistributeMode::Gap);
+        apply_moves(&mut scene, &moves);
+        let after = sorted_edges(&scene, &ids, DistributeAxis::Vertical);
+        let gap0 = after[1].0 - after[0].1;
+        let gap1 = after[2].0 - after[1].1;
+        assert_eq_float(gap0, gap1);
+        // 横向完全没动
+        for id in &ids {
+            assert_eq_float(scene.get_item(id).unwrap().bounding_rect().min_x(), 0.0);
+        }
+    }
+
+    #[test]
+    fn distribute_requires_three_items() {
+        let (scene, ids) = distribute_fixture();
+        let two = &ids[..2];
+        assert!(
+            plan_distribute(&scene, two, DistributeAxis::Horizontal, DistributeMode::Gap)
+                .is_empty()
+        );
+        assert!(plan_distribute(
+            &scene,
+            two,
+            DistributeAxis::Vertical,
+            DistributeMode::Centers
+        )
+        .is_empty());
     }
 }
