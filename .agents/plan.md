@@ -43,6 +43,11 @@
 
 新增：**手工验收反馈批次（2026-09-02，Feihei 实测 5 项）——✅ 全部交付**，见 [CHANGELOG §手工验收反馈批次](CHANGELOG.md)。待用户 `cargo run` 手工复验。
 
+新增：**多元素对齐 / 分布（plan #6，2026-09-05 `cad908b`）** —— 待 `cargo run` 复验：
+选中 ≥2 项看右侧属性栏是否出现「对齐」节（6 图标按钮 + 分布 4 按钮）；
+框选 3 个以上错位元素试「横向等距 / 横向等心」，确认首尾不动、中间均分；
+按 `Ctrl+Z` 应一步撤回；右键菜单「排列」内的对齐/分布嵌套子菜单能否正常展开。
+
 ---
 
 ## 下一步：Excalidraw 打磨批次（Phase L 候选）
@@ -59,7 +64,7 @@
 | 3 | stroke width / sloppiness / edges 倒角 | `rough: bool` → `Sloppiness{Architect,Artist,Cartoonist}` 三档；edges（sharp/round）限定矩形族 | sloppiness 档位；edges 是否扩展到非矩形（倾向否） |
 | 4 | 多边形节点增删 + 首尾重合自动闭合 | 顶点删除（Alt+拖出）+ 端点追加（拖末端点延伸）；首尾距 < 阈值自动 `closed` | 删除手势；阈值复用 `POLYLINE_CLOSE_DISTANCE` |
 | 5 | 直线/箭头端点吸附图形边缘 | 拖端点邻近 Shape 轮廓吸附 + 绑定模型（端点随形状移动） | 吸附阈值；绑定存储位置；与 #7 共用 |
-| 6 | 🔶 多元素对齐、分布（2026-09-05 拍板，实施中） | `arrange.rs` 增 `plan_align`（6 向）+ `plan_distribute`（等距/等心 × 横/纵）；属性栏「对齐」节 + 右键菜单 | 已拍板：两种分布都做；参考系=选区包围盒；UI=属性栏+右键菜单 |
+| 6 | ✅ 多元素对齐、分布（2026-09-05 `cad908b`） | `arrange.rs` 增 `plan_align`（6 向）+ `plan_distribute`（等距/等心 × 横/纵）；属性栏「对齐」节 + 右键菜单 | 已拍板并交付：两种分布都做；参考系=选区包围盒；UI=属性栏+右键菜单 |
 | 7 | Ctrl+箭头 添加连接符 + 下一元素 | 选中 Shape + Ctrl+方向 → 生成绑定 Arrow + 新 Shape（流程图） | 新元素类型/间距；复用 #5 绑定 |
 | 8 | 两列数据粘贴成柱状/折线图 | 剪贴板 2 列 TSV/CSV → 生成 Chart item（柱状/折线） | 图表用新 ItemKind+ChartStyler vs Pixmap 位图；单/多系列 |
 | 9 | mermaid 代码转图表 | mermaid 子集 → nodes+edges（复用 #5/#6/#7） | 解析器：受限自研 Rust（零依赖，倾向）vs WASM mermaid |
@@ -95,7 +100,7 @@
 - 方案：拖端点邻近 Shape 轮廓（点到轮廓距离 < 阈值）吸附到最近点，core 记 `binding: Option<(ItemId, side)>`；形状移动时联动更新绑定端点（Scene 遍历）。Excalidraw 语义：箭头绑 shape，移动 shape 箭头跟随。
 - 决策点：吸附阈值；绑定存储（端点元数据 vs 独立表）；直线是否也可绑（倾向是）。
 
-6. **🔶 多元素对齐、分布（2026-09-05 拍板，实施中）**
+6. **✅ 多元素对齐、分布（2026-09-05 交付：`cad908b`，待人工验收）**
 - 现状：`arrange.rs` 只有 `ArrangeMode::{Linear,Optimal,Grid}`（装箱），**无 align/distribute**。
   排列入口在右键菜单（选中 ≥2 项时的「排列」子菜单），App 无顶部工具条。
 - 方案：core 增 `plan_align(scene, ids, AlignMode)`（6 向）+ `plan_distribute(scene, ids, axis, mode)`，

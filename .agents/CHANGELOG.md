@@ -203,6 +203,35 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 
 ---
 
+## 多元素对齐与分布（plan #6，2026-09-05，`cad908b`）
+
+> 决策点 2026-09-05 拍板（`67ef930`），同日实现交付。人工验收待 Feihei `cargo run` 确认。
+
+- **core（`preferz-core/src/arrange.rs`）**：
+  - 新增 `AlignMode`（Left / HCenter / Right / Top / VCenter / Bottom 六向）、
+    `DistributeAxis`（Horizontal / Vertical）、`DistributeMode`（`Gap` 等边界间距 /
+    `Centers` 等中心距）；
+  - `plan_align(scene, ids, mode)` / `plan_distribute(scene, ids, axis, mode)` 均返回
+    `(ItemId, old_pos, new_pos)`，与既有 `plan_arrange` 同构，**复用 `ArrangeItems` 命令**
+    入 undo 栈（未新增命令类型）。
+  - 参考系 = 参与项 AABB 并集（选区包围盒）：对齐贴向该框对应边/中线；分布**保持首尾
+    元素不动**，仅调整中间项（Gap：`(span - Σ尺寸)/(n-1)`；Centers：首尾中心等分步长）。
+  - 边界处理：参与项过滤 `Scene::is_bound_text`（绑定文本位置由容器决定，独立平移会与
+    容器错位，且不参与包围盒计算）；对齐要求 ≥2 项、分布要求 ≥3 项；位移 ≤ `1e-4`
+    不产生 undo 条目（避免"已经在位"的噪音历史）。
+  - 8 个单测覆盖：六向对齐位移、分布两种基准的间距/中心距、轴向互不影响、
+    ≥2 / ≥3 数量门槛、绑定文本排除。
+- **UI（`preferz` binary）**：
+  - 右侧属性栏在**选中 ≥2 项**时顶部新增「对齐」节：两行 6 个图标按钮（⇤ ↔ ⇥ / ⇡ ↕ ⇣，
+    带 tooltip）+ 「分布」4 个按钮（横向等距 / 横向等心 / 纵向等距 / 纵向等心）；
+    <3 项时分布按钮禁用并 hover 提示「分布需要至少 3 个元素」。
+  - 右键菜单「排列」子菜单内追加「对齐」与「分布」两个嵌套子菜单（同一套动作）。
+  - i18n 新增 13 条中英文案。
+- 决策点结论：**分布两种基准都做**；参考系 = **选区包围盒**；UI = **属性栏 + 右键菜单**
+  （不做画布浮动工具条）。
+
+---
+
 ## 决策点归档（D1–D6 / I1–I4）
 
 > 原列于 plan.md，G/I/H/K 交付后蒸馏归档于此，使 CHANGELOG 自包含、plan.md 仅保留前瞻内容。
