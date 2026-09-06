@@ -95,10 +95,14 @@
 - 方案：transform_handles 增顶点删除（Alt+拖出画布即删，≥3 点保持）；端点追加（拖末端点超阈值即 append）；首尾距 < `POLYLINE_CLOSE_DISTANCE`(8px) 自动 `closed=true`（保留手动 closed 选项）。core 加 `DeleteVertex`/`AppendVertex` 命令。
 - 决策点：删除手势（Alt+click vs 拖出）；阈值复用现有常量。
 
-5. **直线/箭头端点吸附图形边缘**
+5. **🔶 直线/箭头端点吸附图形边缘（2026-09-06 拍板，实施中）**
 - 现状：LineEndpoint 拖拽无吸附、未绑定形状。
-- 方案：拖端点邻近 Shape 轮廓（点到轮廓距离 < 阈值）吸附到最近点，core 记 `binding: Option<(ItemId, side)>`；形状移动时联动更新绑定端点（Scene 遍历）。Excalidraw 语义：箭头绑 shape，移动 shape 箭头跟随。
-- 决策点：吸附阈值；绑定存储（端点元数据 vs 独立表）；直线是否也可绑（倾向是）。
+- 方案：拖端点邻近 Shape 轮廓（点到轮廓距离 < 阈值）吸附到最近点，core 记 `binding`；形状移动时联动更新绑定端点（Scene 遍历）。Excalidraw 语义：箭头绑 shape，移动 shape 箭头跟随。
+- **决策点已拍板（2026-09-06）**：
+  - **吸附阈值**：屏幕 **10px**（画布阈值 = `10 / zoom`，随缩放保持手感一致）；落在阈值内吸附到形状轮廓最近点，超出则拖离并解除该端点绑定。
+  - **绑定存储**：**线性对象两端点各一字段** `start_binding: Option<ItemId>` / `end_binding: Option<ItemId>`（存于 `ItemKind::Shape`，`#[serde(default)]` 自动落盘）。吸附点**不存绝对坐标**，每次形状移动时由 `Scene::resolve_bindings` 按「另一端点的方向」动态重算轮廓最近点——比 plan 原写的 `(ItemId, side)` 更贴近 Excalidraw 动态绑定语义，且天然兼容多段线（仅 0 / 末端点可绑）。
+  - **直线/箭头均可绑**：是。绑定模型与 #7 连接符共用。
+  - **联动触发**：`resolve_bindings(moved_ids)` 注入 `TransformItem`/`MoveItems`/`ScaleItems`/`RotateItems`/`FlipItems`/`ArrangeItems` 的 redo/undo，且拖拽预览阶段（MoveItems、HandleTransform 分支）实时调用，保证端点跟随形状。绑定目标被删除时自动清绑。
 
 6. **✅ 多元素对齐、分布（2026-09-05 交付：`cad908b`，待人工验收）**
 - 现状：`arrange.rs` 只有 `ArrangeMode::{Linear,Optimal,Grid}`（装箱），**无 align/distribute**。
