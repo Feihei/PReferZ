@@ -1871,19 +1871,27 @@ impl PReferZApp {
                 let current_canvas = self.viewport.screen_to_canvas(screen_pos);
                 let delta_canvas = current_canvas - start_canvas;
 
-                // plan #5：端点吸附。仅真实端点（0 / 末点）可绑定；查询点取另一端点
-                // 的画布位置，使吸附发生在靠近另一端的一侧（Excalidraw 风格）。
+                // plan #5：端点吸附。仅真实端点（0 / 末点）可绑定；查询点取**被拖端点**
+                // 的当前画布位置（base_pos + 拖拽位移，跟随鼠标），吸附到轮廓上离光标
+                // 最近的点。修复：此前误用另一端点位置做查询，导致拖拽端永远吸不上
+                // （另一端不在形状附近时无命中），且另一端恰在形状上时会把被拖端吸回起点。
                 let mut snap: Option<(ItemId, CanvasPoint)> = None;
                 if let Some(item) = self.scene.get_item(&item_id) {
                     if let ItemKind::Shape { points, .. } = &item.kind {
                         let last = points.len().saturating_sub(1);
                         if endpoint == 0 || endpoint == last {
-                            let other_idx = if endpoint == 0 { last } else { 0 };
-                            if let Some(op) = points.get(other_idx) {
-                                let oc = item.local_point_to_canvas(*op);
+                            let delta_local = item
+                                .local_to_canvas()
+                                .inverse()
+                                .map(|inv| inv.transform_vector(delta_canvas));
+                            if let Some(delta_local) = delta_local {
+                                let qc = item.local_point_to_canvas((
+                                    base_pos.0 + delta_local.x,
+                                    base_pos.1 + delta_local.y,
+                                ));
                                 let threshold = SNAP_THRESHOLD_PX / self.viewport.zoom;
                                 if let Some((bid, sc, _)) =
-                                    self.scene.find_snap_target(&item_id, oc, threshold)
+                                    self.scene.find_snap_target(&item_id, qc, threshold)
                                 {
                                     snap = Some((bid, sc));
                                 }
