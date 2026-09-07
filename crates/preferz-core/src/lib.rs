@@ -3,6 +3,7 @@ pub mod commands;
 pub mod item;
 pub mod scene;
 pub mod shape;
+pub mod snap;
 pub mod spaces;
 pub mod transform;
 

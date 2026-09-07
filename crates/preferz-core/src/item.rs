@@ -83,6 +83,15 @@ pub enum ItemKind {
         /// `#[serde(default)]`：旧存档无此字段时按 false 加载。
         #[serde(default)]
         rough: bool,
+        /// 端点绑定目标（吸附语义，仅 Polyline 使用）：`points[0]` = `start_binding`，
+        /// `points[last]` = `end_binding`。吸附点**不存绝对坐标**，形状移动时由
+        /// `Scene::resolve_bindings` 按另一端点方向动态重算轮廓最近点（Excalidraw 风格）。
+        /// `#[serde(default)]`：旧存档无此字段按 `None`（未绑定）加载。
+        #[serde(default)]
+        start_binding: Option<ItemId>,
+        /// 见 `start_binding`（终点）。
+        #[serde(default)]
+        end_binding: Option<ItemId>,
     },
     /// 幻灯片画框（Phase D）。不旋转/不翻转；仅边框点选命中，内容区域点击穿透。
     /// 渲染恒在其它 item 之下（创建时 z 置为最小）。
@@ -386,6 +395,8 @@ impl Item {
                 roundness: 0.0,
                 seed: 0,
                 rough: false,
+                start_binding: None,
+                end_binding: None,
             },
             transform: Transform::new(pos_x, pos_y, 1.0, 1.0),
             z: 0,
@@ -423,6 +434,8 @@ impl Item {
                 roundness: 0.0,
                 seed: 0,
                 rough: false,
+                start_binding: None,
+                end_binding: None,
             },
             transform: Transform::new(pos_x, pos_y, 1.0, 1.0),
             z: 0,
@@ -448,6 +461,52 @@ impl Item {
             if rough && *seed == 0 {
                 *seed = Uuid::new_v4().as_u128() as u64;
             }
+        }
+    }
+
+    /// 画布点 → item 局部坐标（逆 [`Item::local_to_canvas`]）。退化变换（缩放为 0）
+    /// 时返回 `None`。吸附/联动换算端点位置用。
+    pub fn canvas_to_local_point(&self, p: CanvasPoint) -> Option<(f32, f32)> {
+        self.local_to_canvas().inverse().map(|inv| {
+            let q = inv.transform_point(p);
+            (q.x, q.y)
+        })
+    }
+
+    /// item 局部坐标点 → 画布点（[`Item::local_to_canvas`] 正向变换）。
+    /// 吸附查询端点位置时用。
+    pub fn local_point_to_canvas(&self, p: (f32, f32)) -> CanvasPoint {
+        self.local_to_canvas()
+            .transform_point(euclid::Point2D::<f32, ItemLocalSpace>::new(p.0, p.1))
+    }
+
+    /// 起点（`points[0]`）绑定的目标 item id（仅 Polyline 有意义）。
+    pub fn start_binding(&self) -> Option<ItemId> {
+        match &self.kind {
+            ItemKind::Shape { start_binding, .. } => *start_binding,
+            _ => None,
+        }
+    }
+
+    /// 终点（`points[last]`）绑定的目标 item id（仅 Polyline 有意义）。
+    pub fn end_binding(&self) -> Option<ItemId> {
+        match &self.kind {
+            ItemKind::Shape { end_binding, .. } => *end_binding,
+            _ => None,
+        }
+    }
+
+    /// 设置起点绑定目标（非 Polyline 无副作用）。
+    pub fn set_start_binding(&mut self, id: Option<ItemId>) {
+        if let ItemKind::Shape { start_binding, .. } = &mut self.kind {
+            *start_binding = id;
+        }
+    }
+
+    /// 设置终点绑定目标（非 Polyline 无副作用）。
+    pub fn set_end_binding(&mut self, id: Option<ItemId>) {
+        if let ItemKind::Shape { end_binding, .. } = &mut self.kind {
+            *end_binding = id;
         }
     }
 

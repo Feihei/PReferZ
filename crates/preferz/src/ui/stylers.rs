@@ -744,6 +744,7 @@ pub fn build_shape_visuals(kind: &ItemKind, to_screen: &LocalToScreen, zoom: f32
         roundness,
         seed,
         rough,
+        ..
     } = kind
     else {
         return Vec::new();

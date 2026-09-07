@@ -216,6 +216,9 @@ pub enum T {
     DistributeVCenters,
     /// 分布需要 ≥3 个元素（不足时按钮禁用并提示）。
     FlashDistributeNeedThree,
+    // ── 端点吸附（plan #5）──
+    /// 线/箭头端点吸附到图形边缘时的提示。
+    FlashSnappedToShape,
     // ── 手绘风（Phase F）──
     StyleRough,
     // ── 属性侧栏文字/图片节（Phase H）──
@@ -385,6 +388,7 @@ fn translate_en(key: T) -> &'static str {
         T::DistributeVGap => "V gap",
         T::DistributeVCenters => "V centers",
         T::FlashDistributeNeedThree => "Distribute needs at least 3 elements",
+        T::FlashSnappedToShape => "Snapped to shape",
         T::StyleRough => "Hand-drawn",
         T::StyleTextBackground => "Background",
         T::StyleGrayscale => "Grayscale",
@@ -545,6 +549,7 @@ fn translate_zh(key: T) -> &'static str {
         T::DistributeVGap => "纵向等距",
         T::DistributeVCenters => "纵向等心",
         T::FlashDistributeNeedThree => "分布需要至少 3 个元素",
+        T::FlashSnappedToShape => "已吸附到图形边缘",
         T::StyleRough => "手绘",
         T::StyleTextBackground => "背景",
         T::StyleGrayscale => "灰度",

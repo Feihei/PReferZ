@@ -51,12 +51,15 @@ impl Command for TransformItem {
         if let Some(item) = scene.get_item_mut(&self.item_id) {
             item.transform = self.new_transform;
         }
+        // 联动：形状变换后重算绑定到它的端点（plan #5）
+        scene.resolve_bindings(&[self.item_id]);
     }
 
     fn undo(&mut self, scene: &mut Scene) {
         if let Some(item) = scene.get_item_mut(&self.item_id) {
             item.transform = self.old_transform;
         }
+        scene.resolve_bindings(&[self.item_id]);
     }
 
     fn skip_first_redo(&self) -> bool {
@@ -68,10 +71,19 @@ impl Command for TransformItem {
 
 /// 线类（Line/Arrow）端点编辑命令：修改 `points` 并同步 `base_size`（AABB）。
 /// 拖拽端点时 UI 已直接改到 item 上，push 时跳过首次 redo。
+///
+/// 端点吸附（plan #5）会同时改变端点绑定：通过 [`EditShapePoints::with_binding_change`]
+/// 传入起/终点的 old/new 绑定。字段为 `Option<Option<ItemId>>`——外层 `None` 表示该
+/// 端点本次无绑定变更（保持原值），外层 `Some`、内层 `None` 表示解绑，内层 `Some(id)`
+/// 表示绑到 `id`。这样整次端点拖拽只占一条 undo 记录。
 pub struct EditShapePoints {
     item_id: ItemId,
     old_points: Vec<(f32, f32)>,
     new_points: Vec<(f32, f32)>,
+    old_start_binding: Option<Option<ItemId>>,
+    old_end_binding: Option<Option<ItemId>>,
+    new_start_binding: Option<Option<ItemId>>,
+    new_end_binding: Option<Option<ItemId>>,
 }
 
 impl EditShapePoints {
@@ -80,7 +92,27 @@ impl EditShapePoints {
             item_id,
             old_points,
             new_points,
+            old_start_binding: None,
+            old_end_binding: None,
+            new_start_binding: None,
+            new_end_binding: None,
         }
+    }
+
+    /// 记录端点绑定变更（plan #5 吸附）。`*_old` / `*_new` 为 `Some(id)` 或 `None`
+    /// （解绑）。仅当确实改变绑定时才调用，未改变则保持 `None`（无操作）。
+    pub fn with_binding_change(
+        mut self,
+        start_old: Option<ItemId>,
+        start_new: Option<ItemId>,
+        end_old: Option<ItemId>,
+        end_new: Option<ItemId>,
+    ) -> Self {
+        self.old_start_binding = Some(start_old);
+        self.old_end_binding = Some(end_old);
+        self.new_start_binding = Some(start_new);
+        self.new_end_binding = Some(end_new);
+        self
     }
 }
 
@@ -88,12 +120,38 @@ impl Command for EditShapePoints {
     fn redo(&mut self, scene: &mut Scene) {
         if let Some(item) = scene.get_item_mut(&self.item_id) {
             item.kind.set_line_points(self.new_points.clone());
+            if let ItemKind::Shape {
+                start_binding,
+                end_binding,
+                ..
+            } = &mut item.kind
+            {
+                if let Some(b) = self.new_start_binding {
+                    *start_binding = b;
+                }
+                if let Some(b) = self.new_end_binding {
+                    *end_binding = b;
+                }
+            }
         }
     }
 
     fn undo(&mut self, scene: &mut Scene) {
         if let Some(item) = scene.get_item_mut(&self.item_id) {
             item.kind.set_line_points(self.old_points.clone());
+            if let ItemKind::Shape {
+                start_binding,
+                end_binding,
+                ..
+            } = &mut item.kind
+            {
+                if let Some(b) = self.old_start_binding {
+                    *start_binding = b;
+                }
+                if let Some(b) = self.old_end_binding {
+                    *end_binding = b;
+                }
+            }
         }
     }
 
@@ -815,6 +873,7 @@ impl Command for MoveItems {
                 item.transform.pos += self.delta;
             }
         }
+        scene.resolve_bindings(&self.item_ids);
     }
 
     fn undo(&mut self, scene: &mut Scene) {
@@ -823,6 +882,7 @@ impl Command for MoveItems {
                 item.transform.pos -= self.delta;
             }
         }
+        scene.resolve_bindings(&self.item_ids);
     }
 
     fn skip_first_redo(&self) -> bool {
@@ -855,6 +915,7 @@ impl Command for ScaleItems {
                 item.transform.scale.y *= self.factor;
             }
         }
+        scene.resolve_bindings(&self.item_ids);
     }
 
     fn undo(&mut self, scene: &mut Scene) {
@@ -864,6 +925,7 @@ impl Command for ScaleItems {
                 item.transform.scale.y /= self.factor;
             }
         }
+        scene.resolve_bindings(&self.item_ids);
     }
 }
 
@@ -887,6 +949,7 @@ impl Command for RotateItems {
                 item.transform.rotation += self.angle;
             }
         }
+        scene.resolve_bindings(&self.item_ids);
     }
 
     fn undo(&mut self, scene: &mut Scene) {
@@ -895,6 +958,7 @@ impl Command for RotateItems {
                 item.transform.rotation -= self.angle;
             }
         }
+        scene.resolve_bindings(&self.item_ids);
     }
 }
 
@@ -926,6 +990,7 @@ impl Command for FlipItems {
                 }
             }
         }
+        scene.resolve_bindings(&self.item_ids);
     }
 
     fn undo(&mut self, scene: &mut Scene) {
@@ -966,6 +1031,8 @@ impl Command for DeleteItems {
         for id in &self.item_ids {
             scene.remove_item(id);
         }
+        // 清理指向被删 item 的悬空端点绑定（plan #5）
+        scene.resolve_bindings(&self.item_ids);
     }
 
     fn undo(&mut self, scene: &mut Scene) {
@@ -975,6 +1042,8 @@ impl Command for DeleteItems {
             scene.add_item_preserve_z(item.clone());
         }
         // 保留 snapshots 以便下次 redo 复用（不必重新抓）
+        // 恢复后重新联动：被删形状回归，原绑定端点重新吸附
+        scene.resolve_bindings(&self.item_ids);
     }
 }
 
@@ -1152,6 +1221,8 @@ impl Command for ArrangeItems {
                 item.transform.pos = *new;
             }
         }
+        let ids: Vec<ItemId> = self.moves.iter().map(|(id, _, _)| *id).collect();
+        scene.resolve_bindings(&ids);
     }
 
     fn undo(&mut self, scene: &mut Scene) {
@@ -1160,6 +1231,8 @@ impl Command for ArrangeItems {
                 item.transform.pos = *old;
             }
         }
+        let ids: Vec<ItemId> = self.moves.iter().map(|(id, _, _)| *id).collect();
+        scene.resolve_bindings(&ids);
     }
 
     fn skip_first_redo(&self) -> bool {

@@ -24,6 +24,7 @@ use preferz_core::commands::{
 use preferz_core::shape::{
     ArrowHeadStyle, CurveType, DashStyle, FillStyle, PixmapStyle, ShapeType, StrokeStyle, TextStyle,
 };
+use preferz_core::snap;
 use preferz_core::spaces::{CanvasPoint, CanvasRect, CanvasSize, CanvasVector};
 use preferz_core::{Command, CropRect, Item, ItemId, ItemKind, Scene};
 use preferz_fileio::{PrzFile, ViewportMeta};
@@ -403,6 +404,9 @@ impl BackgroundOps {
     }
 }
 
+/// 端点吸附阈值（屏幕像素）。画布阈值 = `SNAP_THRESHOLD_PX / zoom`，随缩放保持手感一致。
+const SNAP_THRESHOLD_PX: f32 = 10.0;
+
 pub struct PReferZApp {
     scene: Scene,
     viewport: ViewportState,
@@ -437,6 +441,11 @@ pub struct PReferZApp {
     /// 新建形状是否默认手绘风描边（Phase F；样式面板可调）。
     default_rough: bool,
     drag: DragState,
+    /// 端点拖拽中暂存的绑定目标（plan #5）：拖到形状轮廓上则记 `(端点下标, 形状id)`，
+    /// 释放时写入 item 的 `start_binding`/`end_binding`；拖离则记 `None`（解绑）。
+    pending_endpoint_binding: Option<(usize, ItemId)>,
+    /// 端点吸附高亮：当前吸附到的形状 id（拖拽预览时实时更新），用于渲染高亮描边。
+    snap_highlight: Option<ItemId>,
     /// 文本便签编辑状态（None = 无编辑）
     editing_text: Option<EditingText>,
     /// 画框编号编辑状态（Phase D）：Some(frame_id) 时显示左上角小输入框。
@@ -744,6 +753,8 @@ impl PReferZApp {
             undo_stack: UndoStack::new(),
             flash_status: None,
             context_menu_open: false,
+            pending_endpoint_binding: None,
+            snap_highlight: None,
             context_menu_pos: egui::Pos2::ZERO,
             texture_cache: HashMap::new(),
             grayscale_texture_cache: HashMap::new(),
@@ -1814,6 +1825,8 @@ impl PReferZApp {
                         Handle::Endpoint(_) | Handle::SegmentMid(_) => {}
                     }
                 }
+                // plan #5：缩放/旋转形状时，实时联动重算绑定到它的线端点
+                self.scene.resolve_bindings(&[item_id]);
             }
             DragState::MoveItems {
                 start_canvas,
@@ -1837,6 +1850,9 @@ impl PReferZApp {
                         item.transform.pos = start_tf.pos + delta;
                     }
                 }
+                // plan #5：移动形状时，实时联动重算绑定到它的线端点
+                let ids: Vec<ItemId> = start_transforms.iter().map(|(id, _)| *id).collect();
+                self.scene.resolve_bindings(&ids);
             }
             DragState::CreatingShape { current, .. } => {
                 let _ = current; // 由 match 后更新（需单独 &mut self.drag）
@@ -1854,18 +1870,59 @@ impl PReferZApp {
                 let base_pos = *base_pos;
                 let current_canvas = self.viewport.screen_to_canvas(screen_pos);
                 let delta_canvas = current_canvas - start_canvas;
+
+                // plan #5：端点吸附。仅真实端点（0 / 末点）可绑定；查询点取另一端点
+                // 的画布位置，使吸附发生在靠近另一端的一侧（Excalidraw 风格）。
+                let mut snap: Option<(ItemId, CanvasPoint)> = None;
+                if let Some(item) = self.scene.get_item(&item_id) {
+                    if let ItemKind::Shape { points, .. } = &item.kind {
+                        let last = points.len().saturating_sub(1);
+                        if endpoint == 0 || endpoint == last {
+                            let other_idx = if endpoint == 0 { last } else { 0 };
+                            if let Some(op) = points.get(other_idx) {
+                                let oc = item.local_point_to_canvas(*op);
+                                let threshold = SNAP_THRESHOLD_PX / self.viewport.zoom;
+                                if let Some((bid, sc, _)) =
+                                    self.scene.find_snap_target(&item_id, oc, threshold)
+                                {
+                                    snap = Some((bid, sc));
+                                }
+                            }
+                        }
+                    }
+                }
+
                 if let Some(item) = self.scene.get_item_mut(&item_id) {
                     // 画布位移 → 局部位移（逆变换向量的平移部分自动抵消）
                     let delta_local = item
                         .local_to_canvas()
                         .inverse()
                         .map(|inv| inv.transform_vector(delta_canvas));
+                    // 吸附点换算到线局部坐标：先在此整体借用 item（不可变）算好，
+                    // 避免在 &mut item.kind 作用域内再借用 item 造成冲突。
+                    let snap_local: Option<(ItemId, (f32, f32))> = match snap {
+                        Some((bid, sc)) => item.canvas_to_local_point(sc).map(|local| (bid, local)),
+                        None => None,
+                    };
                     if let Some(delta_local) = delta_local {
                         if let ItemKind::Shape { points, .. } = &mut item.kind {
                             if let Some(p) = points.get_mut(endpoint) {
-                                // 以拖拽开始时的顶点位置为基准（段中点加点时该点
-                                // 不在 start_points 里，故单独存 base_pos）
-                                *p = (base_pos.0 + delta_local.x, base_pos.1 + delta_local.y);
+                                match snap_local {
+                                    Some((bid, local)) => {
+                                        *p = local;
+                                        self.pending_endpoint_binding = Some((endpoint, bid));
+                                        self.snap_highlight = Some(bid);
+                                    }
+                                    None => {
+                                        *p = (
+                                            base_pos.0 + delta_local.x,
+                                            base_pos.1 + delta_local.y,
+                                        );
+                                        // 拖离形状：若该端点原已绑定，本次拖拽将解绑
+                                        self.pending_endpoint_binding = None;
+                                        self.snap_highlight = None;
+                                    }
+                                }
                             }
                         }
                     }
@@ -2071,10 +2128,46 @@ impl PReferZApp {
                             }
                         }
                     } else {
-                        let cmd = EditShapePoints::new(item_id, start_points, new_points);
+                        // 仅真实端点（0 / 末点）涉及绑定；内部顶点拖拽保持原绑定。
+                        let last = new_points.len().saturating_sub(1);
+                        let is_real = endpoint == 0 || endpoint == last;
+                        let (start_old, end_old) = {
+                            let it = self.scene.get_item(&item_id);
+                            let sb = it.and_then(|i| i.start_binding());
+                            let eb = it.and_then(|i| i.end_binding());
+                            (sb, eb)
+                        };
+                        let mut start_new = start_old;
+                        let mut end_new = end_old;
+                        let snapped = self.pending_endpoint_binding.is_some();
+                        match self.pending_endpoint_binding {
+                            Some((idx, bid)) if is_real => {
+                                if idx == 0 {
+                                    start_new = Some(bid);
+                                } else {
+                                    end_new = Some(bid);
+                                }
+                            }
+                            None if is_real => {
+                                // 拖离形状 → 解除该端点绑定
+                                if endpoint == 0 {
+                                    start_new = None;
+                                } else {
+                                    end_new = None;
+                                }
+                            }
+                            _ => {}
+                        }
+                        let cmd = EditShapePoints::new(item_id, start_points, new_points)
+                            .with_binding_change(start_old, start_new, end_old, end_new);
                         self.push_cmd(Box::new(cmd));
+                        if snapped {
+                            self.flash(t(self.lang, T::FlashSnappedToShape));
+                        }
                     }
                 }
+                self.pending_endpoint_binding = None;
+                self.snap_highlight = None;
                 self.transform_handles.end_drag();
             }
             // 多边形在函数开头已提前 return（多拍工具不在释放时收尾），这里只为穷尽匹配
@@ -2887,6 +2980,20 @@ impl PReferZApp {
                 ] {
                     let r = egui::Rect::from_center_size(p, egui::Vec2::splat(handle_size));
                     ui.painter().rect_filled(r, egui::Rounding::same(1.0), fill);
+                }
+            }
+        }
+
+        // 端点吸附高亮（plan #5）：拖动线端点靠近某形状轮廓时，高亮该形状轮廓。
+        // 仅在拖拽预览期间由 update_drag / update_drag_preview 设置，end_drag 时清空。
+        if let Some(bid) = self.snap_highlight {
+            if let Some(item) = self.scene.get_item(&bid) {
+                let segs = snap::outline_segments(item);
+                let stroke = egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(255, 170, 40));
+                for (a, b) in segs {
+                    let sa = self.viewport.canvas_to_screen(a);
+                    let sb = self.viewport.canvas_to_screen(b);
+                    ui.painter().line_segment([sa, sb], stroke);
                 }
             }
         }

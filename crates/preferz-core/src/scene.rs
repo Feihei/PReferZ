@@ -1,8 +1,10 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
-use crate::item::{Item, ItemId};
-use crate::spaces::{CanvasRect, CanvasVector};
+use crate::item::{Item, ItemId, ItemKind};
+use crate::shape::ShapeType;
+use crate::snap;
+use crate::spaces::{CanvasPoint, CanvasRect, CanvasVector};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Scene {
@@ -68,6 +70,139 @@ impl Scene {
 
     pub fn get_item_mut(&mut self, id: &ItemId) -> Option<&mut Item> {
         self.items.iter_mut().find(|item| item.id == *id)
+    }
+
+    /// 查询 `query` 在画布空间下离哪个 item 轮廓最近（用于端点吸附）。
+    ///
+    /// 跳过 `exclude_id`（被拖动的线自身）与绑定文本（`is_bound_text`，其位置由容器
+    /// 决定，不参与吸附）。返回 `(item_id, 最近轮廓点, 距离)`，仅当距离 < `threshold`
+    /// 时才返回 `Some`。
+    pub fn find_snap_target(
+        &self,
+        exclude_id: &ItemId,
+        query: CanvasPoint,
+        threshold: f32,
+    ) -> Option<(ItemId, CanvasPoint, f32)> {
+        let mut best: Option<(ItemId, CanvasPoint, f32)> = None;
+        for item in &self.items {
+            if &item.id == exclude_id || self.is_bound_text(item) {
+                continue;
+            }
+            let np = snap::nearest_outline_point(item, query);
+            let d = query.distance_to(np);
+            if d <= threshold && best.as_ref().is_none_or(|(_, _, bd)| d < *bd) {
+                best = Some((item.id, np, d));
+            }
+        }
+        best
+    }
+
+    /// 联动重算绑定端点：对每条 Polyline，若其起点/终点绑定到 `moved_ids` 中的
+    /// 某个 shape，则把该端点重定位到该 shape 轮廓上「离另一端最近」的点。
+    ///
+    /// 设计要点（plan #5）：
+    /// - 吸附点不存绝对坐标，每次都按另一端方向动态重算，天然兼容形状移动/缩放/旋转。
+    /// - 在形状移动命令（TransformItem / MoveItems / ScaleItems / RotateItems /
+    ///   FlipItems / ArrangeItems）的 redo/undo 中调用，使联动随 undo/redo 一致。
+    /// - 绑定目标已不存在（被删除）时，自动清除该端点的绑定（避免悬空引用）。
+    pub fn resolve_bindings(&mut self, moved_ids: &[ItemId]) {
+        if moved_ids.is_empty() {
+            return;
+        }
+        let moved: HashSet<&ItemId> = moved_ids.iter().collect();
+
+        // 第一遍：只读地计算需要更新的端点（避免同时借用 self.items 读写）。
+        let mut updates: Vec<(ItemId, usize, (f32, f32))> = Vec::new();
+        let mut dead: Vec<(ItemId, usize)> = Vec::new();
+        for line in &self.items {
+            let ItemKind::Shape {
+                shape_type: ShapeType::Polyline,
+                points,
+                start_binding,
+                end_binding,
+                ..
+            } = &line.kind
+            else {
+                continue;
+            };
+            let last = points.len().saturating_sub(1);
+            if last == 0 {
+                continue; // 退化（单点），无端点可言
+            }
+            // 起点（points[0]）
+            if let Some(bid) = start_binding {
+                match self.get_item(bid) {
+                    Some(shape) if moved.contains(bid) => {
+                        let other = points.get(last).copied().unwrap_or((0.0, 0.0));
+                        let query = line.local_to_canvas().transform_point(euclid::Point2D::<
+                            f32,
+                            crate::item::ItemLocalSpace,
+                        >::new(
+                            other.0, other.1
+                        ));
+                        let np = snap::nearest_outline_point(shape, query);
+                        if let Some(local) = line.canvas_to_local_point(np) {
+                            updates.push((line.id, 0, local));
+                        }
+                    }
+                    // 绑定目标已不存在（被删除）→ 清除悬空绑定
+                    None => dead.push((line.id, 0)),
+                    _ => {}
+                }
+            }
+            // 终点（points[last]）
+            if let Some(bid) = end_binding {
+                match self.get_item(bid) {
+                    Some(shape) if moved.contains(bid) => {
+                        let other = points.first().copied().unwrap_or((0.0, 0.0));
+                        let query = line.local_to_canvas().transform_point(euclid::Point2D::<
+                            f32,
+                            crate::item::ItemLocalSpace,
+                        >::new(
+                            other.0, other.1
+                        ));
+                        let np = snap::nearest_outline_point(shape, query);
+                        if let Some(local) = line.canvas_to_local_point(np) {
+                            updates.push((line.id, last, local));
+                        }
+                    }
+                    None => dead.push((line.id, last)),
+                    _ => {}
+                }
+            }
+        }
+
+        // 第二遍：应用端点位移并同步 base_size。
+        for (id, idx, pos) in updates {
+            if let Some(line) = self.get_item_mut(&id) {
+                if let ItemKind::Shape { points, .. } = &mut line.kind {
+                    if let Some(p) = points.get_mut(idx) {
+                        *p = pos;
+                    }
+                }
+                // 同步 points 包围盒（base_size），与 EditShapePoints 行为一致
+                if let ItemKind::Shape { points, .. } = &line.kind {
+                    line.kind.set_line_points(points.clone());
+                }
+            }
+        }
+        // 清除悬空绑定
+        for (id, idx) in dead {
+            if let Some(line) = self.get_item_mut(&id) {
+                if let ItemKind::Shape {
+                    start_binding,
+                    end_binding,
+                    ..
+                } = &mut line.kind
+                {
+                    if idx == 0 {
+                        *start_binding = None;
+                    } else {
+                        *end_binding = None;
+                    }
+                }
+            }
+        }
     }
 
     /// 返回所有绑定到指定容器（封闭形状）的 Text item id（Phase C）。
@@ -548,5 +683,89 @@ mod tests {
         assert_eq!(plan.new_number, 1);
         scene.apply_renumber(&plan);
         assert_eq!(scene.get_item(&a_id).unwrap().frame_number(), Some(1));
+    }
+
+    /// plan #5：形状移动后，绑定到它的端点应联动跟随轮廓最近点。
+    #[test]
+    fn resolve_bindings_follows_moved_shape() {
+        let rect = Item::new_shape(
+            crate::shape::ShapeType::Rectangle,
+            (100.0, 60.0),
+            0.0,
+            0.0,
+            StrokeStyle::default(),
+            None,
+        );
+        let rect_id = rect.id;
+        // 线：起点 (200,30) 终点 (300,30)，起点绑定到 rect（初始 rect 占 [0,100]×[0,60]）
+        let mut line = Item::new_polyline(
+            vec![(200.0, 30.0), (300.0, 30.0)],
+            (100.0, 0.0),
+            None,
+            None,
+            false,
+            0.0,
+            0.0,
+            StrokeStyle::default(),
+        );
+        line.set_start_binding(Some(rect_id));
+        let line_id = line.id;
+
+        let mut scene = Scene::new();
+        scene.add_item(rect);
+        scene.add_item(line);
+
+        // 右移 rect 100 → 占 [100,200]×[0,60]
+        scene.get_item_mut(&rect_id).unwrap().transform.pos += CanvasVector::new(100.0, 0.0);
+        scene.resolve_bindings(&[rect_id]);
+
+        let line = scene.get_item(&line_id).unwrap();
+        assert_eq!(line.start_binding(), Some(rect_id));
+        let pts = match &line.kind {
+            crate::item::ItemKind::Shape { points, .. } => points.clone(),
+            _ => panic!("expected Polyline"),
+        };
+        // 另一端点 (300,30) 不变；起点应吸附到 rect 新右边界 (200,30)
+        assert!((pts[1].0 - 300.0).abs() < 1e-3 && (pts[1].1 - 30.0).abs() < 1e-3);
+        assert!((pts[0].0 - 200.0).abs() < 1.0, "start x = {}", pts[0].0);
+        assert!((pts[0].1 - 30.0).abs() < 1.0, "start y = {}", pts[0].1);
+    }
+
+    /// plan #5：绑定目标被删除后，DeleteItems 应清除指向它的悬空绑定。
+    #[test]
+    fn delete_items_clears_dead_binding() {
+        use crate::commands::{Command, DeleteItems};
+
+        let rect = Item::new_shape(
+            crate::shape::ShapeType::Rectangle,
+            (100.0, 60.0),
+            0.0,
+            0.0,
+            StrokeStyle::default(),
+            None,
+        );
+        let rect_id = rect.id;
+        let mut line = Item::new_polyline(
+            vec![(200.0, 30.0), (300.0, 30.0)],
+            (100.0, 0.0),
+            None,
+            None,
+            false,
+            0.0,
+            0.0,
+            StrokeStyle::default(),
+        );
+        line.set_start_binding(Some(rect_id));
+        let line_id = line.id;
+
+        let mut scene = Scene::new();
+        scene.add_item(rect);
+        scene.add_item(line);
+
+        let mut cmd = DeleteItems::new(vec![rect_id]);
+        cmd.redo(&mut scene);
+
+        let line = scene.get_item(&line_id).unwrap();
+        assert_eq!(line.start_binding(), None);
     }
 }
