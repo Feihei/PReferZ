@@ -232,6 +232,38 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 
 ---
 
+## 直线/箭头端点吸附图形边缘（plan #5，2026-09-07，`a803bbe`）
+
+> 决策点 2026-09-06 拍板（plan.md §5），同日实现交付。人工验收待 Feihei `cargo run` 确认。
+> 与 #7 连接符共用绑定模型。
+
+- **吸附**：拖 `LineEndpoint` 时，仅真实端点（`points[0]` / `points[last]`）可吸附；查询点取
+  **另一端**的画布位置（Excalidraw 风格，吸附发生在靠近目标的一侧）。`Scene::find_snap_target`
+  遍历所有非绑定文本 item，离散化其轮廓（`outline_segments`：矩形/菱形 4 边、椭圆 64 边采样、
+  多段线用自身顶点），求最近点；落屏 **10px** 阈值（`10 / zoom`，随缩放保持手感）内才吸附，
+  超出则拖离并解除该端点绑定。命中目标时高亮其轮廓（`snap_highlight` + `FlashSnappedToShape`）。
+- **绑定存储**：`ItemKind::Shape` 增 `start_binding` / `end_binding: Option<ItemId>`
+  （`#[serde(default)]`，旧 `.prz` 自动按未绑定加载，向后兼容）。**吸附点不存绝对坐标**，
+  每次形状移动时由 `Scene::resolve_bindings` 按「另一端点的方向」动态重算轮廓最近点——
+  比 plan 原写的 `(ItemId, side)` 更贴近 Excalidraw 动态绑定语义，且天然兼容多段线。
+- **联动**：`resolve_bindings(moved_ids)` 两遍（只读计算 → 应用）→ 仅重定位 `moved_ids` 中
+  形状的绑定端点，并同步 `base_size`；绑定目标被删除时自动清绑（`DeleteItems` 的 redo/undo
+  亦触发）。注入 `TransformItem` / `MoveItems` / `ScaleItems` / `RotateItems` / `FlipItems` /
+  `ArrangeItems` 的 redo+undo，以及 `LineEndpoint` 释放、`MoveItems` / `HandleTransform`
+  拖拽预览——端点在形状移动/缩放/旋转时实时跟随。
+- **core 新增**：`snap.rs`（`outline_segments` / `project_point_on_segment` /
+  `nearest_point_on_segments` / `nearest_outline_point`，6 个几何单测）；`item.rs` 加
+  `canvas_to_local_point` / `local_point_to_canvas` / `start_binding` / `set_*_binding`；
+  `EditShapePoints::with_binding_change`（绑定变更与顶点变更同入一条 undo）；
+  `Scene::find_snap_target` / `resolve_bindings`（2 个联动单测）。
+- **UI**：`SNAP_THRESHOLD_PX=10` 常量；`PReferZApp` 增 `pending_endpoint_binding` /
+  `snap_highlight`；`render_scene` 高亮吸附目标轮廓；i18n 增 `FlashSnappedToShape`
+  （中「已吸附到图形边缘」/ 英「Snapped to shape」）。**直线/箭头均可绑**。
+- 质量门全绿：`cargo fmt --check` / `clippy -D warnings` / `cargo test --workspace`（96 测试，
+  +8 为本次新增）。
+
+---
+
 ## 决策点归档（D1–D6 / I1–I4）
 
 > 原列于 plan.md，G/I/H/K 交付后蒸馏归档于此，使 CHANGELOG 自包含、plan.md 仅保留前瞻内容。
