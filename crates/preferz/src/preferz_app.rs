@@ -17,7 +17,7 @@ use preferz_core::arrange::{
 use preferz_core::commands::{
     AddItem, AddItems, ArrangeItems, ArrowHeads, CropItems, DeleteItems, EditShapePoints,
     EditTextContent, FillChange, FillState, FlipItems, MoveItems, NormalizeItems, RenumberFrame,
-    ReorderItems, SetArrowHeads, SetClosed, SetCurveType, SetFrameNumber, SetPixmapProps,
+    ReorderItems, SetArrowHeads, SetClosed, SetCurveType, SetFrameNumber, SetGroup, SetPixmapProps,
     SetPixmapStyle, SetRough, SetRoundness, SetShapeFill, SetStrokeStyle, SetTextStyle,
     TransformItem,
 };
@@ -1675,21 +1675,29 @@ impl PReferZApp {
         // 2) 命中 item：选中并开始移动拖
         if let Some(item) = interaction::get_item_at(screen_pos, &self.scene, &self.viewport) {
             let id = item.id;
+            // G2（plan #13）：命中组员 → 命中集扩展为整组（未编组项 = 自身，行为不变）
+            let hit_ids: Vec<ItemId> = self.scene.expand_to_groups(&[id]);
+            let hit_fully_selected = hit_ids.iter().all(|hid| self.scene.selection.contains(hid));
+
             let mut pending_deselect = None;
             if additive {
-                if self.scene.selection.contains(&id) {
-                    // Shift 按在**已选中**的 item 上：既可能是"Shift+点击取消选中"，
-                    // 也可能是"Shift+拖动做轴约束移动"——两者要到释放时才能区分，
-                    // 这里先记下来交给 end_drag 判定。若在此直接 toggle，
-                    // Shift+拖动会先取消选中，轴约束移动就永远触发不到。
-                    pending_deselect = Some(id);
+                if hit_fully_selected {
+                    // Shift 按在**已选中**的项（组则整组在选区）上：既可能是"Shift+点击
+                    // 取消选中"，也可能是"Shift+拖动做轴约束移动"——两者要到释放时才能
+                    // 区分，这里先记下代表成员交给 end_drag 判定（取消时扩展回整组）。
+                    // 若在此直接 toggle，Shift+拖动会先取消选中，轴约束移动就永远触发不到。
+                    pending_deselect = hit_ids.first().copied();
                 } else {
-                    self.scene.toggle_selection(id);
+                    for hid in &hit_ids {
+                        self.scene.toggle_selection(*hid);
+                    }
                 }
-            } else if !self.scene.selection.contains(&id) {
-                // 非加选且未选中：替换选中为该
+            } else if !hit_fully_selected {
+                // 非加选且命中集未完全选中：替换选中为整组
                 self.scene.deselect_all();
-                self.scene.select(id);
+                for hid in &hit_ids {
+                    self.scene.select(*hid);
+                }
             }
             // 收集所有选中 item transform 快照
             let selected: Vec<ItemId> = self.scene.selection.iter().cloned().collect();
@@ -2055,11 +2063,15 @@ impl PReferZApp {
                             self.push_cmd(Box::new(cmd));
                             self.flash(format!("移动: ({:.0}, {:.0})", delta.x, delta.y));
                         } else if let Some(pid) = pending_deselect {
-                            // Shift+点击已选中项且没拖动 → 取消选中
-                            self.scene.selection.remove(&pid);
+                            // Shift+点击已选中项且没拖动 → 取消选中（组则取消整组，G2）
+                            for hid in self.scene.expand_to_groups(&[pid]) {
+                                self.scene.selection.remove(&hid);
+                            }
                         }
                     } else if let Some(pid) = pending_deselect {
-                        self.scene.selection.remove(&pid);
+                        for hid in self.scene.expand_to_groups(&[pid]) {
+                            self.scene.selection.remove(&hid);
+                        }
                     }
                 }
             }
@@ -3712,6 +3724,22 @@ impl PReferZApp {
                             .clicked()
                         {
                             self.send_to_back();
+                            self.context_menu_open = false;
+                        }
+                        // 编组/解组（plan #13）：编组需 ≥2 项；解组需选区内有已编组项
+                        if self.scene.selection.len() >= 2
+                            && ui
+                                .button(format!("\u{1F510} {}", t(self.lang, T::MenuGroup)))
+                                .clicked()
+                        {
+                            self.group_selected();
+                            self.context_menu_open = false;
+                        }
+                        if ui
+                            .button(format!("\u{1F513} {}", t(self.lang, T::MenuUngroup)))
+                            .clicked()
+                        {
+                            self.ungroup_selected();
                             self.context_menu_open = false;
                         }
                         ui.separator();
@@ -5491,6 +5519,14 @@ impl PReferZApp {
             self.duplicate_in_place();
         }
 
+        // 编组 / 解组（plan #13）：Ctrl+G / Ctrl+Shift+G
+        if self.keymap.pressed(Action::Group, ctx) {
+            self.group_selected();
+        }
+        if self.keymap.pressed(Action::Ungroup, ctx) {
+            self.ungroup_selected();
+        }
+
         let do_undo = self.keymap.pressed(Action::Undo, ctx);
         if do_undo && self.perform_undo() {
             self.flash(t(self.lang, T::FlashUndo).to_string());
@@ -6085,6 +6121,34 @@ impl PReferZApp {
             }
             self.start_export(ctx, path, format, selection_only);
         }
+    }
+
+    /// 编组选中项（plan #13，`Ctrl+G`）。G1 单组：已属别组的项自动换组；
+    /// 少于 2 项不动作（单元素编组无意义）。
+    fn group_selected(&mut self) {
+        let selected: Vec<ItemId> = self.scene.selection.iter().cloned().collect();
+        if selected.len() < 2 {
+            return;
+        }
+        let Some(cmd) = SetGroup::group(&self.scene, &selected) else {
+            return;
+        };
+        self.push_cmd(Box::new(cmd));
+        self.flash(t(self.lang, T::FlashGrouped).to_string());
+    }
+
+    /// 解组选中项（plan #13，`Ctrl+Shift+G`）。G3：只清选中项的组 id，
+    /// 未被解组的其余同组成员保持编组。
+    fn ungroup_selected(&mut self) {
+        let selected: Vec<ItemId> = self.scene.selection.iter().cloned().collect();
+        if selected.is_empty() {
+            return;
+        }
+        let Some(cmd) = SetGroup::ungroup(&self.scene, &selected) else {
+            return;
+        };
+        self.push_cmd(Box::new(cmd));
+        self.flash(t(self.lang, T::FlashUngrouped).to_string());
     }
 
     fn delete_selected(&mut self) {

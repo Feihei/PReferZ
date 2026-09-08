@@ -190,6 +190,11 @@ pub struct Item {
     pub kind: ItemKind,
     pub transform: Transform,
     pub z: i32,
+    /// 所属编组 id（plan #13，单组模型：一个元素至多属一组）。
+    /// `None` = 未编组。同组元素点击命中扩展为整组选中（G2）。
+    /// `#[serde(default)]`：旧存档无此字段按未编组加载。
+    #[serde(default)]
+    pub group_id: Option<Uuid>,
 }
 
 impl Item {
@@ -214,6 +219,7 @@ impl Item {
             },
             transform: Transform::new(pos_x, pos_y, scale_x, scale_y),
             z: 0,
+            group_id: None,
         }
     }
 
@@ -237,6 +243,7 @@ impl Item {
             },
             transform: Transform::new(pos_x, pos_y, 1.0, 1.0),
             z: 0,
+            group_id: None,
         }
     }
 
@@ -263,6 +270,7 @@ impl Item {
             },
             transform: Transform::new(pos_x, pos_y, 1.0, 1.0),
             z: 0,
+            group_id: None,
         }
     }
 
@@ -310,6 +318,7 @@ impl Item {
             },
             transform: Transform::new(pos_x, pos_y, 1.0, 1.0),
             z: 0,
+            group_id: None,
         }
     }
 
@@ -400,6 +409,7 @@ impl Item {
             },
             transform: Transform::new(pos_x, pos_y, 1.0, 1.0),
             z: 0,
+            group_id: None,
         }
     }
 
@@ -439,6 +449,7 @@ impl Item {
             },
             transform: Transform::new(pos_x, pos_y, 1.0, 1.0),
             z: 0,
+            group_id: None,
         }
     }
 

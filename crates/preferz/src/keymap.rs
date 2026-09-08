@@ -399,6 +399,10 @@ pub enum Action {
     /// 原位复制选中项（Excalidraw 同款 `Ctrl+D`）。副本偏移 10px 画布以防完全重叠，
     /// 一次 undo 即可撤销。裸 D 仍是菱形工具，修饰键严格匹配下两者不冲突。
     DuplicateInPlace,
+    /// 编组选中项（plan #13，Excalidraw 同款 `Ctrl+G`）。需 ≥2 项。
+    Group,
+    /// 解组选中项（plan #13，Excalidraw 同款 `Ctrl+Shift+G`）。
+    Ungroup,
 }
 
 impl Action {
@@ -434,6 +438,8 @@ impl Action {
         Action::Confirm,
         Action::EditText,
         Action::DuplicateInPlace,
+        Action::Group,
+        Action::Ungroup,
     ];
 
     /// 出厂默认绑定。一个动作可有多个绑定（如翻页的三组键）。
@@ -487,6 +493,9 @@ impl Action {
             EditText => vec![KeyBind::new(Enter)],
             // 原位复制：Ctrl+D（裸 D 仍是菱形工具，修饰键严格匹配不冲突）
             DuplicateInPlace => vec![KeyBind::new(D).ctrl()],
+            // 编组/解组（plan #13）：Excalidraw 同款 Ctrl+G / Ctrl+Shift+G
+            Group => vec![KeyBind::new(G).ctrl()],
+            Ungroup => vec![KeyBind::new(G).ctrl().shift()],
         }
     }
 }

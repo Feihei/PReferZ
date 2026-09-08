@@ -65,6 +65,17 @@ impl PrzFile {
             }
         }
 
+        // plan #13：旧文件（version 3 之前建的 items 表）缺 group_id 列，就地补列。
+        // CREATE TABLE IF NOT EXISTS 不会给已存在的表加列，open 时迁移一次即可。
+        let has_group_id: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('items') WHERE name = 'group_id'",
+            [],
+            |row| row.get(0),
+        )?;
+        if has_group_id == 0 {
+            conn.execute("ALTER TABLE items ADD COLUMN group_id TEXT", [])?;
+        }
+
         Ok(Self {
             path: path.to_path_buf(),
             connection: conn,
@@ -88,7 +99,8 @@ impl PrzFile {
             kind TEXT NOT NULL,
             data BLOB NOT NULL,
             transform TEXT NOT NULL,
-            z INTEGER NOT NULL
+            z INTEGER NOT NULL,
+            group_id TEXT
         );
         CREATE TABLE IF NOT EXISTS sqlar (
             name TEXT PRIMARY KEY,
@@ -133,7 +145,8 @@ impl PrzFile {
                     item_kind_str(&item.kind),
                     data,
                     transform,
-                    item.z
+                    item.z,
+                    item.group_id.map(|g| g.to_string()),
                 ])?;
             }
         }
@@ -219,13 +232,21 @@ impl PrzFile {
                 let data_blob: Vec<u8> = row.get(2)?;
                 let transform_str: String = row.get(3)?;
                 let z: i32 = row.get(4)?;
-                Ok((id_str, kind_str, data_blob, transform_str, z))
+                let group_id: Option<String> = row.get(5)?;
+                Ok((id_str, kind_str, data_blob, transform_str, z, group_id))
             })?;
 
             for row in rows {
-                let (id_str, _kind_str, data_blob, transform_str, z) = row?;
+                let (id_str, _kind_str, data_blob, transform_str, z, group_id_str) = row?;
                 let id = ItemId::parse_str(&id_str)
                     .map_err(|e| format!("invalid item id '{}': {}", id_str, e))?;
+                let group_id = match group_id_str {
+                    Some(s) => Some(
+                        ItemId::parse_str(&s)
+                            .map_err(|e| format!("invalid group id '{}': {}", s, e))?,
+                    ),
+                    None => None,
+                };
 
                 // 反序列化 ItemKind，清空运行时字段
                 let mut kind: ItemKind = serde_json::from_slice(&data_blob)?;
@@ -246,6 +267,7 @@ impl PrzFile {
                     kind,
                     transform,
                     z,
+                    group_id,
                 };
                 // 保留 z（add_item_preserve_z 会推进 next_z）
                 scene.add_item_preserve_z(item);
@@ -598,5 +620,107 @@ mod tests {
 
     fn assert_eq_float(a: f32, b: f32) {
         assert!((a - b).abs() < 1e-5, "float mismatch: {} vs {}", a, b);
+    }
+
+    // ─────────────────────── 编组持久化（plan #13） ───────────────────────
+
+    #[test]
+    fn prz_save_load_group_roundtrip() {
+        let path = tmp_path("group.prz");
+        let mut scene = Scene::new();
+        let a = Item::new_shape(
+            ShapeType::Rectangle,
+            (50.0, 50.0),
+            0.0,
+            0.0,
+            StrokeStyle::default(),
+            None,
+        );
+        let b = Item::new_shape(
+            ShapeType::Rectangle,
+            (50.0, 50.0),
+            100.0,
+            0.0,
+            StrokeStyle::default(),
+            None,
+        );
+        let (a_id, b_id) = (a.id, b.id);
+        scene.add_item(a);
+        scene.add_item(b);
+        let gid = scene.group(&[a_id, b_id]).unwrap();
+
+        {
+            let mut prz = PrzFile::create(&path).unwrap();
+            prz.save_scene(&scene, &HashMap::new(), ViewportMeta::default())
+                .unwrap();
+        }
+        let prz = PrzFile::open(&path).unwrap();
+        let (loaded, _images, _vp) = prz.load_scene().unwrap();
+        assert_eq!(loaded.items.len(), 2);
+        assert_eq!(loaded.get_item(&a_id).unwrap().group_id, Some(gid));
+        assert_eq!(loaded.get_item(&b_id).unwrap().group_id, Some(gid));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// 旧版 .prz（items 表 5 列、无 group_id 列）：open 应自动补列，加载不失败。
+    #[test]
+    fn prz_open_migrates_legacy_items_without_group_column() {
+        use rusqlite::Connection;
+        let path = tmp_path("legacy5col.prz");
+        // ItemId = uuid::Uuid 别名；fileio 不直接依赖 uuid crate，经 core 间接使用
+        let a_id = preferz_core::item::ItemId::new_v4();
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE items (
+                    id TEXT PRIMARY KEY,
+                    kind TEXT NOT NULL,
+                    data BLOB NOT NULL,
+                    transform TEXT NOT NULL,
+                    z INTEGER NOT NULL
+                );
+                CREATE TABLE sqlar (name TEXT PRIMARY KEY, sz INTEGER NOT NULL, data BLOB NOT NULL);
+                CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                INSERT INTO metadata (key, value) VALUES ('format', 'prz');",
+            )
+            .unwrap();
+            let shape_kind = serde_json::json!({
+                "Shape": {
+                    "shape_type": "Rectangle",
+                    "base_size": [50.0, 50.0],
+                    "points": [],
+                    "stroke": { "color": [30,30,30,255], "width": 2.0, "dash": "Solid" },
+                    "fill": null,
+                    "start_arrow": null,
+                    "end_arrow": null,
+                    "seed": 0
+                }
+            });
+            conn.execute(
+                "INSERT INTO items (id, kind, data, transform, z) VALUES (?, ?, ?, ?, ?)",
+                rusqlite::params![
+                    a_id.to_string(),
+                    "shape",
+                    serde_json::to_vec(&shape_kind).unwrap(),
+                    serde_json::to_string(&serde_json::json!({
+                        "pos": [0.0, 0.0],
+                        "scale": [1.0, 1.0],
+                        "rotation": 0.0,
+                        "flip_h": false,
+                        "flip_v": false
+                    }))
+                    .unwrap(),
+                    0
+                ],
+            )
+            .unwrap();
+        }
+
+        let prz = PrzFile::open(&path).unwrap();
+        let (scene, _images, _vp) = prz.load_scene().unwrap();
+        assert_eq!(scene.items.len(), 1);
+        assert_eq!(scene.items[0].id, a_id);
+        assert_eq!(scene.items[0].group_id, None, "旧文件加载后应未编组");
+        let _ = std::fs::remove_file(&path);
     }
 }

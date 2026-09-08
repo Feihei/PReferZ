@@ -1,9 +1,9 @@
 pub fn insert_item_query() -> &'static str {
-    "INSERT OR REPLACE INTO items (id, kind, data, transform, z) VALUES (?, ?, ?, ?, ?)"
+    "INSERT OR REPLACE INTO items (id, kind, data, transform, z, group_id) VALUES (?, ?, ?, ?, ?, ?)"
 }
 
 pub fn select_all_items_query() -> &'static str {
-    "SELECT id, kind, data, transform, z FROM items ORDER BY z"
+    "SELECT id, kind, data, transform, z, group_id FROM items ORDER BY z"
 }
 
 pub fn delete_item_query() -> &'static str {

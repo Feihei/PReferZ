@@ -1561,6 +1561,69 @@ impl Command for RenumberFrame {
     }
 }
 
+// ─────────────────────────── Group / Ungroup（plan #13） ───────────────────────────
+
+/// 编组/解组命令。快照每个受影响 item 的 `(id, old_group_id, new_group_id)`，
+/// redo 应用新值、undo 还原旧值——天然支持"换组"（G1：编组前已属别组的项
+/// 一步离开旧组进入新组，undo 一步回原组）。
+///
+/// 通过 [`SetGroup::group`] / [`SetGroup::ungroup`] 构造；构造时即快照当前值，
+/// 但**不应用**——首次 redo 由 undo 栈驱动（非预览命令）。
+pub struct SetGroup {
+    entries: Vec<(ItemId, Option<uuid::Uuid>, Option<uuid::Uuid>)>,
+}
+
+impl SetGroup {
+    /// 编组 `ids`（≥2 项才有效）。返回 `None` 表示无可执行命令（不足 2 项）。
+    pub fn group(scene: &Scene, ids: &[ItemId]) -> Option<Self> {
+        if ids.len() < 2 {
+            return None;
+        }
+        let gid = uuid::Uuid::new_v4();
+        let set: std::collections::HashSet<ItemId> = ids.iter().copied().collect();
+        let entries = scene
+            .items
+            .iter()
+            .filter(|it| set.contains(&it.id))
+            .map(|it| (it.id, it.group_id, Some(gid)))
+            .collect();
+        Some(Self { entries })
+    }
+
+    /// 解组 `ids`（清空其 group_id）。
+    pub fn ungroup(scene: &Scene, ids: &[ItemId]) -> Option<Self> {
+        let set: std::collections::HashSet<ItemId> = ids.iter().copied().collect();
+        let entries: Vec<_> = scene
+            .items
+            .iter()
+            .filter(|it| set.contains(&it.id) && it.group_id.is_some())
+            .map(|it| (it.id, it.group_id, None))
+            .collect();
+        if entries.is_empty() {
+            return None;
+        }
+        Some(Self { entries })
+    }
+
+    fn apply(&mut self, scene: &mut Scene, take_new: bool) {
+        for (id, old, new) in &self.entries {
+            if let Some(item) = scene.get_item_mut(id) {
+                item.group_id = if take_new { *new } else { *old };
+            }
+        }
+    }
+}
+
+impl Command for SetGroup {
+    fn redo(&mut self, scene: &mut Scene) {
+        self.apply(scene, true);
+    }
+
+    fn undo(&mut self, scene: &mut Scene) {
+        self.apply(scene, false);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

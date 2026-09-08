@@ -219,6 +219,15 @@ pub enum T {
     // ── 端点吸附（plan #5）──
     /// 线/箭头端点吸附到图形边缘时的提示。
     FlashSnappedToShape,
+    // ── 编组/解组（plan #13）──
+    /// 编组成功提示。
+    FlashGrouped,
+    /// 解组成功提示。
+    FlashUngrouped,
+    /// 右键菜单：编组。
+    MenuGroup,
+    /// 右键菜单：解组。
+    MenuUngroup,
     // ── 手绘风（Phase F）──
     StyleRough,
     // ── 属性侧栏文字/图片节（Phase H）──
@@ -389,6 +398,10 @@ fn translate_en(key: T) -> &'static str {
         T::DistributeVCenters => "V centers",
         T::FlashDistributeNeedThree => "Distribute needs at least 3 elements",
         T::FlashSnappedToShape => "Snapped to shape",
+        T::FlashGrouped => "Grouped",
+        T::FlashUngrouped => "Ungrouped",
+        T::MenuGroup => "Group",
+        T::MenuUngroup => "Ungroup",
         T::StyleRough => "Hand-drawn",
         T::StyleTextBackground => "Background",
         T::StyleGrayscale => "Grayscale",
@@ -550,6 +563,10 @@ fn translate_zh(key: T) -> &'static str {
         T::DistributeVCenters => "纵向等心",
         T::FlashDistributeNeedThree => "分布需要至少 3 个元素",
         T::FlashSnappedToShape => "已吸附到图形边缘",
+        T::FlashGrouped => "已编组",
+        T::FlashUngrouped => "已解组",
+        T::MenuGroup => "编组",
+        T::MenuUngroup => "解组",
         T::StyleRough => "手绘",
         T::StyleTextBackground => "背景",
         T::StyleGrayscale => "灰度",
@@ -592,6 +609,8 @@ pub fn action_label(lang: Lang, action: Action) -> &'static str {
             Confirm => "Confirm (apply crop)",
             EditText => "Edit text of selection",
             DuplicateInPlace => "Duplicate in place",
+            Group => "Group selection",
+            Ungroup => "Ungroup selection",
         },
         Lang::Zh => match action {
             NewCanvas => "新建画布",
@@ -624,6 +643,8 @@ pub fn action_label(lang: Lang, action: Action) -> &'static str {
             Confirm => "确认（应用裁剪）",
             EditText => "编辑选中项的文字",
             DuplicateInPlace => "原位复制",
+            Group => "编组选中项",
+            Ungroup => "解组选中项",
         },
     }
 }

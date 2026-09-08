@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use uuid::Uuid;
 
 use crate::item::{Item, ItemId, ItemKind};
 use crate::shape::ShapeType;
@@ -205,6 +206,65 @@ impl Scene {
         }
     }
 
+    // ─────────────────────────── 编组 / 解组（plan #13） ───────────────────────────
+
+    /// 编组（G1 单组模型）：给 `ids` 中所有**实际存在**的项赋同一新组 id。
+    /// 已属其它组的项自动离开旧组（赋新 id 即换组，无需先手动解组）。
+    /// 少于 2 项时不产生组（单元素编组无意义），返回 `None`。
+    ///
+    /// 注意：本方法只改数据，不入 undo 栈——UI 层应配合 [`crate::commands::SetGroup`]。
+    pub fn group(&mut self, ids: &[ItemId]) -> Option<Uuid> {
+        if ids.len() < 2 {
+            return None;
+        }
+        let gid = Uuid::new_v4();
+        let set: HashSet<ItemId> = ids.iter().copied().collect();
+        for item in &mut self.items {
+            if set.contains(&item.id) {
+                item.group_id = Some(gid);
+            }
+        }
+        Some(gid)
+    }
+
+    /// 解组：清空 `ids` 中各项的 `group_id`。其余同组成员不受影响（G3：
+    /// 部分成员被移出时同组继续存在；彻底解组需整组传入或逐项 `Ctrl+Shift+G`）。
+    pub fn ungroup(&mut self, ids: &[ItemId]) {
+        let set: HashSet<ItemId> = ids.iter().copied().collect();
+        for item in &mut self.items {
+            if set.contains(&item.id) {
+                item.group_id = None;
+            }
+        }
+    }
+
+    /// `item_id` 所属组的全部成员（**含自身**）；未编组时返回 `[item_id]`。
+    /// 用于点击命中扩展整组（G2）。
+    pub fn group_members_of(&self, item_id: &ItemId) -> Vec<ItemId> {
+        let Some(gid) = self.get_item(item_id).and_then(|it| it.group_id) else {
+            return vec![*item_id];
+        };
+        self.items
+            .iter()
+            .filter(|it| it.group_id == Some(gid))
+            .map(|it| it.id)
+            .collect()
+    }
+
+    /// 命中 id 集合 → 按组扩展后的完整选中集（未编组的保持原样）。
+    /// 框选等"按实际命中成员"的场景不需要本方法（G2：框选收实际命中）。
+    pub fn expand_to_groups(&self, ids: &[ItemId]) -> Vec<ItemId> {
+        let mut out: Vec<ItemId> = Vec::new();
+        for id in ids {
+            for member in self.group_members_of(id) {
+                if !out.contains(&member) {
+                    out.push(member);
+                }
+            }
+        }
+        out
+    }
+
     /// 返回所有绑定到指定容器（封闭形状）的 Text item id（Phase C）。
     /// 用于移动/缩放/删除时随容器联动。
     pub fn texts_bound_to(&self, container_id: ItemId) -> Vec<ItemId> {
@@ -229,7 +289,9 @@ impl Scene {
     /// - 副本的 `z` 沿用原件（真正的 z 由 `add_item` 在入场景时重排）；
     /// - `Text.container_id` 会按 old→new 映射改写：容器也在本次复制集内则指向
     ///   新容器（复制封闭图形时其绑定文字跟着走），否则置 `None` 退化为自由文本
-    ///   （不能让副本文字仍绑在没被复制的原件容器上）。
+    ///   （不能让副本文字仍绑在没被复制的原件容器上）；
+    /// - `group_id`（plan #13）：整组被复制时副本共享一个**新**组 id（组结构保留）；
+    ///   组只有部分成员被复制时副本退化为未编组（避免点击副本选中原组）。
     ///
     /// 传入顺序即返回顺序，便于调用方建立一一对应的 id 映射。
     pub fn duplicate_items(&self, ids: &[ItemId], offset: CanvasVector) -> Vec<Item> {
@@ -237,6 +299,29 @@ impl Scene {
 
         let id_map: HashMap<ItemId, ItemId> =
             ids.iter().map(|id| (*id, uuid::Uuid::new_v4())).collect();
+
+        // plan #13：副本的组映射。对复制集里出现的每个旧组：
+        // 该组**全部**成员都在复制集内 → 副本共享一个新组 id（组结构保留）；
+        // 否则副本退化为未编组（保留旧组 id 会导致点击副本选中原组）。
+        let in_set: std::collections::HashSet<ItemId> = ids.iter().copied().collect();
+        let mut group_map: HashMap<Uuid, Option<Uuid>> = HashMap::new();
+        for id in ids {
+            let Some(src) = self.get_item(id) else {
+                continue;
+            };
+            let Some(gid) = src.group_id else {
+                continue;
+            };
+            if group_map.contains_key(&gid) {
+                continue;
+            }
+            let complete = self
+                .items
+                .iter()
+                .filter(|it| it.group_id == Some(gid))
+                .all(|it| in_set.contains(&it.id));
+            group_map.insert(gid, complete.then(Uuid::new_v4));
+        }
 
         let mut out = Vec::with_capacity(ids.len());
         for id in ids {
@@ -246,6 +331,9 @@ impl Scene {
             let mut dup = src.clone();
             dup.id = id_map[id];
             dup.transform.pos += offset;
+            dup.group_id = src
+                .group_id
+                .and_then(|g| group_map.get(&g).copied().flatten());
             if let crate::item::ItemKind::Text { container_id, .. } = &mut dup.kind {
                 if let Some(old_cid) = *container_id {
                     *container_id = id_map.get(&old_cid).copied();
@@ -767,5 +855,144 @@ mod tests {
 
         let line = scene.get_item(&line_id).unwrap();
         assert_eq!(line.start_binding(), None);
+    }
+
+    // ─────────────────────── 编组 / 解组（plan #13） ───────────────────────
+
+    #[test]
+    fn group_assigns_same_id_and_expand_returns_all_members() {
+        let a = shape();
+        let b = shape();
+        let (a_id, b_id) = (a.id, b.id);
+        let mut scene = Scene::new();
+        scene.add_item(a);
+        scene.add_item(b);
+        let c = shape();
+        let c_id = c.id;
+        scene.add_item(c);
+
+        let gid = scene.group(&[a_id, b_id]).expect(">=2 items should group");
+        assert_eq!(scene.get_item(&a_id).unwrap().group_id, Some(gid));
+        assert_eq!(scene.get_item(&b_id).unwrap().group_id, Some(gid));
+        assert_eq!(scene.get_item(&c_id).unwrap().group_id, None);
+
+        // G2：点击命中任一成员 → 扩展为整组
+        let expanded = scene.expand_to_groups(&[a_id]);
+        assert_eq!(expanded.len(), 2);
+        assert!(expanded.contains(&b_id));
+        // 未编组项保持原样
+        assert_eq!(scene.expand_to_groups(&[c_id]), vec![c_id]);
+        // 单项 group 无效
+        assert!(scene.group(&[c_id]).is_none());
+    }
+
+    #[test]
+    fn group_moves_item_out_of_old_group() {
+        // G1：已属组 A 的项与其它项一起编组 → 自动离开组 A 进入新组
+        let a = shape();
+        let b = shape();
+        let c = shape();
+        let (a_id, b_id, c_id) = (a.id, b.id, c.id);
+        let mut scene = Scene::new();
+        scene.add_item(a);
+        scene.add_item(b);
+        scene.add_item(c);
+
+        let gid_a = scene.group(&[a_id, b_id]).unwrap();
+        let gid_new = scene.group(&[a_id, c_id]).unwrap();
+        assert_ne!(gid_a, gid_new);
+        // a 换组，b 仍留在旧组（组 A 继续存在，G3）
+        assert_eq!(scene.get_item(&a_id).unwrap().group_id, Some(gid_new));
+        assert_eq!(scene.get_item(&b_id).unwrap().group_id, Some(gid_a));
+        assert_eq!(scene.get_item(&c_id).unwrap().group_id, Some(gid_new));
+    }
+
+    #[test]
+    fn ungroup_only_clears_given_members() {
+        let a = shape();
+        let b = shape();
+        let c = shape();
+        let (a_id, b_id, c_id) = (a.id, b.id, c.id);
+        let mut scene = Scene::new();
+        scene.add_item(a);
+        scene.add_item(b);
+        scene.add_item(c);
+        let gid = scene.group(&[a_id, b_id, c_id]).unwrap();
+
+        // G3：只解组 a → 其余成员同组继续存在
+        scene.ungroup(&[a_id]);
+        assert_eq!(scene.get_item(&a_id).unwrap().group_id, None);
+        assert_eq!(scene.get_item(&b_id).unwrap().group_id, Some(gid));
+        assert_eq!(scene.get_item(&c_id).unwrap().group_id, Some(gid));
+        // 点击 b 仍扩展出 {b, c}
+        let expanded = scene.expand_to_groups(&[b_id]);
+        assert_eq!(expanded.len(), 2);
+    }
+
+    #[test]
+    fn set_group_command_roundtrip() {
+        use crate::commands::{Command, SetGroup};
+
+        let a = shape();
+        let b = shape();
+        let (a_id, b_id) = (a.id, b.id);
+        let mut scene = Scene::new();
+        scene.add_item(a);
+        scene.add_item(b);
+
+        let mut cmd = SetGroup::group(&scene, &[a_id, b_id]).unwrap();
+        cmd.redo(&mut scene);
+        let gid = scene.get_item(&a_id).unwrap().group_id.unwrap();
+        assert_eq!(scene.get_item(&b_id).unwrap().group_id, Some(gid));
+
+        cmd.undo(&mut scene);
+        assert_eq!(scene.get_item(&a_id).unwrap().group_id, None);
+        assert_eq!(scene.get_item(&b_id).unwrap().group_id, None);
+
+        cmd.redo(&mut scene);
+        assert_eq!(scene.get_item(&a_id).unwrap().group_id, Some(gid));
+
+        // 解组命令：undo 恢复编组
+        let mut un = SetGroup::ungroup(&scene, &[a_id, b_id]).unwrap();
+        un.redo(&mut scene);
+        assert_eq!(scene.get_item(&a_id).unwrap().group_id, None);
+        un.undo(&mut scene);
+        assert_eq!(scene.get_item(&a_id).unwrap().group_id, Some(gid));
+    }
+
+    #[test]
+    fn duplicate_full_group_keeps_grouping() {
+        let a = shape();
+        let b = shape();
+        let (a_id, b_id) = (a.id, b.id);
+        let mut scene = Scene::new();
+        scene.add_item(a);
+        scene.add_item(b);
+        let gid = scene.group(&[a_id, b_id]).unwrap();
+
+        let dups = scene.duplicate_items(&[a_id, b_id], CanvasVector::new(10.0, 0.0));
+        assert_eq!(dups.len(), 2);
+        let dg = dups[0].group_id;
+        assert!(dg.is_some());
+        assert_ne!(dg, Some(gid), "副本应是新组，不能共享原组 id");
+        assert_eq!(dups[1].group_id, dg, "整组复制的副本应同属一个新组");
+    }
+
+    #[test]
+    fn duplicate_partial_group_drops_grouping() {
+        let a = shape();
+        let b = shape();
+        let c = shape();
+        let (a_id, b_id, c_id) = (a.id, b.id, c.id);
+        let mut scene = Scene::new();
+        scene.add_item(a);
+        scene.add_item(b);
+        scene.add_item(c);
+        scene.group(&[a_id, b_id, c_id]);
+
+        // 只复制一个成员 → 副本退化为未编组
+        let dups = scene.duplicate_items(&[a_id], CanvasVector::new(10.0, 0.0));
+        assert_eq!(dups.len(), 1);
+        assert_eq!(dups[0].group_id, None);
     }
 }
