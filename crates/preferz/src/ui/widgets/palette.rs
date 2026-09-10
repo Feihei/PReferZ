@@ -66,9 +66,13 @@ pub const PALETTE_ROWS: [(&str, ColorTuple); 11] = [
 /// 黑 + 各色系第 5 档（600/800 权重档）。
 const STROKE_PICKS: [&str; 5] = ["#1e1e1e", "#e03131", "#2f9e44", "#1971c2", "#f08c00"];
 
-/// 填充 top picks（Excalidraw `DEFAULT_ELEMENT_BACKGROUND_PICKS`）：
-/// transparent + 各色系第 2 档（200 权重档，柔和底色）。
-const FILL_PICKS: [&str; 4] = ["#ffc9c9", "#b2f2bb", "#a5d8ff", "#ffec99"];
+/// 填充默认不透明度（plan #2 拍板 2026-09-10）：50%。
+/// 从色板格子选中填充色时应用（自定义取色保留用户 alpha；滑块可显式覆盖）。
+pub const FILL_DEFAULT_ALPHA: u8 = 128;
+
+/// 填充 top picks：与描边共用同组 5 色（plan #2 拍板，Excalidraw 描边/填充共用调色板）。
+/// 视觉上靠 `FILL_DEFAULT_ALPHA` 半透明呈现，不再用浅色 200 档模拟。
+const FILL_PICKS: [&str; 5] = STROKE_PICKS;
 
 /// `#rrggbb` → `[u8; 3]`。非 hex 输入返回黑色（数据为编译期常量，不会发生）。
 fn hex_to_rgb(hex: &str) -> [u8; 3] {
@@ -157,12 +161,13 @@ fn swatch(ui: &mut egui::Ui, color: egui::Color32, selected: bool, size: f32) ->
 }
 
 /// 调色板弹层：top picks 行 + 全色板网格 + 自定义取色。
+/// 返回 `(颜色, 是否来自色板格子)`；自定义取色器返回 `false`（保留用户 alpha）。
 fn palette_popup(
     ui: &mut egui::Ui,
     current: egui::Color32,
     dark: bool,
     picks: &[&'static str],
-) -> Option<egui::Color32> {
+) -> Option<(egui::Color32, bool)> {
     let mut picked = None;
     let sw = 20.0;
 
@@ -171,7 +176,7 @@ fn palette_popup(
         for hex in picks {
             let c = themed_color(hex, dark);
             if swatch(ui, c, approx_eq(c, current), sw) {
-                picked = Some(c);
+                picked = Some((c, true));
             }
         }
     });
@@ -184,7 +189,7 @@ fn palette_popup(
             for hex in row {
                 let c = themed_color(hex, dark);
                 if swatch(ui, c, approx_eq(c, current), sw) {
-                    picked = Some(c);
+                    picked = Some((c, true));
                 }
             }
         });
@@ -197,7 +202,7 @@ fn palette_popup(
         ui.label(egui::RichText::new("…").weak());
         let mut custom = current;
         if ui.color_edit_button_srgba(&mut custom).changed() {
-            picked = Some(custom);
+            picked = Some((custom, false));
         }
     });
 
@@ -210,11 +215,14 @@ fn approx_eq(a: egui::Color32, b: egui::Color32) -> bool {
 
 /// 调色板按钮（共用实现）：按钮本体显示当前颜色，点击弹出色板。
 /// `picks` 决定弹层顶部的 top picks 行。返回 `true` 表示用户选了新颜色。
+/// `swatch_alpha`：`Some(a)` 时，从色板格子选中的颜色强制写 alpha = `a`
+///（自定义取色不受影响）；描边传 `None`，填充传 `Some(FILL_DEFAULT_ALPHA)`。
 fn palette_button_with_picks(
     ui: &mut egui::Ui,
     current: &mut [u8; 4],
     dark: bool,
     picks: &[&'static str],
+    swatch_alpha: Option<u8>,
 ) -> bool {
     let shown =
         egui::Color32::from_rgba_unmultiplied(current[0], current[1], current[2], current[3]);
@@ -237,8 +245,14 @@ fn palette_button_with_picks(
         &resp,
         egui::PopupCloseBehavior::CloseOnClickOutside,
         |ui| {
-            if let Some(c) = palette_popup(ui, shown, dark, picks) {
-                *current = [c.r(), c.g(), c.b(), c.a()];
+            if let Some((c, from_swatch)) = palette_popup(ui, shown, dark, picks) {
+                let mut rgba = [c.r(), c.g(), c.b(), c.a()];
+                if from_swatch {
+                    if let Some(a) = swatch_alpha {
+                        rgba[3] = a;
+                    }
+                }
+                *current = rgba;
                 changed = true;
             }
         },
@@ -248,12 +262,13 @@ fn palette_button_with_picks(
 
 /// 描边色调色板按钮：top picks 为 `STROKE_PICKS`（Excalidraw 描边默认行）。
 pub fn color_palette_button(ui: &mut egui::Ui, current: &mut [u8; 4], dark: bool) -> bool {
-    palette_button_with_picks(ui, current, dark, &STROKE_PICKS)
+    palette_button_with_picks(ui, current, dark, &STROKE_PICKS, None)
 }
 
-/// 填充色调色板按钮：top picks 为 `FILL_PICKS`（Excalidraw 背景默认行）。
+/// 填充色调色板按钮：top picks 与描边共用同组 5 色（plan #2），
+/// 色板格子选中时套默认 50% 不透明度（`FILL_DEFAULT_ALPHA`）。
 pub fn fill_color_palette_button(ui: &mut egui::Ui, current: &mut [u8; 4], dark: bool) -> bool {
-    palette_button_with_picks(ui, current, dark, &FILL_PICKS)
+    palette_button_with_picks(ui, current, dark, &FILL_PICKS, Some(FILL_DEFAULT_ALPHA))
 }
 
 /// 填充样式四态选择器（无 / 纯色 / 斜线 / 交叉线），Excalidraw 同款图标。

@@ -3,7 +3,7 @@ use preferz_core::item::{
     catmull_rom_polyline, ItemKind, ItemLocalSpace, CURVE_SAMPLES, ROUNDED_CORNER_SEGMENTS,
 };
 use preferz_core::shape::{
-    ArrowHeadStyle, CurveType, DashStyle, FillStyle, SeededRng, ShapeType, StrokeStyle,
+    ArrowHeadStyle, CurveType, DashStyle, FillStyle, SeededRng, ShapeType, Sloppiness, StrokeStyle,
 };
 use preferz_core::spaces::ScreenSpace;
 
@@ -28,6 +28,9 @@ pub struct ShapeData {
     pub roundness: f32,
     /// 手绘风描边抖动种子（Phase F）。同一 seed 恒得同一抖动；`CleanStyler` 忽略此字段。
     pub seed: u64,
+    /// 手绘风抖动档位（plan #3）。`Off` 时调用方应选 `CleanStyler`；
+    /// `RoughStyler` 按 [`Sloppiness::amp_scale`] 缩放抖动幅度。
+    pub sloppiness: Sloppiness,
 }
 
 /// 将 shape 局部几何转换为屏幕空间的 egui::Shape 列表。
@@ -526,7 +529,7 @@ impl RoughStyler {
     ///
     /// 开放曲线的周长不含"末点 → 首点"那一段（它并不存在），否则平均间距被
     /// 虚增，抖动幅度会偏大。
-    fn curve_jitter_amp(pts: &[Pos2], zoom: f32, closed: bool) -> f32 {
+    fn curve_jitter_amp(pts: &[Pos2], zoom: f32, closed: bool, amp_scale: f32) -> f32 {
         let n = pts.len();
         if n < 2 {
             return 0.0;
@@ -537,7 +540,7 @@ impl RoughStyler {
             .map(|i| (pts[i] - pts[(i + 1) % n]).length())
             .sum();
         let avg_canvas = perimeter / n as f32 / zoom;
-        (avg_canvas * Self::OFFSET_RATIO).min(Self::MAX_OFFSET_CANVAS) * zoom * 0.5
+        (avg_canvas * Self::OFFSET_RATIO).min(Self::MAX_OFFSET_CANVAS) * zoom * 0.5 * amp_scale
     }
 
     /// 按 dash 样式把一条抖动贝塞尔落到 egui 形状列表。
@@ -577,16 +580,18 @@ impl RoughStyler {
     /// 生成一条抖动边 `a → b` 的三次贝塞尔控制点 `[p0, c1, c2, p3]`。
     ///
     /// 退化边（长度 ≈ 0）直接返回零抖动直线，避免除以 0 得到 NaN。
-    fn sketch_edge(rng: &mut SeededRng, a: Pos2, b: Pos2, zoom: f32) -> [Pos2; 4] {
+    fn sketch_edge(rng: &mut SeededRng, a: Pos2, b: Pos2, zoom: f32, amp_scale: f32) -> [Pos2; 4] {
         let d = b - a;
         let len = d.length();
         if len < 1e-3 {
             return [a, a, b, b];
         }
 
-        // 抖动幅度以画布像素计量，再换算回屏幕像素（见类型注释）。
+        // 抖动幅度以画布像素计量，再换算回屏幕像素（见类型注释）；
+        // 乘档位系数得到 Architect/Artist/Cartoonist 三档观感（plan #3）。
         let len_canvas = len / zoom;
-        let max_offset = (len_canvas * Self::OFFSET_RATIO).min(Self::MAX_OFFSET_CANVAS) * zoom;
+        let max_offset =
+            (len_canvas * Self::OFFSET_RATIO).min(Self::MAX_OFFSET_CANVAS) * zoom * amp_scale;
         let half = max_offset * 0.5;
 
         // 弓形位移：垂直于边，强度随边长增长（200 画布像素处饱和）。
@@ -686,11 +691,12 @@ impl ShapeStyler for RoughStyler {
         }
 
         let mut rng = SeededRng::new(shape.seed);
+        let amp_scale = shape.sloppiness.amp_scale();
 
         if Self::is_smooth(shape) {
             // 曲线类轮廓（椭圆、Curved 折线）：整圈抖动后连成光滑曲线。
             // 若沿用逐边直线抖动，采样段之间的折角会非常明显。
-            let amp = Self::curve_jitter_amp(&pts, zoom, closed);
+            let amp = Self::curve_jitter_amp(&pts, zoom, closed, amp_scale);
             for _ in 0..Self::PASSES {
                 let jittered = Self::jitter_points(&mut rng, &pts, amp);
                 for bez in Self::catmull_rom_beziers(&jittered, closed) {
@@ -704,7 +710,7 @@ impl ShapeStyler for RoughStyler {
                 let a = pts[i];
                 let b = pts[(i + 1) % pts.len()];
                 for _ in 0..Self::PASSES {
-                    let bez = Self::sketch_edge(&mut rng, a, b, zoom);
+                    let bez = Self::sketch_edge(&mut rng, a, b, zoom, amp_scale);
                     Self::push_edge(&mut out, bez, stroke, line_width, stroke_color, zoom);
                 }
             }
@@ -726,7 +732,7 @@ impl ShapeStyler for RoughStyler {
 
 // ─────────────────────────── 渲染入口 ───────────────────────────
 
-/// 依据 Shape 的 `rough` 开关选择风格器，构建 egui 形状列表。
+/// 依据 Shape 的 `sloppiness` 档位选择风格器，构建 egui 形状列表。
 ///
 /// `render_scene` 与 Present 模式共用，避免两处各组装一遍 `ShapeData`。
 pub fn build_shape_visuals(kind: &ItemKind, to_screen: &LocalToScreen, zoom: f32) -> Vec<Shape> {
@@ -743,7 +749,7 @@ pub fn build_shape_visuals(kind: &ItemKind, to_screen: &LocalToScreen, zoom: f32
         curve_type,
         roundness,
         seed,
-        rough,
+        sloppiness,
         ..
     } = kind
     else {
@@ -760,10 +766,11 @@ pub fn build_shape_visuals(kind: &ItemKind, to_screen: &LocalToScreen, zoom: f32
         curve_type: *curve_type,
         roundness: *roundness,
         seed: *seed,
+        sloppiness: *sloppiness,
     };
     let fill_color = fill.map(color_from);
 
-    if *rough {
+    if *sloppiness != Sloppiness::Off {
         RoughStyler.build_shapes(&data, stroke, fill_color, *fill_style, to_screen, zoom)
     } else {
         CleanStyler.build_shapes(&data, stroke, fill_color, *fill_style, to_screen, zoom)
@@ -799,6 +806,7 @@ mod tests {
             curve_type: CurveType::Straight,
             roundness: 0.0,
             seed,
+            sloppiness: Sloppiness::Off,
         }
     }
 
@@ -813,6 +821,7 @@ mod tests {
             curve_type: CurveType::Straight,
             roundness: 0.0,
             seed: 42,
+            sloppiness: Sloppiness::Off,
         }
     }
 
@@ -912,6 +921,7 @@ mod tests {
             curve_type: CurveType::Straight,
             roundness: 0.0,
             seed,
+            sloppiness: Sloppiness::Artist,
         }
     }
 
@@ -1061,6 +1071,7 @@ mod tests {
             curve_type: CurveType::Straight,
             roundness: 0.0,
             seed: 5,
+            sloppiness: Sloppiness::Artist,
         };
         let shapes = RoughStyler.build_shapes(
             &degenerate,
@@ -1106,6 +1117,7 @@ mod tests {
             curve_type: CurveType::Curved,
             roundness: 0.0,
             seed: 42,
+            sloppiness: Sloppiness::Off,
         }
     }
 
@@ -1312,7 +1324,7 @@ mod tests {
         let clean = build_shape_visuals(&base.kind, &identity(), 1.0);
         assert_eq!(clean.len(), 1, "未开启手绘 → CleanStyler 单多边形");
 
-        let rough = base.with_rough(true);
+        let rough = base.with_sloppiness(Sloppiness::Artist);
         let sketched = build_shape_visuals(&rough.kind, &identity(), 1.0);
         assert_eq!(sketched.len(), 8, "开启手绘 → RoughStyler 抖动边");
     }

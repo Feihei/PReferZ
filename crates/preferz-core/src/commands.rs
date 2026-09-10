@@ -1,6 +1,8 @@
 use crate::item::{CropRect, ItemId, ItemKind};
 use crate::scene::{RenumberPlan, Scene};
-use crate::shape::{ArrowHeadStyle, CurveType, FillStyle, PixmapStyle, StrokeStyle, TextStyle};
+use crate::shape::{
+    ArrowHeadStyle, CurveType, FillStyle, PixmapStyle, Sloppiness, StrokeStyle, TextStyle,
+};
 use crate::spaces::CanvasVector;
 use crate::transform::Transform;
 
@@ -438,26 +440,27 @@ impl Command for SetRoundness {
     }
 }
 
-// ─────────────────────────── Set rough ───────────────────────────
+// ─────────────────────────── Set sloppiness ───────────────────────────
 
-/// 批量切换 Shape 手绘风描边命令（Phase F）。开启时由 RoughStyler 渲染抖动描边。
-/// 经 `Item::set_rough` 写入，顺带在 seed 为 0 时生成随机种子。
+/// 批量设置 Shape 手绘风抖动档位命令（plan #3，取代旧 `SetRough`）。
+/// 非 `Off` 档位由 RoughStyler 渲染抖动描边。经 `Item::set_sloppiness` 写入，
+/// 顺带在 seed 为 0 时生成随机种子。
 /// 整批只占一条 undo 记录（D3）；单项用 [`Self::new`]，多选批量用 [`Self::new_batch`]。
-pub struct SetRough {
-    items: Vec<(ItemId, bool, bool)>,
+pub struct SetSloppiness {
+    items: Vec<(ItemId, Sloppiness, Sloppiness)>,
     preview_already_applied: bool,
 }
 
-impl SetRough {
-    pub fn new(item_id: ItemId, old_rough: bool, new_rough: bool) -> Self {
+impl SetSloppiness {
+    pub fn new(item_id: ItemId, old: Sloppiness, new: Sloppiness) -> Self {
         Self {
-            items: vec![(item_id, old_rough, new_rough)],
+            items: vec![(item_id, old, new)],
             preview_already_applied: false,
         }
     }
 
     /// 批量构造：`(item_id, old, new)` 三元组列表。
-    pub fn new_batch(items: Vec<(ItemId, bool, bool)>) -> Self {
+    pub fn new_batch(items: Vec<(ItemId, Sloppiness, Sloppiness)>) -> Self {
         Self {
             items,
             preview_already_applied: false,
@@ -470,17 +473,17 @@ impl SetRough {
         self
     }
 
-    fn apply(scene: &mut Scene, items: &[(ItemId, bool, bool)], new: bool) {
-        for (id, old, new_rough) in items {
-            let value = if new { *new_rough } else { *old };
+    fn apply(scene: &mut Scene, items: &[(ItemId, Sloppiness, Sloppiness)], new: bool) {
+        for (id, old, new_s) in items {
+            let value = if new { *new_s } else { *old };
             if let Some(item) = scene.get_item_mut(id) {
-                item.set_rough(value);
+                item.set_sloppiness(value);
             }
         }
     }
 }
 
-impl Command for SetRough {
+impl Command for SetSloppiness {
     fn redo(&mut self, scene: &mut Scene) {
         let items = std::mem::take(&mut self.items);
         Self::apply(scene, &items, true);
@@ -674,20 +677,7 @@ impl SetTextStyle {
         for (id, old, new_style) in items {
             let value = if new { *new_style } else { *old };
             if let Some(item) = scene.get_item_mut(id) {
-                if let ItemKind::Text {
-                    font_size,
-                    color,
-                    background,
-                    measured_size,
-                    ..
-                } = &mut item.kind
-                {
-                    *font_size = value.font_size;
-                    *color = value.color;
-                    *background = value.background;
-                    // 字号变了，缓存的测量尺寸作废，下一帧重测（否则变换框尺寸滞后）
-                    *measured_size = None;
-                }
+                item.set_text_style(value);
             }
         }
     }
@@ -1628,7 +1618,9 @@ impl Command for SetGroup {
 mod tests {
     use super::*;
     use crate::item::Item;
-    use crate::shape::{DashStyle, ShapeType, StrokeStyle};
+    use crate::shape::{
+        DashStyle, FontFamily, ShapeType, Sloppiness, StrokeStyle, TextAlignH, TextAlignV,
+    };
 
     fn shape_in(scene: &mut Scene) -> ItemId {
         let item = Item::new_shape(
@@ -1645,24 +1637,27 @@ mod tests {
     }
 
     #[test]
-    fn set_rough_redo_undo_restores_previous_state() {
+    fn set_sloppiness_redo_undo_restores_previous_state() {
         let mut scene = Scene::new();
         let id = shape_in(&mut scene);
-        assert!(!scene.get_item(&id).unwrap().rough());
+        assert_eq!(scene.get_item(&id).unwrap().sloppiness(), Sloppiness::Off);
 
-        let mut cmd = SetRough::new(id, false, true);
+        let mut cmd = SetSloppiness::new(id, Sloppiness::Off, Sloppiness::Artist);
         cmd.redo(&mut scene);
-        assert!(scene.get_item(&id).unwrap().rough());
+        assert_eq!(
+            scene.get_item(&id).unwrap().sloppiness(),
+            Sloppiness::Artist
+        );
         cmd.undo(&mut scene);
-        assert!(!scene.get_item(&id).unwrap().rough());
+        assert_eq!(scene.get_item(&id).unwrap().sloppiness(), Sloppiness::Off);
     }
 
     #[test]
-    fn set_rough_generates_seed_and_keeps_it_across_undo() {
+    fn set_sloppiness_generates_seed_and_keeps_it_across_undo() {
         let mut scene = Scene::new();
         let id = shape_in(&mut scene);
 
-        let mut cmd = SetRough::new(id, false, true);
+        let mut cmd = SetSloppiness::new(id, Sloppiness::Off, Sloppiness::Artist);
         cmd.redo(&mut scene);
         let seed = match &scene.get_item(&id).unwrap().kind {
             ItemKind::Shape { seed, .. } => *seed,
@@ -1680,14 +1675,14 @@ mod tests {
     }
 
     #[test]
-    fn set_rough_on_non_shape_is_noop() {
+    fn set_sloppiness_on_non_shape_is_noop() {
         let mut scene = Scene::new();
         let txt = Item::new_text("x".to_string(), 0.0, 0.0, 16.0, [255; 4]);
         let id = txt.id;
         scene.add_item(txt);
-        let mut cmd = SetRough::new(id, false, true);
+        let mut cmd = SetSloppiness::new(id, Sloppiness::Off, Sloppiness::Artist);
         cmd.redo(&mut scene);
-        assert!(!scene.get_item(&id).unwrap().rough());
+        assert_eq!(scene.get_item(&id).unwrap().sloppiness(), Sloppiness::Off);
     }
 
     // ───────── 批量命令（Phase H / D3：多选一次改动一条 undo） ─────────
@@ -1750,16 +1745,25 @@ mod tests {
     }
 
     #[test]
-    fn set_rough_batch_toggles_every_item() {
+    fn set_sloppiness_batch_sets_every_item() {
         let mut scene = Scene::new();
         let (a, b) = two_shapes(&mut scene);
-        let mut cmd = SetRough::new_batch(vec![(a, false, true), (b, false, true)]);
+        let mut cmd = SetSloppiness::new_batch(vec![
+            (a, Sloppiness::Off, Sloppiness::Cartoonist),
+            (b, Sloppiness::Off, Sloppiness::Architect),
+        ]);
         cmd.redo(&mut scene);
-        assert!(scene.get_item(&a).unwrap().rough());
-        assert!(scene.get_item(&b).unwrap().rough());
+        assert_eq!(
+            scene.get_item(&a).unwrap().sloppiness(),
+            Sloppiness::Cartoonist
+        );
+        assert_eq!(
+            scene.get_item(&b).unwrap().sloppiness(),
+            Sloppiness::Architect
+        );
         cmd.undo(&mut scene);
-        assert!(!scene.get_item(&a).unwrap().rough());
-        assert!(!scene.get_item(&b).unwrap().rough());
+        assert_eq!(scene.get_item(&a).unwrap().sloppiness(), Sloppiness::Off);
+        assert_eq!(scene.get_item(&b).unwrap().sloppiness(), Sloppiness::Off);
     }
 
     #[test]
@@ -1907,11 +1911,17 @@ mod tests {
             font_size: 16.0,
             color: [255, 255, 255, 255],
             background: None,
+            align_h: TextAlignH::Center,
+            align_v: TextAlignV::Middle,
+            font_family: FontFamily::Normal,
         };
         let new = TextStyle {
             font_size: 32.0,
             color: [10, 20, 30, 255],
             background: Some([0, 0, 0, 128]),
+            align_h: TextAlignH::Left,
+            align_v: TextAlignV::Top,
+            font_family: FontFamily::Handwriting,
         };
         let mut cmd = SetTextStyle::new_batch(vec![(id, old, new)]);
         cmd.redo(&mut scene);
@@ -1955,6 +1965,9 @@ mod tests {
             font_size: 16.0,
             color: [255; 4],
             background: None,
+            align_h: TextAlignH::Center,
+            align_v: TextAlignV::Middle,
+            font_family: FontFamily::Normal,
         };
         let mut new = old;
         new.font_size = 48.0;

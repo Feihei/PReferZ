@@ -166,6 +166,8 @@ pub enum T {
     StyleFillNone,
     /// 填充节标题。
     StyleFillLabel,
+    /// 填充不透明度滑块（plan #2）。
+    StyleFillOpacity,
     /// 填充样式三态（无填充复用 StyleFillNone）。
     StyleFillSolid,
     StyleFillHachure,
@@ -230,9 +232,26 @@ pub enum T {
     MenuUngroup,
     // ── 手绘风（Phase F）──
     StyleRough,
+    /// 手绘风档位四选一（plan #3，对齐 Excalidraw sloppiness）。
+    SloppinessOff,
+    SloppinessArchitect,
+    SloppinessArtist,
+    SloppinessCartoonist,
     // ── 属性侧栏文字/图片节（Phase H）──
     StyleTextBackground,
     StyleGrayscale,
+    // ── 文字样式（plan #1：对齐 + 伪手写字体）──
+    StyleFontLabel,
+    FontNormal,
+    FontHandwriting,
+    StyleAlignH,
+    StyleAlignV,
+    TextAlignLeft,
+    TextAlignCenter,
+    TextAlignRight,
+    TextAlignTop,
+    TextAlignMiddle,
+    TextAlignBottom,
 }
 
 /// 查表翻译。未命中的 key 返回 debug 字符串（开发期易发现遗漏）。
@@ -363,6 +382,7 @@ fn translate_en(key: T) -> &'static str {
         T::StyleDashDotted => "Dotted",
         T::StyleFillNone => "No fill",
         T::StyleFillLabel => "Fill",
+        T::StyleFillOpacity => "Opacity",
         T::StyleFillSolid => "Solid",
         T::StyleFillHachure => "Hachure",
         T::StyleFillCrossHatch => "Cross-hatch",
@@ -403,8 +423,23 @@ fn translate_en(key: T) -> &'static str {
         T::MenuGroup => "Group",
         T::MenuUngroup => "Ungroup",
         T::StyleRough => "Hand-drawn",
+        T::SloppinessOff => "Off",
+        T::SloppinessArchitect => "Architect",
+        T::SloppinessArtist => "Artist",
+        T::SloppinessCartoonist => "Cartoonist",
         T::StyleTextBackground => "Background",
         T::StyleGrayscale => "Grayscale",
+        T::StyleFontLabel => "Font",
+        T::FontNormal => "Normal",
+        T::FontHandwriting => "Handwritten",
+        T::StyleAlignH => "H-Align",
+        T::StyleAlignV => "V-Align",
+        T::TextAlignLeft => "Left",
+        T::TextAlignCenter => "Center",
+        T::TextAlignRight => "Right",
+        T::TextAlignTop => "Top",
+        T::TextAlignMiddle => "Middle",
+        T::TextAlignBottom => "Bottom",
     }
 }
 
@@ -528,6 +563,7 @@ fn translate_zh(key: T) -> &'static str {
         T::StyleDashDotted => "点线",
         T::StyleFillNone => "无填充",
         T::StyleFillLabel => "填充",
+        T::StyleFillOpacity => "不透明度",
         T::StyleFillSolid => "纯色",
         T::StyleFillHachure => "斜线",
         T::StyleFillCrossHatch => "交叉线",
@@ -567,9 +603,24 @@ fn translate_zh(key: T) -> &'static str {
         T::FlashUngrouped => "已解组",
         T::MenuGroup => "编组",
         T::MenuUngroup => "解组",
-        T::StyleRough => "手绘",
+        T::StyleRough => "手绘风",
+        T::SloppinessOff => "关闭",
+        T::SloppinessArchitect => "建筑师",
+        T::SloppinessArtist => "画师",
+        T::SloppinessCartoonist => "卡通",
         T::StyleTextBackground => "背景",
         T::StyleGrayscale => "灰度",
+        T::StyleFontLabel => "字体",
+        T::FontNormal => "黑体",
+        T::FontHandwriting => "手写",
+        T::StyleAlignH => "水平对齐",
+        T::StyleAlignV => "垂直对齐",
+        T::TextAlignLeft => "左",
+        T::TextAlignCenter => "中",
+        T::TextAlignRight => "右",
+        T::TextAlignTop => "上",
+        T::TextAlignMiddle => "中",
+        T::TextAlignBottom => "下",
     }
 }
 

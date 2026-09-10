@@ -18,11 +18,12 @@ use preferz_core::commands::{
     AddItem, AddItems, ArrangeItems, ArrowHeads, CropItems, DeleteItems, EditShapePoints,
     EditTextContent, FillChange, FillState, FlipItems, MoveItems, NormalizeItems, RenumberFrame,
     ReorderItems, SetArrowHeads, SetClosed, SetCurveType, SetFrameNumber, SetGroup, SetPixmapProps,
-    SetPixmapStyle, SetRough, SetRoundness, SetShapeFill, SetStrokeStyle, SetTextStyle,
+    SetPixmapStyle, SetRoundness, SetShapeFill, SetSloppiness, SetStrokeStyle, SetTextStyle,
     TransformItem,
 };
 use preferz_core::shape::{
-    ArrowHeadStyle, CurveType, DashStyle, FillStyle, PixmapStyle, ShapeType, StrokeStyle, TextStyle,
+    ArrowHeadStyle, CurveType, DashStyle, FillStyle, FontFamily, PixmapStyle, SeededRng, ShapeType,
+    Sloppiness, StrokeStyle, TextAlignH, TextAlignV, TextStyle,
 };
 use preferz_core::snap;
 use preferz_core::spaces::{CanvasPoint, CanvasRect, CanvasSize, CanvasVector};
@@ -438,8 +439,8 @@ pub struct PReferZApp {
     default_fill: Option<[u8; 4]>,
     /// 绘制形状默认填充样式（`None` = 无填充；Excalidraw 四态默认，默认样式侧栏可调）。
     default_fill_style: Option<FillStyle>,
-    /// 新建形状是否默认手绘风描边（Phase F；样式面板可调）。
-    default_rough: bool,
+    /// 新建形状默认手绘风抖动档位（plan #3；默认样式侧栏可调）。
+    default_sloppiness: Sloppiness,
     drag: DragState,
     /// 端点拖拽中暂存的绑定目标（plan #5）：拖到形状轮廓上则记 `(端点下标, 形状id)`，
     /// 释放时写入 item 的 `start_binding`/`end_binding`；拖离则记 `None`（解绑）。
@@ -688,23 +689,9 @@ fn prop_cmd(pending: PropEdit, scene: &Scene) -> Option<Box<dyn Command>> {
                 .items
                 .iter()
                 .filter_map(|(id, old)| match (old, scene.get_item(id)) {
-                    (PropValue::Text(old), Some(item)) => match &item.kind {
-                        ItemKind::Text {
-                            font_size,
-                            color,
-                            background,
-                            ..
-                        } => Some((
-                            *id,
-                            *old,
-                            TextStyle {
-                                font_size: *font_size,
-                                color: *color,
-                                background: *background,
-                            },
-                        )),
-                        _ => None,
-                    },
+                    (PropValue::Text(old), Some(item)) => {
+                        item.kind.text_style().map(|new| (*id, *old, new))
+                    }
                     _ => None,
                 })
                 .collect();
@@ -774,7 +761,7 @@ impl PReferZApp {
             },
             default_fill: None,
             default_fill_style: None,
-            default_rough: false,
+            default_sloppiness: Sloppiness::Off,
             drag: DragState::Idle,
             editing_text: None,
             editing_frame_number: None,
@@ -2243,7 +2230,7 @@ impl PReferZApp {
                 min_y,
                 self.default_stroke,
             )
-            .with_rough(self.default_rough);
+            .with_sloppiness(self.default_sloppiness);
             self.push_new_item(AddItem::new(item));
             self.flash(if end_arrow.is_some() {
                 "已创建箭头"
@@ -2277,10 +2264,14 @@ impl PReferZApp {
         } else {
             (w, h)
         };
-        // 填充默认值：选了填充样式但未选填充色时，跟随描边色（Excalidraw 语义）
-        let fill = self
-            .default_fill_style
-            .map(|_| self.default_fill.unwrap_or(self.default_stroke.color));
+        // 填充默认值：选了填充样式但未选填充色时，跟随描边色（Excalidraw 语义），
+        // 并套默认 50% 不透明度（plan #2；显式选过填充色则保留用户设置）
+        let fill = self.default_fill_style.map(|_| {
+            self.default_fill.unwrap_or_else(|| {
+                let c = self.default_stroke.color;
+                [c[0], c[1], c[2], palette::FILL_DEFAULT_ALPHA]
+            })
+        });
         let item = Item::new_shape(
             shape_type,
             (bw, bh),
@@ -2289,7 +2280,7 @@ impl PReferZApp {
             self.default_stroke,
             fill,
         )
-        .with_rough(self.default_rough)
+        .with_sloppiness(self.default_sloppiness)
         .with_fill_style(self.default_fill_style.unwrap_or(FillStyle::Solid));
         self.push_new_item(AddItem::new(item));
         self.flash("已创建图形");
@@ -2392,7 +2383,7 @@ impl PReferZApp {
             min_y,
             self.default_stroke,
         )
-        .with_rough(self.default_rough);
+        .with_sloppiness(self.default_sloppiness);
         self.push_new_item(AddItem::new(item));
         self.flash(t(self.lang, T::PolygonCreated));
     }
@@ -2416,6 +2407,9 @@ impl PReferZApp {
             color,
             container_id,
             background,
+            align_h,
+            align_v,
+            font_family,
             ..
         } = &item.kind
         else {
@@ -2429,53 +2423,166 @@ impl PReferZApp {
         let text_color =
             egui::Color32::from_rgba_premultiplied(color[0], color[1], color[2], color[3]);
         let zoom = self.viewport.zoom;
+        let hand = *font_family == FontFamily::Handwriting;
 
-        let (galley, top_left) = match container_id.filter(|cid| self.scene.get_item(cid).is_some())
-        {
-            // 绑定文本：换行到容器宽度，居中于容器矩形（随容器实时联动）
-            Some(cid) => {
-                let container = self.scene.get_item(&cid).expect("filter 已保证存在");
-                let cr = self
-                    .viewport
-                    .canvas_to_screen_rect(container.bounding_rect());
-                let wrap = (cr.width() - 12.0).max(20.0);
-                let galley = ui.ctx().fonts(|f| {
-                    f.layout_job(egui::text::LayoutJob::simple(
-                        content.clone(),
-                        egui::FontId::proportional(*font_size * zoom),
-                        text_color,
-                        wrap,
-                    ))
-                });
-                let size = galley.size();
-                (galley, cr.center() - egui::vec2(size.x * 0.5, size.y * 0.5))
-            }
-            // 自由文本（或容器已丢失）：按自身 transform 定位，字号叠加 scale
-            None => {
-                let origin = self.viewport.canvas_to_screen(item.canvas_corners()[0]);
-                // scale.x（等比缩放场景下 scale.y 相同；非等比 egui text 不支持非均匀缩放）
-                let effective_font_size = *font_size * item.transform.scale.x.abs() * zoom;
-                let galley = ui.ctx().fonts(|f| {
-                    f.layout_no_wrap(
-                        content.clone(),
-                        egui::FontId::proportional(effective_font_size),
-                        text_color,
-                    )
-                });
-                (galley, origin)
-            }
-        };
+        // 统一产出 (字形 galley, 绝对屏幕位置) 列表 + 文字内容包围矩形。
+        // 伪手写逐字排版返回多片；普通排版单 galley 一片。
+        let (pieces, content_rect) =
+            match container_id.filter(|cid| self.scene.get_item(cid).is_some()) {
+                // 绑定文本：换行到容器宽度，按对齐枚举定位（plan #1；默认居中 = 历史行为）
+                Some(cid) => {
+                    let container = self.scene.get_item(&cid).expect("filter 已保证存在");
+                    let cr = self
+                        .viewport
+                        .canvas_to_screen_rect(container.bounding_rect());
+                    let wrap = (cr.width() - 12.0).max(20.0);
+                    let pad = 6.0 * zoom;
+                    if hand {
+                        let seed = item.id.as_u128() as u64;
+                        let (mut pieces, size) = Self::layout_handwritten(
+                            ui.ctx(),
+                            content,
+                            *font_size * zoom,
+                            text_color,
+                            Some(wrap),
+                            seed,
+                        );
+                        // 水平/垂直对齐（仅绑定文字生效）
+                        let dx = match align_h {
+                            TextAlignH::Left => pad,
+                            TextAlignH::Center => (cr.width() - size.x) * 0.5,
+                            TextAlignH::Right => cr.width() - size.x - pad,
+                        };
+                        let dy = match align_v {
+                            TextAlignV::Top => pad,
+                            TextAlignV::Middle => (cr.height() - size.y) * 0.5,
+                            TextAlignV::Bottom => cr.height() - size.y - pad,
+                        };
+                        for (_g, p) in &mut pieces {
+                            *p += egui::vec2(dx, dy);
+                        }
+                        let rect = egui::Rect::from_min_size(cr.min + egui::vec2(dx, dy), size);
+                        (pieces, rect)
+                    } else {
+                        let galley = ui.ctx().fonts(|f| {
+                            f.layout_job(egui::text::LayoutJob::simple(
+                                content.clone(),
+                                egui::FontId::proportional(*font_size * zoom),
+                                text_color,
+                                wrap,
+                            ))
+                        });
+                        let size = galley.size();
+                        let dx = match align_h {
+                            TextAlignH::Left => pad,
+                            TextAlignH::Center => (cr.width() - size.x) * 0.5,
+                            TextAlignH::Right => cr.width() - size.x - pad,
+                        };
+                        let dy = match align_v {
+                            TextAlignV::Top => pad,
+                            TextAlignV::Middle => (cr.height() - size.y) * 0.5,
+                            TextAlignV::Bottom => cr.height() - size.y - pad,
+                        };
+                        let top_left = cr.min + egui::vec2(dx, dy);
+                        (
+                            vec![(galley, top_left)],
+                            egui::Rect::from_min_size(top_left, size),
+                        )
+                    }
+                }
+                // 自由文本（或容器已丢失）：按自身 transform 定位，字号叠加 scale；
+                // 对齐枚举不生效（单行无框，恒 top-left）
+                None => {
+                    let origin = self.viewport.canvas_to_screen(item.canvas_corners()[0]);
+                    // scale.x（等比缩放场景下 scale.y 相同；非等比 egui text 不支持非均匀缩放）
+                    let effective_font_size = *font_size * item.transform.scale.x.abs() * zoom;
+                    if hand {
+                        let seed = item.id.as_u128() as u64;
+                        let (pieces, size) = Self::layout_handwritten(
+                            ui.ctx(),
+                            content,
+                            effective_font_size,
+                            text_color,
+                            None,
+                            seed,
+                        );
+                        (pieces, egui::Rect::from_min_size(origin, size))
+                    } else {
+                        let galley = ui.ctx().fonts(|f| {
+                            f.layout_no_wrap(
+                                content.clone(),
+                                egui::FontId::proportional(effective_font_size),
+                                text_color,
+                            )
+                        });
+                        let size = galley.size();
+                        (
+                            vec![(galley, origin)],
+                            egui::Rect::from_min_size(origin, size),
+                        )
+                    }
+                }
+            };
 
         if let Some(bg) = background {
             let pad = 4.0 * zoom;
-            let rect = egui::Rect::from_min_size(top_left, galley.size()).expand(pad);
             ui.painter().rect_filled(
-                rect,
+                content_rect.expand(pad),
                 egui::Rounding::same(2.0),
                 egui::Color32::from_rgba_unmultiplied(bg[0], bg[1], bg[2], bg[3]),
             );
         }
-        ui.painter().galley(top_left, galley, text_color);
+        for (galley, pos) in pieces {
+            ui.painter().galley(pos, galley, text_color);
+        }
+    }
+
+    /// 伪手写排版（plan #1）：逐字符用自身 galley 宽度步进（忽略字距，
+    /// 笔画参差正是手写感的一部分），字号与位置按确定性种子微抖。
+    ///
+    /// `font_px` 为基准字号（屏幕像素）；`wrap` 为换行宽度（仅绑定文字，
+    /// `None` 不换行）。返回 `(字形 galley, 相对原点的位置)` 列表与整体包围盒尺寸。
+    /// 种子由调用方取自 item id，保证重绘 / 存盘重开不跳变。
+    fn layout_handwritten(
+        ctx: &egui::Context,
+        content: &str,
+        font_px: f32,
+        color: egui::Color32,
+        wrap: Option<f32>,
+        seed: u64,
+    ) -> (Vec<(std::sync::Arc<egui::Galley>, egui::Pos2)>, egui::Vec2) {
+        let mut rng = SeededRng::new(seed ^ 0x6D61_6E75_7363_7269); // "manuscri"
+        let mut pieces = Vec::new();
+        let amp = font_px * 0.045;
+        let mut pen = egui::pos2(0.0, 0.0);
+        let mut line_h = 0.0_f32;
+        let mut max_x = 0.0_f32;
+        for line in content.split('\n') {
+            pen.x = 0.0;
+            pen.y += line_h;
+            line_h = 0.0;
+            for ch in line.chars() {
+                let s = font_px * (1.0 + rng.signed() * 0.04);
+                let g = ctx.fonts(|f| {
+                    f.layout_no_wrap(ch.to_string(), egui::FontId::proportional(s), color)
+                });
+                let gsize = g.size();
+                // 超出换行宽度则折行（首字符不折，避免窄容器死循环）
+                if let Some(w) = wrap {
+                    if pen.x + gsize.x > w && pen.x > 0.0 {
+                        pen.x = 0.0;
+                        pen.y += line_h;
+                        line_h = 0.0;
+                    }
+                }
+                let p = egui::pos2(pen.x + rng.signed() * amp, pen.y + rng.signed() * amp);
+                pieces.push((g, p));
+                pen.x += gsize.x;
+                line_h = line_h.max(gsize.y);
+                max_x = max_x.max(pen.x);
+            }
+        }
+        (pieces, egui::vec2(max_x, pen.y + line_h))
     }
 
     /// 绘制单个 item 的视觉内容（不含选中手柄 / 多选外框 / 裁剪 overlay）。
@@ -2550,7 +2657,7 @@ impl PReferZApp {
             }
             // 文字：可选背景 + 排版绘制，两处渲染路径共用 draw_text_item
             ItemKind::Text { .. } => self.draw_text_item(ui, item, editing_id),
-            // 风格器分发（CleanStyler / RoughStyler）在 build_shape_visuals 内按 rough 字段决定。
+            // 风格器分发（CleanStyler / RoughStyler）在 build_shape_visuals 内按 sloppiness 档位决定。
             ItemKind::Shape { .. } => {
                 let to_screen = item_local_to_screen(item, &self.viewport);
                 let shapes = build_shape_visuals(&item.kind, &to_screen, self.viewport.zoom);
@@ -2909,7 +3016,7 @@ impl PReferZApp {
                 }
                 // 文字：可选背景 + 排版绘制，两处渲染路径共用 draw_text_item
                 ItemKind::Text { .. } => self.draw_text_item(ui, item, editing_id),
-                // Shape：风格器分发同 render_scene，rough 开关决定 Clean 或手绘。
+                // Shape：风格器分发同 render_scene，sloppiness 档位决定 Clean 或手绘。
                 ItemKind::Shape { .. } => {
                     let to_screen = item_local_to_screen(item, &self.viewport);
                     let shapes = build_shape_visuals(&item.kind, &to_screen, self.viewport.zoom);
@@ -4253,9 +4360,23 @@ impl PReferZApp {
                         }
                     }
                 }
-                // 手绘风：新建形状的默认开关（Phase F）
+                // 手绘风：新建形状的默认档位（plan #3，对齐 Excalidraw sloppiness）
                 ui.add_space(4.0);
-                ui.checkbox(&mut self.default_rough, t(lang, T::StyleRough));
+                ui.label(t(lang, T::StyleRough));
+                ui.horizontal(|ui| {
+                    let opts = [
+                        (Sloppiness::Off, T::SloppinessOff),
+                        (Sloppiness::Architect, T::SloppinessArchitect),
+                        (Sloppiness::Artist, T::SloppinessArtist),
+                        (Sloppiness::Cartoonist, T::SloppinessCartoonist),
+                    ];
+                    for (val, label) in opts {
+                        let selected = self.default_sloppiness == val;
+                        if ui.selectable_label(selected, t(lang, label)).clicked() && !selected {
+                            self.default_sloppiness = val;
+                        }
+                    }
+                });
             });
     }
 
@@ -4400,9 +4521,16 @@ impl PReferZApp {
                                 match new_style {
                                     Some(s) => {
                                         *fill_style = s;
-                                        // 无填充 → 有填充：默认跟随描边色（Excalidraw 语义）
+                                        // 无填充 → 有填充：默认跟随描边色（Excalidraw 语义），
+                                        // 套默认 50% 不透明度（plan #2）
                                         if fill.is_none() {
-                                            *fill = Some(stroke.color);
+                                            let c = stroke.color;
+                                            *fill = Some([
+                                                c[0],
+                                                c[1],
+                                                c[2],
+                                                palette::FILL_DEFAULT_ALPHA,
+                                            ]);
                                         }
                                     }
                                     None => {
@@ -4415,7 +4543,7 @@ impl PReferZApp {
                     );
                 }
             });
-            // 填充颜色（仅有填充时显示；Excalidraw 同款调色板）
+            // 填充颜色（仅有填充时显示；Excalidraw 同款调色板，plan #2：与描边共用 5 色）
             if let Some(c) = state.color {
                 let mut col = c;
                 if palette::fill_color_palette_button(ui, &mut col, dark) {
@@ -4435,6 +4563,34 @@ impl PReferZApp {
                         |k| {
                             if let ItemKind::Shape { fill, .. } = k {
                                 *fill = Some(new);
+                            }
+                        },
+                    );
+                }
+                // 不透明度滑块（plan #2）：0–100%，仅改 alpha 保 RGB
+                let mut pct = (c[3] as f32 / 255.0 * 100.0).round();
+                if ui
+                    .add(
+                        egui::Slider::new(&mut pct, 0.0..=100.0).text(t(lang, T::StyleFillOpacity)),
+                    )
+                    .changed()
+                {
+                    let a = (pct / 100.0 * 255.0).round() as u8;
+                    self.apply_continuous(
+                        &fill_ids,
+                        PropKind::Fill,
+                        |k| match k {
+                            ItemKind::Shape {
+                                fill, fill_style, ..
+                            } => Some(PropValue::Fill(FillState {
+                                color: *fill,
+                                style: *fill_style,
+                            })),
+                            _ => None,
+                        },
+                        |k| {
+                            if let ItemKind::Shape { fill: Some(f), .. } = k {
+                                f[3] = a;
                             }
                         },
                     );
@@ -4475,26 +4631,40 @@ impl PReferZApp {
                 }
             }
         }
-        // 手绘风（离散，整批改命令）
+        // 手绘风档位（plan #3，离散四档，整批一条命令）
         if let Some(p) = prop(&self.scene, ids, |it| match &it.kind {
-            ItemKind::Shape { rough, .. } => Some(*rough),
+            ItemKind::Shape { sloppiness, .. } => Some(*sloppiness),
             _ => None,
         }) {
-            let mut checked = p.value();
-            if ui.checkbox(&mut checked, t(lang, T::StyleRough)).changed() && checked != p.value() {
-                let items: Vec<(ItemId, bool, bool)> = ids
-                    .iter()
-                    .filter_map(|id| {
-                        self.scene.get_item(id).and_then(|it| match &it.kind {
-                            ItemKind::Shape { rough, .. } => Some((*id, *rough, checked)),
-                            _ => None,
-                        })
-                    })
-                    .collect();
-                if !items.is_empty() {
-                    self.push_cmd(Box::new(SetRough::new_batch(items)));
+            let current = p.value();
+            let opts = [
+                (Sloppiness::Off, T::SloppinessOff),
+                (Sloppiness::Architect, T::SloppinessArchitect),
+                (Sloppiness::Artist, T::SloppinessArtist),
+                (Sloppiness::Cartoonist, T::SloppinessCartoonist),
+            ];
+            ui.horizontal(|ui| {
+                ui.label(t(lang, T::StyleRough));
+                for (val, label) in opts {
+                    let selected = current == val;
+                    if ui.selectable_label(selected, t(lang, label)).clicked() && !selected {
+                        let items: Vec<(ItemId, Sloppiness, Sloppiness)> = ids
+                            .iter()
+                            .filter_map(|id| {
+                                self.scene.get_item(id).and_then(|it| match &it.kind {
+                                    ItemKind::Shape { sloppiness, .. } => {
+                                        Some((*id, *sloppiness, val))
+                                    }
+                                    _ => None,
+                                })
+                            })
+                            .collect();
+                        if !items.is_empty() {
+                            self.push_cmd(Box::new(SetSloppiness::new_batch(items)));
+                        }
+                    }
                 }
-            }
+            });
         }
         // 线性对象专用：曲线 / 闭合 / 箭头
         let poly_ids: Vec<ItemId> = ids
@@ -4650,19 +4820,7 @@ impl PReferZApp {
                 self.apply_continuous(
                     ids,
                     PropKind::TextStyle,
-                    |k| match k {
-                        ItemKind::Text {
-                            font_size,
-                            color,
-                            background,
-                            ..
-                        } => Some(PropValue::Text(TextStyle {
-                            font_size: *font_size,
-                            color: *color,
-                            background: *background,
-                        })),
-                        _ => None,
-                    },
+                    |k| k.text_style().map(PropValue::Text),
                     |k| {
                         if let ItemKind::Text { font_size, .. } = k {
                             *font_size = fs;
@@ -4685,19 +4843,7 @@ impl PReferZApp {
                 self.apply_continuous(
                     ids,
                     PropKind::TextStyle,
-                    |k| match k {
-                        ItemKind::Text {
-                            font_size,
-                            color,
-                            background,
-                            ..
-                        } => Some(PropValue::Text(TextStyle {
-                            font_size: *font_size,
-                            color: *color,
-                            background: *background,
-                        })),
-                        _ => None,
-                    },
+                    |k| k.text_style().map(PropValue::Text),
                     |k| {
                         if let ItemKind::Text { color, .. } = k {
                             *color = new;
@@ -4726,19 +4872,7 @@ impl PReferZApp {
                 self.apply_continuous(
                     ids,
                     PropKind::TextStyle,
-                    |k| match k {
-                        ItemKind::Text {
-                            font_size,
-                            color,
-                            background,
-                            ..
-                        } => Some(PropValue::Text(TextStyle {
-                            font_size: *font_size,
-                            color: *color,
-                            background: *background,
-                        })),
-                        _ => None,
-                    },
+                    |k| k.text_style().map(PropValue::Text),
                     |k| {
                         if let ItemKind::Text { background, .. } = k {
                             *background = new;
@@ -4758,19 +4892,7 @@ impl PReferZApp {
                     self.apply_continuous(
                         ids,
                         PropKind::TextStyle,
-                        |k| match k {
-                            ItemKind::Text {
-                                font_size,
-                                color,
-                                background,
-                                ..
-                            } => Some(PropValue::Text(TextStyle {
-                                font_size: *font_size,
-                                color: *color,
-                                background: *background,
-                            })),
-                            _ => None,
-                        },
+                        |k| k.text_style().map(PropValue::Text),
                         |k| {
                             if let ItemKind::Text { background, .. } = k {
                                 *background = Some(new);
@@ -4778,6 +4900,114 @@ impl PReferZApp {
                         },
                     );
                 }
+            }
+        }
+        // 字体族（plan #1）：黑体 / 伪手写（逐字微抖，零体积增量）
+        if let Some(p) = prop(&self.scene, ids, |it| match &it.kind {
+            ItemKind::Text { font_family, .. } => Some(*font_family),
+            _ => None,
+        }) {
+            let current = p.value();
+            ui.horizontal(|ui| {
+                ui.label(t(lang, T::StyleFontLabel));
+                for (val, label) in [
+                    (FontFamily::Normal, T::FontNormal),
+                    (FontFamily::Handwriting, T::FontHandwriting),
+                ] {
+                    if ui
+                        .selectable_label(current == val, t(lang, label))
+                        .clicked()
+                        && current != val
+                    {
+                        self.apply_continuous(
+                            ids,
+                            PropKind::TextStyle,
+                            |k| k.text_style().map(PropValue::Text),
+                            |k| {
+                                if let ItemKind::Text { font_family, .. } = k {
+                                    *font_family = val;
+                                }
+                            },
+                        );
+                    }
+                }
+            });
+        }
+        // 对齐（plan #1）：仅绑定文字显示；自由文本单行无框恒 top-left
+        let has_bound_text = ids.iter().any(|id| {
+            matches!(
+                self.scene.get_item(id),
+                Some(it) if matches!(
+                    &it.kind,
+                    ItemKind::Text {
+                        container_id: Some(_),
+                        ..
+                    }
+                )
+            )
+        });
+        if has_bound_text {
+            if let Some(p) = prop(&self.scene, ids, |it| match &it.kind {
+                ItemKind::Text { align_h, .. } => Some(*align_h),
+                _ => None,
+            }) {
+                let current = p.value();
+                ui.horizontal(|ui| {
+                    ui.label(t(lang, T::StyleAlignH));
+                    for (val, label) in [
+                        (TextAlignH::Left, T::TextAlignLeft),
+                        (TextAlignH::Center, T::TextAlignCenter),
+                        (TextAlignH::Right, T::TextAlignRight),
+                    ] {
+                        if ui
+                            .selectable_label(current == val, t(lang, label))
+                            .clicked()
+                            && current != val
+                        {
+                            self.apply_continuous(
+                                ids,
+                                PropKind::TextStyle,
+                                |k| k.text_style().map(PropValue::Text),
+                                |k| {
+                                    if let ItemKind::Text { align_h, .. } = k {
+                                        *align_h = val;
+                                    }
+                                },
+                            );
+                        }
+                    }
+                });
+            }
+            if let Some(p) = prop(&self.scene, ids, |it| match &it.kind {
+                ItemKind::Text { align_v, .. } => Some(*align_v),
+                _ => None,
+            }) {
+                let current = p.value();
+                ui.horizontal(|ui| {
+                    ui.label(t(lang, T::StyleAlignV));
+                    for (val, label) in [
+                        (TextAlignV::Top, T::TextAlignTop),
+                        (TextAlignV::Middle, T::TextAlignMiddle),
+                        (TextAlignV::Bottom, T::TextAlignBottom),
+                    ] {
+                        if ui
+                            .selectable_label(current == val, t(lang, label))
+                            .clicked()
+                            && current != val
+                        {
+                            self.apply_continuous(
+                                ids,
+                                PropKind::TextStyle,
+                                |k| k.text_style().map(PropValue::Text),
+                                |k| {
+                                    if let ItemKind::Text { align_v, .. } = k {
+                                        *align_v = val;
+                                    }
+                                },
+                            );
+                        }
+                    }
+                });
             }
         }
     }

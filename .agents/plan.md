@@ -62,14 +62,14 @@
 
 > **状态**：G / I / H / K 已全部交付（见 [CHANGELOG](CHANGELOG.md) §Phase G/I/H/K + §手工验收反馈批次）；
 > 决策点 D1–D6 / I1–I4 已归档（见 [CHANGELOG §决策点归档](CHANGELOG.md)）。
-> 本批次为对齐 Excalidraw 的观感/交互打磨项，**尚未实施**，按下方编号逐步评审、集体拍板后开工。
-> 实施顺序建议：**5/6/13 先（编辑器基础：吸附 / 对齐分布 / 编组解组）→ 1/2/3（样式面板补全）→ 4（多边形编辑）→ 7（连接符，依赖 5）→ 8/9（数据/图表，较重）→ 10（徒手，独立）**；**11/12 为独立快赢（拖拽修饰键 / 缩放钳制默认值），可随时插入，不阻塞其他项**。
+> 本批次为对齐 Excalidraw 的观感/交互打磨项。5/6/11/12/13 已交付；
+> **2026-09-10 拍板：启动 1/2/3 样式面板批次**（实施顺序 #2 → #3 → #1），决策点见表格「关键依赖 / 决策点」列。后续依次：4 → 7 → 8/9 → 10。
 
 | # | 打磨项 | 一句话方案 | 关键依赖 / 决策点 |
 |---|---|---|---|
-| 1 | 绑定文字对齐 + 字号 + 字体切换 | Text 加 H/V 对齐枚举 + 字体族（黑体/手写），侧栏加对齐分段与字号滑块 | 手写字体：真实嵌入 TTF vs 伪手写渲染（体积）；垂直对齐是否仅绑定文字 |
-| 2 | 调色板对齐 + 填充半透明 | `FILL_PICKS` 改为与描边同 5 色（黑红绿蓝橙）；填充加不透明度滑块（RGBA alpha） | 填充默认透明度取值；top picks 描边/填充共用同组 5 色 |
-| 3 | stroke width / sloppiness / edges 倒角 | `rough: bool` → `Sloppiness{Architect,Artist,Cartoonist}` 三档；edges（sharp/round）限定矩形族 | sloppiness 档位；edges 是否扩展到非矩形（倾向否） |
+| 1 | ✅ 绑定文字对齐 + 字号 + 字体切换（2026-09-10 代码交付，待人工验收） | Text 加 H/V 对齐枚举 + 字体族（黑体/手写），侧栏加对齐分段与字号滑块 | ✅ 已拍板（2026-09-10）：手写体=**伪手写渲染**（复用 RoughStyler 思路，不嵌 TTF）；字号沿用现有滑块范围；垂直对齐仅绑定文字，自由文字固定 top-left |
+| 2 | ✅ 调色板对齐 + 填充半透明（2026-09-10 代码交付，待人工验收） | `FILL_PICKS` 改为与描边同 5 色（黑红绿蓝橙）；填充加不透明度滑块（RGBA alpha） | ✅ 已拍板（2026-09-10）：top picks 描边/填充共用同组 5 色；填充默认 alpha **50%**（选填充样式但未显式改 alpha 时） |
+| 3 | ✅ stroke width / sloppiness / edges 倒角（2026-09-10 代码交付，待人工验收；edges 经调研已被现有 roundness + curve_type 覆盖，无需新 UI） | `rough: bool` → `Sloppiness{Architect,Artist,Cartoonist}` 三档；edges（sharp/round）对齐 Excalidraw | ✅ 已拍板（2026-09-10）：sloppiness 对齐 Excalidraw 3 档；edges **对齐 Excalidraw 语义**——矩形→倒角，多边形/折线→顶点处切换曲线平滑（spline 类，具体插值实现时定） |
 | 4 | 多边形节点增删 + 首尾重合自动闭合 | 顶点删除（Alt+拖出）+ 端点追加（拖末端点延伸）；首尾距 < 阈值自动 `closed` | 删除手势；阈值复用 `POLYLINE_CLOSE_DISTANCE` |
 | 5 | ✅ 直线/箭头端点吸附图形边缘（2026-09-07 `a803bbe` + `8d2465e` 修复） | 拖端点邻近 Shape 轮廓吸附 + 绑定模型（端点随形状移动） | 已拍板并交付（2026-09-08 复验通过）：阈值屏 10px；绑定=两端 `Option<ItemId>` 不存绝对坐标，`resolve_bindings` 动态重算；直线/箭头均可绑，与 #7 共用 |
 | 6 | ✅ 多元素对齐、分布（2026-09-05 `cad908b`） | `arrange.rs` 增 `plan_align`（6 向）+ `plan_distribute`（等距/等心 × 横/纵）；属性栏「对齐」节 + 右键菜单 | 已拍板并交付：两种分布都做；参考系=选区包围盒；UI=属性栏+右键菜单 |
@@ -83,20 +83,23 @@
 
 ### 各项细节与决策点
 
-1. **绑定文字对齐 + 字号 + 字体切换**
+1. **✅ 绑定文字对齐 + 字号 + 字体切换（2026-09-10 代码交付，待人工验收）**
 - 现状：`ItemKind::Text`（TextStyle）已有 `font_size`/`color`/`background`，但**无对齐字段**；绑定文字（容器封闭 Shape）由渲染层自动居中，无 H/V 控制；字体仅内嵌 simhei（黑体）一种。
 - 方案：core 加 `TextAlignH{Left,Center,Right}` + `TextAlignV{Top,Middle,Bottom}`（`#[serde(default)]=Center`）；字体族 `FontFamily{Handwriting,Normal}`——手写体需新增第二种嵌入 TTF（体积评估，见 `.issues`）或伪手写渲染（复用 RoughStyler 思路）。侧栏 Text 节加对齐分段控件 + 字号滑块（已有）+ 字体族切换。
-- 决策点：手写体实现方式（真实 TTF vs 伪手写）；字号范围；垂直对齐是否仅绑定文字（自由文字默认 top-left）。
+- 决策点已拍板（2026-09-10）：手写体用**伪手写渲染**（复用 RoughStyler 思路，不嵌 TTF，零体积增量）；字号沿用现有滑块范围；垂直对齐仅绑定文字，自由文字固定 top-left。
+- 交付（2026-09-10）：`TextStyle` 扩 6 字段（+align_h/align_v/font_family，`#[serde(default)]` 向后兼容）；`layout_handwritten` 逐字符排版 + SeededRng 确定性抖动（字号 ±4%、幅度 0.045×font_px，兼容换行）；`draw_text_item` 按对齐枚举定位（默认即历史居中行为）；侧栏 Text 节新增字体族两档分段（所有文字）+ H/V 对齐分段（仅绑定文字）；全部走 `SetTextStyle` 整份快照入 undo。
 
-2. **调色板对齐 + 填充半透明**
+2. **✅ 调色板对齐 + 填充半透明（2026-09-10 代码交付，待人工验收）**
 - 现状：`STROKE_PICKS` 已是 `["#1e1e1e","#e03131","#2f9e44","#1971c2","#f08c00"]`（黑红绿蓝橙，恰好对齐 Excalidraw）；`FILL_PICKS` 是 4 个粉彩色，**与 5 标准色不对齐**。
 - 方案：`FILL_PICKS` 改为与 `STROKE_PICKS` 同 5 色；填充增**不透明度滑块**（fill 已是 RGBA，暴露 alpha 0–100%，默认取 Excalidraw 观感值）。侧栏填充节走 `apply_continuous` + `FillState`。
-- 决策点：填充默认透明度；top picks 描边/填充共用同组 5 色（Excalidraw 是共用）。
+- 决策点已拍板（2026-09-10）：top picks 描边/填充共用同组 5 色（黑红绿蓝橙）；填充默认 alpha 50%（用户选填充样式但未显式调 alpha 时）。
+- 交付（2026-09-10）：`FILL_PICKS = STROKE_PICKS`；新建形状/属性栏 None→Some 填色套 `FILL_DEFAULT_ALPHA`(128)；侧栏填充色后新增 0–100% 不透明度滑块（`apply_continuous` 仅改 alpha 通道）。
 
-3. **stroke width / sloppiness / edges 倒角**
+3. **✅ stroke width / sloppiness / edges 倒角（2026-09-10 代码交付，待人工验收）**
 - 现状：`StrokeStyle.width` 已有（0.5–12 连续）；`rough: bool` 仅开/关；矩形 `roundness` 已有（仅矩形族）。**缺 sloppiness 多档**与通用 edges 倒角。
 - 方案：`rough: bool` → `Sloppiness{Architect,Artist,Cartoonist}`（3 档映射到 RoughStyler 抖动幅度；`#[serde(default)]`=Architect 即原 false 语义），`SetRough` 改 `SetSloppiness`；edges（sharp/round）分段控件，仅矩形显示。
-- 决策点：sloppiness 档位（对齐 Excalidraw 3 档）；edges 是否扩展非矩形（倾向否）。
+- 决策点已拍板（2026-09-10）：sloppiness 对齐 Excalidraw 3 档；edges 对齐 Excalidraw 语义——矩形→倒角，多边形/折线→顶点处切换曲线平滑（spline 类，具体插值实现时定，倾向 Catmull-Rom 与现有手绘曲线一致）。
+- 交付（2026-09-10）：`Sloppiness` 四档（Off/Architect/Artist/Cartoonist，amp_scale 0/0.5/1/1.8）+ `deserialize_sloppiness` 兼容旧 bool（true→Artist）；侧栏 checkbox 改四档分段；`SetRough`→`SetSloppiness` 批量命令。**edges 经调研无需新 UI**：矩形倒角=已有 roundness 滑块，多边形曲线切换=已有 curve_type Straight/Curved（Catmull-Rom）。
 
 4. **多边形节点增删 + 首尾重合自动闭合**
 - 现状：反馈 #5 已做段中点拖拽**插入**顶点（SegmentMid）；但删顶点、端点追加、首尾重合自动闭合缺失。

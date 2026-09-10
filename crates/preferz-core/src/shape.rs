@@ -42,6 +42,64 @@ pub enum DashStyle {
     Dotted,
 }
 
+/// 手绘风抖动档位（plan #3，取代旧 `rough: bool`）。
+///
+/// `Off` = 关闭手绘风（CleanStyler，即旧 `rough: false` 语义）；其余三档对齐
+/// Excalidraw 的 sloppiness 选择器，抖动幅度依次增大，`Artist` ≈ 旧
+/// `rough: true` 的观感。幅度乘数见 [`Sloppiness::amp_scale`]。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Sloppiness {
+    /// 关闭手绘风（默认；旧 `rough: false`）。
+    #[default]
+    Off,
+    /// 建筑师（轻微抖动）。
+    Architect,
+    /// 画师（中等抖动，旧 `rough: true` 观感）。
+    Artist,
+    /// 卡通（夸张抖动）。
+    Cartoonist,
+}
+
+impl Sloppiness {
+    /// 抖动幅度乘数（1.0 = 旧 `rough: true` 观感，Phase F 基准）。
+    pub fn amp_scale(self) -> f32 {
+        match self {
+            Sloppiness::Off => 0.0,
+            Sloppiness::Architect => 0.5,
+            Sloppiness::Artist => 1.0,
+            Sloppiness::Cartoonist => 1.8,
+        }
+    }
+}
+
+/// `Sloppiness` 字段的兼容反序列化（plan #3）。
+///
+/// 旧存档此字段名为 `rough` 且存 bool：`false` → `Off`、`true` → `Artist`
+/// （保住手绘观感）；新存档为小写字符串。未知值一律降级 `Off`，宁缺勿炸。
+/// 字段缺失时由 `#[serde(default)]` 走 `Default`（= `Off`），不经本函数。
+pub fn deserialize_sloppiness<'de, D>(deserializer: D) -> Result<Sloppiness, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(serde::Deserialize)]
+    #[serde(untagged)]
+    enum Repr {
+        Bool(bool),
+        Str(String),
+    }
+    Ok(match Repr::deserialize(deserializer) {
+        Ok(Repr::Bool(true)) => Sloppiness::Artist,
+        Ok(Repr::Str(s)) => match s.as_str() {
+            "architect" => Sloppiness::Architect,
+            "artist" => Sloppiness::Artist,
+            "cartoonist" => Sloppiness::Cartoonist,
+            _ => Sloppiness::Off,
+        },
+        _ => Sloppiness::Off,
+    })
+}
+
 /// 填充样式（Excalidraw 同款四态中的三种有填充样式；"无填充"由
 /// `fill: None` 表达）。仅闭合图形生效。
 ///
@@ -78,11 +136,46 @@ impl Default for StrokeStyle {
     }
 }
 
-/// Text item 的可编辑样式快照（Phase H）。
+/// 水平对齐（plan #1）。仅**绑定文字**生效（自由文本单行无框，恒 top-left）；
+/// 旧存档缺字段按 `Center` 加载（与历史自动居中行为一致）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum TextAlignH {
+    Left,
+    #[default]
+    Center,
+    Right,
+}
+
+/// 垂直对齐（plan #1）。仅**绑定文字**生效；默认 `Middle` 同上。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum TextAlignV {
+    Top,
+    #[default]
+    Middle,
+    Bottom,
+}
+
+/// 文字字体族（plan #1）。
+///
+/// `Handwriting` 为**伪手写渲染**：不嵌入手写 TTF（零体积增量），渲染层按
+/// 确定性种子对每个字符做位置/字号微抖，复现手写笔迹的参差感。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum FontFamily {
+    /// 黑体（内嵌 simhei，默认）。
+    #[default]
+    Normal,
+    /// 伪手写（渲染层逐字微抖）。
+    Handwriting,
+}
+
+/// Text item 的可编辑样式快照（Phase H；plan #1 扩展对齐与字体族）。
 ///
 /// 单独成结构是为了让 `SetTextStyle` 命令用 `(old, new)` 一对值描述整次改动，
 /// 而不是为字号 / 颜色 / 背景各开一条命令——侧栏里拖一次滑块只该产生一条 undo 记录。
-/// 三个字段在 UI 上分属不同控件，但命令层按"整份样式"快照，改哪一项都走同一条路径。
+/// 各字段在 UI 上分属不同控件，但命令层按"整份样式"快照，改哪一项都走同一条路径。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TextStyle {
     /// 字号（屏幕像素，与 `ItemKind::Text::font_size` 同单位）。
@@ -91,6 +184,12 @@ pub struct TextStyle {
     pub color: [u8; 4],
     /// 文字背景色；`None` = 全透明（默认，与 Excalidraw 一致）。
     pub background: Option<[u8; 4]>,
+    /// 水平对齐（仅绑定文字生效）。
+    pub align_h: TextAlignH,
+    /// 垂直对齐（仅绑定文字生效）。
+    pub align_v: TextAlignV,
+    /// 字体族（黑体 / 伪手写）。
+    pub font_family: FontFamily,
 }
 
 /// Pixmap item 的可编辑样式快照（Phase H）。

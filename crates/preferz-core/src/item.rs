@@ -1,7 +1,10 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::shape::{ArrowHeadStyle, CurveType, FillStyle, ShapeType, StrokeStyle};
+use crate::shape::{
+    ArrowHeadStyle, CurveType, FillStyle, FontFamily, ShapeType, Sloppiness, StrokeStyle,
+    TextAlignH, TextAlignV, TextStyle,
+};
 use crate::spaces::{CanvasPoint, CanvasRect, CanvasVector};
 use crate::transform::Transform;
 
@@ -48,6 +51,15 @@ pub enum ItemKind {
         /// `#[serde(default)]`：旧存档无此字段视为透明。
         #[serde(default)]
         background: Option<[u8; 4]>,
+        /// 水平对齐（plan #1）。仅绑定文字生效；默认 `Center`（旧存档自动居中）。
+        #[serde(default)]
+        align_h: TextAlignH,
+        /// 垂直对齐（plan #1）。仅绑定文字生效；默认 `Middle` 同上。
+        #[serde(default)]
+        align_v: TextAlignV,
+        /// 字体族（plan #1）：黑体 / 伪手写。默认黑体。
+        #[serde(default)]
+        font_family: FontFamily,
     },
     Shape {
         shape_type: ShapeType,
@@ -79,10 +91,16 @@ pub enum ItemKind {
         roundness: f32,
         /// 手绘风描边抖动种子（Phase F）。同种子恒得同一抖动，保证重绘/存盘后形状不变。
         seed: u64,
-        /// 手绘风描边开关（Phase F）。true 时由 RoughStyler 渲染抖动描边。
-        /// `#[serde(default)]`：旧存档无此字段时按 false 加载。
-        #[serde(default)]
-        rough: bool,
+        /// 手绘风抖动档位（plan #3，取代旧 `rough: bool`）。
+        /// `alias = "rough"` 兼容旧存档的 bool 字段（false→Off、true→Artist），
+        /// 见 [`crate::shape::deserialize_sloppiness`]。
+        /// `#[serde(default)]`：旧存档无此字段（未开手绘风）按 `Off` 加载。
+        #[serde(
+            default,
+            alias = "rough",
+            deserialize_with = "crate::shape::deserialize_sloppiness"
+        )]
+        sloppiness: Sloppiness,
         /// 端点绑定目标（吸附语义，仅 Polyline 使用）：`points[0]` = `start_binding`，
         /// `points[last]` = `end_binding`。吸附点**不存绝对坐标**，形状移动时由
         /// `Scene::resolve_bindings` 按另一端点方向动态重算轮廓最近点（Excalidraw 风格）。
@@ -145,6 +163,53 @@ impl ItemKind {
                 }
                 *base_size = (max_x - min_x, max_y - min_y);
             }
+        }
+    }
+
+    /// Text 样式快照（plan #1 扩展对齐与字体族）；非 Text 返回 `None`。
+    pub fn text_style(&self) -> Option<TextStyle> {
+        match self {
+            ItemKind::Text {
+                font_size,
+                color,
+                background,
+                align_h,
+                align_v,
+                font_family,
+                ..
+            } => Some(TextStyle {
+                font_size: *font_size,
+                color: *color,
+                background: *background,
+                align_h: *align_h,
+                align_v: *align_v,
+                font_family: *font_family,
+            }),
+            _ => None,
+        }
+    }
+
+    /// 整份写入 Text 样式（供 `SetTextStyle` 命令使用）；
+    /// 同时作废测量尺寸缓存（字号变化后变换框须重测）。非 Text 调用无副作用。
+    pub fn set_text_style(&mut self, style: TextStyle) {
+        if let ItemKind::Text {
+            font_size,
+            color,
+            background,
+            align_h,
+            align_v,
+            font_family,
+            measured_size,
+            ..
+        } = self
+        {
+            *font_size = style.font_size;
+            *color = style.color;
+            *background = style.background;
+            *align_h = style.align_h;
+            *align_v = style.align_v;
+            *font_family = style.font_family;
+            *measured_size = None;
         }
     }
 }
@@ -240,6 +305,9 @@ impl Item {
                 measured_size: None,
                 container_id: None,
                 background: None,
+                align_h: TextAlignH::Center,
+                align_v: TextAlignV::Middle,
+                font_family: FontFamily::Normal,
             },
             transform: Transform::new(pos_x, pos_y, 1.0, 1.0),
             z: 0,
@@ -267,6 +335,9 @@ impl Item {
                 measured_size: None,
                 container_id: Some(container_id),
                 background: None,
+                align_h: TextAlignH::Center,
+                align_v: TextAlignV::Middle,
+                font_family: FontFamily::Normal,
             },
             transform: Transform::new(pos_x, pos_y, 1.0, 1.0),
             z: 0,
@@ -403,7 +474,7 @@ impl Item {
                 curve_type: CurveType::Straight,
                 roundness: 0.0,
                 seed: 0,
-                rough: false,
+                sloppiness: Sloppiness::Off,
                 start_binding: None,
                 end_binding: None,
             },
@@ -443,7 +514,7 @@ impl Item {
                 curve_type: CurveType::Straight,
                 roundness: 0.0,
                 seed: 0,
-                rough: false,
+                sloppiness: Sloppiness::Off,
                 start_binding: None,
                 end_binding: None,
             },
@@ -453,26 +524,39 @@ impl Item {
         }
     }
 
-    /// 是否启用手绘风描边（非 Shape 恒为 false）。
-    pub fn rough(&self) -> bool {
-        matches!(self.kind, ItemKind::Shape { rough: true, .. })
+    /// 手绘风抖动档位（非 Shape 恒为 `Off`）。
+    pub fn sloppiness(&self) -> Sloppiness {
+        match &self.kind {
+            ItemKind::Shape { sloppiness, .. } => *sloppiness,
+            _ => Sloppiness::Off,
+        }
     }
 
-    /// builder：设置手绘风开关。开启时若 `seed` 仍为 0，则生成一个随机种子，
+    /// builder：设置手绘风档位。非 `Off` 时若 `seed` 仍为 0，则生成一个随机种子，
     /// 避免所有手绘图形抖出一模一样的轮廓。
-    pub fn with_rough(mut self, rough: bool) -> Self {
-        self.set_rough(rough);
+    pub fn with_sloppiness(mut self, sloppiness: Sloppiness) -> Self {
+        self.set_sloppiness(sloppiness);
         self
     }
 
-    /// 设置手绘风开关（供 `SetRough` 命令使用），语义同 [`Item::with_rough`]。
-    pub fn set_rough(&mut self, rough: bool) {
-        if let ItemKind::Shape { rough: r, seed, .. } = &mut self.kind {
-            *r = rough;
-            if rough && *seed == 0 {
+    /// 设置手绘风档位（供 `SetSloppiness` 命令使用），语义同 [`Item::with_sloppiness`]。
+    pub fn set_sloppiness(&mut self, sloppiness: Sloppiness) {
+        if let ItemKind::Shape {
+            sloppiness: s,
+            seed,
+            ..
+        } = &mut self.kind
+        {
+            *s = sloppiness;
+            if sloppiness != Sloppiness::Off && *seed == 0 {
                 *seed = Uuid::new_v4().as_u128() as u64;
             }
         }
+    }
+
+    /// 整份写入 Text 样式（plan #1：委托给 [`ItemKind::set_text_style`]）。
+    pub fn set_text_style(&mut self, style: TextStyle) {
+        self.kind.set_text_style(style);
     }
 
     /// 画布点 → item 局部坐标（逆 [`Item::local_to_canvas`]）。退化变换（缩放为 0）
@@ -1386,8 +1470,9 @@ mod tests {
     }
 
     #[test]
-    fn shape_serde_backward_compat_without_rough() {
-        // 旧版本 Shape JSON 无 rough 字段（Phase F 新增），应加载为 false（不报错）。
+    fn shape_serde_backward_compat_without_sloppiness() {
+        // 旧版本 Shape JSON 无手绘风字段（Phase F 起有 bool `rough`，plan #3 改枚举），
+        // 缺字段应加载为 Off（不报错）。
         let json = r#"{
             "Shape": {
                 "shape_type": "Rectangle",
@@ -1403,9 +1488,64 @@ mod tests {
         }"#;
         let kind: ItemKind = serde_json::from_str(json).unwrap();
         match &kind {
-            ItemKind::Shape { rough, .. } => assert!(!*rough),
+            ItemKind::Shape { sloppiness, .. } => assert_eq!(*sloppiness, Sloppiness::Off),
             _ => panic!("expected Shape kind"),
         }
+    }
+
+    #[test]
+    fn shape_serde_legacy_rough_bool_maps_to_sloppiness() {
+        // 旧存档的 `"rough": bool`（Phase F–K）应被 alias 兼容加载：
+        // false → Off（观感不变）、true → Artist（保住手绘观感）；
+        // 新存档为小写字符串枚举，序列化后应能回读。
+        let base = r#"{
+            "Shape": {
+                "shape_type": "Rectangle",
+                "base_size": [10.0, 20.0],
+                "points": [],
+                "stroke": {"color": [255,255,255,255], "width": 2.0, "dash": "Solid"},
+                "fill": null,
+                "start_arrow": null,
+                "end_arrow": null,
+                "closed": false,
+                "seed": 7,
+                "rough": %s
+            }
+        }"#;
+        let kind: ItemKind = serde_json::from_str(&base.replace("%s", "true")).unwrap();
+        match &kind {
+            ItemKind::Shape { sloppiness, .. } => assert_eq!(*sloppiness, Sloppiness::Artist),
+            _ => panic!("expected Shape kind"),
+        }
+        let kind: ItemKind = serde_json::from_str(&base.replace("%s", "false")).unwrap();
+        match &kind {
+            ItemKind::Shape { sloppiness, .. } => assert_eq!(*sloppiness, Sloppiness::Off),
+            _ => panic!("expected Shape kind"),
+        }
+
+        // 新格式：小写字符串，往返一致
+        let json = r#"{
+            "Shape": {
+                "shape_type": "Rectangle",
+                "base_size": [10.0, 20.0],
+                "points": [],
+                "stroke": {"color": [255,255,255,255], "width": 2.0, "dash": "Solid"},
+                "fill": null,
+                "start_arrow": null,
+                "end_arrow": null,
+                "closed": false,
+                "seed": 7,
+                "sloppiness": "cartoonist"
+            }
+        }"#;
+        let kind: ItemKind = serde_json::from_str(json).unwrap();
+        match &kind {
+            ItemKind::Shape { sloppiness, .. } => assert_eq!(*sloppiness, Sloppiness::Cartoonist),
+            _ => panic!("expected Shape kind"),
+        }
+        let out = serde_json::to_string(&kind).unwrap();
+        assert!(out.contains("\"sloppiness\":\"cartoonist\""));
+        assert!(!out.contains("\"rough\""), "新存档不应再写旧字段 rough");
     }
 
     #[test]
@@ -1441,7 +1581,7 @@ mod tests {
     }
 
     #[test]
-    fn shape_rough_serde_roundtrip() {
+    fn shape_sloppiness_serde_roundtrip() {
         let item = Item::new_shape(
             ShapeType::Rectangle,
             (10.0, 10.0),
@@ -1450,20 +1590,22 @@ mod tests {
             StrokeStyle::default(),
             None,
         )
-        .with_rough(true);
-        assert!(item.rough());
+        .with_sloppiness(Sloppiness::Artist);
+        assert_eq!(item.sloppiness(), Sloppiness::Artist);
         let s = serde_json::to_string(&item).unwrap();
         let back: Item = serde_json::from_str(&s).unwrap();
-        assert!(back.rough());
+        assert_eq!(back.sloppiness(), Sloppiness::Artist);
         // seed 一并持久化，保证重开后抖动形状不变
         match (&item.kind, &back.kind) {
-            (ItemKind::Shape { seed: a, .. }, ItemKind::Shape { seed: b, .. }) => assert_eq!(a, b),
+            (ItemKind::Shape { seed: a, .. }, ItemKind::Shape { seed: b, .. }) => {
+                assert_eq!(*a, *b)
+            }
             _ => panic!("expected Shape kind"),
         }
     }
 
     #[test]
-    fn with_rough_assigns_seed_only_when_zero() {
+    fn with_sloppiness_assigns_seed_only_when_zero() {
         let item = Item::new_shape(
             ShapeType::Rectangle,
             (10.0, 10.0),
@@ -1478,25 +1620,36 @@ mod tests {
         };
         assert_eq!(seed_of(&item), 0);
 
-        let rough = item.clone().with_rough(true);
+        let rough = item.clone().with_sloppiness(Sloppiness::Artist);
         let seed = seed_of(&rough);
         assert_ne!(seed, 0, "开启手绘应生成非 0 种子");
         // 二次切换保留原种子：重绘时轮廓不跳变
-        assert_eq!(seed_of(&rough.clone().with_rough(true)), seed);
-        assert_eq!(seed_of(&rough.clone().with_rough(false)), seed);
+        assert_eq!(
+            seed_of(&rough.clone().with_sloppiness(Sloppiness::Artist)),
+            seed
+        );
+        assert_eq!(
+            seed_of(&rough.clone().with_sloppiness(Sloppiness::Cartoonist)),
+            seed
+        );
+
+        // 切档不改 seed（换档沿用同一抖动，观感连续）
+        let other = rough.clone().with_sloppiness(Sloppiness::Architect);
+        assert_eq!(other.sloppiness(), Sloppiness::Architect);
+        assert_eq!(seed_of(&other), seed);
 
         // 关闭手绘不改 seed（再次打开沿用同一抖动）
-        let off = rough.with_rough(false);
-        assert!(!off.rough());
+        let off = rough.with_sloppiness(Sloppiness::Off);
+        assert_eq!(off.sloppiness(), Sloppiness::Off);
         assert_eq!(seed_of(&off), seed);
     }
 
     #[test]
-    fn rough_is_false_for_non_shape_items() {
+    fn sloppiness_is_off_for_non_shape_items() {
         let txt = Item::new_text("x".to_string(), 0.0, 0.0, 16.0, [255; 4]);
-        assert!(!txt.rough());
+        assert_eq!(txt.sloppiness(), Sloppiness::Off);
         let frame = Item::new_frame(1, (10.0, 10.0), 0.0, 0.0, None);
-        assert!(!frame.rough());
+        assert_eq!(frame.sloppiness(), Sloppiness::Off);
     }
 
     // ── crop 几何（旋转感知） ──
