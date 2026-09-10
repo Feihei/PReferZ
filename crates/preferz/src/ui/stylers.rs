@@ -539,8 +539,11 @@ impl RoughStyler {
         let perimeter: f32 = (0..seg_count)
             .map(|i| (pts[i] - pts[(i + 1) % n]).length())
             .sum();
-        let avg_canvas = perimeter / n as f32 / zoom;
-        (avg_canvas * Self::OFFSET_RATIO).min(Self::MAX_OFFSET_CANVAS) * zoom * 0.5 * amp_scale
+        let avg_canvas = perimeter / seg_count as f32 / zoom;
+        // 不再额外打五折：此前 ×0.5 加上采样密集导致曲线抖动仅零点几像素，
+        // 各 Sloppiness 档位肉眼无差别（用户反馈"曲线手绘样式都一样"）。
+        // 现在与逐边抖动同一尺度，档位差异（0.5/1/1.8）可感知。
+        (avg_canvas * Self::OFFSET_RATIO).min(Self::MAX_OFFSET_CANVAS) * zoom * amp_scale
     }
 
     /// 按 dash 样式把一条抖动贝塞尔落到 egui 形状列表。

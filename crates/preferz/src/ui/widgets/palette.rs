@@ -115,10 +115,16 @@ pub fn apply_dark_mode_filter(rgb: [u8; 3]) -> [u8; 3] {
         0.715 - c * 0.715 + s * 0.715,
         0.072 + c * 0.928 + s * 0.072,
     ];
-    let apply = |r: f32, g: f32, b: f32| -> u8 {
-        ((r * m[0] + g * m[1] + b * m[2]).clamp(0.0, 1.0) * 255.0).round() as u8
+    // 矩阵行点乘（修复：此前误把 m[4]/m[8] 当颜色分量传入，导致 dark 滤镜
+    // 输出错乱、色板与主题不符）。CSS 规范：newG 用第 2 行、newB 用第 3 行。
+    let apply_row = |r: f32, g: f32, b: f32, row: usize| -> u8 {
+        ((r * m[row] + g * m[row + 1] + b * m[row + 2]).clamp(0.0, 1.0) * 255.0).round() as u8
     };
-    [apply(r, g, b), apply(r, m[4], b), apply(r, g, m[8])]
+    [
+        apply_row(r, g, b, 0),
+        apply_row(r, g, b, 3),
+        apply_row(r, g, b, 6),
+    ]
 }
 
 /// 主题化 hex → Color32：暗色主题套 Excalidraw 滤镜。
@@ -342,5 +348,40 @@ fn draw_fill_icon(
             let d = egui::pos2(inner.right() - 2.0, inner.bottom() - 2.0);
             painter.line_segment([c, d], stroke);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 黑 → 亮灰（Excalidraw dark 下黑色元素显示为近白，非滤镜错乱后的中间色）。
+    #[test]
+    fn dark_filter_lightens_black() {
+        let [r, g, b] = apply_dark_mode_filter([0x1e, 0x1e, 0x1e]);
+        assert!(r > 200 && g > 200 && b > 200, "got ({r},{g},{b})");
+    }
+
+    /// 白 → 暗灰（滤镜互逆方向）。
+    #[test]
+    fn dark_filter_darkens_white() {
+        let [r, g, b] = apply_dark_mode_filter([255, 255, 255]);
+        assert!(r < 60 && g < 60 && b < 60, "got ({r},{g},{b})");
+    }
+
+    /// 灰度色 hue-rotate 后仍是灰度（R=G=B）——此前矩阵行错位时该性质被破坏。
+    #[test]
+    fn dark_filter_preserves_grayscale() {
+        let [r, g, b] = apply_dark_mode_filter([100, 100, 100]);
+        assert_eq!(r, g);
+        assert_eq!(g, b);
+    }
+
+    /// 纯红变亮红（用户反馈：dark picks 应为"白红绿蓝橙，比 light 亮一点"）。
+    #[test]
+    fn dark_filter_keeps_hue_and_lightens_red() {
+        let [r, g, b] = apply_dark_mode_filter([0xe0, 0x31, 0x31]);
+        assert!(r > g && r > b, "hue lost: got ({r},{g},{b})");
+        assert!(r > 0xe0, "not lightened: got ({r},{g},{b})");
     }
 }

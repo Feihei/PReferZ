@@ -2498,7 +2498,7 @@ impl PReferZApp {
                     let effective_font_size = *font_size * item.transform.scale.x.abs() * zoom;
                     if hand {
                         let seed = item.id.as_u128() as u64;
-                        let (pieces, size) = Self::layout_handwritten(
+                        let (mut pieces, size) = Self::layout_handwritten(
                             ui.ctx(),
                             content,
                             effective_font_size,
@@ -2506,6 +2506,10 @@ impl PReferZApp {
                             None,
                             seed,
                         );
+                        // layout_handwritten 返回相对原点的位置，平移到 item 起点
+                        for (_g, p) in &mut pieces {
+                            *p += origin.to_vec2();
+                        }
                         (pieces, egui::Rect::from_min_size(origin, size))
                     } else {
                         let galley = ui.ctx().fonts(|f| {
@@ -2553,7 +2557,9 @@ impl PReferZApp {
     ) -> (Vec<(std::sync::Arc<egui::Galley>, egui::Pos2)>, egui::Vec2) {
         let mut rng = SeededRng::new(seed ^ 0x6D61_6E75_7363_7269); // "manuscri"
         let mut pieces = Vec::new();
-        let amp = font_px * 0.045;
+        // 观感参数：抖动要足够大才能与正常排版拉开差距（用户反馈 0.045/±4%
+        // 几乎不可见）。幅度取字号的 10%，字号与字符间距各抖 ±8%。
+        let amp = font_px * 0.10;
         let mut pen = egui::pos2(0.0, 0.0);
         let mut line_h = 0.0_f32;
         let mut max_x = 0.0_f32;
@@ -2562,7 +2568,7 @@ impl PReferZApp {
             pen.y += line_h;
             line_h = 0.0;
             for ch in line.chars() {
-                let s = font_px * (1.0 + rng.signed() * 0.04);
+                let s = font_px * (1.0 + rng.signed() * 0.08);
                 let g = ctx.fonts(|f| {
                     f.layout_no_wrap(ch.to_string(), egui::FontId::proportional(s), color)
                 });
@@ -2577,7 +2583,7 @@ impl PReferZApp {
                 }
                 let p = egui::pos2(pen.x + rng.signed() * amp, pen.y + rng.signed() * amp);
                 pieces.push((g, p));
-                pen.x += gsize.x;
+                pen.x += gsize.x * (1.0 + rng.signed() * 0.08);
                 line_h = line_h.max(gsize.y);
                 max_x = max_x.max(pen.x);
             }
@@ -4198,13 +4204,34 @@ impl PReferZApp {
                     ui.separator();
                 }
 
-                let text_ids: Vec<ItemId> = ids
+                let mut text_ids: Vec<ItemId> = ids
                     .iter()
                     .copied()
                     .filter(|id| {
                         matches!(self.scene.get_item(id), Some(item) if matches!(item.kind, ItemKind::Text { .. }))
                     })
                     .collect();
+                // 选中图形时把其绑定文字纳入文字节（Excalidraw 同款入口）：
+                // 绑定文字不可独立选中，此前选中图形时侧栏无任何文字样式控件
+                //（用户反馈"看不到文字对齐选项 / 文字样式不随主体改"）。
+                for id in &ids {
+                    if matches!(
+                        self.scene.get_item(id),
+                        Some(item) if matches!(item.kind, ItemKind::Shape { .. })
+                    ) {
+                        for item in &self.scene.items {
+                            if let ItemKind::Text {
+                                container_id: Some(cid),
+                                ..
+                            } = &item.kind
+                            {
+                                if cid == id && !text_ids.contains(&item.id) {
+                                    text_ids.push(item.id);
+                                }
+                            }
+                        }
+                    }
+                }
                 if !text_ids.is_empty() {
                     ui.label(t(lang, T::PropsSectionText));
                     self.render_text_props(ui, lang, &text_ids);
