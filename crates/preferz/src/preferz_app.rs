@@ -2206,6 +2206,22 @@ impl PReferZApp {
                             }
                             _ => {}
                         }
+                        // 绑定写入必须在此"预览直改"：EditShapePoints 的
+                        // skip_first_redo=true 会跳过 push 后的首次 redo，而
+                        // 绑定字段只在 redo 里写——不直改的话吸附释放后
+                        // start/end_binding 仍是 None，移动被吸附图形时
+                        // resolve_bindings 不重算，端点不跟随（用户反馈）。
+                        if let Some(item) = self.scene.get_item_mut(&item_id) {
+                            if let ItemKind::Shape {
+                                start_binding,
+                                end_binding,
+                                ..
+                            } = &mut item.kind
+                            {
+                                *start_binding = start_new;
+                                *end_binding = end_new;
+                            }
+                        }
                         let cmd = EditShapePoints::new(item_id, start_points, new_points)
                             .with_binding_change(start_old, start_new, end_old, end_new);
                         self.push_cmd(Box::new(cmd));
