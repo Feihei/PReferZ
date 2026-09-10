@@ -49,8 +49,19 @@ pub trait ShapeStyler {
 
 // ─────────────────────────── 共用工具 ───────────────────────────
 
+/// RGBA → egui 颜色。
+///
+/// egui painter 使用**预乘 alpha** 语义：存储的 (255,0,0,128) 若按非预乘构建，
+/// 红色分量 255 > alpha 128，混合结果接近不透明（用户反馈"填充 50% 看不出透明"）。
+/// 此处显式预乘 RGB 后交给 egui。
 fn color_from(c: [u8; 4]) -> Color32 {
-    Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3])
+    let a = c[3] as u32;
+    Color32::from_rgba_premultiplied(
+        (c[0] as u32 * a / 255) as u8,
+        (c[1] as u32 * a / 255) as u8,
+        (c[2] as u32 * a / 255) as u8,
+        c[3],
+    )
 }
 
 fn to_pos2(p: euclid::Point2D<f32, ScreenSpace>) -> Pos2 {

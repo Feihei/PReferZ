@@ -16,10 +16,10 @@ use preferz_core::arrange::{
 };
 use preferz_core::commands::{
     AddItem, AddItems, ArrangeItems, ArrowHeads, CropItems, DeleteItems, EditShapePoints,
-    EditTextContent, FillChange, FillState, FlipItems, MoveItems, NormalizeItems, RenumberFrame,
-    ReorderItems, SetArrowHeads, SetClosed, SetCurveType, SetFrameNumber, SetGroup, SetPixmapProps,
-    SetPixmapStyle, SetRoundness, SetShapeFill, SetSloppiness, SetStrokeStyle, SetTextStyle,
-    TransformItem,
+    EditTextContent, FillChange, FillState, FlipItems, MoveItems, MultiCommand, NormalizeItems,
+    RenumberFrame, ReorderItems, SetArrowHeads, SetClosed, SetCurveType, SetFrameNumber, SetGroup,
+    SetPixmapProps, SetPixmapStyle, SetRoundness, SetShapeFill, SetSloppiness, SetStrokeStyle,
+    SetTextStyle, TransformItem,
 };
 use preferz_core::shape::{
     ArrowHeadStyle, CurveType, DashStyle, FillStyle, FontFamily, PixmapStyle, SeededRng, ShapeType,
@@ -623,23 +623,64 @@ enum PropValue {
 fn prop_cmd(pending: PropEdit, scene: &Scene) -> Option<Box<dyn Command>> {
     match pending.kind {
         PropKind::Stroke => {
-            let items: Vec<(ItemId, StrokeStyle, StrokeStyle)> = {
-                pending
-                    .items
-                    .iter()
-                    .filter_map(|(id, old)| match (old, scene.get_item(id)) {
-                        (PropValue::Stroke(old), Some(item)) => match &item.kind {
-                            ItemKind::Shape { stroke, .. } => Some((*id, *old, *stroke)),
-                            _ => None,
+            // 分流：联动快照（填充 / 绑定文字）与描边快照混在同一 pending 里，
+            // 按值类型拆成各自的批量命令，最后打包成一条 MultiCommand
+            // （改描边色 → 填充色 / 绑定文字色联动，撤销一步到位）。
+            let mut strokes = Vec::new();
+            let mut texts = Vec::new();
+            let mut fills = Vec::new();
+            for (id, old) in &pending.items {
+                let Some(item) = scene.get_item(id) else {
+                    continue;
+                };
+                match (old, &item.kind) {
+                    (PropValue::Stroke(old), ItemKind::Shape { stroke, .. }) => {
+                        strokes.push((*id, *old, *stroke));
+                    }
+                    (PropValue::Text(old), ItemKind::Text { .. }) => {
+                        if let Some(cur) = item.kind.text_style() {
+                            texts.push((*id, *old, cur));
+                        }
+                    }
+                    (
+                        PropValue::Fill(old),
+                        ItemKind::Shape {
+                            fill, fill_style, ..
                         },
-                        _ => None,
-                    })
-                    .collect()
-            };
-            (!items.is_empty()).then(|| {
-                Box::new(SetStrokeStyle::new_batch(items).with_preview_applied(true))
-                    as Box<dyn Command>
-            })
+                    ) => {
+                        fills.push((
+                            *id,
+                            *old,
+                            FillState {
+                                color: *fill,
+                                style: *fill_style,
+                            },
+                        ));
+                    }
+                    _ => {}
+                }
+            }
+            let mut cmds: Vec<Box<dyn Command>> = Vec::new();
+            if !strokes.is_empty() {
+                cmds.push(Box::new(
+                    SetStrokeStyle::new_batch(strokes).with_preview_applied(true),
+                ));
+            }
+            if !texts.is_empty() {
+                cmds.push(Box::new(
+                    SetTextStyle::new_batch(texts).with_preview_applied(true),
+                ));
+            }
+            if !fills.is_empty() {
+                cmds.push(Box::new(
+                    SetShapeFill::new_batch(fills).with_preview_applied(true),
+                ));
+            }
+            match cmds.len() {
+                0 => None,
+                1 => Some(cmds.pop().expect("len == 1")),
+                _ => Some(Box::new(MultiCommand::new(cmds))),
+            }
         }
         PropKind::Fill => {
             let items: Vec<FillChange> = pending
@@ -2458,8 +2499,10 @@ impl PReferZApp {
                             TextAlignV::Middle => (cr.height() - size.y) * 0.5,
                             TextAlignV::Bottom => cr.height() - size.y - pad,
                         };
+                        // layout_handwritten 返回相对原点的位置，先平移到容器矩形
+                        // 左上，再按对齐枚举偏移（修复：此前漏加 cr.min，文字跑容器左上角外）
                         for (_g, p) in &mut pieces {
-                            *p += egui::vec2(dx, dy);
+                            *p += cr.min.to_vec2() + egui::vec2(dx, dy);
                         }
                         let rect = egui::Rect::from_min_size(cr.min + egui::vec2(dx, dy), size);
                         (pieces, rect)
@@ -4430,6 +4473,9 @@ impl PReferZApp {
                         }
                     },
                 );
+                // 联动（用户拍板 2026-09-10）：改描边色时填充色跟随（保留 alpha）、
+                // 绑定文字色跟随； undo 由 prop_cmd 打包成一条 MultiCommand。
+                self.sync_stroke_color_side_effects(ids, new);
             }
             if p.is_mixed() {
                 ui.label(t(lang, T::PropsMixedValue));
@@ -5194,6 +5240,91 @@ impl PReferZApp {
         for id in ids {
             if let Some(item) = self.scene.get_item_mut(id) {
                 apply(&mut item.kind);
+            }
+        }
+    }
+
+    /// 描边色联动同步（改描边色时调用）：填充色跟随（保留 alpha）、绑定文字色跟随。
+    ///
+    /// 直接改 kind 作预览，并把联动目标的旧值快照追加进当前 Stroke 待合并编辑
+    /// ——`prop_cmd` 会把混合快照分流成三条批量命令并打包为一条 [`MultiCommand`]，
+    /// 撤销时整体回到改色前。按 id 去重：pending 已有的条目是首次快照，不覆盖
+    /// （与 [`Self::ensure_prop_edit`] 的"整段拖动只取一处 old 值"语义一致）。
+    fn sync_stroke_color_side_effects(&mut self, ids: &[ItemId], color: [u8; 4]) {
+        let mut extra: Vec<(ItemId, PropValue)> = Vec::new();
+        for id in ids {
+            // 一次性提取不可变数据后立即释放借用（后续预览阶段要可变借 scene）
+            let (is_shape, fill_target) = match self.scene.get_item(id).map(|it| &it.kind) {
+                Some(ItemKind::Shape {
+                    fill, fill_style, ..
+                }) => (true, fill.map(|f| (f, *fill_style))),
+                Some(_) => (false, None),
+                None => continue,
+            };
+            if !is_shape {
+                continue;
+            }
+            // 该图形的绑定文字：old = 当前整份 TextStyle，new = 仅换 color
+            let text_ids: Vec<ItemId> = self
+                .scene
+                .items
+                .iter()
+                .filter_map(|t| match &t.kind {
+                    ItemKind::Text {
+                        container_id: Some(cid),
+                        ..
+                    } if cid == id => Some(t.id),
+                    _ => None,
+                })
+                .collect();
+            for tid in text_ids {
+                let Some(t) = self.scene.get_item(&tid) else {
+                    continue;
+                };
+                let Some(old_style) = t.kind.text_style() else {
+                    continue;
+                };
+                if old_style.color != color {
+                    extra.push((tid, PropValue::Text(old_style)));
+                }
+                // 预览：直接改文字颜色
+                if let Some(t) = self.scene.get_item_mut(&tid) {
+                    if let ItemKind::Text { color: c, .. } = &mut t.kind {
+                        *c = color;
+                    }
+                }
+            }
+            // 填充：old = 当前 FillState，new = 换 color 保 alpha；无填充不联动
+            if let Some((fill, fill_style)) = fill_target {
+                if fill[0] != color[0] || fill[1] != color[1] || fill[2] != color[2] {
+                    extra.push((
+                        *id,
+                        PropValue::Fill(FillState {
+                            color: Some(fill),
+                            style: fill_style,
+                        }),
+                    ));
+                }
+                // 预览：直接改填充颜色（保留 alpha）
+                if let Some(it) = self.scene.get_item_mut(id) {
+                    if let ItemKind::Shape { fill: Some(f), .. } = &mut it.kind {
+                        f[0] = color[0];
+                        f[1] = color[1];
+                        f[2] = color[2];
+                    }
+                }
+            }
+        }
+        // 追加快照（按 id 去重，保留首次快照）
+        if !extra.is_empty() {
+            if let Some(p) = self.prop_edit_pending.as_mut() {
+                if p.kind == PropKind::Stroke {
+                    for (id, v) in extra {
+                        if !p.items.iter().any(|(eid, _)| *eid == id) {
+                            p.items.push((id, v));
+                        }
+                    }
+                }
             }
         }
     }

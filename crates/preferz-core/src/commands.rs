@@ -19,6 +19,41 @@ pub trait Command {
     }
 }
 
+/// 复合命令：把多条命令打包成**一条** undo 记录（整体重做 / 整体撤销）。
+///
+/// 用于一次 UI 操作跨命令类型联动的场景——例如改描边色同时联动绑定文字色
+/// 与填充色，需要 `SetStrokeStyle` + `SetTextStyle` + `SetShapeFill` 三条
+/// 批量命令合并，撤销时一步回到操作前。
+///
+/// redo 按构造顺序执行，undo 逆序执行（后改的先撤）。
+pub struct MultiCommand {
+    cmds: Vec<Box<dyn Command>>,
+}
+
+impl MultiCommand {
+    pub fn new(cmds: Vec<Box<dyn Command>>) -> Self {
+        Self { cmds }
+    }
+}
+
+impl Command for MultiCommand {
+    fn redo(&mut self, scene: &mut Scene) {
+        for cmd in &mut self.cmds {
+            cmd.redo(scene);
+        }
+    }
+
+    fn undo(&mut self, scene: &mut Scene) {
+        for cmd in self.cmds.iter_mut().rev() {
+            cmd.undo(scene);
+        }
+    }
+
+    fn skip_first_redo(&self) -> bool {
+        self.cmds.iter().any(|cmd| cmd.skip_first_redo())
+    }
+}
+
 // ─────────────────────────── Transform ───────────────────────────
 
 /// 单个 item 的整体 transform 变更（scale + rotate + move + flip 的任意组合）。
@@ -1634,6 +1669,42 @@ mod tests {
         let id = item.id;
         scene.add_item(item);
         id
+    }
+
+    #[test]
+    fn multi_command_redo_all_undo_reverse() {
+        let mut scene = Scene::new();
+        let id = shape_in(&mut scene);
+
+        // 两条子命令打包：sloppiness + dash，redo 全生效，undo 逆序全还原
+        let mut cmd = MultiCommand::new(vec![
+            Box::new(SetSloppiness::new(id, Sloppiness::Off, Sloppiness::Artist)),
+            Box::new(SetStrokeStyle::new(
+                id,
+                StrokeStyle::default(),
+                StrokeStyle {
+                    dash: DashStyle::Dashed,
+                    ..StrokeStyle::default()
+                },
+            )),
+        ]);
+        cmd.redo(&mut scene);
+        let item = scene.get_item(&id).unwrap();
+        assert_eq!(item.sloppiness(), Sloppiness::Artist);
+        let dash = match &scene.get_item(&id).unwrap().kind {
+            ItemKind::Shape { stroke, .. } => stroke.dash,
+            _ => panic!("not a shape"),
+        };
+        assert_eq!(dash, DashStyle::Dashed);
+
+        cmd.undo(&mut scene);
+        let item = scene.get_item(&id).unwrap();
+        assert_eq!(item.sloppiness(), Sloppiness::Off);
+        let dash = match &scene.get_item(&id).unwrap().kind {
+            ItemKind::Shape { stroke, .. } => stroke.dash,
+            _ => panic!("not a shape"),
+        };
+        assert_eq!(dash, DashStyle::Solid);
     }
 
     #[test]
