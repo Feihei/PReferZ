@@ -1,4 +1,4 @@
-use crate::item::{CropRect, ItemId, ItemKind};
+use crate::item::{CropRect, EndpointBinding, ItemId, ItemKind};
 use crate::scene::{RenumberPlan, Scene};
 use crate::shape::{
     ArrowHeadStyle, CurveType, FillStyle, PixmapStyle, Sloppiness, StrokeStyle, TextStyle,
@@ -117,10 +117,10 @@ pub struct EditShapePoints {
     item_id: ItemId,
     old_points: Vec<(f32, f32)>,
     new_points: Vec<(f32, f32)>,
-    old_start_binding: Option<Option<ItemId>>,
-    old_end_binding: Option<Option<ItemId>>,
-    new_start_binding: Option<Option<ItemId>>,
-    new_end_binding: Option<Option<ItemId>>,
+    old_start_binding: Option<Option<EndpointBinding>>,
+    old_end_binding: Option<Option<EndpointBinding>>,
+    new_start_binding: Option<Option<EndpointBinding>>,
+    new_end_binding: Option<Option<EndpointBinding>>,
 }
 
 impl EditShapePoints {
@@ -136,14 +136,14 @@ impl EditShapePoints {
         }
     }
 
-    /// 记录端点绑定变更（plan #5 吸附）。`*_old` / `*_new` 为 `Some(id)` 或 `None`
-    /// （解绑）。仅当确实改变绑定时才调用，未改变则保持 `None`（无操作）。
+    /// 记录端点绑定变更（plan #5 吸附）。`*_old` / `*_new` 为 `Some(binding)` 或
+    /// `None`（解绑）。仅当确实改变绑定时才调用，未改变则保持 `None`（无操作）。
     pub fn with_binding_change(
         mut self,
-        start_old: Option<ItemId>,
-        start_new: Option<ItemId>,
-        end_old: Option<ItemId>,
-        end_new: Option<ItemId>,
+        start_old: Option<EndpointBinding>,
+        start_new: Option<EndpointBinding>,
+        end_old: Option<EndpointBinding>,
+        end_new: Option<EndpointBinding>,
     ) -> Self {
         self.old_start_binding = Some(start_old);
         self.old_end_binding = Some(end_old);

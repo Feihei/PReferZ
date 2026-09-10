@@ -10,6 +10,49 @@ use crate::transform::Transform;
 
 pub type ItemId = Uuid;
 
+/// 端点绑定（plan #5/#14）：线端点钉在目标图形上。
+///
+/// `target` 为被吸附图形；`anchor` 为端点钉在目标**局部坐标系**的表面点
+/// （吸附命中时记录）。目标图形移动/缩放/旋转时按锚点重算端点画布位置，
+/// 端点钉在同一表面点不沿边缘滑动。`anchor: None` 表示旧存档迁移（只有
+/// 目标），`resolve_bindings` 回退“另一端点的最近轮廓点”旧行为。
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct EndpointBinding {
+    pub target: ItemId,
+    #[serde(default)]
+    pub anchor: Option<(f32, f32)>,
+}
+
+/// 旧存档兼容：`start_binding`/`end_binding` 曾是 `Option<ItemId>`（JSON 中为
+/// uuid 字符串或 null）。反序列化时接受 uuid 字符串（→ 无锚点绑定）或
+/// `{target, anchor}` 对象，均归一为 `Option<EndpointBinding>`。
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum EndpointBindingRepr {
+    Legacy(ItemId),
+    Full {
+        target: ItemId,
+        #[serde(default)]
+        anchor: Option<(f32, f32)>,
+    },
+}
+
+pub fn deserialize_endpoint_binding_opt<'de, D>(
+    deserializer: D,
+) -> Result<Option<EndpointBinding>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let repr = Option::<EndpointBindingRepr>::deserialize(deserializer)?;
+    Ok(repr.map(|r| match r {
+        EndpointBindingRepr::Legacy(target) => EndpointBinding {
+            target,
+            anchor: None,
+        },
+        EndpointBindingRepr::Full { target, anchor } => EndpointBinding { target, anchor },
+    }))
+}
+
 /// Item 局部坐标空间。原点为 item 的 `transform.pos`，未旋转/缩放前的左上角。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ItemLocalSpace;
@@ -101,15 +144,16 @@ pub enum ItemKind {
             deserialize_with = "crate::shape::deserialize_sloppiness"
         )]
         sloppiness: Sloppiness,
-        /// 端点绑定目标（吸附语义，仅 Polyline 使用）：`points[0]` = `start_binding`，
-        /// `points[last]` = `end_binding`。吸附点**不存绝对坐标**，形状移动时由
-        /// `Scene::resolve_bindings` 按另一端点方向动态重算轮廓最近点（Excalidraw 风格）。
-        /// `#[serde(default)]`：旧存档无此字段按 `None`（未绑定）加载。
-        #[serde(default)]
-        start_binding: Option<ItemId>,
+        /// 端点绑定（吸附语义，仅 Polyline 使用）：`points[0]` = `start_binding`，
+        /// `points[last]` = `end_binding`。绑定记录**目标 + 锚点**（锚点为端点钉在
+        /// 目标局部坐标系的位置），目标图形移动/缩放/旋转时由
+        /// `Scene::resolve_bindings` 按锚点重算端点，端点钉在同一表面点不滑动
+        /// （Excalidraw 语义）。`anchor=None`（旧存档迁移）回退“最近轮廓点”重算。
+        #[serde(default, deserialize_with = "deserialize_endpoint_binding_opt")]
+        start_binding: Option<EndpointBinding>,
         /// 见 `start_binding`（终点）。
-        #[serde(default)]
-        end_binding: Option<ItemId>,
+        #[serde(default, deserialize_with = "deserialize_endpoint_binding_opt")]
+        end_binding: Option<EndpointBinding>,
     },
     /// 幻灯片画框（Phase D）。不旋转/不翻转；仅边框点选命中，内容区域点击穿透。
     /// 渲染恒在其它 item 之下（创建时 z 置为最小）。
@@ -576,7 +620,7 @@ impl Item {
     }
 
     /// 起点（`points[0]`）绑定的目标 item id（仅 Polyline 有意义）。
-    pub fn start_binding(&self) -> Option<ItemId> {
+    pub fn start_binding(&self) -> Option<EndpointBinding> {
         match &self.kind {
             ItemKind::Shape { start_binding, .. } => *start_binding,
             _ => None,
@@ -584,7 +628,7 @@ impl Item {
     }
 
     /// 终点（`points[last]`）绑定的目标 item id（仅 Polyline 有意义）。
-    pub fn end_binding(&self) -> Option<ItemId> {
+    pub fn end_binding(&self) -> Option<EndpointBinding> {
         match &self.kind {
             ItemKind::Shape { end_binding, .. } => *end_binding,
             _ => None,
@@ -592,16 +636,16 @@ impl Item {
     }
 
     /// 设置起点绑定目标（非 Polyline 无副作用）。
-    pub fn set_start_binding(&mut self, id: Option<ItemId>) {
+    pub fn set_start_binding(&mut self, binding: Option<EndpointBinding>) {
         if let ItemKind::Shape { start_binding, .. } = &mut self.kind {
-            *start_binding = id;
+            *start_binding = binding;
         }
     }
 
     /// 设置终点绑定目标（非 Polyline 无副作用）。
-    pub fn set_end_binding(&mut self, id: Option<ItemId>) {
+    pub fn set_end_binding(&mut self, binding: Option<EndpointBinding>) {
         if let ItemKind::Shape { end_binding, .. } = &mut self.kind {
-            *end_binding = id;
+            *end_binding = binding;
         }
     }
 

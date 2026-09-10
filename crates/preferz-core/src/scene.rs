@@ -131,9 +131,9 @@ impl Scene {
                 continue; // 退化（单点），无端点可言
             }
             // 起点（points[0]）
-            if let Some(bid) = start_binding {
-                match self.get_item(bid) {
-                    Some(shape) if moved.contains(bid) => {
+            if let Some(b) = start_binding {
+                match self.get_item(&b.target) {
+                    Some(shape) if moved.contains(&b.target) => {
                         let other = points.get(last).copied().unwrap_or((0.0, 0.0));
                         let query = line.local_to_canvas().transform_point(euclid::Point2D::<
                             f32,
@@ -141,7 +141,20 @@ impl Scene {
                         >::new(
                             other.0, other.1
                         ));
-                        let np = snap::nearest_outline_point(shape, query);
+                        // 有锚点：端点钉在目标局部系同一点（不随另一端滑动，
+                        // 修复矩形移动时端点沿边滑动/自动变水平垂直）。
+                        // 无锚点（旧存档迁移）：回退“另一端点最近轮廓点”。
+                        let np = match b.anchor {
+                            Some(anchor) => {
+                                shape.local_to_canvas().transform_point(euclid::Point2D::<
+                                    f32,
+                                    crate::item::ItemLocalSpace,
+                                >::new(
+                                    anchor.0, anchor.1
+                                ))
+                            }
+                            None => snap::nearest_outline_point(shape, query),
+                        };
                         if let Some(local) = line.canvas_to_local_point(np) {
                             updates.push((line.id, 0, local));
                         }
@@ -152,9 +165,9 @@ impl Scene {
                 }
             }
             // 终点（points[last]）
-            if let Some(bid) = end_binding {
-                match self.get_item(bid) {
-                    Some(shape) if moved.contains(bid) => {
+            if let Some(b) = end_binding {
+                match self.get_item(&b.target) {
+                    Some(shape) if moved.contains(&b.target) => {
                         let other = points.first().copied().unwrap_or((0.0, 0.0));
                         let query = line.local_to_canvas().transform_point(euclid::Point2D::<
                             f32,
@@ -162,7 +175,17 @@ impl Scene {
                         >::new(
                             other.0, other.1
                         ));
-                        let np = snap::nearest_outline_point(shape, query);
+                        let np = match b.anchor {
+                            Some(anchor) => {
+                                shape.local_to_canvas().transform_point(euclid::Point2D::<
+                                    f32,
+                                    crate::item::ItemLocalSpace,
+                                >::new(
+                                    anchor.0, anchor.1
+                                ))
+                            }
+                            None => snap::nearest_outline_point(shape, query),
+                        };
                         if let Some(local) = line.canvas_to_local_point(np) {
                             updates.push((line.id, last, local));
                         }
@@ -796,7 +819,11 @@ mod tests {
             0.0,
             StrokeStyle::default(),
         );
-        line.set_start_binding(Some(rect_id));
+        line.set_start_binding(Some(crate::item::EndpointBinding {
+            target: rect_id,
+            // 旧语义：无锚点（最近轮廓点回退），行为与原测试一致
+            anchor: None,
+        }));
         let line_id = line.id;
 
         let mut scene = Scene::new();
@@ -808,7 +835,13 @@ mod tests {
         scene.resolve_bindings(&[rect_id]);
 
         let line = scene.get_item(&line_id).unwrap();
-        assert_eq!(line.start_binding(), Some(rect_id));
+        assert_eq!(
+            line.start_binding(),
+            Some(crate::item::EndpointBinding {
+                target: rect_id,
+                anchor: None,
+            })
+        );
         let pts = match &line.kind {
             crate::item::ItemKind::Shape { points, .. } => points.clone(),
             _ => panic!("expected Polyline"),
@@ -817,6 +850,76 @@ mod tests {
         assert!((pts[1].0 - 300.0).abs() < 1e-3 && (pts[1].1 - 30.0).abs() < 1e-3);
         assert!((pts[0].0 - 200.0).abs() < 1.0, "start x = {}", pts[0].0);
         assert!((pts[0].1 - 30.0).abs() < 1.0, "start y = {}", pts[0].1);
+    }
+
+    /// plan #14 锚点绑定：移动矩形时端点钉在锚点（目标局部系同一点），
+    /// 不再重贴"另一端点的最近轮廓点"（否则端点沿边滑动、直线被拉成水平/垂直）。
+    #[test]
+    fn resolve_bindings_anchored_endpoint_stays_pinned() {
+        // 矩形占 [0,100]×[0,60]；线起点钉在锚点 (100, 40)（右边缘下部），
+        // 另一端在 (400, 200)（斜向下）。右移矩形 50 后锚点画布位置为 (150, 40)。
+        let rect = Item::new_shape(
+            crate::shape::ShapeType::Rectangle,
+            (100.0, 60.0),
+            0.0,
+            0.0,
+            StrokeStyle::default(),
+            None,
+        );
+        let rect_id = rect.id;
+        let mut line = Item::new_polyline(
+            vec![(100.0, 40.0), (400.0, 200.0)],
+            (0.0, 0.0),
+            None,
+            None,
+            false,
+            0.0,
+            0.0,
+            StrokeStyle::default(),
+        );
+        line.set_start_binding(Some(crate::item::EndpointBinding {
+            target: rect_id,
+            anchor: Some((100.0, 40.0)),
+        }));
+        let line_id = line.id;
+
+        let mut scene = Scene::new();
+        scene.add_item(rect);
+        scene.add_item(line);
+
+        scene.get_item_mut(&rect_id).unwrap().transform.pos += CanvasVector::new(50.0, 0.0);
+        scene.resolve_bindings(&[rect_id]);
+
+        let pts = match &scene.get_item(&line_id).unwrap().kind {
+            crate::item::ItemKind::Shape { points, .. } => points.clone(),
+            _ => panic!("expected Polyline"),
+        };
+        // 锚点 (100,40) 随矩形平移 → 画布 (150,40)；线局部无变换 → points[0]=(150,40)
+        assert!((pts[0].0 - 150.0).abs() < 1e-3, "x = {}", pts[0].0);
+        assert!((pts[0].1 - 40.0).abs() < 1e-3, "y = {}", pts[0].1);
+        // 另一端不受影响
+        assert!((pts[1].0 - 400.0).abs() < 1e-3 && (pts[1].1 - 200.0).abs() < 1e-3);
+    }
+
+    /// 旧存档兼容：`start_binding` 为纯 uuid 字符串时迁移为无锚点绑定。
+    #[test]
+    fn serde_legacy_binding_id_migrates_without_anchor() {
+        let id = uuid::Uuid::new_v4();
+        let json = format!(
+            r#"{{"Shape":{{"shape_type":"Polyline","base_size":[100.0,0.0],
+            "points":[[0.0,0.0],[100.0,0.0]],"start_arrow":null,"end_arrow":null,
+            "closed":false,"curve_type":"straight","roundness":0.0,"seed":0,
+            "sloppiness":"off","stroke":{{"color":[255,255,255,255],"width":2.0,"dash":"Solid"}},
+            "fill":null,"fill_style":"solid","start_binding":"{id}","end_binding":null}}}}"#
+        );
+        let kind: crate::item::ItemKind = serde_json::from_str(&json).unwrap();
+        match kind {
+            crate::item::ItemKind::Shape { start_binding, .. } => {
+                assert_eq!(start_binding.map(|b| b.target), Some(id));
+                assert_eq!(start_binding.and_then(|b| b.anchor), None);
+            }
+            _ => panic!("expected Shape"),
+        }
     }
 
     /// plan #5：绑定目标被删除后，DeleteItems 应清除指向它的悬空绑定。
@@ -843,7 +946,10 @@ mod tests {
             0.0,
             StrokeStyle::default(),
         );
-        line.set_start_binding(Some(rect_id));
+        line.set_start_binding(Some(crate::item::EndpointBinding {
+            target: rect_id,
+            anchor: None,
+        }));
         let line_id = line.id;
 
         let mut scene = Scene::new();

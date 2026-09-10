@@ -8,7 +8,7 @@ pub mod spaces;
 pub mod transform;
 
 pub use commands::Command;
-pub use item::{CropRect, Item, ItemId, ItemKind};
+pub use item::{CropRect, EndpointBinding, Item, ItemId, ItemKind};
 pub use scene::Scene;
 pub use shape::{
     ArrowHeadStyle, CurveType, DashStyle, FillStyle, PixmapStyle, SeededRng, ShapeType,

@@ -27,7 +27,7 @@ use preferz_core::shape::{
 };
 use preferz_core::snap;
 use preferz_core::spaces::{CanvasPoint, CanvasRect, CanvasSize, CanvasVector};
-use preferz_core::{Command, CropRect, Item, ItemId, ItemKind, Scene};
+use preferz_core::{Command, CropRect, EndpointBinding, Item, ItemId, ItemKind, Scene};
 use preferz_fileio::{PrzFile, ViewportMeta};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -444,7 +444,9 @@ pub struct PReferZApp {
     drag: DragState,
     /// 端点拖拽中暂存的绑定目标（plan #5）：拖到形状轮廓上则记 `(端点下标, 形状id)`，
     /// 释放时写入 item 的 `start_binding`/`end_binding`；拖离则记 `None`（解绑）。
-    pending_endpoint_binding: Option<(usize, ItemId)>,
+    /// 三元组：`(端点索引, 目标 id, 锚点)`——锚点为贴合点在目标局部系的坐标，
+    /// 移动目标时端点按锚点重算，钉在同一表面点（Excalidraw 语义）。
+    pending_endpoint_binding: Option<PendingEndpointBinding>,
     /// 端点吸附高亮：当前吸附到的形状 id（拖拽预览时实时更新），用于渲染高亮描边。
     snap_highlight: Option<ItemId>,
     /// 文本便签编辑状态（None = 无编辑）
@@ -510,6 +512,11 @@ enum SavePromptAction {
     /// 用户点了新建画布（Ctrl+N）
     NewCanvas,
 }
+
+/// 端点拖拽中暂存的绑定：`(端点索引, 目标 id, 锚点)`。
+type PendingEndpointBinding = (usize, ItemId, Option<(f32, f32)>);
+/// 端点吸附命中时的换算结果：`(目标 id, 线局部坐标)`。
+type SnapHitLocal = (ItemId, (f32, f32));
 
 /// 裁剪模式状态（spec §2.2 裁剪）。
 #[derive(Clone)]
@@ -1936,25 +1943,37 @@ impl PReferZApp {
                     }
                 }
 
+                // 吸附点换算：线局部坐标（直接写回 points）+ 目标局部坐标（锚点，
+                // 供 resolve_bindings 按钉点重算）。全部在可变借用前算好。
+                let (snap_anchor, snap_local): (Option<_>, Option<SnapHitLocal>) = match snap {
+                    Some((bid, sc)) => {
+                        let anchor = self
+                            .scene
+                            .get_item(&bid)
+                            .and_then(|t| t.canvas_to_local_point(sc));
+                        let local = self
+                            .scene
+                            .get_item(&item_id)
+                            .and_then(|it| it.canvas_to_local_point(sc));
+                        (Some(anchor), local.map(|l| (bid, l)))
+                    }
+                    None => (None, None),
+                };
+
                 if let Some(item) = self.scene.get_item_mut(&item_id) {
                     // 画布位移 → 局部位移（逆变换向量的平移部分自动抵消）
                     let delta_local = item
                         .local_to_canvas()
                         .inverse()
                         .map(|inv| inv.transform_vector(delta_canvas));
-                    // 吸附点换算到线局部坐标：先在此整体借用 item（不可变）算好，
-                    // 避免在 &mut item.kind 作用域内再借用 item 造成冲突。
-                    let snap_local: Option<(ItemId, (f32, f32))> = match snap {
-                        Some((bid, sc)) => item.canvas_to_local_point(sc).map(|local| (bid, local)),
-                        None => None,
-                    };
                     if let Some(delta_local) = delta_local {
                         if let ItemKind::Shape { points, .. } = &mut item.kind {
                             if let Some(p) = points.get_mut(endpoint) {
                                 match snap_local {
                                     Some((bid, local)) => {
                                         *p = local;
-                                        self.pending_endpoint_binding = Some((endpoint, bid));
+                                        self.pending_endpoint_binding =
+                                            Some((endpoint, bid, snap_anchor.flatten()));
                                         self.snap_highlight = Some(bid);
                                     }
                                     None => {
@@ -2189,11 +2208,15 @@ impl PReferZApp {
                         let mut end_new = end_old;
                         let snapped = self.pending_endpoint_binding.is_some();
                         match self.pending_endpoint_binding {
-                            Some((idx, bid)) if is_real => {
+                            Some((idx, bid, anchor)) if is_real => {
+                                let binding = Some(EndpointBinding {
+                                    target: bid,
+                                    anchor,
+                                });
                                 if idx == 0 {
-                                    start_new = Some(bid);
+                                    start_new = binding;
                                 } else {
-                                    end_new = Some(bid);
+                                    end_new = binding;
                                 }
                             }
                             None if is_real => {
