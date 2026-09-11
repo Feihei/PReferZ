@@ -368,6 +368,10 @@ pub enum Action {
     DeleteSelected,
     // 视图
     FitToScreen,
+    /// 缩放到选中元素（Excalidraw 同款 Shift+2）。
+    ZoomToSelection,
+    /// 缩放回 100%（Excalidraw 同款 Shift+3），视口中心不动。
+    Zoom100,
     TogglePresent,
     // 工具
     ToolSelect,
@@ -418,6 +422,8 @@ impl Action {
         Action::Paste,
         Action::DeleteSelected,
         Action::FitToScreen,
+        Action::ZoomToSelection,
+        Action::Zoom100,
         Action::TogglePresent,
         Action::ToolSelect,
         Action::ToolRect,
@@ -461,6 +467,9 @@ impl Action {
             // 适应画布 → 对齐 Excalidraw「缩放到适应/Zoom to fit」= Shift+1。
             // 裸 F 让给画框（见下）。
             FitToScreen => vec![KeyBind::new(Num1).shift()],
+            // 对齐 Excalidraw：Shift+2 = 缩放到选中，Shift+3 = 缩放回 100%
+            ZoomToSelection => vec![KeyBind::new(Num2).shift()],
+            Zoom100 => vec![KeyBind::new(Num3).shift()],
             TogglePresent => vec![KeyBind::new(F5)],
             // 以下 6 个工具对齐 Excalidraw：字母键 + 数字键 1–6 双绑定。
             ToolSelect => vec![KeyBind::new(V), KeyBind::new(Num1)],

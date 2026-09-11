@@ -82,7 +82,8 @@
 | 11 | ✅ 选中拖动修饰键 + Ctrl+D 原位复制 | Ctrl+拖动=复制并移动副本；Shift+拖动=水平/垂直约束（PowerPoint 风）；Ctrl+D=原位复制 | 已交付（2026-09-03）：按下即建副本；约束基准=画布轴（视口无旋转，与屏幕轴同向）；Ctrl+D 偏移 10px |
 | 12 | ✅ 最大/最小缩放限制 | 默认 100%，最小 10%（0.1x），最大 1000%（10x）；`min_zoom`/`max_zoom` 改默认值 | 已交付（2026-09-03）：默认值 0.1/10.0；`.prz` 元数据越界时 clamp |
 | 13 | ✅ 元素编组 / 解组（2026-09-08 `4033726`，待人工验收） | `Item.group_id: Option<Uuid>`（单组，持久化）；点击组成员全选、移动整体；`Ctrl+G` 编组 / `Ctrl+Shift+G` 解组 | 已拍板（G1–G4 全按倾向列）：单组；点击整组；删/拖出成员其余保持编组；组粒度复制/对齐/分布 |
-| 14 | ✅ 移动整条线贴合图形时建立端点绑定（2026-09-10 `38de45b` + 本批，待人工验收） | **锚点绑定模型**：`Option<ItemId>` → `EndpointBinding{target, anchor}`（锚点=贴合点在目标局部系坐标）；`resolve_bindings` 按锚点重算，端点钉同一表面点（修复矩形移动时端点沿边滑动、直线被拉平）；旧存档纯 uuid serde untagged 自动迁移（回退最近轮廓点）。**整线绑定**：MoveItems 预览对组内每条 Polyline 两端做 snap 查询（排除移动组自身），命中→贴边+绑定直改，未命中→端点随线自由+解绑；释放用 `MultiCommand` 打包 MoveItems + EditShapePoints，一条 undo 记录。另修复 skip_first_redo 回归（绑定字段释放直改） | 已按倾向拍板：① 整线贴合默认绑定（Excalidraw=是）✅；② 预览吸附视觉与端点编辑模式一致（同阈值/同高亮）✅；③ 端点同时贴近多目标取最近（find_snap_target 语义）✅ |
+| 14 | ✅ 移动整条线贴合图形时建立端点绑定（2026-09-10 `38de45b`/`aa928e1`，已验收 ✅） | **锚点绑定模型**：`Option<ItemId>` → `EndpointBinding{target, anchor}`（锚点=贴合点在目标局部系坐标）；`resolve_bindings` 按锚点重算，端点钉同一表面点（修复矩形移动时端点沿边滑动、直线被拉平）；旧存档纯 uuid serde untagged 自动迁移（回退最近轮廓点）。**整线绑定**：MoveItems 预览对组内每条 Polyline 两端做 snap 查询（排除移动组自身），命中→贴边+绑定直改，未命中→端点随线自由+解绑；释放用 `MultiCommand` 打包 MoveItems + EditShapePoints，一条 undo 记录。另修复 skip_first_redo 回归（绑定字段释放直改） | 已按倾向拍板：① 整线贴合默认绑定（Excalidraw=是）✅；② 预览吸附视觉与端点编辑模式一致（同阈值/同高亮）✅；③ 端点同时贴近多目标取最近（find_snap_target 语义）✅ |
+| 15 | ✅ 视口缩放套件（View all / 缩放到选中 / 100%）（2026-09-10 本批，待人工验收） | Excalidraw 同款三键：Shift+1 = Zoom to fit（**已有** `FitToScreen`，本轮确认保留）；新增 Shift+2 = 缩放到选中（`zoom_to_selection`，选中 AABB 并集 `fit_to_content`，无选中仅 flash"未选中元素"）；新增 Shift+3 = 缩放回 100%（视口中心 pan 不动，仅改 zoom）。两 Action 均入 `ALL` 列表可重绑定；i18n 补 Action 名与 flash 词条 | 已按倾向拍板：① 快捷键对齐 Excalidraw Shift+1/2/3 ✅；② Shift+2 无选中时提示而非退化成 fit all（与 Excalidraw 一致不改变视口）✅ |
 
 ### 各项细节与决策点
 

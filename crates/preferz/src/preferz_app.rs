@@ -6146,9 +6146,17 @@ impl PReferZApp {
             self.paste_from_clipboard(ctx);
         }
 
-        // 适应画布
+        // 适应画布（Excalidraw Shift+1 = Zoom to fit all）
         if self.keymap.pressed(Action::FitToScreen, ctx) {
             self.fit_to_screen();
+        }
+        // 缩放到选中（Excalidraw Shift+2）与回到 100%（Shift+3）
+        if self.keymap.pressed(Action::ZoomToSelection, ctx) {
+            self.zoom_to_selection();
+        }
+        if self.keymap.pressed(Action::Zoom100, ctx) {
+            self.viewport.zoom = 1.0; // 视口中心（pan）不动，仅改缩放
+            self.flash(t(self.lang, T::FlashZoom100).to_string());
         }
 
         // 进入裁剪模式（仅单张图片选中时）
@@ -6874,6 +6882,29 @@ impl PReferZApp {
         if let Some(b) = bbox {
             self.viewport.fit_to_content(b);
             self.flash(t(self.lang, T::FlashFitToCanvas).to_string());
+        }
+    }
+
+    /// Shift+2：缩放视口到选中元素（Excalidraw 同款 Zoom to selection）。
+    /// 无选中时仅 flash 提示，不做任何视口变更。
+    fn zoom_to_selection(&mut self) {
+        if self.scene.selection.is_empty() {
+            self.flash(t(self.lang, T::FlashNoSelection).to_string());
+            return;
+        }
+        let mut bbox: Option<preferz_core::spaces::CanvasRect> = None;
+        for id in &self.scene.selection {
+            if let Some(item) = self.scene.get_item(id) {
+                let r = item.bounding_rect();
+                bbox = Some(match bbox {
+                    Some(b) => b.union(&r),
+                    None => r,
+                });
+            }
+        }
+        if let Some(b) = bbox {
+            self.viewport.fit_to_content(b);
+            self.flash(t(self.lang, T::FlashZoomToSelection).to_string());
         }
     }
 
