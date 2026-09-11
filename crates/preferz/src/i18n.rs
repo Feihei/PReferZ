@@ -224,6 +224,15 @@ pub enum T {
     // ── 端点吸附（plan #5）──
     /// 线/箭头端点吸附到图形边缘时的提示。
     FlashSnappedToShape,
+    // ── 多边形顶点编辑（plan #4）──
+    /// Alt+单击删除顶点成功。
+    FlashVertexDeleted,
+    /// 开放折线顶点数已达下限，拒绝删除。
+    FlashVertexMinOpen,
+    /// 闭合多边形顶点数已达下限，拒绝删除。
+    FlashVertexMinClosed,
+    /// 端点拖回起点附近，自动闭合成多边形。
+    FlashPolygonClosed,
     // ── 编组/解组（plan #13）──
     /// 编组成功提示。
     FlashGrouped,
@@ -424,6 +433,10 @@ fn translate_en(key: T) -> &'static str {
         T::DistributeVCenters => "V centers",
         T::FlashDistributeNeedThree => "Distribute needs at least 3 elements",
         T::FlashSnappedToShape => "Snapped to shape",
+        T::FlashVertexDeleted => "Vertex deleted",
+        T::FlashVertexMinOpen => "An open line needs at least 2 points",
+        T::FlashVertexMinClosed => "A closed shape needs at least 3 points",
+        T::FlashPolygonClosed => "Closed into a polygon",
         T::FlashGrouped => "Grouped",
         T::FlashUngrouped => "Ungrouped",
         T::MenuGroup => "Group",
@@ -608,6 +621,10 @@ fn translate_zh(key: T) -> &'static str {
         T::DistributeVCenters => "纵向等心",
         T::FlashDistributeNeedThree => "分布需要至少 3 个元素",
         T::FlashSnappedToShape => "已吸附到图形边缘",
+        T::FlashVertexDeleted => "已删除顶点",
+        T::FlashVertexMinOpen => "开放折线至少保留 2 个顶点",
+        T::FlashVertexMinClosed => "闭合多边形至少保留 3 个顶点",
+        T::FlashPolygonClosed => "已闭合成多边形",
         T::FlashGrouped => "已编组",
         T::FlashUngrouped => "已解组",
         T::MenuGroup => "编组",

@@ -110,9 +110,12 @@ impl Command for TransformItem {
 /// 拖拽端点时 UI 已直接改到 item 上，push 时跳过首次 redo。
 ///
 /// 端点吸附（plan #5）会同时改变端点绑定：通过 [`EditShapePoints::with_binding_change`]
-/// 传入起/终点的 old/new 绑定。字段为 `Option<Option<ItemId>>`——外层 `None` 表示该
+/// 传入起/终点的 old/new 绑定。字段为 `Option<Option<EndpointBinding>>`——外层 `None` 表示该
 /// 端点本次无绑定变更（保持原值），外层 `Some`、内层 `None` 表示解绑，内层 `Some(id)`
 /// 表示绑到 `id`。这样整次端点拖拽只占一条 undo 记录。
+///
+/// plan #4：顶点删除 / Alt+拖端点延伸 / 端点拖回起点自动闭合都会顺带改 `closed`，
+/// 用 [`EditShapePoints::with_closed`] 记录 old/new，与点变更同占一条 undo。
 pub struct EditShapePoints {
     item_id: ItemId,
     old_points: Vec<(f32, f32)>,
@@ -121,6 +124,8 @@ pub struct EditShapePoints {
     old_end_binding: Option<Option<EndpointBinding>>,
     new_start_binding: Option<Option<EndpointBinding>>,
     new_end_binding: Option<Option<EndpointBinding>>,
+    old_closed: Option<bool>,
+    new_closed: Option<bool>,
 }
 
 impl EditShapePoints {
@@ -133,6 +138,8 @@ impl EditShapePoints {
             old_end_binding: None,
             new_start_binding: None,
             new_end_binding: None,
+            old_closed: None,
+            new_closed: None,
         }
     }
 
@@ -151,6 +158,14 @@ impl EditShapePoints {
         self.new_end_binding = Some(end_new);
         self
     }
+
+    /// 记录 `closed` 变更（plan #4 端点拖回起点自动闭合 / 删除顶点导致的退化）。
+    /// UI 预览阶段已直改 item，push 后首次 redo 跳过；redo/undo 时随点集一并写回。
+    pub fn with_closed(mut self, old_closed: bool, new_closed: bool) -> Self {
+        self.old_closed = Some(old_closed);
+        self.new_closed = Some(new_closed);
+        self
+    }
 }
 
 impl Command for EditShapePoints {
@@ -160,6 +175,7 @@ impl Command for EditShapePoints {
             if let ItemKind::Shape {
                 start_binding,
                 end_binding,
+                closed,
                 ..
             } = &mut item.kind
             {
@@ -168,6 +184,9 @@ impl Command for EditShapePoints {
                 }
                 if let Some(b) = self.new_end_binding {
                     *end_binding = b;
+                }
+                if let Some(c) = self.new_closed {
+                    *closed = c;
                 }
             }
         }
@@ -179,6 +198,7 @@ impl Command for EditShapePoints {
             if let ItemKind::Shape {
                 start_binding,
                 end_binding,
+                closed,
                 ..
             } = &mut item.kind
             {
@@ -187,6 +207,9 @@ impl Command for EditShapePoints {
                 }
                 if let Some(b) = self.old_end_binding {
                     *end_binding = b;
+                }
+                if let Some(c) = self.old_closed {
+                    *closed = c;
                 }
             }
         }
@@ -1878,6 +1901,43 @@ mod tests {
         cmd.undo(&mut scene);
         assert!(!closed_of(&scene, a));
         assert!(!closed_of(&scene, b));
+    }
+
+    #[test]
+    fn edit_shape_points_with_closed_roundtrips_points_and_flag() {
+        // plan #4：端点拖回起点自动闭合 = 点集 + closed 同占一条命令，
+        // redo/undo 必须两者一起生效/还原。
+        let mut scene = Scene::new();
+        let item = Item::new_polyline(
+            vec![(0.0, 0.0), (50.0, 0.0), (50.0, 50.0)],
+            (50.0, 50.0),
+            None,
+            None,
+            false,
+            0.0,
+            0.0,
+            StrokeStyle::default(),
+        );
+        let id = item.id;
+        scene.add_item(item);
+        let mut cmd = EditShapePoints::new(
+            id,
+            vec![(0.0, 0.0), (50.0, 0.0), (50.0, 50.0)],
+            vec![(0.0, 0.0), (50.0, 0.0), (2.0, 3.0)],
+        )
+        .with_closed(false, true);
+        cmd.redo(&mut scene);
+        assert!(closed_of(&scene, id), "redo 应同时写 closed");
+        match &scene.get_item(&id).unwrap().kind {
+            ItemKind::Shape { points, .. } => assert_eq!(points[2], (2.0, 3.0)),
+            _ => panic!("expected Shape kind"),
+        }
+        cmd.undo(&mut scene);
+        assert!(!closed_of(&scene, id), "undo 应还原 closed");
+        match &scene.get_item(&id).unwrap().kind {
+            ItemKind::Shape { points, .. } => assert_eq!(points[2], (50.0, 50.0)),
+            _ => panic!("expected Shape kind"),
+        }
     }
 
     #[test]

@@ -169,6 +169,10 @@ enum DragState {
         start_points: Vec<(f32, f32)>,
         /// 被拖顶点在拖拽开始时的位置（加点拖拽时即段中点）。
         base_pos: (f32, f32),
+        /// plan #4：Alt+按在**真实端点**（0/末点）上进入"延伸"模式——预览越过
+        /// 触发阈值时在该端外侧插入一个复制顶点（原端点变成中间顶点），随后拖的
+        /// 是新点；未越阈值就释放 = Alt+单击 → 删除所点顶点。
+        alt_extend: bool,
     },
     /// 用 Frame 工具拖拽创建画框（两点式：start → current）。
     CreatingFrame {
@@ -976,6 +980,28 @@ const FLASH_DURATION_MS: u128 = 2500;
 /// 与 Excalidraw 的吸附闭合一致；多段线阶段起作用，两点式下仅覆盖短拖拽。
 const POLYLINE_CLOSE_DISTANCE: f32 = 8.0;
 
+/// plan #4：Alt+拖端点进入"延伸"的移动触发阈值（屏幕像素）。越过前按普通端点
+/// 拖拽处理；越阈瞬间在该端外侧插入复制顶点。取小值避免与 Alt+单击删除（=删除
+/// 顶点手势）互相误触。
+const EXTEND_TRIGGER_PX: f32 = 4.0;
+
+/// plan #4：端点拖拽释放时是否自动闭合成多边形。判定与 Excalidraw `isPathALoop`
+/// 同式：≥3 顶点、被拖的是**真实端点**（0/末点）、首尾画布距离 × zoom ≤
+/// [`POLYLINE_CLOSE_DISTANCE`]（即屏幕 8px，缩放不改变手感）。开放态专用；
+/// 是否 `closed` 由调用方判断。
+fn should_auto_close(points: &[(f32, f32)], endpoint: usize, zoom: f32) -> bool {
+    let last = match points.len().checked_sub(1) {
+        Some(l) if points.len() >= 3 => l,
+        _ => return false,
+    };
+    if endpoint != 0 && endpoint != last {
+        return false;
+    }
+    let dx = points[0].0 - points[last].0;
+    let dy = points[0].1 - points[last].1;
+    (dx * dx + dy * dy).sqrt() * zoom <= POLYLINE_CLOSE_DISTANCE
+}
+
 impl eframe::App for PReferZApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // 每帧重置连续编辑标记；本帧结束时据此决定是否结算待合并的拖拽编辑（Phase H）。
@@ -1435,7 +1461,8 @@ impl eframe::App for PReferZApp {
                 if let Some(pos) = pointer_pos {
                     let additive = ctx.input(|i| i.modifiers.shift);
                     let free_scale = ctx.input(|i| i.modifiers.ctrl);
-                    self.begin_drag(pos, additive, free_scale);
+                    let alt = ctx.input(|i| i.modifiers.alt);
+                    self.begin_drag(pos, additive, free_scale, alt);
                 }
             }
 
@@ -1525,7 +1552,66 @@ impl eframe::App for PReferZApp {
 // ─────────────────────────── 拖拽逻辑 ───────────────────────────
 
 impl PReferZApp {
-    fn begin_drag(&mut self, screen_pos: egui::Pos2, additive: bool, free_scale: bool) {
+    /// plan #4：Alt+单击删除顶点。守卫：开放折线保 ≥2、闭合多边形保 ≥3 顶点
+    /// （再删退化到无法成形），不满足时 flash 拒绝。删首/尾顶点连带解除该端
+    /// 绑定（中间顶点不涉绑定）。预览直改 + `EditShapePoints`（恒 skip_first_redo）
+    /// 入 undo 栈，一步可撤。
+    fn try_delete_vertex(&mut self, item_id: ItemId, idx: usize) {
+        let (old_points, closed, so, eo) = match self.scene.get_item(&item_id) {
+            Some(item) => match &item.kind {
+                ItemKind::Shape {
+                    points,
+                    closed,
+                    start_binding,
+                    end_binding,
+                    ..
+                } => (points.clone(), *closed, *start_binding, *end_binding),
+                _ => return,
+            },
+            None => return,
+        };
+        let n = old_points.len();
+        let min = if closed { 3 } else { 2 };
+        if n <= min {
+            self.flash(if closed {
+                t(self.lang, T::FlashVertexMinClosed)
+            } else {
+                t(self.lang, T::FlashVertexMinOpen)
+            });
+            return;
+        }
+        let last = n - 1;
+        let binding_touched = idx == 0 || idx == last;
+        let mut new_points = old_points.clone();
+        new_points.remove(idx);
+        let sn = if idx == 0 { None } else { so };
+        let en = if idx == last { None } else { eo };
+        // 预览直改（命令 skip_first_redo 恒 true，push 不再重放 redo）
+        if let Some(item) = self.scene.get_item_mut(&item_id) {
+            if let ItemKind::Shape {
+                start_binding,
+                end_binding,
+                ..
+            } = &mut item.kind
+            {
+                if idx == 0 {
+                    *start_binding = None;
+                }
+                if idx == last {
+                    *end_binding = None;
+                }
+            }
+            item.kind.set_line_points(new_points.clone());
+        }
+        let mut cmd = EditShapePoints::new(item_id, old_points, new_points);
+        if binding_touched {
+            cmd = cmd.with_binding_change(so, sn, eo, en);
+        }
+        self.push_cmd(Box::new(cmd));
+        self.flash(t(self.lang, T::FlashVertexDeleted));
+    }
+
+    fn begin_drag(&mut self, screen_pos: egui::Pos2, additive: bool, free_scale: bool, alt: bool) {
         // 文本编辑中不启动拖拽
         if self.editing_text.is_some() {
             return;
@@ -1637,12 +1723,20 @@ impl PReferZApp {
                     show_rotate,
                 );
                 if h != Handle::None {
-                    // 线性对象顶点控制点：进入端点拖拽（预览直接改 points）
+                    // 线性对象顶点控制点：进入端点拖拽（预览直接改 points）。
+                    // plan #4：Alt+单击内部顶点 → 按下即删；Alt+按在真实端点
+                    // （0/末点）→ 延伸模式（越阈追加 / 未越阈释放=单击删除）。
                     if let Handle::Endpoint(endpoint) = h {
                         let start_points = match &item.kind {
                             ItemKind::Shape { points, .. } => points.clone(),
                             _ => Vec::new(),
                         };
+                        let n = start_points.len();
+                        let is_real = n > 0 && (endpoint == 0 || endpoint == n - 1);
+                        if alt && !is_real {
+                            self.try_delete_vertex(item.id, endpoint);
+                            return;
+                        }
                         let base_pos = start_points.get(endpoint).copied().unwrap_or((0.0, 0.0));
                         let start_canvas = self.viewport.screen_to_canvas(screen_pos);
                         self.drag = DragState::LineEndpoint {
@@ -1651,6 +1745,7 @@ impl PReferZApp {
                             start_canvas,
                             start_points,
                             base_pos,
+                            alt_extend: alt && is_real,
                         };
                         self.transform_handles.active_handle = h;
                         self.transform_handles.is_dragging = true;
@@ -1687,6 +1782,7 @@ impl PReferZApp {
                                 start_canvas,
                                 start_points,
                                 base_pos: mid,
+                                alt_extend: false,
                             };
                             self.transform_handles.active_handle = h;
                             self.transform_handles.is_dragging = true;
@@ -1860,6 +1956,55 @@ impl PReferZApp {
             }
         }
 
+        // plan #4：Alt+拖端点"延伸"的延迟启动——越过移动阈值前按普通端点拖拽
+        // 处理；越阈瞬间在该端外侧插入一个复制顶点（原端点变成中间顶点），随后
+        // 拖的是新点。是否已插入用 start_points 与当前点集的数量差判定，不引入
+        // 额外交互状态；中途松开 Alt 不撤销延伸（保持简洁，与 Excalidraw 的
+        // uncommitted 点丢弃语义不同）。
+        {
+            let mut armed: Option<(ItemId, usize, usize, (f32, f32))> = None; // (线, 端点, 原点数, base_pos)
+            if let DragState::LineEndpoint {
+                item_id,
+                endpoint,
+                start_canvas,
+                start_points,
+                base_pos,
+                alt_extend: true,
+            } = &self.drag
+            {
+                let cur = self.viewport.screen_to_canvas(screen_pos);
+                let moved =
+                    (cur - *start_canvas).length() >= EXTEND_TRIGGER_PX / self.viewport.zoom;
+                if moved {
+                    let not_appended_yet = self.scene.get_item(item_id).is_some_and(|it| {
+                        !matches!(&it.kind, ItemKind::Shape { points, .. }
+                            if points.len() > start_points.len())
+                    });
+                    if not_appended_yet {
+                        armed = Some((*item_id, *endpoint, start_points.len(), *base_pos));
+                    }
+                }
+            }
+            if let Some((item_id, endpoint, n_old, base_pos)) = armed {
+                let prepend = endpoint == 0;
+                if let Some(it) = self.scene.get_item_mut(&item_id) {
+                    if let ItemKind::Shape { points, .. } = &mut it.kind {
+                        if prepend {
+                            points.insert(0, base_pos);
+                        } else {
+                            points.push(base_pos);
+                        }
+                    }
+                }
+                if !prepend {
+                    // 末点侧：被拖下标改到新插入的复制点（= 原点数）；0 侧仍拖 index 0
+                    if let DragState::LineEndpoint { endpoint: e, .. } = &mut self.drag {
+                        *e = n_old;
+                    }
+                }
+            }
+        }
+
         match &self.drag {
             DragState::HandleTransform {
                 item_id,
@@ -2019,13 +2164,25 @@ impl PReferZApp {
                 item_id,
                 endpoint,
                 start_canvas,
-                start_points: _,
+                start_points,
                 base_pos,
+                alt_extend,
             } => {
                 let item_id = *item_id;
                 let endpoint = *endpoint;
                 let start_canvas = *start_canvas;
                 let base_pos = *base_pos;
+                // plan #4：Alt 延伸尚未触发（还没插入复制点）时不动原端点——
+                // Alt+单击删除不该因几像素抖动被误当"微调端点"提交。
+                if *alt_extend {
+                    let appended = self.scene.get_item(&item_id).is_some_and(|it| {
+                        matches!(&it.kind, ItemKind::Shape { points, .. }
+                            if points.len() > start_points.len())
+                    });
+                    if !appended {
+                        return;
+                    }
+                }
                 let current_canvas = self.viewport.screen_to_canvas(screen_pos);
                 let delta_canvas = current_canvas - start_canvas;
 
@@ -2333,20 +2490,28 @@ impl PReferZApp {
                 start_canvas: _,
                 start_points,
                 base_pos,
+                alt_extend,
             } => {
                 // 预览已直接改 points；释放时若有变化则固化到 undo 栈
-                let new_points = match self.scene.get_item(&item_id) {
+                let mut new_points = match self.scene.get_item(&item_id) {
                     Some(item) => match &item.kind {
                         ItemKind::Shape { points, .. } => points.clone(),
                         _ => Vec::new(),
                     },
                     None => Vec::new(),
                 };
-                if !new_points.is_empty() && new_points != start_points {
+                if alt_extend && new_points == start_points {
+                    // plan #4：Alt+按在端点上未越过延伸阈值即释放 = Alt+单击 →
+                    // 删除该顶点（守卫在 try_delete_vertex 内：开放 ≥2 / 闭合 ≥3）。
+                    if !new_points.is_empty() {
+                        self.try_delete_vertex(item_id, endpoint);
+                    }
+                } else if !new_points.is_empty() && new_points != start_points {
                     if new_points.len() != start_points.len()
                         && new_points.get(endpoint) == Some(&base_pos)
                     {
                         // 点击了段中点但未拖动：移除插入的顶点，不产生空命令
+                        // （Alt 延伸越阈后又精确拖回 base 的罕见情形同样落在此清理）
                         if let Some(item) = self.scene.get_item_mut(&item_id) {
                             if let ItemKind::Shape { points, .. } = &mut item.kind {
                                 if points.len() == new_points.len() {
@@ -2358,36 +2523,77 @@ impl PReferZApp {
                         // 仅真实端点（0 / 末点）涉及绑定；内部顶点拖拽保持原绑定。
                         let last = new_points.len().saturating_sub(1);
                         let is_real = endpoint == 0 || endpoint == last;
-                        let (start_old, end_old) = {
+                        let (start_old, end_old, open_now) = {
                             let it = self.scene.get_item(&item_id);
                             let sb = it.and_then(|i| i.start_binding());
                             let eb = it.and_then(|i| i.end_binding());
-                            (sb, eb)
+                            let open = matches!(
+                                it.map(|i| &i.kind),
+                                Some(ItemKind::Shape { closed: false, .. })
+                            );
+                            (sb, eb, open)
                         };
+                        // plan #4：端点拖回起点附近释放 → 自动闭合成多边形
+                        // （≥3 顶点、首尾距 ≤ 屏幕 8px；Excalidraw isPathALoop 同式）。
+                        let will_close = open_now
+                            && is_real
+                            && should_auto_close(&new_points, endpoint, self.viewport.zoom);
                         let mut start_new = start_old;
                         let mut end_new = end_old;
                         let snapped = self.pending_endpoint_binding.is_some();
-                        match self.pending_endpoint_binding {
-                            Some((idx, bid, anchor)) if is_real => {
-                                let binding = Some(EndpointBinding {
-                                    target: bid,
-                                    anchor,
-                                });
-                                if idx == 0 {
-                                    start_new = binding;
-                                } else {
-                                    end_new = binding;
+                        if will_close {
+                            // 闭合优先于吸附：被拖端点吸附至对端、该端解绑；
+                            // closed 与点集经 with_closed 同占一条 undo。
+                            if let Some(item) = self.scene.get_item_mut(&item_id) {
+                                if let ItemKind::Shape {
+                                    points,
+                                    closed,
+                                    start_binding,
+                                    end_binding,
+                                    ..
+                                } = &mut item.kind
+                                {
+                                    let l = points.len().saturating_sub(1);
+                                    if l >= 2 {
+                                        let src = if endpoint == 0 { points[l] } else { points[0] };
+                                        if let Some(p) = points.get_mut(endpoint) {
+                                            *p = src;
+                                        }
+                                        *closed = true;
+                                        if endpoint == 0 {
+                                            *start_binding = None;
+                                            start_new = None;
+                                        } else {
+                                            *end_binding = None;
+                                            end_new = None;
+                                        }
+                                        new_points = points.clone();
+                                    }
                                 }
                             }
-                            None if is_real => {
-                                // 拖离形状 → 解除该端点绑定
-                                if endpoint == 0 {
-                                    start_new = None;
-                                } else {
-                                    end_new = None;
+                        } else {
+                            match self.pending_endpoint_binding {
+                                Some((idx, bid, anchor)) if is_real => {
+                                    let binding = Some(EndpointBinding {
+                                        target: bid,
+                                        anchor,
+                                    });
+                                    if idx == 0 {
+                                        start_new = binding;
+                                    } else {
+                                        end_new = binding;
+                                    }
                                 }
+                                None if is_real => {
+                                    // 拖离形状 → 解除该端点绑定
+                                    if endpoint == 0 {
+                                        start_new = None;
+                                    } else {
+                                        end_new = None;
+                                    }
+                                }
+                                _ => {}
                             }
-                            _ => {}
                         }
                         // 绑定写入必须在此"预览直改"：EditShapePoints 的
                         // skip_first_redo=true 会跳过 push 后的首次 redo，而
@@ -2407,8 +2613,15 @@ impl PReferZApp {
                         }
                         let cmd = EditShapePoints::new(item_id, start_points, new_points)
                             .with_binding_change(start_old, start_new, end_old, end_new);
+                        let cmd = if will_close {
+                            cmd.with_closed(false, true)
+                        } else {
+                            cmd
+                        };
                         self.push_cmd(Box::new(cmd));
-                        if snapped {
+                        if will_close {
+                            self.flash(t(self.lang, T::FlashPolygonClosed));
+                        } else if snapped {
                             self.flash(t(self.lang, T::FlashSnappedToShape));
                         }
                     }
@@ -5849,6 +6062,112 @@ mod tests {
             "非多边形状态应原样保留，不能被吞掉"
         );
         assert!(app.scene.items.is_empty());
+    }
+
+    // ───────── 多边形顶点编辑（plan #4） ─────────
+
+    /// 放入一条 Polyline（局部点集从 (0,0) 起算，pos=0），返回应用与 item id。
+    fn app_with_polyline(points: Vec<(f32, f32)>, closed: bool) -> (PReferZApp, ItemId) {
+        let mut app = PReferZApp::new();
+        let min_x = points.iter().map(|p| p.0).fold(f32::MAX, f32::min);
+        let min_y = points.iter().map(|p| p.1).fold(f32::MAX, f32::min);
+        let max_x = points.iter().map(|p| p.0).fold(f32::MIN, f32::max);
+        let max_y = points.iter().map(|p| p.1).fold(f32::MIN, f32::max);
+        let item = Item::new_polyline(
+            points,
+            (max_x - min_x, max_y - min_y),
+            None,
+            None,
+            closed,
+            0.0,
+            0.0,
+            StrokeStyle::default(),
+        );
+        let id = item.id;
+        app.scene.add_item(item);
+        (app, id)
+    }
+
+    fn polyline_points(app: &PReferZApp, id: ItemId) -> Vec<(f32, f32)> {
+        match &app.scene.get_item(&id).unwrap().kind {
+            ItemKind::Shape { points, .. } => points.clone(),
+            _ => panic!("应为 Shape"),
+        }
+    }
+
+    #[test]
+    fn should_auto_close_requires_three_points_real_endpoint_and_screen_threshold() {
+        let looped = vec![(0.0, 0.0), (50.0, 0.0), (1.0, 1.0)];
+        assert!(
+            should_auto_close(&looped, 2, 1.0),
+            "末点拖回首点附近 → 闭合"
+        );
+        assert!(should_auto_close(&looped, 0, 1.0), "首点侧同样判定");
+        assert!(!should_auto_close(&looped, 1, 1.0), "内部顶点不参与闭合");
+        let two = vec![(0.0, 0.0), (1.0, 0.0)];
+        assert!(!should_auto_close(&two, 1, 1.0), "两点恒开放");
+        // 阈值按屏幕像素：zoom=4 时画布 1.5px ≈ 屏 6px 过；3px = 屏 12px 不过
+        let near = vec![(0.0, 0.0), (50.0, 0.0), (1.5, 0.0)];
+        assert!(should_auto_close(&near, 2, 4.0));
+        let far = vec![(0.0, 0.0), (50.0, 0.0), (3.0, 0.0)];
+        assert!(!should_auto_close(&far, 2, 4.0));
+    }
+
+    #[test]
+    fn delete_vertex_guard_keeps_minimum_points() {
+        // 两点开放线删端点：拒绝、不入 undo 栈、有 flash
+        let (mut app, id) = app_with_polyline(vec![(0.0, 0.0), (50.0, 0.0)], false);
+        app.try_delete_vertex(id, 0);
+        assert!(app.undo_stack.undo.is_empty(), "守卫失败不应产生命令");
+        assert_eq!(polyline_points(&app, id).len(), 2);
+        assert!(app.flash_status.is_some(), "应提示拒绝原因");
+        // 闭合三角形删顶点：拒绝（保 ≥3）
+        let (mut app, id) = app_with_polyline(vec![(0.0, 0.0), (50.0, 0.0), (25.0, 40.0)], true);
+        app.try_delete_vertex(id, 1);
+        assert!(app.undo_stack.undo.is_empty());
+        assert_eq!(polyline_points(&app, id).len(), 3);
+        // 开放三点删中间点：成功剩两点，一步 undo 还原
+        let (mut app, id) = app_with_polyline(vec![(0.0, 0.0), (25.0, 10.0), (50.0, 0.0)], false);
+        app.try_delete_vertex(id, 1);
+        assert_eq!(app.undo_stack.undo.len(), 1);
+        assert_eq!(polyline_points(&app, id), vec![(0.0, 0.0), (50.0, 0.0)]);
+        assert!(app.perform_undo());
+        assert_eq!(polyline_points(&app, id).len(), 3);
+    }
+
+    #[test]
+    fn delete_endpoint_vertex_clears_its_binding_and_undoes() {
+        let (mut app, line_id) =
+            app_with_polyline(vec![(0.0, 0.0), (25.0, 10.0), (50.0, 0.0)], false);
+        let (target_app, target_id) = app_with_polyline(vec![(0.0, 0.0), (10.0, 10.0)], false);
+        drop(target_app); // 只取一个 id 作绑定目标占位
+        if let Some(it) = app.scene.get_item_mut(&line_id) {
+            if let ItemKind::Shape { start_binding, .. } = &mut it.kind {
+                *start_binding = Some(EndpointBinding {
+                    target: target_id,
+                    anchor: None,
+                });
+            }
+        }
+        app.try_delete_vertex(line_id, 0);
+        if let Some(it) = app.scene.get_item(&line_id) {
+            if let ItemKind::Shape { start_binding, .. } = &it.kind {
+                assert!(start_binding.is_none(), "删首顶点应解除起点绑定");
+            }
+        }
+        assert!(app.perform_undo());
+        if let Some(it) = app.scene.get_item(&line_id) {
+            if let ItemKind::Shape { start_binding, .. } = &it.kind {
+                assert_eq!(
+                    *start_binding,
+                    Some(EndpointBinding {
+                        target: target_id,
+                        anchor: None,
+                    }),
+                    "undo 应连同绑定一起还原"
+                );
+            }
+        }
     }
 }
 
