@@ -1,6 +1,6 @@
 use crate::i18n::{t, Lang, T};
 use crate::interaction;
-use crate::keymap::{Action, Keymap, KeymapMap};
+use crate::keymap::{Action, BindKey, KeyBind, Keymap, KeymapMap};
 use crate::theme::{self, ThemeMode};
 use crate::ui::stylers::{build_shape_visuals, item_local_to_screen};
 use crate::ui::widgets::palette;
@@ -1000,6 +1000,53 @@ fn should_auto_close(points: &[(f32, f32)], endpoint: usize, zoom: f32) -> bool 
     let dx = points[0].0 - points[last].0;
     let dy = points[0].1 - points[last].1;
     (dx * dx + dy * dy).sqrt() * zoom <= POLYLINE_CLOSE_DISTANCE
+}
+
+/// plan #7：流程图创建/导航的方向（方向键语义）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FlowDir {
+    Up,
+    Right,
+    Down,
+    Left,
+}
+
+impl FlowDir {
+    fn opposite(self) -> Self {
+        match self {
+            FlowDir::Up => FlowDir::Down,
+            FlowDir::Down => FlowDir::Up,
+            FlowDir::Left => FlowDir::Right,
+            FlowDir::Right => FlowDir::Left,
+        }
+    }
+
+    /// 从**实际命中**的绑定取方向（plan #7 两动作各共用一个 Action、四方向键
+    /// 多绑定）。改绑到非方向键时无方向可解释 → `None`（调用方静默忽略）。
+    fn from_bind(bind: &KeyBind) -> Option<Self> {
+        Some(match bind.key {
+            BindKey::ArrowUp => Self::Up,
+            BindKey::ArrowDown => Self::Down,
+            BindKey::ArrowLeft => Self::Left,
+            BindKey::ArrowRight => Self::Right,
+            _ => return None,
+        })
+    }
+}
+
+/// plan #7：流程图主轴间距（新节点边到源边，画布 px）。对齐 Excalidraw
+/// `VERTICAL_OFFSET`/`HORIZONTAL_OFFSET` = 100。
+const FLOWCHART_GAP: f32 = 100.0;
+
+/// 包围盒（w×h，局部坐标）朝向 `dir` 的**边中点**——同时用作端点绑定锚点
+/// （目标局部系）与连接箭头端点的局部位置。
+fn edge_anchor_local(dir: FlowDir, w: f32, h: f32) -> (f32, f32) {
+    match dir {
+        FlowDir::Right => (w, h / 2.0),
+        FlowDir::Left => (0.0, h / 2.0),
+        FlowDir::Down => (w / 2.0, h),
+        FlowDir::Up => (w / 2.0, 0.0),
+    }
 }
 
 impl eframe::App for PReferZApp {
@@ -6169,6 +6216,148 @@ mod tests {
             }
         }
     }
+
+    // ───────── 流程图（plan #7） ─────────
+
+    fn app_with_rect(pos: (f32, f32), size: (f32, f32)) -> (PReferZApp, ItemId) {
+        let mut app = PReferZApp::new();
+        let item = Item::new_shape(
+            ShapeType::Rectangle,
+            size,
+            pos.0,
+            pos.1,
+            StrokeStyle::default(),
+            None,
+        );
+        let id = item.id;
+        app.scene.add_item(item);
+        app.scene.select(id);
+        (app, id)
+    }
+
+    #[test]
+    fn edge_anchor_local_gives_facing_edge_midpoints() {
+        assert_eq!(
+            edge_anchor_local(FlowDir::Right, 120.0, 80.0),
+            (120.0, 40.0)
+        );
+        assert_eq!(edge_anchor_local(FlowDir::Left, 120.0, 80.0), (0.0, 40.0));
+        assert_eq!(edge_anchor_local(FlowDir::Down, 120.0, 80.0), (60.0, 80.0));
+        assert_eq!(edge_anchor_local(FlowDir::Up, 120.0, 80.0), (60.0, 0.0));
+    }
+
+    #[test]
+    fn add_connected_shape_creates_bound_clone_with_one_undo_step() {
+        let (mut app, src_id) = app_with_rect((10.0, 10.0), (120.0, 80.0));
+        app.add_connected_shape(FlowDir::Right);
+
+        assert_eq!(app.scene.items.len(), 3, "应新增节点+箭头各一");
+        let src = app.scene.get_item(&src_id).unwrap().clone();
+        let dup = app
+            .scene
+            .items
+            .iter()
+            .find(|i| {
+                i.id != src_id
+                    && matches!(
+                        i.kind,
+                        ItemKind::Shape {
+                            shape_type: ShapeType::Rectangle,
+                            ..
+                        }
+                    )
+            })
+            .expect("克隆的矩形节点")
+            .clone();
+        let arrow = app
+            .scene
+            .items
+            .iter()
+            .find(|i| {
+                matches!(
+                    i.kind,
+                    ItemKind::Shape {
+                        shape_type: ShapeType::Polyline,
+                        ..
+                    }
+                )
+            })
+            .expect("连接箭头")
+            .clone();
+        assert_ne!(dup.id, src.id);
+        // 主轴 = 源右边界 + 100 间距；交叉轴（同尺寸克隆）即 y 不变。
+        assert_eq!((dup.transform.pos.x, dup.transform.pos.y), (230.0, 10.0));
+        // 箭头：起点=源右边中点 (130,50)，终点=克隆左边中点 (230,50)，
+        // 局部点集对齐 AABB 左上角；端头 = Arrow。
+        match &arrow.kind {
+            ItemKind::Shape {
+                points,
+                base_size,
+                end_arrow,
+                start_binding,
+                end_binding,
+                ..
+            } => {
+                assert_eq!(
+                    (arrow.transform.pos.x, arrow.transform.pos.y),
+                    (130.0, 50.0)
+                );
+                assert_eq!(*points, vec![(0.0, 0.0), (100.0, 0.0)]);
+                assert_eq!(*base_size, (100.0, 0.0));
+                assert_eq!(*end_arrow, Some(ArrowHeadStyle::Arrow));
+                assert_eq!(
+                    start_binding.as_ref().map(|b| (b.target, b.anchor)),
+                    Some((src_id, Some((120.0, 40.0))))
+                );
+                assert_eq!(
+                    end_binding.as_ref().map(|b| (b.target, b.anchor)),
+                    Some((dup.id, Some((0.0, 40.0))))
+                );
+            }
+            _ => unreachable!(),
+        }
+        // z 序：箭头在两者之上；选区 = 新节点（连按可接链）。
+        assert!(arrow.z > dup.z && arrow.z > src.z);
+        assert_eq!(app.scene.selection.len(), 1);
+        assert!(app.scene.selection.contains(&dup.id));
+        // 一条 undo 撤回整对；redo 恢复。
+        assert_eq!(app.undo_stack.undo.len(), 1);
+        assert!(app.perform_undo());
+        assert_eq!(app.scene.items.len(), 1);
+        assert!(app.perform_redo());
+        assert_eq!(app.scene.items.len(), 3);
+    }
+
+    #[test]
+    fn add_connected_shape_ignores_non_node_selection() {
+        // 线性对象（Polyline）不作源（对齐 Excalidraw isFlowchartNodeElement），
+        // 静默：不加 item、不入 undo。
+        let (mut app, line_id) = app_with_polyline(vec![(0.0, 0.0), (50.0, 0.0)], false);
+        app.scene.deselect_all();
+        app.scene.select(line_id);
+        app.add_connected_shape(FlowDir::Right);
+        assert_eq!(app.scene.items.len(), 1);
+        assert!(app.undo_stack.undo.is_empty());
+    }
+
+    #[test]
+    fn navigate_connected_jumps_along_bound_arrows() {
+        let (mut app, src_id) = app_with_rect((10.0, 10.0), (120.0, 80.0));
+        app.add_connected_shape(FlowDir::Right); // 选区已在 dup 上
+        let dup_id = *app.scene.selection.iter().next().unwrap();
+        let undo_len = app.undo_stack.undo.len(); // 创建本身占 1 条
+
+        // 从 dup 向左回到 src；从 src 向右到 dup。
+        app.navigate_connected(FlowDir::Left);
+        assert_eq!(app.scene.selection.len(), 1);
+        assert!(app.scene.selection.contains(&src_id));
+        app.navigate_connected(FlowDir::Right);
+        assert!(app.scene.selection.contains(&dup_id));
+        // 无该方向邻居：选区保持不动（不产生命令、不清选区）。
+        app.navigate_connected(FlowDir::Up);
+        assert!(app.scene.selection.contains(&dup_id));
+        assert_eq!(app.undo_stack.undo.len(), undo_len, "导航不应新增命令");
+    }
 }
 
 /// 缩放手柄：以拖拽角点的对角为锚点
@@ -6431,6 +6620,19 @@ impl PReferZApp {
         }
         if self.keymap.pressed(Action::Ungroup, ctx) {
             self.ungroup_selected();
+        }
+
+        // 流程图（plan #7，Excalidraw 同款）：Ctrl+方向=沿该向克隆连接节点+
+        // 绑定箭头；Alt+方向=沿连接跳邻居。方向取自实际命中的绑定键（可改绑）。
+        if let Some(bind) = self.keymap.pressed_bind(Action::AddConnectedShape, ctx) {
+            if let Some(dir) = FlowDir::from_bind(&bind) {
+                self.add_connected_shape(dir);
+            }
+        }
+        if let Some(bind) = self.keymap.pressed_bind(Action::NavigateConnected, ctx) {
+            if let Some(dir) = FlowDir::from_bind(&bind) {
+                self.navigate_connected(dir);
+            }
         }
 
         let do_undo = self.keymap.pressed(Action::Undo, ctx);
@@ -7147,6 +7349,136 @@ impl PReferZApp {
         }
         self.push_cmd(Box::new(AddItems::new(dups).with_preview_applied(true)));
         self.flash(fill(t(self.lang, T::FlashDuplicated), &[n.to_string()]));
+    }
+
+    /// plan #7：流程图节点创建（`Ctrl+方向`，单选矩形/椭圆/菱形时）。沿该向
+    /// 克隆一个**同源同风格**节点（主轴 = 源边界 + [`FLOWCHART_GAP`]，交叉轴
+    /// 中心对齐——同尺寸克隆时偏移天然实现；不复制绑定文字），并连一条两端
+    /// 绑定的**直箭头**（本仓库无 elbow）：anchor=各自朝向对方的边中点、初始
+    /// 端点即该锚点画布位置，与 `resolve_bindings` 重算结果一致，后续移动形状
+    /// 箭头自动跟随。按下即提交：新节点+箭头 `AddItems` 一条 undo，选区跳新
+    /// 节点（同方向连按自然接链）。前提不满足静默（对齐 Excalidraw）。
+    fn add_connected_shape(&mut self, dir: FlowDir) {
+        let Some(src_id) = self.single_selected_id() else {
+            return;
+        };
+        let (w, h, stroke) = match self.scene.get_item(&src_id) {
+            Some(item) => match &item.kind {
+                ItemKind::Shape {
+                    shape_type,
+                    base_size,
+                    stroke,
+                    ..
+                } if !matches!(shape_type, ShapeType::Polyline) => {
+                    (base_size.0, base_size.1, *stroke)
+                }
+                _ => return,
+            },
+            None => return,
+        };
+        let offset = match dir {
+            FlowDir::Right => CanvasVector::new(w + FLOWCHART_GAP, 0.0),
+            FlowDir::Left => CanvasVector::new(-(w + FLOWCHART_GAP), 0.0),
+            FlowDir::Down => CanvasVector::new(0.0, h + FLOWCHART_GAP),
+            FlowDir::Up => CanvasVector::new(0.0, -(h + FLOWCHART_GAP)),
+        };
+        // duplicate_items：新 uuid（手绘抖动由 id 派生自动不同）、未编组化、
+        // 不含绑定文字（只复制传入的 id）——正合克隆节点语义。
+        let mut dups = self.scene.duplicate_items(&[src_id], offset);
+        let Some(dup) = dups.pop() else { return };
+        let new_id = dup.id;
+        let src_anchor = edge_anchor_local(dir, w, h);
+        let dup_anchor = edge_anchor_local(dir.opposite(), w, h);
+        let s = match self.scene.get_item(&src_id) {
+            Some(item) => item.local_point_to_canvas(src_anchor),
+            None => return,
+        };
+        let d = dup.local_point_to_canvas(dup_anchor);
+        // 箭头：两点局部坐标对齐 AABB 左上角（与 finish_create_shape 同惯例）。
+        let min = CanvasPoint::new(s.x.min(d.x), s.y.min(d.y));
+        let mut arrow = Item::new_polyline(
+            vec![(s.x - min.x, s.y - min.y), (d.x - min.x, d.y - min.y)],
+            ((d.x - s.x).abs(), (d.y - s.y).abs()),
+            None,
+            Some(ArrowHeadStyle::Arrow),
+            false,
+            min.x,
+            min.y,
+            stroke,
+        );
+        if let ItemKind::Shape {
+            start_binding,
+            end_binding,
+            ..
+        } = &mut arrow.kind
+        {
+            *start_binding = Some(EndpointBinding {
+                target: src_id,
+                anchor: Some(src_anchor),
+            });
+            *end_binding = Some(EndpointBinding {
+                target: new_id,
+                anchor: Some(dup_anchor),
+            });
+        }
+        let added = vec![dup.clone(), arrow.clone()];
+        self.scene.add_item(dup);
+        self.scene.add_item(arrow); // 递增 z：箭头压在新节点上（Excalidraw 同款顺序）
+        self.scene.deselect_all();
+        self.scene.select(new_id);
+        self.push_cmd(Box::new(AddItems::new(added).with_preview_applied(true)));
+    }
+
+    /// plan #7：沿连接箭头导航（`Alt+方向`）。从单选元素出发，找**直连**邻居
+    /// （某条 Polyline 两端绑定恰一端=当前、另一端目标中心落在 `dir` 主轴
+    /// 前方且交叉轴不越过主轴），取主轴距离最近者跳选区（组按 #13 点击语义
+    /// 整组展开）。无命令——导航不进 undo（与 Excalidraw 一致）。
+    fn navigate_connected(&mut self, dir: FlowDir) {
+        let Some(cur_id) = self.single_selected_id() else {
+            return;
+        };
+        let cur_center = match self.scene.get_item(&cur_id) {
+            Some(item) => item.bounding_rect().center(),
+            None => return,
+        };
+        let mut best: Option<(ItemId, f32)> = None; // (邻居, 主轴距离)
+        for item in &self.scene.items {
+            let ItemKind::Shape {
+                shape_type: ShapeType::Polyline,
+                start_binding,
+                end_binding,
+                ..
+            } = &item.kind
+            else {
+                continue;
+            };
+            // 只走两端都有绑定的完整连接；自环跳过。
+            let nb = match (start_binding, end_binding) {
+                (Some(b0), Some(b1)) if b0.target == cur_id && b1.target != cur_id => b1.target,
+                (Some(b0), Some(b1)) if b1.target == cur_id && b0.target != cur_id => b0.target,
+                _ => continue,
+            };
+            let nb_center = match self.scene.get_item(&nb) {
+                Some(neighbor) => neighbor.bounding_rect().center(),
+                None => continue,
+            };
+            let delta = nb_center - cur_center;
+            let (prim, orth) = match dir {
+                FlowDir::Right => (delta.x, delta.y),
+                FlowDir::Left => (-delta.x, delta.y),
+                FlowDir::Down => (delta.y, delta.x),
+                FlowDir::Up => (-delta.y, delta.x),
+            };
+            if prim > 0.0 && prim >= orth.abs() && best.is_none_or(|(_, bd)| prim < bd) {
+                best = Some((nb, prim));
+            }
+        }
+        if let Some((nb, _)) = best {
+            self.scene.deselect_all();
+            for hid in self.scene.expand_to_groups(&[nb]) {
+                self.scene.select(hid);
+            }
+        }
     }
 
     fn bring_to_front(&mut self) {

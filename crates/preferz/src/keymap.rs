@@ -330,6 +330,11 @@ impl KeyBind {
         self
     }
 
+    const fn alt(mut self) -> Self {
+        self.alt = true;
+        self
+    }
+
     const fn on_release(mut self) -> Self {
         self.on_release = true;
         self
@@ -407,6 +412,12 @@ pub enum Action {
     Group,
     /// 解组选中项（plan #13，Excalidraw 同款 `Ctrl+Shift+G`）。
     Ungroup,
+    /// 流程图：单选矩形/椭圆/菱形时沿方向克隆节点并连一条双端绑定箭头
+    /// （plan #7，Excalidraw 同款 `Ctrl+方向`）。方向取自实际命中的箭头键。
+    AddConnectedShape,
+    /// 流程图：沿连接箭头把选区跳到该方向的直接绑定邻居（plan #7，
+    /// Excalidraw 同款 `Alt+方向`）。不产生命令。
+    NavigateConnected,
 }
 
 impl Action {
@@ -446,6 +457,8 @@ impl Action {
         Action::DuplicateInPlace,
         Action::Group,
         Action::Ungroup,
+        Action::AddConnectedShape,
+        Action::NavigateConnected,
     ];
 
     /// 出厂默认绑定。一个动作可有多个绑定（如翻页的三组键）。
@@ -505,6 +518,21 @@ impl Action {
             // 编组/解组（plan #13）：Excalidraw 同款 Ctrl+G / Ctrl+Shift+G
             Group => vec![KeyBind::new(G).ctrl()],
             Ungroup => vec![KeyBind::new(G).ctrl().shift()],
+            // 流程图（plan #7，Excalidraw 同款）：Ctrl+方向=沿该向创建克隆节点+
+            // 绑定箭头；Alt+方向=沿连接跳邻居。Present 导航占的是**裸**方向键，
+            // 严格修饰匹配下互不冲突。
+            AddConnectedShape => vec![
+                KeyBind::new(ArrowUp).ctrl(),
+                KeyBind::new(ArrowDown).ctrl(),
+                KeyBind::new(ArrowLeft).ctrl(),
+                KeyBind::new(ArrowRight).ctrl(),
+            ],
+            NavigateConnected => vec![
+                KeyBind::new(ArrowUp).alt(),
+                KeyBind::new(ArrowDown).alt(),
+                KeyBind::new(ArrowLeft).alt(),
+                KeyBind::new(ArrowRight).alt(),
+            ],
         }
     }
 }
@@ -552,21 +580,31 @@ impl Keymap {
 
     /// 该动作当前是否被触发。修饰键**严格匹配**，见模块文档第 2 条。
     pub fn pressed(&self, action: Action, ctx: &egui::Context) -> bool {
+        self.pressed_bind(action, ctx).is_some()
+    }
+
+    /// 返回该动作当前**实际命中**的绑定（多绑定时取第一个）。供"方向由物理键
+    /// 决定"的动作使用（plan #7：`Ctrl+↑↓←→` / `Alt+↑↓←→` 共用一个 Action，
+    /// 改绑后仍按命中的键解释方向）。
+    pub fn pressed_bind(&self, action: Action, ctx: &egui::Context) -> Option<KeyBind> {
         let binds = self.bindings(action);
         if binds.is_empty() {
-            return false;
+            return None;
         }
         ctx.input(|i| {
-            binds.iter().any(|b| {
-                let edge = if b.on_release {
-                    i.key_released(b.key.to_egui())
-                } else {
-                    i.key_pressed(b.key.to_egui())
-                };
-                edge && i.modifiers.ctrl == b.ctrl
-                    && i.modifiers.shift == b.shift
-                    && i.modifiers.alt == b.alt
-            })
+            binds
+                .iter()
+                .find(|b| {
+                    let edge = if b.on_release {
+                        i.key_released(b.key.to_egui())
+                    } else {
+                        i.key_pressed(b.key.to_egui())
+                    };
+                    edge && i.modifiers.ctrl == b.ctrl
+                        && i.modifiers.shift == b.shift
+                        && i.modifiers.alt == b.alt
+                })
+                .copied()
         })
     }
 

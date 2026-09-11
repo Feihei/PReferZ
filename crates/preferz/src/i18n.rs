@@ -690,6 +690,8 @@ pub fn action_label(lang: Lang, action: Action) -> &'static str {
             DuplicateInPlace => "Duplicate in place",
             Group => "Group selection",
             Ungroup => "Ungroup selection",
+            AddConnectedShape => "Flowchart: add connected shape",
+            NavigateConnected => "Flowchart: navigate along connections",
         },
         Lang::Zh => match action {
             NewCanvas => "新建画布",
@@ -726,6 +728,8 @@ pub fn action_label(lang: Lang, action: Action) -> &'static str {
             DuplicateInPlace => "原位复制",
             Group => "编组选中项",
             Ungroup => "解组选中项",
+            AddConnectedShape => "流程图：添加连接图形",
+            NavigateConnected => "流程图：沿连接导航",
         },
     }
 }
