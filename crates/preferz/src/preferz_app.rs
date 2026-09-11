@@ -125,6 +125,10 @@ enum DragState {
     MoveItems {
         start_canvas: CanvasPoint,
         start_transforms: Vec<(ItemId, preferz_core::Transform)>,
+        /// 移动组内的线类快照（plan #14）：预览阶段对每条 Polyline 两端做吸附，
+        /// 命中则贴边 + 绑定（直改），未命中则端点随线自由移动 + 解绑；
+        /// 释放时把 points/binding 变更与 MoveItems 打包成一条 undo 记录。
+        line_snaps: Vec<LineSnapState>,
         /// Ctrl+拖动复制：本次拖拽新建的副本 id。释放时按**最终位置**入 undo，
         /// 一次撤销即可撤掉整个「复制 + 移动」（plan.md 快赢项 #11）。
         duplicate_ids: Option<Vec<ItemId>>,
@@ -517,6 +521,16 @@ enum SavePromptAction {
 type PendingEndpointBinding = (usize, ItemId, Option<(f32, f32)>);
 /// 端点吸附命中时的换算结果：`(目标 id, 线局部坐标)`。
 type SnapHitLocal = (ItemId, (f32, f32));
+
+/// 移动整条线时的吸附快照（plan #14）：begin_drag 时对移动组内的每条
+/// Polyline 记下初始 points 与绑定，供预览复位与释放时生成 EditShapePoints。
+#[derive(Clone)]
+struct LineSnapState {
+    line_id: ItemId,
+    start_points: Vec<(f32, f32)>,
+    start_start_binding: Option<EndpointBinding>,
+    start_end_binding: Option<EndpointBinding>,
+}
 
 /// 裁剪模式状态（spec §2.2 裁剪）。
 #[derive(Clone)]
@@ -1795,9 +1809,32 @@ impl PReferZApp {
                 .filter_map(|sid| self.scene.get_item(&sid).map(|it| (sid, it.transform)))
                 .collect();
             let start_canvas = self.viewport.screen_to_canvas(screen_pos);
+            // plan #14：移动组内的 Polyline 快照（预览吸附 + 释放打包入栈）
+            let line_snaps: Vec<LineSnapState> = start_transforms
+                .iter()
+                .filter_map(|(id, _)| {
+                    let it = self.scene.get_item(id)?;
+                    match &it.kind {
+                        ItemKind::Shape {
+                            shape_type: ShapeType::Polyline,
+                            points,
+                            start_binding,
+                            end_binding,
+                            ..
+                        } if points.len() > 1 => Some(LineSnapState {
+                            line_id: *id,
+                            start_points: points.clone(),
+                            start_start_binding: *start_binding,
+                            start_end_binding: *end_binding,
+                        }),
+                        _ => None,
+                    }
+                })
+                .collect();
             self.drag = DragState::MoveItems {
                 start_canvas,
                 start_transforms,
+                line_snaps,
                 duplicate_ids,
                 original_ids,
                 pending_deselect,
@@ -1874,6 +1911,7 @@ impl PReferZApp {
             DragState::MoveItems {
                 start_canvas,
                 start_transforms,
+                line_snaps,
                 ..
             } => {
                 let current_canvas = self.viewport.screen_to_canvas(screen_pos);
@@ -1893,8 +1931,85 @@ impl PReferZApp {
                         item.transform.pos = start_tf.pos + delta;
                     }
                 }
-                // plan #5：移动形状时，实时联动重算绑定到它的线端点
                 let ids: Vec<ItemId> = start_transforms.iter().map(|(id, _)| *id).collect();
+                // plan #14：移动整条线时端点吸附 + 建立绑定。命中 → 端点贴边并
+                // 绑定（锚点 = 贴合点在目标局部系坐标）；未命中 → 端点随线自由
+                // 移动并解绑（Excalidraw 同款）。吸附目标排除移动组自身。
+                let moved: std::collections::HashSet<ItemId> = ids.iter().copied().collect();
+                let threshold = SNAP_THRESHOLD_PX / self.viewport.zoom;
+                self.snap_highlight = None;
+                for ls in line_snaps {
+                    let last = ls.start_points.len().saturating_sub(1);
+                    for endpoint in [0usize, last] {
+                        // 端点当前画布位置（points 尚为初始值，transform 已随组移动）
+                        let qc = self
+                            .scene
+                            .get_item(&ls.line_id)
+                            .map(|it| it.local_point_to_canvas(ls.start_points[endpoint]));
+                        let hit = qc.and_then(|qc| {
+                            self.scene
+                                .find_snap_target(&ls.line_id, qc, threshold)
+                                .filter(|(bid, _, _)| !moved.contains(bid))
+                        });
+                        match hit {
+                            Some((bid, sc, _)) => {
+                                // 先不可变换算（锚点 + 线局部新坐标），再可变写回
+                                let anchor = self
+                                    .scene
+                                    .get_item(&bid)
+                                    .and_then(|t| t.canvas_to_local_point(sc));
+                                let new_local = self
+                                    .scene
+                                    .get_item(&ls.line_id)
+                                    .and_then(|it| it.canvas_to_local_point(sc));
+                                if let (Some(new_local), Some(item)) =
+                                    (new_local, self.scene.get_item_mut(&ls.line_id))
+                                {
+                                    if let ItemKind::Shape {
+                                        points,
+                                        start_binding,
+                                        end_binding,
+                                        ..
+                                    } = &mut item.kind
+                                    {
+                                        points[endpoint] = new_local;
+                                        let binding = anchor.map(|a| EndpointBinding {
+                                            target: bid,
+                                            anchor: Some(a),
+                                        });
+                                        if endpoint == 0 {
+                                            *start_binding = binding;
+                                        } else {
+                                            *end_binding = binding;
+                                        }
+                                    }
+                                    self.snap_highlight = Some(bid);
+                                }
+                            }
+                            None => {
+                                // 端点回到随线移动的基准位（上一帧可能吸附偏移过）
+                                // 并解绑该端点
+                                if let Some(item) = self.scene.get_item_mut(&ls.line_id) {
+                                    if let ItemKind::Shape {
+                                        points,
+                                        start_binding,
+                                        end_binding,
+                                        ..
+                                    } = &mut item.kind
+                                    {
+                                        points[endpoint] = ls.start_points[endpoint];
+                                        if endpoint == 0 {
+                                            *start_binding = None;
+                                        } else {
+                                            *end_binding = None;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                // plan #5：移动形状时，实时联动重算绑定到它的线端点
                 self.scene.resolve_bindings(&ids);
             }
             DragState::CreatingShape { current, .. } => {
@@ -2057,6 +2172,7 @@ impl PReferZApp {
             }
             DragState::MoveItems {
                 start_transforms,
+                line_snaps,
                 duplicate_ids,
                 original_ids,
                 pending_deselect,
@@ -2106,8 +2222,52 @@ impl PReferZApp {
                         if delta.x.abs() > 1e-4 || delta.y.abs() > 1e-4 {
                             let ids: Vec<ItemId> =
                                 start_transforms.iter().map(|(i, _)| *i).collect();
-                            let cmd = MoveItems::new(ids, delta);
-                            self.push_cmd(Box::new(cmd));
+                            let move_cmd = MoveItems::new(ids, delta);
+                            // plan #14：线端吸附的 points/binding 变更与移动打包成
+                            // 一条 undo 记录（整体撤销/重做）。子命令的 points 与
+                            // 绑定均已预览直改，skip_first_redo 语义一致。
+                            let mut line_cmds: Vec<Box<dyn Command>> = Vec::new();
+                            for ls in line_snaps {
+                                let Some(item) = self.scene.get_item(&ls.line_id) else {
+                                    continue;
+                                };
+                                let ItemKind::Shape {
+                                    points,
+                                    start_binding,
+                                    end_binding,
+                                    ..
+                                } = &item.kind
+                                else {
+                                    continue;
+                                };
+                                let changed = points != &ls.start_points
+                                    || start_binding != &ls.start_start_binding
+                                    || end_binding != &ls.start_end_binding;
+                                if !changed {
+                                    continue;
+                                }
+                                line_cmds.push(Box::new(
+                                    EditShapePoints::new(
+                                        ls.line_id,
+                                        ls.start_points.clone(),
+                                        points.clone(),
+                                    )
+                                    .with_binding_change(
+                                        ls.start_start_binding,
+                                        *start_binding,
+                                        ls.start_end_binding,
+                                        *end_binding,
+                                    ),
+                                ));
+                            }
+                            let cmd: Box<dyn Command> = if line_cmds.is_empty() {
+                                Box::new(move_cmd)
+                            } else {
+                                let mut all: Vec<Box<dyn Command>> = vec![Box::new(move_cmd)];
+                                all.extend(line_cmds);
+                                Box::new(MultiCommand::new(all))
+                            };
+                            self.push_cmd(cmd);
                             self.flash(format!("移动: ({:.0}, {:.0})", delta.x, delta.y));
                         } else if let Some(pid) = pending_deselect {
                             // Shift+点击已选中项且没拖动 → 取消选中（组则取消整组，G2）

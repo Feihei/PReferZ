@@ -82,7 +82,7 @@
 | 11 | ✅ 选中拖动修饰键 + Ctrl+D 原位复制 | Ctrl+拖动=复制并移动副本；Shift+拖动=水平/垂直约束（PowerPoint 风）；Ctrl+D=原位复制 | 已交付（2026-09-03）：按下即建副本；约束基准=画布轴（视口无旋转，与屏幕轴同向）；Ctrl+D 偏移 10px |
 | 12 | ✅ 最大/最小缩放限制 | 默认 100%，最小 10%（0.1x），最大 1000%（10x）；`min_zoom`/`max_zoom` 改默认值 | 已交付（2026-09-03）：默认值 0.1/10.0；`.prz` 元数据越界时 clamp |
 | 13 | ✅ 元素编组 / 解组（2026-09-08 `4033726`，待人工验收） | `Item.group_id: Option<Uuid>`（单组，持久化）；点击组成员全选、移动整体；`Ctrl+G` 编组 / `Ctrl+Shift+G` 解组 | 已拍板（G1–G4 全按倾向列）：单组；点击整组；删/拖出成员其余保持编组；组粒度复制/对齐/分布 |
-| 14 | 🔜 移动整条线贴合图形时建立端点绑定 | 已完成部分（2026-09-10）：① **锚点绑定模型**——`Option<ItemId>` 升级为 `EndpointBinding{target, anchor}`，锚点=贴合点在目标局部系坐标；`resolve_bindings` 移动/缩放目标时按锚点重算，端点钉在同一表面点（修复矩形移动时端点沿边滑动、直线被拉成水平/垂直）；旧存档纯 uuid 自动迁移为无锚点绑定（回退"最近轮廓点"旧行为），serde untagged 兼容。② skip_first_redo 回归修复（绑定字段释放时直改）。剩余缺口：移动整条线贴合图形不建立绑定，方案同前（MultiCommand 打包 MoveItems + EditShapePoints） | 决策点：① 整线贴合是否默认绑定（Excalidraw=是）；② 预览吸附的视觉与端点编辑模式统一；③ 端点同时贴近两个图形时的取舍（近者胜） |
+| 14 | ✅ 移动整条线贴合图形时建立端点绑定（2026-09-10 `38de45b` + 本批，待人工验收） | **锚点绑定模型**：`Option<ItemId>` → `EndpointBinding{target, anchor}`（锚点=贴合点在目标局部系坐标）；`resolve_bindings` 按锚点重算，端点钉同一表面点（修复矩形移动时端点沿边滑动、直线被拉平）；旧存档纯 uuid serde untagged 自动迁移（回退最近轮廓点）。**整线绑定**：MoveItems 预览对组内每条 Polyline 两端做 snap 查询（排除移动组自身），命中→贴边+绑定直改，未命中→端点随线自由+解绑；释放用 `MultiCommand` 打包 MoveItems + EditShapePoints，一条 undo 记录。另修复 skip_first_redo 回归（绑定字段释放直改） | 已按倾向拍板：① 整线贴合默认绑定（Excalidraw=是）✅；② 预览吸附视觉与端点编辑模式一致（同阈值/同高亮）✅；③ 端点同时贴近多目标取最近（find_snap_target 语义）✅ |
 
 ### 各项细节与决策点
 
