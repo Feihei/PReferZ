@@ -66,13 +66,14 @@
 > 决策点 D1–D6 / I1–I4 已归档（见 [CHANGELOG §决策点归档](CHANGELOG.md)）。
 > 本批次为对齐 Excalidraw 的观感/交互打磨项。5/6/11/12/13 已交付；
 > **2026-09-10 拍板：启动 1/2/3 样式面板批次**（实施顺序 #2 → #3 → #1），决策点见表格「关键依赖 / 决策点」列。后续依次：4 → 7 → 8/9 → 10。
+> **2026-09-11 启动 #4**：经 .ref/excalidraw 调研更正原倾向（Alt 在现行版是加顶点手势、删除走选中+Del），拍板见细节 §4。
 
 | # | 打磨项 | 一句话方案 | 关键依赖 / 决策点 |
 |---|---|---|---|
 | 1 | ✅ 绑定文字对齐 + 字号 + 字体切换（2026-09-10 代码交付，待人工验收） | Text 加 H/V 对齐枚举 + 字体族（黑体/手写），侧栏加对齐分段与字号滑块 | ✅ 已拍板（2026-09-10）：手写体=**伪手写渲染**（复用 RoughStyler 思路，不嵌 TTF）；字号沿用现有滑块范围；垂直对齐仅绑定文字，自由文字固定 top-left |
 | 2 | ✅ 调色板对齐 + 填充半透明（2026-09-10 代码交付，待人工验收） | `FILL_PICKS` 改为与描边同 5 色（黑红绿蓝橙）；填充加不透明度滑块（RGBA alpha） | ✅ 已拍板（2026-09-10）：top picks 描边/填充共用同组 5 色；填充默认 alpha **50%**（选填充样式但未显式改 alpha 时） |
 | 3 | ✅ stroke width / sloppiness / edges 倒角（2026-09-10 代码交付，待人工验收；edges 经调研已被现有 roundness + curve_type 覆盖，无需新 UI） | `rough: bool` → `Sloppiness{Architect,Artist,Cartoonist}` 三档；edges（sharp/round）对齐 Excalidraw | ✅ 已拍板（2026-09-10）：sloppiness 对齐 Excalidraw 3 档；edges **对齐 Excalidraw 语义**——矩形→倒角，多边形/折线→顶点处切换曲线平滑（spline 类，具体插值实现时定） |
-| 4 | 多边形节点增删 + 首尾重合自动闭合 | 顶点删除（Alt+拖出）+ 端点追加（拖末端点延伸）；首尾距 < 阈值自动 `closed` | 删除手势；阈值复用 `POLYLINE_CLOSE_DISTANCE` |
+| 4 | 多边形节点增删 + 首尾重合自动闭合（2026-09-11 拍板，进行中） | 顶点删除（**Alt+单击顶点即删**）+ 端点追加（**Alt+拖真实端点**，越阈值在外侧追加顶点后拖新点）；端点拖拽释放首尾距 ≤ 屏 8px 自动 `closed` | ✅ 已拍板（2026-09-11，调研更正见细节 §4）：守卫=开放 ≥2 / 闭合 ≥3 顶点；删首尾顶点连该端解绑；命令层**复用 `EditShapePoints`**（加可选 closed 变更字段），不新增 DeleteVertex/AppendVertex |
 | 5 | ✅ 直线/箭头端点吸附图形边缘（2026-09-07 `a803bbe` + `8d2465e` 修复） | 拖端点邻近 Shape 轮廓吸附 + 绑定模型（端点随形状移动） | 已拍板并交付（2026-09-08 复验通过）：阈值屏 10px；绑定=两端 `Option<ItemId>` 不存绝对坐标，`resolve_bindings` 动态重算；直线/箭头均可绑，与 #7 共用 |
 | 6 | ✅ 多元素对齐、分布（2026-09-05 `cad908b`） | `arrange.rs` 增 `plan_align`（6 向）+ `plan_distribute`（等距/等心 × 横/纵）；属性栏「对齐」节 + 右键菜单 | 已拍板并交付：两种分布都做；参考系=选区包围盒；UI=属性栏+右键菜单 |
 | 7 | Ctrl+箭头 添加连接符 + 下一元素 | 选中 Shape + Ctrl+方向 → 生成绑定 Arrow + 新 Shape（流程图） | 新元素类型/间距；复用 #5 绑定 |
@@ -107,8 +108,12 @@
 
 4. **多边形节点增删 + 首尾重合自动闭合**
 - 现状：反馈 #5 已做段中点拖拽**插入**顶点（SegmentMid）；但删顶点、端点追加、首尾重合自动闭合缺失。
-- 方案：transform_handles 增顶点删除（Alt+拖出画布即删，≥3 点保持）；端点追加（拖末端点超阈值即 append）；首尾距 < `POLYLINE_CLOSE_DISTANCE`(8px) 自动 `closed=true`（保留手动 closed 选项）。core 加 `DeleteVertex`/`AppendVertex` 命令。
-- 决策点：删除手势（Alt+click vs 拖出）；阈值复用现有常量。
+- **调研更正（2026-09-11，.ref/excalidraw）**：plan 原倾向「删除=Alt+拖出」与现行 Excalidraw 不符——现行版 **Alt 是加顶点手势**（`linearElementEditor.ts:1216-1273` Alt+拖拽在末点追加"未提交"顶点、`1072-1112` Alt+click 落点并拖走），**删顶点走"点选 + Delete 键"**（`actionDeleteSelected.tsx:215-261`，Alt+click 删除是旧版手势）；**自动闭合** = 拖首/尾顶点释放时首尾距 ≤ `LINE_CONFIRM_THRESHOLD`(8px)/zoom 且 ≥3 顶点 → 置 polygon 并把被拖点吸附到对端（`linearElementEditor.ts:714-751`、`utils.ts:477-491`、`constants.ts:21`）。本仓库无"顶点选中态"（手柄只有 hover/drag），忠实照搬"点选+Del"需新增 selectedPointsIndices 状态机，弃用。
+- **决策点已拍板（2026-09-11）**：
+  - **删除手势**：✅ **Alt+单击顶点即删**（内部顶点按下即删；端点=延后到释放且未越追加阈值时删，与 Alt+拖追加共用按下入口、按移动区分）。守卫：开放折线保 ≥2、闭合多边形保 ≥3 顶点，不满足拒绝并 flash。删首/尾顶点连带解除该端绑定（中间顶点无绑定不动）。
+  - **追加分支**：✅ **Alt+拖真实端点（0/末点）=延伸**：越过屏幕 4px 阈值后在该端外侧插入一个复制顶点（原端点成为中间顶点），被拖的是新顶点；追加一个点，不做 Excalidraw 的 Alt+拖连续链式加点。未越阈值释放 = Alt+单击 → 删所点顶点。
+  - **自动闭合**：✅ 任何端点顶点拖拽**释放**时，若当前开放、≥3 顶点且首尾距 ≤ 屏幕 8px（画布距 × zoom；复用 `POLYLINE_CLOSE_DISTANCE`，与 Excalidraw 同值）→ `closed=true` + 被拖端点吸附至对端 + 该端绑定解除，与点变更同占一条 undo。侧栏手动 closed 勾选保留。
+  - **命令层**：实现更正——不新增 `DeleteVertex`/`AppendVertex`，**复用 `EditShapePoints`**（本质=点集替换，绑定变更已内建），加可选 closed 变更字段承载"拖回起点即闭合"。
 
 5. **✅ 直线/箭头端点吸附图形边缘（2026-09-07 交付：`a803bbe`，待人工验收）**
 - 现状：LineEndpoint 拖拽无吸附、未绑定形状。
