@@ -770,10 +770,18 @@ pub fn build_shape_visuals(kind: &ItemKind, to_screen: &LocalToScreen, zoom: f32
         return Vec::new();
     };
 
+    // 验收反馈 #4-1：闭合且首尾重合（自动闭合的"合并点"）视作一个点——去掉
+    // 重复尾点，直线/手绘路径不再画零长收尾段（抖出一个脏点），曲线与 core
+    // `catmull_rom_polyline` 的同款去重保持一致（命中与渲染同一条曲线）。
+    let mut pts = points.clone();
+    if *closed && pts.len() >= 2 && pts[0] == pts[pts.len() - 1] {
+        pts.pop();
+    }
+
     let data = ShapeData {
         shape_type: *shape_type,
         base_size: *base_size,
-        points: points.clone(),
+        points: pts,
         start_arrow: *start_arrow,
         end_arrow: *end_arrow,
         closed: *closed,

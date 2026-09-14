@@ -233,6 +233,10 @@ pub enum T {
     FlashVertexMinClosed,
     /// 端点拖回起点附近，自动闭合成多边形。
     FlashPolygonClosed,
+    /// 拖开闭合合并点，自动恢复开放。
+    FlashPolygonOpened,
+    /// HUD 主题切换按钮 hover 提示。
+    ThemeToggleHint,
     // ── 编组/解组（plan #13）──
     /// 编组成功提示。
     FlashGrouped,
@@ -437,6 +441,8 @@ fn translate_en(key: T) -> &'static str {
         T::FlashVertexMinOpen => "An open line needs at least 2 points",
         T::FlashVertexMinClosed => "A closed shape needs at least 3 points",
         T::FlashPolygonClosed => "Closed into a polygon",
+        T::FlashPolygonOpened => "Reopened",
+        T::ThemeToggleHint => "Toggle light / dark theme",
         T::FlashGrouped => "Grouped",
         T::FlashUngrouped => "Ungrouped",
         T::MenuGroup => "Group",
@@ -625,6 +631,8 @@ fn translate_zh(key: T) -> &'static str {
         T::FlashVertexMinOpen => "开放折线至少保留 2 个顶点",
         T::FlashVertexMinClosed => "闭合多边形至少保留 3 个顶点",
         T::FlashPolygonClosed => "已闭合成多边形",
+        T::FlashPolygonOpened => "已恢复开放",
+        T::ThemeToggleHint => "切换明暗主题",
         T::FlashGrouped => "已编组",
         T::FlashUngrouped => "已解组",
         T::MenuGroup => "编组",

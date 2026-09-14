@@ -1045,6 +1045,12 @@ pub fn catmull_rom_polyline(pts: &[(f32, f32)], closed: bool, samples: usize) ->
     if n < 2 || (!closed && n == 2) {
         return pts.to_vec();
     }
+    // 验收反馈 #4-1：自动闭合是"端点吸附至起点重合 + closed 标志"（保留两个端点
+    // 供拖开解闭合），但闭合样条按重合两点采样会在接缝处产生零长段 → 反向环。
+    // 首尾精确重合时视作**一个点**：去掉重复尾点再采样。
+    if closed && pts[0] == pts[n - 1] {
+        return catmull_rom_polyline(&pts[..n - 1], true, samples);
+    }
     let seg_count = if closed { n } else { n - 1 };
     let mut out = Vec::with_capacity(seg_count * samples + 1);
     for i in 0..seg_count {
@@ -1344,6 +1350,19 @@ mod tests {
         assert_eq!(out.len(), pts.len() * 4 + 1);
         // 闭合：末点回到首点
         assert!((out[out.len() - 1].0 - 0.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn catmull_rom_closed_merged_endpoint_samples_as_single_point() {
+        // 验收反馈 #4-1：自动闭合的"合并点"（首尾精确重合）必须视作一个点采样，
+        // 否则闭合侧零长段产生反向环（圆滑模式接缝处的反向曲线）。
+        let tri = vec![(0.0, 0.0), (50.0, 0.0), (0.0, 50.0)];
+        let merged = vec![(0.0, 0.0), (50.0, 0.0), (0.0, 50.0), (0.0, 0.0)];
+        assert_eq!(
+            catmull_rom_polyline(&merged, true, 8),
+            catmull_rom_polyline(&tri, true, 8),
+            "首尾重合与不重合的闭合采样必须一致"
+        );
     }
 
     #[test]

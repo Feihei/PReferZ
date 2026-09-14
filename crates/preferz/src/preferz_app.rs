@@ -985,10 +985,21 @@ const POLYLINE_CLOSE_DISTANCE: f32 = 8.0;
 /// 顶点手势）互相误触。
 const EXTEND_TRIGGER_PX: f32 = 4.0;
 
+/// 首尾点的**屏幕距离**（画布距离 × zoom；闭合/开放阈值均按屏幕像素计，缩放不
+/// 改手感）。点数 <2 返回 0。
+fn first_last_screen_dist(points: &[(f32, f32)], zoom: f32) -> f32 {
+    let last = match points.len().checked_sub(1) {
+        Some(l) if l >= 1 => l,
+        _ => return 0.0,
+    };
+    let dx = points[0].0 - points[last].0;
+    let dy = points[0].1 - points[last].1;
+    (dx * dx + dy * dy).sqrt() * zoom
+}
+
 /// plan #4：端点拖拽释放时是否自动闭合成多边形。判定与 Excalidraw `isPathALoop`
-/// 同式：≥3 顶点、被拖的是**真实端点**（0/末点）、首尾画布距离 × zoom ≤
-/// [`POLYLINE_CLOSE_DISTANCE`]（即屏幕 8px，缩放不改变手感）。开放态专用；
-/// 是否 `closed` 由调用方判断。
+/// 同式：≥3 顶点、被拖的是**真实端点**（0/末点）、首尾屏幕距离 ≤
+/// [`POLYLINE_CLOSE_DISTANCE`]。开放态专用；是否 `closed` 由调用方判断。
 fn should_auto_close(points: &[(f32, f32)], endpoint: usize, zoom: f32) -> bool {
     let last = match points.len().checked_sub(1) {
         Some(l) if points.len() >= 3 => l,
@@ -997,9 +1008,7 @@ fn should_auto_close(points: &[(f32, f32)], endpoint: usize, zoom: f32) -> bool 
     if endpoint != 0 && endpoint != last {
         return false;
     }
-    let dx = points[0].0 - points[last].0;
-    let dy = points[0].1 - points[last].1;
-    (dx * dx + dy * dy).sqrt() * zoom <= POLYLINE_CLOSE_DISTANCE
+    first_last_screen_dist(points, zoom) <= POLYLINE_CLOSE_DISTANCE
 }
 
 /// plan #7：流程图创建/导航的方向（方向键语义）。
@@ -2585,6 +2594,17 @@ impl PReferZApp {
                         let will_close = open_now
                             && is_real
                             && should_auto_close(&new_points, endpoint, self.viewport.zoom);
+                        // 验收反馈 #4-1：反向操作——"已闭合的合并点"（首尾重合）
+                        // 把其中一个端点拖开（释放时首尾距 > 屏幕 8px）→ 自动恢复
+                        // 开放，无需回侧栏取消闭合勾选。仅重合态触发，普通闭合多边形
+                        // 拖顶点不会误开。
+                        let overlap_before = start_points.len() >= 2
+                            && start_points[0] == start_points[start_points.len() - 1];
+                        let will_open = !open_now
+                            && is_real
+                            && overlap_before
+                            && first_last_screen_dist(&new_points, self.viewport.zoom)
+                                > POLYLINE_CLOSE_DISTANCE;
                         let mut start_new = start_old;
                         let mut end_new = end_old;
                         let snapped = self.pending_endpoint_binding.is_some();
@@ -2619,6 +2639,15 @@ impl PReferZApp {
                                 }
                             }
                         } else {
+                            if will_open {
+                                // 预览直改开放态；closed 变更记录经 with_closed
+                                // 随同一条 undo 还原。
+                                if let Some(item) = self.scene.get_item_mut(&item_id) {
+                                    if let ItemKind::Shape { closed, .. } = &mut item.kind {
+                                        *closed = false;
+                                    }
+                                }
+                            }
                             match self.pending_endpoint_binding {
                                 Some((idx, bid, anchor)) if is_real => {
                                     let binding = Some(EndpointBinding {
@@ -2662,12 +2691,16 @@ impl PReferZApp {
                             .with_binding_change(start_old, start_new, end_old, end_new);
                         let cmd = if will_close {
                             cmd.with_closed(false, true)
+                        } else if will_open {
+                            cmd.with_closed(true, false)
                         } else {
                             cmd
                         };
                         self.push_cmd(Box::new(cmd));
                         if will_close {
                             self.flash(t(self.lang, T::FlashPolygonClosed));
+                        } else if will_open {
+                            self.flash(t(self.lang, T::FlashPolygonOpened));
                         } else if snapped {
                             self.flash(t(self.lang, T::FlashSnappedToShape));
                         }
@@ -5834,6 +5867,61 @@ impl PReferZApp {
                                 self.lang = lang.toggled();
                                 self.persist_config();
                             }
+                            // 主题切换（验收反馈 3）：light 画黑色月牙、dark 画
+                            // 白色太阳（字体无可靠月牙字形，用形状手绘）。Auto 下
+                            // 按**当前生效外观**显示；点击显式切到相反态，副作用与
+                            // 设置面板 theme_changed 一致（默认描边色随主题翻转+持久化）。
+                            ui.add_space(2.0);
+                            let dark_now = self.theme.is_dark(ctx);
+                            let gal = ui.visuals().strong_text_color();
+                            let (icon_rect, resp) = ui
+                                .allocate_exact_size(egui::vec2(20.0, 20.0), egui::Sense::click());
+                            let resp = resp.on_hover_text(t(self.lang, T::ThemeToggleHint));
+                            if ui.is_rect_visible(icon_rect) {
+                                let painter = ui.painter();
+                                let center = icon_rect.center();
+                                let mut bg = ui.visuals().window_fill;
+                                if resp.hovered() {
+                                    // hover 底色（同时用作月牙"挖除"色，保证抠弧无痕）
+                                    let mix = |a: u8, b: u8| -> u8 {
+                                        ((a as f32) * 0.88 + (b as f32) * 0.12) as u8
+                                    };
+                                    bg = egui::Color32::from_rgb(
+                                        mix(bg.r(), gal.r()),
+                                        mix(bg.g(), gal.g()),
+                                        mix(bg.b(), gal.b()),
+                                    );
+                                    painter.rect_filled(icon_rect, 4.0, bg);
+                                }
+                                if dark_now {
+                                    // 太阳：实心圆 + 8 道射线
+                                    painter.circle_filled(center, 3.4, gal);
+                                    for k in 0..8usize {
+                                        let a = std::f32::consts::TAU * k as f32 / 8.0;
+                                        let (dy, dx) = a.sin_cos();
+                                        painter.line_segment(
+                                            [
+                                                center + egui::vec2(dx * 5.2, dy * 5.2),
+                                                center + egui::vec2(dx * 7.6, dy * 7.6),
+                                            ],
+                                            egui::Stroke::new(1.4_f32, gal),
+                                        );
+                                    }
+                                } else {
+                                    // 月牙：实心圆 + 右上偏置的背景色圆挖除
+                                    painter.circle_filled(center + egui::vec2(-0.6, 0.4), 5.8, gal);
+                                    painter.circle_filled(center + egui::vec2(3.4, -2.0), 5.0, bg);
+                                }
+                            }
+                            if resp.clicked() {
+                                self.theme = if dark_now {
+                                    ThemeMode::Light
+                                } else {
+                                    ThemeMode::Dark
+                                };
+                                self.default_stroke.color = self.theme.default_stroke_color(ctx);
+                                self.persist_config();
+                            }
                         });
                     });
             });
@@ -6357,6 +6445,136 @@ mod tests {
         app.navigate_connected(FlowDir::Up);
         assert!(app.scene.selection.contains(&dup_id));
         assert_eq!(app.undo_stack.undo.len(), undo_len, "导航不应新增命令");
+    }
+
+    // ───────── 验收反馈批次（#4-1 / #7-2） ─────────
+
+    /// 模拟"端点拖拽预览后释放"：直接摆好场景终态 + DragState，走 end_drag。
+    fn finish_endpoint_drag(
+        app: &mut PReferZApp,
+        item_id: ItemId,
+        endpoint: usize,
+        start_points: Vec<(f32, f32)>,
+    ) {
+        let base_pos = start_points[endpoint];
+        app.drag = DragState::LineEndpoint {
+            item_id,
+            endpoint,
+            start_canvas: CanvasPoint::new(0.0, 0.0),
+            start_points,
+            base_pos,
+            alt_extend: false,
+        };
+        app.end_drag();
+    }
+
+    #[test]
+    fn dragging_merged_endpoint_away_reopens_closed_shape() {
+        // 验收反馈 #4-1：自动闭合产物（首尾重合 + closed）把其中一个端点拖开
+        // （> 屏幕 8px）→ 释放时自动恢复开放，一条 undo 可还原重合 + closed。
+        let start = vec![(0.0, 0.0), (50.0, 0.0), (0.0, 50.0), (0.0, 0.0)];
+        let (mut app, id) = app_with_polyline(start.clone(), true);
+        if let Some(it) = app.scene.get_item_mut(&id) {
+            if let ItemKind::Shape { points, .. } = &mut it.kind {
+                points[3] = (30.0, 20.0); // 预览已拖开
+            }
+        }
+        finish_endpoint_drag(&mut app, id, 3, start);
+        match &app.scene.get_item(&id).unwrap().kind {
+            ItemKind::Shape { closed, points, .. } => {
+                assert!(!*closed, "拖开合并点应自动恢复开放");
+                assert_eq!(points[3], (30.0, 20.0));
+            }
+            _ => unreachable!(),
+        }
+        assert_eq!(app.undo_stack.undo.len(), 1);
+        assert!(app.perform_undo());
+        match &app.scene.get_item(&id).unwrap().kind {
+            ItemKind::Shape { closed, points, .. } => {
+                assert!(*closed, "undo 应还原闭合态");
+                assert_eq!(points[3], (0.0, 0.0), "undo 应还原合并位置");
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn dragging_vertex_of_unmerged_closed_shape_stays_closed() {
+        // 非重合的普通闭合多边形（侧栏手动闭合）拖顶点**不得**被自动开放。
+        let start = vec![(0.0, 0.0), (50.0, 0.0), (25.0, 40.0)];
+        let (mut app, id) = app_with_polyline(start.clone(), true);
+        if let Some(it) = app.scene.get_item_mut(&id) {
+            if let ItemKind::Shape { points, .. } = &mut it.kind {
+                points[0] = (60.0, 10.0);
+            }
+        }
+        finish_endpoint_drag(&mut app, id, 0, start);
+        assert!(
+            matches!(
+                &app.scene.get_item(&id).unwrap().kind,
+                ItemKind::Shape { closed: true, .. }
+            ),
+            "首尾不重合的闭合形状拖顶点保持闭合"
+        );
+    }
+
+    #[test]
+    fn add_connected_shape_places_sibling_next_to_existing_neighbor() {
+        // 验收反馈 #7-2：A→B 已连，选中 A 再按 Ctrl+→ —— 新节点 C 放到 B 旁
+        // （主轴 = B 远边 + GAP），不与 B 重合；箭头仍是 A→C。
+        let (mut app, a_id) = app_with_rect((10.0, 10.0), (120.0, 80.0));
+        app.add_connected_shape(FlowDir::Right); // A→B，选区在 B
+        let b_id = *app.scene.selection.iter().next().unwrap();
+        app.scene.deselect_all();
+        app.scene.select(a_id);
+        app.add_connected_shape(FlowDir::Right);
+
+        assert_eq!(app.scene.items.len(), 5, "3 节点 + 2 箭头");
+        let c = app
+            .scene
+            .items
+            .iter()
+            .find(|i| {
+                i.id != a_id
+                    && i.id != b_id
+                    && matches!(
+                        i.kind,
+                        ItemKind::Shape {
+                            shape_type: ShapeType::Rectangle,
+                            ..
+                        }
+                    )
+            })
+            .expect("第三个节点");
+        // B 位于 (230,10)，B.max.x = 350 → C = (450, 10)
+        assert_eq!((c.transform.pos.x, c.transform.pos.y), (450.0, 10.0));
+        // 第二条箭头：A→C
+        let arrow = app
+            .scene
+            .items
+            .iter()
+            .filter(|i| {
+                matches!(
+                    i.kind,
+                    ItemKind::Shape {
+                        shape_type: ShapeType::Polyline,
+                        ..
+                    }
+                )
+            })
+            .max_by_key(|i| i.z)
+            .expect("第二条箭头");
+        match &arrow.kind {
+            ItemKind::Shape {
+                start_binding,
+                end_binding,
+                ..
+            } => {
+                assert_eq!(start_binding.as_ref().map(|b| b.target), Some(a_id));
+                assert_eq!(end_binding.as_ref().map(|b| b.target), Some(c.id));
+            }
+            _ => unreachable!(),
+        }
     }
 }
 
@@ -7376,12 +7594,35 @@ impl PReferZApp {
             },
             None => return,
         };
-        let offset = match dir {
-            FlowDir::Right => CanvasVector::new(w + FLOWCHART_GAP, 0.0),
-            FlowDir::Left => CanvasVector::new(-(w + FLOWCHART_GAP), 0.0),
-            FlowDir::Down => CanvasVector::new(0.0, h + FLOWCHART_GAP),
-            FlowDir::Up => CanvasVector::new(0.0, -(h + FLOWCHART_GAP)),
+        // 验收反馈 #7-2：该方向已有直连同级邻居时，新节点放到**邻居旁边**
+        // （主轴=邻居远边 + GAP、交叉轴对齐邻居中心），而不是与原选中的源节点
+        // 完全重合；无邻居则以源为基准（原行为）。箭头仍 源→新节点。
+        let src_rect = match self.scene.get_item(&src_id) {
+            Some(item) => item.bounding_rect(),
+            None => return,
         };
+        let (sw, sh) = (src_rect.width(), src_rect.height());
+        let base = self
+            .find_connected_neighbor(src_id, dir)
+            .map(|(_, rect)| rect)
+            .unwrap_or(src_rect);
+        let target = match dir {
+            FlowDir::Right => {
+                CanvasPoint::new(base.max().x + FLOWCHART_GAP, base.center().y - sh / 2.0)
+            }
+            FlowDir::Left => CanvasPoint::new(
+                base.min().x - FLOWCHART_GAP - sw,
+                base.center().y - sh / 2.0,
+            ),
+            FlowDir::Down => {
+                CanvasPoint::new(base.center().x - sw / 2.0, base.max().y + FLOWCHART_GAP)
+            }
+            FlowDir::Up => CanvasPoint::new(
+                base.center().x - sw / 2.0,
+                base.min().y - FLOWCHART_GAP - sh,
+            ),
+        };
+        let offset = target - src_rect.min();
         // duplicate_items：新 uuid（手绘抖动由 id 派生自动不同）、未编组化、
         // 不含绑定文字（只复制传入的 id）——正合克隆节点语义。
         let mut dups = self.scene.duplicate_items(&[src_id], offset);
@@ -7429,19 +7670,12 @@ impl PReferZApp {
         self.push_cmd(Box::new(AddItems::new(added).with_preview_applied(true)));
     }
 
-    /// plan #7：沿连接箭头导航（`Alt+方向`）。从单选元素出发，找**直连**邻居
-    /// （某条 Polyline 两端绑定恰一端=当前、另一端目标中心落在 `dir` 主轴
-    /// 前方且交叉轴不越过主轴），取主轴距离最近者跳选区（组按 #13 点击语义
-    /// 整组展开）。无命令——导航不进 undo（与 Excalidraw 一致）。
-    fn navigate_connected(&mut self, dir: FlowDir) {
-        let Some(cur_id) = self.single_selected_id() else {
-            return;
-        };
-        let cur_center = match self.scene.get_item(&cur_id) {
-            Some(item) => item.bounding_rect().center(),
-            None => return,
-        };
-        let mut best: Option<(ItemId, f32)> = None; // (邻居, 主轴距离)
+    /// plan #7 / 验收反馈 #7-2：找 `id` 在 `dir` 方向的**直连**邻居——某条
+    /// Polyline 两端绑定恰一端=当前、另一端目标中心落在 `dir` 主轴前方且
+    /// 交叉轴不越过主轴，取主轴距离最近者。返回（邻居 id, 邻居包围盒）。
+    fn find_connected_neighbor(&self, id: ItemId, dir: FlowDir) -> Option<(ItemId, CanvasRect)> {
+        let cur_center = self.scene.get_item(&id)?.bounding_rect().center();
+        let mut best: Option<(ItemId, f32, CanvasRect)> = None; // (邻居, 主轴距离, rect)
         for item in &self.scene.items {
             let ItemKind::Shape {
                 shape_type: ShapeType::Polyline,
@@ -7454,26 +7688,35 @@ impl PReferZApp {
             };
             // 只走两端都有绑定的完整连接；自环跳过。
             let nb = match (start_binding, end_binding) {
-                (Some(b0), Some(b1)) if b0.target == cur_id && b1.target != cur_id => b1.target,
-                (Some(b0), Some(b1)) if b1.target == cur_id && b0.target != cur_id => b0.target,
+                (Some(b0), Some(b1)) if b0.target == id && b1.target != id => b1.target,
+                (Some(b0), Some(b1)) if b1.target == id && b0.target != id => b0.target,
                 _ => continue,
             };
-            let nb_center = match self.scene.get_item(&nb) {
-                Some(neighbor) => neighbor.bounding_rect().center(),
+            let nb_rect = match self.scene.get_item(&nb) {
+                Some(neighbor) => neighbor.bounding_rect(),
                 None => continue,
             };
-            let delta = nb_center - cur_center;
+            let delta = nb_rect.center() - cur_center;
             let (prim, orth) = match dir {
                 FlowDir::Right => (delta.x, delta.y),
                 FlowDir::Left => (-delta.x, delta.y),
                 FlowDir::Down => (delta.y, delta.x),
                 FlowDir::Up => (-delta.y, delta.x),
             };
-            if prim > 0.0 && prim >= orth.abs() && best.is_none_or(|(_, bd)| prim < bd) {
-                best = Some((nb, prim));
+            if prim > 0.0 && prim >= orth.abs() && best.is_none_or(|(_, bd, _)| prim < bd) {
+                best = Some((nb, prim, nb_rect));
             }
         }
-        if let Some((nb, _)) = best {
+        best.map(|(nb, _, rect)| (nb, rect))
+    }
+
+    /// plan #7：沿连接箭头导航（`Alt+方向`）。跳选区到 `dir` 方向的直连邻居
+    /// （组按 #13 点击语义整组展开）。无命令——导航不进 undo（与 Excalidraw 一致）。
+    fn navigate_connected(&mut self, dir: FlowDir) {
+        let Some(cur_id) = self.single_selected_id() else {
+            return;
+        };
+        if let Some((nb, _)) = self.find_connected_neighbor(cur_id, dir) {
             self.scene.deselect_all();
             for hid in self.scene.expand_to_groups(&[nb]) {
                 self.scene.select(hid);
