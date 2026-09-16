@@ -118,6 +118,36 @@ pub enum T {
     FlashExportFailed,         // 导出失败: {err}
     FlashProcessing,           // 处理中...（进度条默认）
     FlashDuplicated,           // 已复制 {0} 个元素（Ctrl+拖动 / Ctrl+D）
+    // ── flash / 进度条文案（原散落在 preferz_app.rs 里写死中文，收进表内）──
+    FlashSaved,              // 已保存: {0}
+    FlashSaveFailed,         // 保存失败: {0}
+    FlashOpened,             // 已打开: {0}
+    FlashOpenFailed,         // 打开失败: {0}
+    FlashImported,           // 已导入: {0}
+    FlashImportFailed,       // 导入失败 {0}: {1}
+    FlashClipboardFailed,    // 剪贴板访问失败: {0}
+    ProgressImportImage,     // 导入图片: {0}（进度条）
+    ProgressOpenFile,        // 打开文件: {0}（进度条）
+    ProgressSaveFile,        // 保存文件: {0}（进度条）
+    FlashFlipH,              // 水平翻转
+    FlashFlipV,              // 垂直翻转
+    FlashTransform,          // 变换: 缩放=({0}, {1}) 旋转={2}°
+    FlashMoved,              // 移动: ({0}, {1})
+    FlashDeleted,            // 已删除 {0} 项
+    FlashShapeCreated,       // 已创建图形
+    FlashLineCreated,        // 已创建直线
+    FlashArrowCreated,       // 已创建箭头
+    FlashFrameCreated,       // 已创建画框 #{0}
+    FlashFrameRenumbered,    // 画框编号 → #{0}
+    FlashNoSelectedImages,   // 无选中的图片项
+    FlashNoExportableImages, // 无可导出的图片项
+    FlashArranged,           // 排列：{0}
+    FlashAligned,            // 对齐：{0}
+    FlashDistributed,        // 分布：{0}
+    FlashNormalized,         // 归一化：{0}
+    ArrangeModeLinear,       // 线形（toast 用，不带菜单里的快捷键提示）
+    ArrangeModeGrid,         // 网格
+    ArrangeModeOptimal,      // 最优装箱
     // ── 欢迎页 ──
     WelcomeTitle, // PReferZ（固定不翻译）
     WelcomeSubtitle,
@@ -355,6 +385,35 @@ fn translate_en(key: T) -> &'static str {
         T::FlashExportFailed => "Export failed", // 后接错误
         T::FlashProcessing => "Processing...",
         T::FlashDuplicated => "Duplicated {0} elements",
+        T::FlashSaved => "Saved {0}",
+        T::FlashSaveFailed => "Save failed: {0}",
+        T::FlashOpened => "Opened {0}",
+        T::FlashOpenFailed => "Open failed: {0}",
+        T::FlashImported => "Imported {0}",
+        T::FlashImportFailed => "Import failed {0}: {1}",
+        T::FlashClipboardFailed => "Clipboard access failed: {0}",
+        T::ProgressImportImage => "Importing image {0}",
+        T::ProgressOpenFile => "Opening file {0}",
+        T::ProgressSaveFile => "Saving file {0}",
+        T::FlashFlipH => "Flipped horizontally",
+        T::FlashFlipV => "Flipped vertically",
+        T::FlashTransform => "Transform: scale=({0}, {1}) rotation={2}°",
+        T::FlashMoved => "Moved ({0}, {1})",
+        T::FlashDeleted => "Deleted {0} item(s)",
+        T::FlashShapeCreated => "Shape created",
+        T::FlashLineCreated => "Line created",
+        T::FlashArrowCreated => "Arrow created",
+        T::FlashFrameCreated => "Frame created #{0}",
+        T::FlashFrameRenumbered => "Frame renumbered → #{0}",
+        T::FlashNoSelectedImages => "No selected image items",
+        T::FlashNoExportableImages => "No exportable image items",
+        T::FlashArranged => "Arranged: {0}",
+        T::FlashAligned => "Align: {0}",
+        T::FlashDistributed => "Distributed: {0}",
+        T::FlashNormalized => "Normalized: {0}",
+        T::ArrangeModeLinear => "Linear",
+        T::ArrangeModeGrid => "Grid",
+        T::ArrangeModeOptimal => "Optimal packing",
         // 欢迎页
         T::WelcomeTitle => "PReferZ",
         T::WelcomeSubtitle => "Reference image board · right-click to start",
@@ -545,6 +604,35 @@ fn translate_zh(key: T) -> &'static str {
         T::FlashExportFailed => "导出失败",
         T::FlashProcessing => "处理中...",
         T::FlashDuplicated => "已复制 {0} 个元素",
+        T::FlashSaved => "已保存: {0}",
+        T::FlashSaveFailed => "保存失败: {0}",
+        T::FlashOpened => "已打开: {0}",
+        T::FlashOpenFailed => "打开失败: {0}",
+        T::FlashImported => "已导入: {0}",
+        T::FlashImportFailed => "导入失败 {0}: {1}",
+        T::FlashClipboardFailed => "剪贴板访问失败: {0}",
+        T::ProgressImportImage => "导入图片: {0}",
+        T::ProgressOpenFile => "打开文件: {0}",
+        T::ProgressSaveFile => "保存文件: {0}",
+        T::FlashFlipH => "水平翻转",
+        T::FlashFlipV => "垂直翻转",
+        T::FlashTransform => "变换: 缩放=({0}, {1}) 旋转={2}°",
+        T::FlashMoved => "移动: ({0}, {1})",
+        T::FlashDeleted => "已删除 {0} 项",
+        T::FlashShapeCreated => "已创建图形",
+        T::FlashLineCreated => "已创建直线",
+        T::FlashArrowCreated => "已创建箭头",
+        T::FlashFrameCreated => "已创建画框 #{0}",
+        T::FlashFrameRenumbered => "画框编号 → #{0}",
+        T::FlashNoSelectedImages => "无选中的图片项",
+        T::FlashNoExportableImages => "无可导出的图片项",
+        T::FlashArranged => "排列：{0}",
+        T::FlashAligned => "对齐：{0}",
+        T::FlashDistributed => "分布：{0}",
+        T::FlashNormalized => "归一化尺寸: {0}",
+        T::ArrangeModeLinear => "线形",
+        T::ArrangeModeGrid => "网格",
+        T::ArrangeModeOptimal => "最优装箱",
         // 欢迎页
         T::WelcomeTitle => "PReferZ",
         T::WelcomeSubtitle => "参考图板 · 右键打开菜单开始",
@@ -739,5 +827,44 @@ pub fn action_label(lang: Lang, action: Action) -> &'static str {
             AddConnectedShape => "流程图：添加连接图形",
             NavigateConnected => "流程图：沿连接导航",
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// 英文表不允许出现 CJK 字符。
+    ///
+    /// `translate_en` 的穷尽 `match` 只能保证「每个 key 都有 entry」，保证不了
+    /// 「entry 真是英文」——历史上 flash / 进度条文案直接写死在 `preferz_app.rs`
+    /// 里（`已保存: ...`），切到 EN 界面照样弹中文。这里扫自身源码补上这道闸，
+    /// 行内 `//` 注释（大量中文说明）不计入检查。
+    #[test]
+    fn english_table_contains_no_cjk() {
+        let src = include_str!("i18n.rs");
+        let after = src
+            .split_once("fn translate_en(key: T) -> &'static str {")
+            .expect("translate_en 应存在")
+            .1;
+        let body = after
+            .split_once("\nfn ")
+            .expect("translate_en 之后应有下一个 fn")
+            .0;
+        let bad: Vec<&str> = body
+            .lines()
+            .map(|line| line.split("//").next().unwrap_or(""))
+            .filter(|code| {
+                code.chars().any(|c| {
+                    matches!(
+                        c,
+                        '\u{2e80}'..='\u{9fff}' | '\u{ac00}'..='\u{d7af}' | '\u{ff00}'..='\u{ffef}'
+                    )
+                })
+            })
+            .map(str::trim)
+            .collect();
+        assert!(
+            bad.is_empty(),
+            "英文表含中文文案（切 EN 界面会漏出中文）: {bad:?}"
+        );
     }
 }

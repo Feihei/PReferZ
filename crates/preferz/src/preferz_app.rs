@@ -260,11 +260,14 @@ struct BackgroundOps {
 }
 
 impl BackgroundOps {
-    fn start_import(&mut self, ctx: &egui::Context, path: PathBuf) {
+    fn start_import(&mut self, ctx: &egui::Context, path: PathBuf, lang: Lang) {
         let (tx, rx) = mpsc::channel();
         self.import_rx = Some(rx);
         self.pending += 1;
-        self.msg = Some(format!("导入图片: {}", path.display()));
+        self.msg = Some(fill(
+            t(lang, T::ProgressImportImage),
+            &[path.display().to_string()],
+        ));
         let ctx2 = ctx.clone();
         std::thread::spawn(move || {
             let outcome = match (std::fs::read(&path), image::open(&path)) {
@@ -302,11 +305,14 @@ impl BackgroundOps {
         });
     }
 
-    fn start_load(&mut self, ctx: &egui::Context, path: PathBuf) {
+    fn start_load(&mut self, ctx: &egui::Context, path: PathBuf, lang: Lang) {
         let (tx, rx) = mpsc::channel();
         self.load_rx = Some(rx);
         self.pending += 1;
-        self.msg = Some(format!("打开文件: {}", path.display()));
+        self.msg = Some(fill(
+            t(lang, T::ProgressOpenFile),
+            &[path.display().to_string()],
+        ));
         let ctx2 = ctx.clone();
         std::thread::spawn(move || {
             let result = (|| {
@@ -329,11 +335,15 @@ impl BackgroundOps {
         scene: Scene,
         images: HashMap<String, Vec<u8>>,
         viewport: ViewportMeta,
+        lang: Lang,
     ) {
         let (tx, rx) = mpsc::channel();
         self.save_rx = Some(rx);
         self.pending += 1;
-        self.msg = Some(format!("保存文件: {}", path.display()));
+        self.msg = Some(fill(
+            t(lang, T::ProgressSaveFile),
+            &[path.display().to_string()],
+        ));
         let ctx2 = ctx.clone();
         std::thread::spawn(move || {
             let result = (|| {
@@ -425,6 +435,9 @@ pub struct PReferZApp {
     undo_stack: UndoStack,
     /// 临时状态消息（已导），会在若干帧后清空，避免覆盖持续状态（B5）
     flash_status: Option<(String, std::time::Instant)>,
+    /// `flash()` 调用计数。用作 toast `Area` 的 Id 后缀，让每条新提示都重新走
+    /// 一次 egui sizing pass（详见 `render_flash_toast`）。
+    flash_seq: u64,
     context_menu_open: bool,
     context_menu_pos: egui::Pos2,
     texture_cache: HashMap<u64, egui::TextureHandle>,
@@ -805,6 +818,7 @@ impl PReferZApp {
             view_fit_prev: None,
             undo_stack: UndoStack::new(),
             flash_status: None,
+            flash_seq: 0,
             context_menu_open: false,
             pending_endpoint_binding: None,
             snap_highlight: None,
@@ -863,6 +877,7 @@ impl PReferZApp {
 
     fn flash(&mut self, msg: impl Into<String>) {
         self.flash_status = Some((msg.into(), std::time::Instant::now()));
+        self.flash_seq = self.flash_seq.wrapping_add(1);
     }
 
     /// push undo command 并标记画布为 dirty（有未保存修改）
@@ -916,7 +931,10 @@ impl PReferZApp {
         if let Some(outcome) = self.bg_ops.take_save() {
             match outcome.result {
                 Ok(()) => {
-                    self.flash(format!("已保存: {}", outcome.path.display()));
+                    self.flash(fill(
+                        t(self.lang, T::FlashSaved),
+                        &[outcome.path.display().to_string()],
+                    ));
                     self.current_file = Some(outcome.path.clone());
                     self.dirty = false;
                     // 若有 pending 关闭/新建请求，现在保存完成可以执行了
@@ -932,7 +950,10 @@ impl PReferZApp {
                     }
                 }
                 Err(e) => {
-                    self.flash(format!("保存失败: {}", e));
+                    self.flash(fill(
+                        t(self.lang, T::FlashSaveFailed),
+                        std::slice::from_ref(&e),
+                    ));
                     // 保存失败：取消 pending，让用户自行决定
                     self.pending_save_prompt = None;
                 }
@@ -975,6 +996,10 @@ impl Default for PReferZApp {
 }
 
 const FLASH_DURATION_MS: u128 = 2500;
+
+/// flash toast 距屏幕左右两边的留白（px）。排版上限宽度 = 屏宽 − 2×该值，
+/// 见 `render_flash_toast`。
+const FLASH_TOAST_SIDE_MARGIN: f32 = 24.0;
 
 /// 线性对象自动闭合的模糊距离（画布像素）：终点回到起点该距离内即判定为闭合图形。
 /// 与 Excalidraw 的吸附闭合一致；多段线阶段起作用，两点式下仅覆盖短拖拽。
@@ -1090,7 +1115,7 @@ impl eframe::App for PReferZApp {
         });
         for path in dropped {
             if is_project_file(&path) {
-                self.bg_ops.start_load(ctx, path);
+                self.bg_ops.start_load(ctx, path, self.lang);
             } else {
                 self.pending_import.push(path);
             }
@@ -1098,7 +1123,7 @@ impl eframe::App for PReferZApp {
 
         // 处理待导入：启动后台解码（不阻塞 UI
         while let Some(path) = self.pending_import.pop() {
-            self.bg_ops.start_import(ctx, path);
+            self.bg_ops.start_import(ctx, path, self.lang);
         }
 
         // poll 后台任务结果（导入/加载/保存/导出）。
@@ -1581,6 +1606,11 @@ impl eframe::App for PReferZApp {
                         .msg
                         .clone()
                         .unwrap_or_else(|| t(self.lang, T::FlashProcessing).to_string());
+                    // 同 flash toast：把排版上限钉死（屏宽 − 两侧留白），带长路径的
+                    // 消息稳定折行留在屏内，而不是横向溢出被裁或逐帧收缩。
+                    let max_w =
+                        (ctx.screen_rect().width() - 2.0 * FLASH_TOAST_SIDE_MARGIN).max(200.0);
+                    ui.set_max_width(max_w);
                     ui.vertical_centered(|ui| {
                         ui.add_space(4.0);
                         ui.label(&msg);
@@ -1851,11 +1881,14 @@ impl PReferZApp {
                         let horizontal = h == Handle::FlipH;
                         let cmd = FlipItems::new(ids, horizontal);
                         self.push_cmd(Box::new(cmd));
-                        self.flash(if horizontal {
-                            "水平翻转"
-                        } else {
-                            "垂直翻转"
-                        });
+                        self.flash(t(
+                            self.lang,
+                            if horizontal {
+                                T::FlashFlipH
+                            } else {
+                                T::FlashFlipV
+                            },
+                        ));
                         return;
                     }
                     let start_corners = item.canvas_corners();
@@ -2373,11 +2406,13 @@ impl PReferZApp {
                         let cmd = TransformItem::new(item_id, start_transform, new_tf);
                         // skip_first_redo=true，因为预览已应用
                         self.push_cmd(Box::new(cmd));
-                        self.flash(format!(
-                            "变换: 缩放=({:.2},{:.2}) 旋转={:.1}°",
-                            new_tf.scale.x,
-                            new_tf.scale.y,
-                            new_tf.rotation.to_degrees()
+                        self.flash(fill(
+                            t(self.lang, T::FlashTransform),
+                            &[
+                                format!("{:.2}", new_tf.scale.x),
+                                format!("{:.2}", new_tf.scale.y),
+                                format!("{:.1}", new_tf.rotation.to_degrees()),
+                            ],
                         ));
                     }
                 }
@@ -2481,7 +2516,10 @@ impl PReferZApp {
                                 Box::new(MultiCommand::new(all))
                             };
                             self.push_cmd(cmd);
-                            self.flash(format!("移动: ({:.0}, {:.0})", delta.x, delta.y));
+                            self.flash(fill(
+                                t(self.lang, T::FlashMoved),
+                                &[format!("{:.0}", delta.x), format!("{:.0}", delta.y)],
+                            ));
                         } else if let Some(pid) = pending_deselect {
                             // Shift+点击已选中项且没拖动 → 取消选中（组则取消整组，G2）
                             for hid in self.scene.expand_to_groups(&[pid]) {
@@ -2765,11 +2803,14 @@ impl PReferZApp {
             )
             .with_sloppiness(self.default_sloppiness);
             self.push_new_item(AddItem::new(item));
-            self.flash(if end_arrow.is_some() {
-                "已创建箭头"
-            } else {
-                "已创建直线"
-            });
+            self.flash(t(
+                self.lang,
+                if end_arrow.is_some() {
+                    T::FlashArrowCreated
+                } else {
+                    T::FlashLineCreated
+                },
+            ));
             // 默认回 Select
             self.tool = Tool::Select;
             return;
@@ -2816,7 +2857,7 @@ impl PReferZApp {
         .with_sloppiness(self.default_sloppiness)
         .with_fill_style(self.default_fill_style.unwrap_or(FillStyle::Solid));
         self.push_new_item(AddItem::new(item));
-        self.flash("已创建图形");
+        self.flash(t(self.lang, T::FlashShapeCreated));
         // 默认回 Select
         self.tool = Tool::Select;
     }
@@ -2842,7 +2883,10 @@ impl PReferZApp {
         self.push_cmd(Box::new(reorder));
         self.scene.deselect_all();
         self.scene.select(frame_id);
-        self.flash(format!("已创建画框 #{}", number));
+        self.flash(fill(
+            t(self.lang, T::FlashFrameCreated),
+            &[number.to_string()],
+        ));
         // 默认回 Select
         self.tool = Tool::Select;
     }
@@ -4233,7 +4277,10 @@ impl PReferZApp {
             let plan = self.scene.plan_frame_renumber(frame_id, new_number);
             let cmd = RenumberFrame::new(plan);
             self.push_cmd(Box::new(cmd));
-            self.flash(format!("画框编号 → #{}", new_number));
+            self.flash(fill(
+                t(self.lang, T::FlashFrameRenumbered),
+                &[new_number.to_string()],
+            ));
         }
     }
 
@@ -5936,11 +5983,25 @@ impl PReferZApp {
             return;
         };
         let msg = msg.clone();
-        egui::Area::new(egui::Id::new("flash_toast"))
+        // Id 带上本次 flash 的序号：`Area` 会把内容尺寸记忆在 `AreaState` 里，
+        // 下一帧以该尺寸作为 `max_rect`（见 egui `Area::end()`：
+        // `state.size = Some(content_ui.min_size())`）。若沿用固定 Id，新文案会
+        // 按上一条（可能已被收缩过的）宽度排版，居中位置也慢一帧。换新 Id 则走
+        // 一次 sizing pass，结束时 egui 自带 `request_repaint()`，真实宽度立刻到位。
+        egui::Area::new(egui::Id::new(("flash_toast", self.flash_seq)))
             .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -16.0))
             .order(egui::Order::Foreground)
             .interactable(false)
             .show(ctx, |ui| {
+                // 把排版宽度钉死，不让它来自 Area 的记忆尺寸：`Area::end()` 每帧
+                // 把 `state.size` 收缩成内容 `min_size()`，下一帧又拿它当 `max_rect`，
+                // 而 flash 多为无 ASCII 空格的中文，默认 `Words` 模式把整句当一个
+                // 超长"单词"按字符硬拆 → 可用宽度逐帧变小，最终塌成正一列（每行
+                // 一个字），只在有重绘时发生所以"有时正常有时竖条"。显式 set_max_width
+                // 后收缩链被切断：短文案单行，超长文案（带路径的错误）稳定折行且
+                // 始终留在屏幕内（Extend 会让它横向溢出被两侧裁掉）。
+                let max_w = (ctx.screen_rect().width() - 2.0 * FLASH_TOAST_SIDE_MARGIN).max(200.0);
+                ui.set_max_width(max_w);
                 egui::Frame::popup(ui.style())
                     .inner_margin(egui::Margin::symmetric(12.0, 6.0))
                     .show(ui, |ui| {
@@ -6576,6 +6637,65 @@ mod tests {
             _ => unreachable!(),
         }
     }
+
+    /// flash 提示必须跟随界面语言。这批文案曾直接写死中文（`已删除 3 项`…），
+    /// 切到 EN 界面后弹出的仍是中文。这里跑一遍常用动作，断言 EN 下提示里无 CJK。
+    #[test]
+    fn flash_messages_follow_selected_language() {
+        fn has_cjk(s: &str) -> bool {
+            s.chars()
+                .any(|c| matches!(c, '\u{2e80}'..='\u{9fff}' | '\u{ff00}'..='\u{ffef}'))
+        }
+
+        let mut app = PReferZApp::new();
+        app.lang = Lang::En;
+        let a = Item::new_shape(
+            ShapeType::Rectangle,
+            (40.0, 40.0),
+            0.0,
+            0.0,
+            StrokeStyle::default(),
+            None,
+        );
+        let b = Item::new_shape(
+            ShapeType::Rectangle,
+            (40.0, 40.0),
+            120.0,
+            60.0,
+            StrokeStyle::default(),
+            None,
+        );
+        let (a_id, b_id) = (a.id, b.id);
+        app.scene.add_item(a);
+        app.scene.add_item(b);
+
+        // 取出本步产生的 flash，断言已按英文出文案
+        let expect_ascii_flash = |app: &mut PReferZApp, what: &str| {
+            let msg = app
+                .flash_status
+                .take()
+                .map(|(m, _)| m)
+                .unwrap_or_else(|| panic!("{what} 应给出 flash 提示"));
+            assert!(!msg.is_empty(), "{what} 的提示不应为空");
+            assert!(!has_cjk(&msg), "EN 界面下 {what} 的提示未翻译: {msg}");
+        };
+
+        app.scene.deselect_all();
+        app.scene.select(a_id);
+        app.scene.select(b_id);
+        app.align_selected(AlignMode::Left);
+        expect_ascii_flash(&mut app, "对齐");
+        app.arrange_selected(ArrangeMode::Grid);
+        expect_ascii_flash(&mut app, "排列");
+
+        app.scene.deselect_all();
+        app.scene.select(b_id);
+        app.delete_selected();
+        expect_ascii_flash(&mut app, "删除");
+
+        app.finish_create_frame(CanvasPoint::new(0.0, 0.0), CanvasPoint::new(200.0, 200.0));
+        expect_ascii_flash(&mut app, "创建画框");
+    }
 }
 
 /// 缩放手柄：以拖拽角点的对角为锚点
@@ -6967,7 +7087,10 @@ impl PReferZApp {
 
     fn finish_import(&mut self, ctx: &egui::Context, outcome: ImportOutcome) {
         if let Some(e) = outcome.error {
-            self.flash(format!("导入失败 {}: {}", outcome.path.display(), e));
+            self.flash(fill(
+                t(self.lang, T::FlashImportFailed),
+                &[outcome.path.display().to_string(), e.to_string()],
+            ));
             return;
         }
         let texture_id = self.next_texture_id;
@@ -7008,7 +7131,10 @@ impl PReferZApp {
 
         let cmd = AddItem::new(item);
         self.push_cmd(Box::new(cmd));
-        self.flash(format!("已导入: {}", outcome.path.display()));
+        self.flash(fill(
+            t(self.lang, T::FlashImported),
+            &[outcome.path.display().to_string()],
+        ));
         ctx.request_repaint();
     }
 
@@ -7078,11 +7204,17 @@ impl PReferZApp {
                 self.dirty = false;
                 // 加载成功后加入最近文件列表
                 add_recent_file(&mut self.recent_files, outcome.path.clone());
-                self.flash(format!("已打开: {}", outcome.path.display()));
+                self.flash(fill(
+                    t(self.lang, T::FlashOpened),
+                    &[outcome.path.display().to_string()],
+                ));
                 ctx.request_repaint();
             }
             Err(e) => {
-                self.flash(format!("打开失败: {}", e));
+                self.flash(fill(
+                    t(self.lang, T::FlashOpenFailed),
+                    std::slice::from_ref(&e),
+                ));
             }
         }
     }
@@ -7150,7 +7282,7 @@ impl PReferZApp {
     /// 记录最近文件并启动后台加载。
     fn add_recent_and_load(&mut self, ctx: &egui::Context, path: PathBuf) {
         add_recent_file(&mut self.recent_files, path.clone());
-        self.bg_ops.start_load(ctx, path);
+        self.bg_ops.start_load(ctx, path, self.lang);
     }
 
     /// 载入图片到当前画布。
@@ -7171,7 +7303,10 @@ impl PReferZApp {
         let mut clipboard = match arboard::Clipboard::new() {
             Ok(c) => c,
             Err(e) => {
-                self.flash(format!("剪贴板访问失败: {}", e));
+                self.flash(fill(
+                    t(self.lang, T::FlashClipboardFailed),
+                    &[e.to_string()],
+                ));
                 return;
             }
         };
@@ -7257,7 +7392,7 @@ impl PReferZApp {
             zoom: self.viewport.zoom,
         };
         self.bg_ops
-            .start_save(ctx, path, self.scene.clone(), images, viewport);
+            .start_save(ctx, path, self.scene.clone(), images, viewport, self.lang);
     }
 
     /// 启动后台导出（spec §2.3 导出）。
@@ -7341,11 +7476,14 @@ impl PReferZApp {
             .collect();
 
         if pixmap_items.is_empty() {
-            self.flash(if selection_only {
-                "无选中的图片项"
-            } else {
-                "无可导出的图片项"
-            });
+            self.flash(t(
+                self.lang,
+                if selection_only {
+                    T::FlashNoSelectedImages
+                } else {
+                    T::FlashNoExportableImages
+                },
+            ));
             return;
         }
 
@@ -7510,7 +7648,10 @@ impl PReferZApp {
         let cmd = DeleteItems::new(ids.clone());
         self.push_cmd(Box::new(cmd));
         self.scene.selection.clear();
-        self.flash(format!("已删除 {} 项", ids.len()));
+        self.flash(fill(
+            t(self.lang, T::FlashDeleted),
+            &[ids.len().to_string()],
+        ));
         // 纹理驱逐（修 .issues #1 删副本后原件变灰方块）：
         // - 副本与原件共享同一 texture_id，删除后只要场景里仍有 item 引用该纹理
         //   就不能驱逐——否则其余引用者立刻变灰方块、裁剪/取色等编辑功能一并失效；
@@ -8110,11 +8251,14 @@ impl PReferZApp {
         let cmd = ArrangeItems::new(moves).with_preview_applied(false);
         self.push_cmd(Box::new(cmd));
         let mode_name = match mode {
-            ArrangeMode::Linear => "线形",
-            ArrangeMode::Grid => "网格",
-            ArrangeMode::Optimal => "最优装箱",
+            ArrangeMode::Linear => T::ArrangeModeLinear,
+            ArrangeMode::Grid => T::ArrangeModeGrid,
+            ArrangeMode::Optimal => T::ArrangeModeOptimal,
         };
-        self.flash(format!("排列：{}", mode_name));
+        self.flash(fill(
+            t(self.lang, T::FlashArranged),
+            &[t(self.lang, mode_name).to_string()],
+        ));
     }
 
     /// 多元素对齐（plan #6）。参考系 = 选区包围盒；命令复用 `ArrangeItems` 入 undo 栈。
@@ -8138,10 +8282,9 @@ impl PReferZApp {
             AlignMode::VCenter => T::AlignVCenter,
             AlignMode::Bottom => T::AlignBottom,
         };
-        self.flash(format!(
-            "{}：{}",
-            t(self.lang, T::PropsSectionAlign),
-            t(self.lang, name)
+        self.flash(fill(
+            t(self.lang, T::FlashAligned),
+            &[t(self.lang, name).to_string()],
         ));
     }
 
@@ -8165,10 +8308,9 @@ impl PReferZApp {
             (DistributeAxis::Vertical, DistributeMode::Gap) => T::DistributeVGap,
             (DistributeAxis::Vertical, DistributeMode::Centers) => T::DistributeVCenters,
         };
-        self.flash(format!(
-            "{}：{}",
-            t(self.lang, T::Distribute),
-            t(self.lang, name)
+        self.flash(fill(
+            t(self.lang, T::FlashDistributed),
+            &[t(self.lang, name).to_string()],
         ));
     }
 
@@ -8221,7 +8363,10 @@ impl PReferZApp {
             preferz_core::commands::NormalizeMode::Height => t(self.lang, T::NormalizeByHeight),
             preferz_core::commands::NormalizeMode::Area => t(self.lang, T::NormalizeByArea),
         };
-        self.flash(format!("{}: {}", t(self.lang, T::NormalizeSize), mode_name));
+        self.flash(fill(
+            t(self.lang, T::FlashNormalized),
+            &[mode_name.to_string()],
+        ));
     }
 
     /// 渲染保存提示对话框（关闭/新建时若 dirty 弹出）    /// 按钮    /// - 保存：触发保存流程，首次保存弹系统文件选择器；保存完成后由 poll_background 执行 pending action
