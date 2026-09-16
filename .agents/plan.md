@@ -85,6 +85,32 @@
    light 下显黑色月牙、dark 下显白色太阳（☀），hover 有底色高亮；Auto 主题按**当前生效外观**显示，
    点击转为显式 Light/Dark 并即时翻色（默认描边色随主题、写 config 持久化，与设置面板一致）。
 
+新增：**验收反馈批次（2026-09-16，Feihei 实测 2 项）—— 🔶 代码交付，待 `cargo run` 复验**：
+
+1. **绿色 flash toast 有时塌成一竖条**（每行一个字），有时正常单行。根因：flash 用固定 Id 的
+   `egui::Area`，而 Area 会把内容尺寸记忆在 `AreaState` 并在下一帧当作 `max_rect`
+   （egui `Area::end()` 里 `state.size = content_ui.min_size()`）；中文文案没有 ASCII 空格，
+   默认 `TextWrapMode::Words` 把整句当一个超长"单词"按字符硬拆，于是可用宽度逐帧收缩，
+   只要画布还在重绘就收敛成正一列；无重绘（只画了一两帧）时看起来正常——这解释了"有时"。
+   修法：显式把排版上限钉死为「屏宽 − 两侧留白」（新常量 `FLASH_TOAST_SIDE_MARGIN = 24`，
+   `ui.set_max_width`）——可用宽度不再来自记忆尺寸，收缩链被切断：短文案恒单行，
+   超长文案（带路径的错误）稳定折行且留在屏内（比 `Extend` 更好，`Extend` 会让它横向
+   溢出被两侧裁掉）；后台进度条浮层同处理。另给 Area Id 加 flash 序号 `flash_seq`，
+   让每条新提示重走一次 sizing pass（居中位置不再慢一帧）。
+   复验：连续做移动 / 缩放 / 删除 / 对齐 / 排列 / 保存等会出提示的操作，toast 应恒为
+   **水平居中的一整块**——常规短文案单行贴在画布底部；超长文案（带路径的「已保存」）
+   在屏宽内折成两三行、左右各留 24px，既不塌成竖条也不溢出屏幕两侧。
+2. **切到 EN 界面后弹的信息仍是中文**。根因：flash 与后台进度条的一批文案直接写死在
+   `preferz_app.rs`（`已保存: …` / `已删除 3 项` / `水平翻转` / `排列：线形` / `导入图片: 路径` 等），
+   未经过 `t(self.lang, …)`。修法：新增 29 个词条（文件操作、翻转/变换/移动/删除、创建图形/
+   直线/箭头/画框/改号、导出无图两类、排列/对齐/分布/归一化模板与排列模式短名、进度条三条），
+   全部改走 `t` / `fill`；`BackgroundOps::start_import` / `start_load` / `start_save` 增 `lang`
+   参数以本地化进度消息；对齐/分布原先用全角冒号硬拼（英文会得 `Align：Align left`），改为整句模板。
+   复验：HUD 左下角切到 EN 后，删除 / 保存 / 导入 / 导出 / 排列 / 对齐 / 翻转 / 拖动缩放
+   的 toast 与后台进度条文字全为英文；再切回「中」应与改动前中文文案一致（措辞未变）。
+   回归闸：`i18n::tests::english_table_contains_no_cjk`（扫英文表禁 CJK）+
+   `preferz_app::tests::flash_messages_follow_selected_language`（EN 下跑常用动作断言提示无中文）。
+
 ---
 
 ## 下一步：Excalidraw 打磨批次（Phase L 候选）
