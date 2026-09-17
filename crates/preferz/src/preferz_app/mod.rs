@@ -28,10 +28,17 @@ use preferz_core::shape::{
 use preferz_core::snap;
 use preferz_core::spaces::{CanvasPoint, CanvasRect, CanvasSize, CanvasVector};
 use preferz_core::{Command, CropRect, EndpointBinding, Item, ItemId, ItemKind, Scene};
-use preferz_fileio::{PrzFile, ViewportMeta};
+use preferz_fileio::ViewportMeta;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::{self};
+// —— Step 3：从 preferz_app 拆出的子模块（见 core-sink 计划）——
+mod background_ops;
+mod config;
+mod export;
+pub(crate) use background_ops::{BackgroundOps, ExportOutcome, ImportOutcome, LoadOutcome};
+pub(crate) use config::{add_recent_file, load_config, load_recent_files, save_config, UserConfig};
+pub(crate) use export::{export_pixmaps_to_dir, export_scene_to_file, ColorSample, ExportFormat};
 
 /// Undo 栈。`push` 会读`Command::skip_first_redo()`
 /// - 交互预览命令（拖拽中已直接改 item）返true 跳过首次 redo
@@ -266,220 +273,6 @@ struct EditingText {
     first_frame: bool,
     /// 绑定文本所属容器 id（None = 自由文本）。新创建绑定时在提交时写入。
     container_id: Option<ItemId>,
-}
-
-/// 后台图片导入解码结果（线UI 线程）
-/// 线程负责读取文件字节 + 解码；UI 线程负责上传纹理 + 创建 item
-struct ImportOutcome {
-    path: PathBuf,
-    /// 原始图片字节（写sqlar 用）
-    bytes: Vec<u8>,
-    /// 解码后的图片尺寸
-    width: u32,
-    height: u32,
-    /// RGBA 像素数据（上传纹理用
-    rgba: Vec<u8>,
-    /// 解码错误（若存在
-    error: Option<String>,
-}
-
-/// 后台 .prz 加载结果（线UI 线程）
-struct LoadOutcome {
-    path: PathBuf,
-    result: Result<preferz_fileio::LoadResult, String>,
-}
-
-/// 后台保存结果（线UI 线程）
-struct SaveOutcome {
-    path: PathBuf,
-    result: Result<(), String>,
-}
-
-/// 后台导出结果（线程 → UI 线程）。
-struct ExportOutcome {
-    path: PathBuf,
-    result: Result<String, String>,
-}
-
-/// 后台任务状态。`loading`/`saving` 为 true 时显示进度条。
-#[derive(Default)]
-struct BackgroundOps {
-    /// 图片导入解码通道（单条队列，每次导入一条）。
-    import_rx: Option<Receiver<ImportOutcome>>,
-    /// .prz 文件加载通道。
-    load_rx: Option<Receiver<LoadOutcome>>,
-    /// 文件保存通道。
-    save_rx: Option<Receiver<SaveOutcome>>,
-    /// 场景导出通道。
-    export_rx: Option<Receiver<ExportOutcome>>,
-    /// 当前进行的后台任务数量（>0 时显示进度条）。
-    pending: usize,
-    /// 进度消息。
-    msg: Option<String>,
-}
-
-impl BackgroundOps {
-    fn start_import(&mut self, ctx: &egui::Context, path: PathBuf, lang: Lang) {
-        let (tx, rx) = mpsc::channel();
-        self.import_rx = Some(rx);
-        self.pending += 1;
-        self.msg = Some(fill(
-            t(lang, T::ProgressImportImage),
-            &[path.display().to_string()],
-        ));
-        let ctx2 = ctx.clone();
-        std::thread::spawn(move || {
-            let outcome = match (std::fs::read(&path), image::open(&path)) {
-                (Ok(bytes), Ok(img)) => {
-                    let (w, h) = img.dimensions();
-                    let rgba = img.to_rgba8().into_vec();
-                    ImportOutcome {
-                        path,
-                        bytes,
-                        width: w,
-                        height: h,
-                        rgba,
-                        error: None,
-                    }
-                }
-                (Err(e), _) => ImportOutcome {
-                    path,
-                    bytes: Vec::new(),
-                    width: 0,
-                    height: 0,
-                    rgba: Vec::new(),
-                    error: Some(format!("读取失败: {}", e)),
-                },
-                (_, Err(e)) => ImportOutcome {
-                    path,
-                    bytes: Vec::new(),
-                    width: 0,
-                    height: 0,
-                    rgba: Vec::new(),
-                    error: Some(format!("解码失败: {}", e)),
-                },
-            };
-            let _ = tx.send(outcome);
-            ctx2.request_repaint();
-        });
-    }
-
-    fn start_load(&mut self, ctx: &egui::Context, path: PathBuf, lang: Lang) {
-        let (tx, rx) = mpsc::channel();
-        self.load_rx = Some(rx);
-        self.pending += 1;
-        self.msg = Some(fill(
-            t(lang, T::ProgressOpenFile),
-            &[path.display().to_string()],
-        ));
-        let ctx2 = ctx.clone();
-        std::thread::spawn(move || {
-            let result = (|| {
-                let prz = PrzFile::open(&path)?;
-                prz.load_scene()
-            })();
-            let outcome = LoadOutcome {
-                path: path.clone(),
-                result: result.map_err(|e| e.to_string()),
-            };
-            let _ = tx.send(outcome);
-            ctx2.request_repaint();
-        });
-    }
-
-    fn start_save(
-        &mut self,
-        ctx: &egui::Context,
-        path: PathBuf,
-        scene: Scene,
-        images: HashMap<String, Vec<u8>>,
-        viewport: ViewportMeta,
-        lang: Lang,
-    ) {
-        let (tx, rx) = mpsc::channel();
-        self.save_rx = Some(rx);
-        self.pending += 1;
-        self.msg = Some(fill(
-            t(lang, T::ProgressSaveFile),
-            &[path.display().to_string()],
-        ));
-        let ctx2 = ctx.clone();
-        std::thread::spawn(move || {
-            let result = (|| {
-                let mut prz = if path.exists() {
-                    PrzFile::open(&path)?
-                } else {
-                    PrzFile::create(&path)?
-                };
-                prz.save_scene(&scene, &images, viewport)
-            })();
-            let _ = tx.send(SaveOutcome {
-                path: path.clone(),
-                result: result.map_err(|e| e.to_string()),
-            });
-            ctx2.request_repaint();
-        });
-    }
-
-    /// 取出并处理已完成的导入结果（PReferZApp::poll_background 调用）
-    fn take_import(&mut self) -> Option<ImportOutcome> {
-        if let Some(rx) = &self.import_rx {
-            if let Ok(outcome) = rx.try_recv() {
-                self.pending = self.pending.saturating_sub(1);
-                if self.pending == 0 {
-                    self.msg = None;
-                }
-                self.import_rx = None;
-                return Some(outcome);
-            }
-        }
-        None
-    }
-
-    /// 取出并处理已完成的加载结果（PReferZApp::poll_background 调用）
-    fn take_load(&mut self) -> Option<LoadOutcome> {
-        if let Some(rx) = &self.load_rx {
-            if let Ok(outcome) = rx.try_recv() {
-                self.pending = self.pending.saturating_sub(1);
-                if self.pending == 0 {
-                    self.msg = None;
-                }
-                self.load_rx = None;
-                return Some(outcome);
-            }
-        }
-        None
-    }
-
-    /// 取出并处理已完成的保存结果（由 PReferZApp::poll_background 调用）。
-    fn take_save(&mut self) -> Option<SaveOutcome> {
-        if let Some(rx) = &self.save_rx {
-            if let Ok(outcome) = rx.try_recv() {
-                self.pending = self.pending.saturating_sub(1);
-                if self.pending == 0 {
-                    self.msg = None;
-                }
-                self.save_rx = None;
-                return Some(outcome);
-            }
-        }
-        None
-    }
-
-    /// 取出并处理已完成的导出结果（由 PReferZApp::poll_background 调用）。
-    fn take_export(&mut self) -> Option<ExportOutcome> {
-        if let Some(rx) = &self.export_rx {
-            if let Ok(outcome) = rx.try_recv() {
-                self.pending = self.pending.saturating_sub(1);
-                if self.pending == 0 {
-                    self.msg = None;
-                }
-                self.export_rx = None;
-                return Some(outcome);
-            }
-        }
-        None
-    }
 }
 
 /// 端点吸附阈值（屏幕像素）。画布阈值 = `SNAP_THRESHOLD_PX / zoom`，随缩放保持手感一致。
@@ -4724,7 +4517,7 @@ impl PReferZApp {
         // Icon（标题上方，64×64 居中；懒加载复用 assets/icon.png）
         let ctx = ui.ctx().clone();
         let logo_tex = self.logo_texture.get_or_insert_with(|| {
-            let bytes = include_bytes!("../../../assets/icon.png");
+            let bytes = include_bytes!("../../../../assets/icon.png");
             match image::load_from_memory(bytes) {
                 Ok(img) => {
                     let rgba = img.to_rgba8();
@@ -6270,556 +6063,6 @@ fn fill(template: &str, parts: &[String]) -> String {
         s = s.replace(&format!("{{{i}}}"), part);
     }
     s
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn fill_replaces_indexed_placeholders() {
-        assert_eq!(
-            fill("a {0} b {1}", &["X".to_string(), "Y".to_string()]),
-            "a X b Y"
-        );
-        // 占位多于参数时保留原样，便于开发期发现漏填
-        assert_eq!(fill("a {0} b {1}", &["X".to_string()]), "a X b {1}");
-    }
-
-    // ───────── 多边形工具（Phase I） ─────────
-
-    /// 构造一个已进入多边形绘制中状态的应用：直接摆好 DragState，不走 UI 事件。
-    fn app_creating_polygon(points: Vec<CanvasPoint>, current: CanvasPoint) -> PReferZApp {
-        let mut app = PReferZApp::new();
-        app.tool = Tool::Polygon;
-        app.drag = DragState::CreatingPolygon {
-            points,
-            current,
-            shift: false,
-        };
-        app
-    }
-
-    #[test]
-    fn finish_create_polygon_builds_closed_polyline_in_aabb_local_space() {
-        let mut app = app_creating_polygon(
-            vec![
-                CanvasPoint::new(10.0, 20.0),
-                CanvasPoint::new(60.0, 20.0),
-                CanvasPoint::new(60.0, 70.0),
-            ],
-            // 与末顶点重合（双击收尾），不应追加成第四点
-            CanvasPoint::new(60.0, 70.0),
-        );
-        app.finish_create_polygon();
-        assert_eq!(app.scene.items.len(), 1);
-        let item = &app.scene.items[0];
-        // 整体位置 = AABB 左上角，局部坐标从 (0,0) 起算
-        assert_eq!((item.transform.pos.x, item.transform.pos.y), (10.0, 20.0));
-        match &item.kind {
-            ItemKind::Shape {
-                shape_type,
-                points,
-                closed,
-                base_size,
-                ..
-            } => {
-                assert_eq!(*shape_type, ShapeType::Polyline);
-                assert!(closed, "多边形工具产物恒为闭合折线");
-                assert_eq!(points.len(), 3);
-                assert_eq!(points[0], (0.0, 0.0));
-                assert_eq!(points[1], (50.0, 0.0));
-                assert_eq!(points[2], (50.0, 50.0));
-                assert_eq!(*base_size, (50.0, 50.0));
-            }
-            _ => panic!("多边形应为 Shape item"),
-        }
-        assert_eq!(app.tool, Tool::Select, "收尾后应回 Select");
-    }
-
-    #[test]
-    fn finish_create_polygon_appends_rubber_band_tip_when_far_from_last_vertex() {
-        // Enter 收尾时指针通常远离末顶点，此时橡皮筋末端应算作最后一个顶点
-        let mut app = app_creating_polygon(
-            vec![
-                CanvasPoint::new(0.0, 0.0),
-                CanvasPoint::new(50.0, 0.0),
-                CanvasPoint::new(50.0, 50.0),
-            ],
-            CanvasPoint::new(0.0, 50.0),
-        );
-        app.finish_create_polygon();
-        let item = &app.scene.items[0];
-        match &item.kind {
-            ItemKind::Shape { points, .. } => assert_eq!(points.len(), 4),
-            _ => panic!("多边形应为 Shape item"),
-        }
-    }
-
-    #[test]
-    fn finish_create_polygon_discards_fewer_than_three_points() {
-        let mut app = app_creating_polygon(
-            vec![CanvasPoint::new(0.0, 0.0), CanvasPoint::new(50.0, 0.0)],
-            CanvasPoint::new(50.0, 0.0),
-        );
-        app.finish_create_polygon();
-        assert!(app.scene.items.is_empty(), "两点连不出面，不应产生 item");
-        assert_eq!(app.tool, Tool::Select);
-        assert!(app.flash_status.is_some(), "应给出提示");
-    }
-
-    #[test]
-    fn finish_create_polygon_ignores_other_drag_states() {
-        let mut app = PReferZApp::new();
-        app.drag = DragState::BoxSelect {
-            start_canvas: CanvasPoint::new(0.0, 0.0),
-            current_canvas: CanvasPoint::new(10.0, 10.0),
-            additive: false,
-        };
-        app.finish_create_polygon();
-        assert!(
-            matches!(app.drag, DragState::BoxSelect { .. }),
-            "非多边形状态应原样保留，不能被吞掉"
-        );
-        assert!(app.scene.items.is_empty());
-    }
-
-    // ───────── 多边形顶点编辑（plan #4） ─────────
-
-    /// 放入一条 Polyline（局部点集从 (0,0) 起算，pos=0），返回应用与 item id。
-    fn app_with_polyline(points: Vec<(f32, f32)>, closed: bool) -> (PReferZApp, ItemId) {
-        let mut app = PReferZApp::new();
-        let min_x = points.iter().map(|p| p.0).fold(f32::MAX, f32::min);
-        let min_y = points.iter().map(|p| p.1).fold(f32::MAX, f32::min);
-        let max_x = points.iter().map(|p| p.0).fold(f32::MIN, f32::max);
-        let max_y = points.iter().map(|p| p.1).fold(f32::MIN, f32::max);
-        let item = Item::new_polyline(
-            points,
-            (max_x - min_x, max_y - min_y),
-            None,
-            None,
-            closed,
-            0.0,
-            0.0,
-            StrokeStyle::default(),
-        );
-        let id = item.id;
-        app.scene.add_item(item);
-        (app, id)
-    }
-
-    fn polyline_points(app: &PReferZApp, id: ItemId) -> Vec<(f32, f32)> {
-        match &app.scene.get_item(&id).unwrap().kind {
-            ItemKind::Shape { points, .. } => points.clone(),
-            _ => panic!("应为 Shape"),
-        }
-    }
-
-    #[test]
-    fn should_auto_close_requires_three_points_real_endpoint_and_screen_threshold() {
-        let looped = vec![(0.0, 0.0), (50.0, 0.0), (1.0, 1.0)];
-        assert!(
-            should_auto_close(&looped, 2, 1.0),
-            "末点拖回首点附近 → 闭合"
-        );
-        assert!(should_auto_close(&looped, 0, 1.0), "首点侧同样判定");
-        assert!(!should_auto_close(&looped, 1, 1.0), "内部顶点不参与闭合");
-        let two = vec![(0.0, 0.0), (1.0, 0.0)];
-        assert!(!should_auto_close(&two, 1, 1.0), "两点恒开放");
-        // 阈值按屏幕像素：zoom=4 时画布 1.5px ≈ 屏 6px 过；3px = 屏 12px 不过
-        let near = vec![(0.0, 0.0), (50.0, 0.0), (1.5, 0.0)];
-        assert!(should_auto_close(&near, 2, 4.0));
-        let far = vec![(0.0, 0.0), (50.0, 0.0), (3.0, 0.0)];
-        assert!(!should_auto_close(&far, 2, 4.0));
-    }
-
-    #[test]
-    fn delete_vertex_guard_keeps_minimum_points() {
-        // 两点开放线删端点：拒绝、不入 undo 栈、有 flash
-        let (mut app, id) = app_with_polyline(vec![(0.0, 0.0), (50.0, 0.0)], false);
-        app.try_delete_vertex(id, 0);
-        assert!(app.undo_stack.undo.is_empty(), "守卫失败不应产生命令");
-        assert_eq!(polyline_points(&app, id).len(), 2);
-        assert!(app.flash_status.is_some(), "应提示拒绝原因");
-        // 闭合三角形删顶点：拒绝（保 ≥3）
-        let (mut app, id) = app_with_polyline(vec![(0.0, 0.0), (50.0, 0.0), (25.0, 40.0)], true);
-        app.try_delete_vertex(id, 1);
-        assert!(app.undo_stack.undo.is_empty());
-        assert_eq!(polyline_points(&app, id).len(), 3);
-        // 开放三点删中间点：成功剩两点，一步 undo 还原
-        let (mut app, id) = app_with_polyline(vec![(0.0, 0.0), (25.0, 10.0), (50.0, 0.0)], false);
-        app.try_delete_vertex(id, 1);
-        assert_eq!(app.undo_stack.undo.len(), 1);
-        assert_eq!(polyline_points(&app, id), vec![(0.0, 0.0), (50.0, 0.0)]);
-        assert!(app.perform_undo());
-        assert_eq!(polyline_points(&app, id).len(), 3);
-    }
-
-    #[test]
-    fn delete_endpoint_vertex_clears_its_binding_and_undoes() {
-        let (mut app, line_id) =
-            app_with_polyline(vec![(0.0, 0.0), (25.0, 10.0), (50.0, 0.0)], false);
-        let (target_app, target_id) = app_with_polyline(vec![(0.0, 0.0), (10.0, 10.0)], false);
-        drop(target_app); // 只取一个 id 作绑定目标占位
-        if let Some(it) = app.scene.get_item_mut(&line_id) {
-            if let ItemKind::Shape { start_binding, .. } = &mut it.kind {
-                *start_binding = Some(EndpointBinding {
-                    target: target_id,
-                    anchor: None,
-                });
-            }
-        }
-        app.try_delete_vertex(line_id, 0);
-        if let Some(it) = app.scene.get_item(&line_id) {
-            if let ItemKind::Shape { start_binding, .. } = &it.kind {
-                assert!(start_binding.is_none(), "删首顶点应解除起点绑定");
-            }
-        }
-        assert!(app.perform_undo());
-        if let Some(it) = app.scene.get_item(&line_id) {
-            if let ItemKind::Shape { start_binding, .. } = &it.kind {
-                assert_eq!(
-                    *start_binding,
-                    Some(EndpointBinding {
-                        target: target_id,
-                        anchor: None,
-                    }),
-                    "undo 应连同绑定一起还原"
-                );
-            }
-        }
-    }
-
-    // ───────── 流程图（plan #7） ─────────
-
-    fn app_with_rect(pos: (f32, f32), size: (f32, f32)) -> (PReferZApp, ItemId) {
-        let mut app = PReferZApp::new();
-        let item = Item::new_shape(
-            ShapeType::Rectangle,
-            size,
-            pos.0,
-            pos.1,
-            StrokeStyle::default(),
-            None,
-        );
-        let id = item.id;
-        app.scene.add_item(item);
-        app.scene.select(id);
-        (app, id)
-    }
-
-    #[test]
-    fn edge_anchor_local_gives_facing_edge_midpoints() {
-        assert_eq!(
-            edge_anchor_local(FlowDir::Right, 120.0, 80.0),
-            (120.0, 40.0)
-        );
-        assert_eq!(edge_anchor_local(FlowDir::Left, 120.0, 80.0), (0.0, 40.0));
-        assert_eq!(edge_anchor_local(FlowDir::Down, 120.0, 80.0), (60.0, 80.0));
-        assert_eq!(edge_anchor_local(FlowDir::Up, 120.0, 80.0), (60.0, 0.0));
-    }
-
-    #[test]
-    fn add_connected_shape_creates_bound_clone_with_one_undo_step() {
-        let (mut app, src_id) = app_with_rect((10.0, 10.0), (120.0, 80.0));
-        app.add_connected_shape(FlowDir::Right);
-
-        assert_eq!(app.scene.items.len(), 3, "应新增节点+箭头各一");
-        let src = app.scene.get_item(&src_id).unwrap().clone();
-        let dup = app
-            .scene
-            .items
-            .iter()
-            .find(|i| {
-                i.id != src_id
-                    && matches!(
-                        i.kind,
-                        ItemKind::Shape {
-                            shape_type: ShapeType::Rectangle,
-                            ..
-                        }
-                    )
-            })
-            .expect("克隆的矩形节点")
-            .clone();
-        let arrow = app
-            .scene
-            .items
-            .iter()
-            .find(|i| {
-                matches!(
-                    i.kind,
-                    ItemKind::Shape {
-                        shape_type: ShapeType::Polyline,
-                        ..
-                    }
-                )
-            })
-            .expect("连接箭头")
-            .clone();
-        assert_ne!(dup.id, src.id);
-        // 主轴 = 源右边界 + 100 间距；交叉轴（同尺寸克隆）即 y 不变。
-        assert_eq!((dup.transform.pos.x, dup.transform.pos.y), (230.0, 10.0));
-        // 箭头：起点=源右边中点 (130,50)，终点=克隆左边中点 (230,50)，
-        // 局部点集对齐 AABB 左上角；端头 = Arrow。
-        match &arrow.kind {
-            ItemKind::Shape {
-                points,
-                base_size,
-                end_arrow,
-                start_binding,
-                end_binding,
-                ..
-            } => {
-                assert_eq!(
-                    (arrow.transform.pos.x, arrow.transform.pos.y),
-                    (130.0, 50.0)
-                );
-                assert_eq!(*points, vec![(0.0, 0.0), (100.0, 0.0)]);
-                assert_eq!(*base_size, (100.0, 0.0));
-                assert_eq!(*end_arrow, Some(ArrowHeadStyle::Arrow));
-                assert_eq!(
-                    start_binding.as_ref().map(|b| (b.target, b.anchor)),
-                    Some((src_id, Some((120.0, 40.0))))
-                );
-                assert_eq!(
-                    end_binding.as_ref().map(|b| (b.target, b.anchor)),
-                    Some((dup.id, Some((0.0, 40.0))))
-                );
-            }
-            _ => unreachable!(),
-        }
-        // z 序：箭头在两者之上；选区 = 新节点（连按可接链）。
-        assert!(arrow.z > dup.z && arrow.z > src.z);
-        assert_eq!(app.scene.selection.len(), 1);
-        assert!(app.scene.selection.contains(&dup.id));
-        // 一条 undo 撤回整对；redo 恢复。
-        assert_eq!(app.undo_stack.undo.len(), 1);
-        assert!(app.perform_undo());
-        assert_eq!(app.scene.items.len(), 1);
-        assert!(app.perform_redo());
-        assert_eq!(app.scene.items.len(), 3);
-    }
-
-    #[test]
-    fn add_connected_shape_ignores_non_node_selection() {
-        // 线性对象（Polyline）不作源（对齐 Excalidraw isFlowchartNodeElement），
-        // 静默：不加 item、不入 undo。
-        let (mut app, line_id) = app_with_polyline(vec![(0.0, 0.0), (50.0, 0.0)], false);
-        app.scene.deselect_all();
-        app.scene.select(line_id);
-        app.add_connected_shape(FlowDir::Right);
-        assert_eq!(app.scene.items.len(), 1);
-        assert!(app.undo_stack.undo.is_empty());
-    }
-
-    #[test]
-    fn navigate_connected_jumps_along_bound_arrows() {
-        let (mut app, src_id) = app_with_rect((10.0, 10.0), (120.0, 80.0));
-        app.add_connected_shape(FlowDir::Right); // 选区已在 dup 上
-        let dup_id = *app.scene.selection.iter().next().unwrap();
-        let undo_len = app.undo_stack.undo.len(); // 创建本身占 1 条
-
-        // 从 dup 向左回到 src；从 src 向右到 dup。
-        app.navigate_connected(FlowDir::Left);
-        assert_eq!(app.scene.selection.len(), 1);
-        assert!(app.scene.selection.contains(&src_id));
-        app.navigate_connected(FlowDir::Right);
-        assert!(app.scene.selection.contains(&dup_id));
-        // 无该方向邻居：选区保持不动（不产生命令、不清选区）。
-        app.navigate_connected(FlowDir::Up);
-        assert!(app.scene.selection.contains(&dup_id));
-        assert_eq!(app.undo_stack.undo.len(), undo_len, "导航不应新增命令");
-    }
-
-    // ───────── 验收反馈批次（#4-1 / #7-2） ─────────
-
-    /// 模拟"端点拖拽预览后释放"：直接摆好场景终态 + DragState，走 end_drag。
-    fn finish_endpoint_drag(
-        app: &mut PReferZApp,
-        item_id: ItemId,
-        endpoint: usize,
-        start_points: Vec<(f32, f32)>,
-    ) {
-        let base_pos = start_points[endpoint];
-        app.drag = DragState::LineEndpoint {
-            item_id,
-            endpoint,
-            start_canvas: CanvasPoint::new(0.0, 0.0),
-            start_points,
-            base_pos,
-            alt_extend: false,
-        };
-        app.end_drag();
-    }
-
-    #[test]
-    fn dragging_merged_endpoint_away_reopens_closed_shape() {
-        // 验收反馈 #4-1：自动闭合产物（首尾重合 + closed）把其中一个端点拖开
-        // （> 屏幕 8px）→ 释放时自动恢复开放，一条 undo 可还原重合 + closed。
-        let start = vec![(0.0, 0.0), (50.0, 0.0), (0.0, 50.0), (0.0, 0.0)];
-        let (mut app, id) = app_with_polyline(start.clone(), true);
-        if let Some(it) = app.scene.get_item_mut(&id) {
-            if let ItemKind::Shape { points, .. } = &mut it.kind {
-                points[3] = (30.0, 20.0); // 预览已拖开
-            }
-        }
-        finish_endpoint_drag(&mut app, id, 3, start);
-        match &app.scene.get_item(&id).unwrap().kind {
-            ItemKind::Shape { closed, points, .. } => {
-                assert!(!*closed, "拖开合并点应自动恢复开放");
-                assert_eq!(points[3], (30.0, 20.0));
-            }
-            _ => unreachable!(),
-        }
-        assert_eq!(app.undo_stack.undo.len(), 1);
-        assert!(app.perform_undo());
-        match &app.scene.get_item(&id).unwrap().kind {
-            ItemKind::Shape { closed, points, .. } => {
-                assert!(*closed, "undo 应还原闭合态");
-                assert_eq!(points[3], (0.0, 0.0), "undo 应还原合并位置");
-            }
-            _ => unreachable!(),
-        }
-    }
-
-    #[test]
-    fn dragging_vertex_of_unmerged_closed_shape_stays_closed() {
-        // 非重合的普通闭合多边形（侧栏手动闭合）拖顶点**不得**被自动开放。
-        let start = vec![(0.0, 0.0), (50.0, 0.0), (25.0, 40.0)];
-        let (mut app, id) = app_with_polyline(start.clone(), true);
-        if let Some(it) = app.scene.get_item_mut(&id) {
-            if let ItemKind::Shape { points, .. } = &mut it.kind {
-                points[0] = (60.0, 10.0);
-            }
-        }
-        finish_endpoint_drag(&mut app, id, 0, start);
-        assert!(
-            matches!(
-                &app.scene.get_item(&id).unwrap().kind,
-                ItemKind::Shape { closed: true, .. }
-            ),
-            "首尾不重合的闭合形状拖顶点保持闭合"
-        );
-    }
-
-    #[test]
-    fn add_connected_shape_places_sibling_next_to_existing_neighbor() {
-        // 验收反馈 #7-2：A→B 已连，选中 A 再按 Ctrl+→ —— 新节点 C 放到 B 旁
-        // （主轴 = B 远边 + GAP），不与 B 重合；箭头仍是 A→C。
-        let (mut app, a_id) = app_with_rect((10.0, 10.0), (120.0, 80.0));
-        app.add_connected_shape(FlowDir::Right); // A→B，选区在 B
-        let b_id = *app.scene.selection.iter().next().unwrap();
-        app.scene.deselect_all();
-        app.scene.select(a_id);
-        app.add_connected_shape(FlowDir::Right);
-
-        assert_eq!(app.scene.items.len(), 5, "3 节点 + 2 箭头");
-        let c = app
-            .scene
-            .items
-            .iter()
-            .find(|i| {
-                i.id != a_id
-                    && i.id != b_id
-                    && matches!(
-                        i.kind,
-                        ItemKind::Shape {
-                            shape_type: ShapeType::Rectangle,
-                            ..
-                        }
-                    )
-            })
-            .expect("第三个节点");
-        // B 位于 (230,10)，B.max.x = 350 → C = (450, 10)
-        assert_eq!((c.transform.pos.x, c.transform.pos.y), (450.0, 10.0));
-        // 第二条箭头：A→C
-        let arrow = app
-            .scene
-            .items
-            .iter()
-            .filter(|i| {
-                matches!(
-                    i.kind,
-                    ItemKind::Shape {
-                        shape_type: ShapeType::Polyline,
-                        ..
-                    }
-                )
-            })
-            .max_by_key(|i| i.z)
-            .expect("第二条箭头");
-        match &arrow.kind {
-            ItemKind::Shape {
-                start_binding,
-                end_binding,
-                ..
-            } => {
-                assert_eq!(start_binding.as_ref().map(|b| b.target), Some(a_id));
-                assert_eq!(end_binding.as_ref().map(|b| b.target), Some(c.id));
-            }
-            _ => unreachable!(),
-        }
-    }
-
-    /// flash 提示必须跟随界面语言。这批文案曾直接写死中文（`已删除 3 项`…），
-    /// 切到 EN 界面后弹出的仍是中文。这里跑一遍常用动作，断言 EN 下提示里无 CJK。
-    #[test]
-    fn flash_messages_follow_selected_language() {
-        fn has_cjk(s: &str) -> bool {
-            s.chars()
-                .any(|c| matches!(c, '\u{2e80}'..='\u{9fff}' | '\u{ff00}'..='\u{ffef}'))
-        }
-
-        let mut app = PReferZApp::new();
-        app.lang = Lang::En;
-        let a = Item::new_shape(
-            ShapeType::Rectangle,
-            (40.0, 40.0),
-            0.0,
-            0.0,
-            StrokeStyle::default(),
-            None,
-        );
-        let b = Item::new_shape(
-            ShapeType::Rectangle,
-            (40.0, 40.0),
-            120.0,
-            60.0,
-            StrokeStyle::default(),
-            None,
-        );
-        let (a_id, b_id) = (a.id, b.id);
-        app.scene.add_item(a);
-        app.scene.add_item(b);
-
-        // 取出本步产生的 flash，断言已按英文出文案
-        let expect_ascii_flash = |app: &mut PReferZApp, what: &str| {
-            let msg = app
-                .flash_status
-                .take()
-                .map(|(m, _)| m)
-                .unwrap_or_else(|| panic!("{what} 应给出 flash 提示"));
-            assert!(!msg.is_empty(), "{what} 的提示不应为空");
-            assert!(!has_cjk(&msg), "EN 界面下 {what} 的提示未翻译: {msg}");
-        };
-
-        app.scene.deselect_all();
-        app.scene.select(a_id);
-        app.scene.select(b_id);
-        app.align_selected(AlignMode::Left);
-        expect_ascii_flash(&mut app, "对齐");
-        app.arrange_selected(ArrangeMode::Grid);
-        expect_ascii_flash(&mut app, "排列");
-
-        app.scene.deselect_all();
-        app.scene.select(b_id);
-        app.delete_selected();
-        expect_ascii_flash(&mut app, "删除");
-
-        app.finish_create_frame(CanvasPoint::new(0.0, 0.0), CanvasPoint::new(200.0, 200.0));
-        expect_ascii_flash(&mut app, "创建画框");
-    }
 }
 
 /// 缩放手柄：以拖拽角点的对角为锚点
@@ -8715,436 +7958,552 @@ impl PReferZApp {
     }
 }
 
-/// 颜色采样结果（spec §2.2 颜色采样）。
-#[derive(Debug, Clone, Copy)]
-struct ColorSample {
-    r: u8,
-    g: u8,
-    b: u8,
-    a: u8,
-    screen_pos: egui::Pos2,
-    px: u32,
-    py: u32,
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-// ─────────────────────────── 导出 ───────────────────────────
+    #[test]
+    fn fill_replaces_indexed_placeholders() {
+        assert_eq!(
+            fill("a {0} b {1}", &["X".to_string(), "Y".to_string()]),
+            "a X b Y"
+        );
+        // 占位多于参数时保留原样，便于开发期发现漏填
+        assert_eq!(fill("a {0} b {1}", &["X".to_string()]), "a X b {1}");
+    }
 
-/// 导出格式（spec §2.3 导出，SVG 暂不支持）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ExportFormat {
-    Png,
-    Jpeg,
-}
+    // ───────── 多边形工具（Phase I） ─────────
 
-impl ExportFormat {
-    pub fn extension(&self) -> &'static str {
-        match self {
-            ExportFormat::Png => "png",
-            ExportFormat::Jpeg => "jpg",
+    /// 构造一个已进入多边形绘制中状态的应用：直接摆好 DragState，不走 UI 事件。
+    fn app_creating_polygon(points: Vec<CanvasPoint>, current: CanvasPoint) -> PReferZApp {
+        let mut app = PReferZApp::new();
+        app.tool = Tool::Polygon;
+        app.drag = DragState::CreatingPolygon {
+            points,
+            current,
+            shift: false,
+        };
+        app
+    }
+
+    #[test]
+    fn finish_create_polygon_builds_closed_polyline_in_aabb_local_space() {
+        let mut app = app_creating_polygon(
+            vec![
+                CanvasPoint::new(10.0, 20.0),
+                CanvasPoint::new(60.0, 20.0),
+                CanvasPoint::new(60.0, 70.0),
+            ],
+            // 与末顶点重合（双击收尾），不应追加成第四点
+            CanvasPoint::new(60.0, 70.0),
+        );
+        app.finish_create_polygon();
+        assert_eq!(app.scene.items.len(), 1);
+        let item = &app.scene.items[0];
+        // 整体位置 = AABB 左上角，局部坐标从 (0,0) 起算
+        assert_eq!((item.transform.pos.x, item.transform.pos.y), (10.0, 20.0));
+        match &item.kind {
+            ItemKind::Shape {
+                shape_type,
+                points,
+                closed,
+                base_size,
+                ..
+            } => {
+                assert_eq!(*shape_type, ShapeType::Polyline);
+                assert!(closed, "多边形工具产物恒为闭合折线");
+                assert_eq!(points.len(), 3);
+                assert_eq!(points[0], (0.0, 0.0));
+                assert_eq!(points[1], (50.0, 0.0));
+                assert_eq!(points[2], (50.0, 50.0));
+                assert_eq!(*base_size, (50.0, 50.0));
+            }
+            _ => panic!("多边形应为 Shape item"),
+        }
+        assert_eq!(app.tool, Tool::Select, "收尾后应回 Select");
+    }
+
+    #[test]
+    fn finish_create_polygon_appends_rubber_band_tip_when_far_from_last_vertex() {
+        // Enter 收尾时指针通常远离末顶点，此时橡皮筋末端应算作最后一个顶点
+        let mut app = app_creating_polygon(
+            vec![
+                CanvasPoint::new(0.0, 0.0),
+                CanvasPoint::new(50.0, 0.0),
+                CanvasPoint::new(50.0, 50.0),
+            ],
+            CanvasPoint::new(0.0, 50.0),
+        );
+        app.finish_create_polygon();
+        let item = &app.scene.items[0];
+        match &item.kind {
+            ItemKind::Shape { points, .. } => assert_eq!(points.len(), 4),
+            _ => panic!("多边形应为 Shape item"),
         }
     }
 
-    pub fn display_name(&self) -> &'static str {
-        match self {
-            ExportFormat::Png => "PNG",
-            ExportFormat::Jpeg => "JPG",
+    #[test]
+    fn finish_create_polygon_discards_fewer_than_three_points() {
+        let mut app = app_creating_polygon(
+            vec![CanvasPoint::new(0.0, 0.0), CanvasPoint::new(50.0, 0.0)],
+            CanvasPoint::new(50.0, 0.0),
+        );
+        app.finish_create_polygon();
+        assert!(app.scene.items.is_empty(), "两点连不出面，不应产生 item");
+        assert_eq!(app.tool, Tool::Select);
+        assert!(app.flash_status.is_some(), "应给出提示");
+    }
+
+    #[test]
+    fn finish_create_polygon_ignores_other_drag_states() {
+        let mut app = PReferZApp::new();
+        app.drag = DragState::BoxSelect {
+            start_canvas: CanvasPoint::new(0.0, 0.0),
+            current_canvas: CanvasPoint::new(10.0, 10.0),
+            additive: false,
+        };
+        app.finish_create_polygon();
+        assert!(
+            matches!(app.drag, DragState::BoxSelect { .. }),
+            "非多边形状态应原样保留，不能被吞掉"
+        );
+        assert!(app.scene.items.is_empty());
+    }
+
+    // ───────── 多边形顶点编辑（plan #4） ─────────
+
+    /// 放入一条 Polyline（局部点集从 (0,0) 起算，pos=0），返回应用与 item id。
+    fn app_with_polyline(points: Vec<(f32, f32)>, closed: bool) -> (PReferZApp, ItemId) {
+        let mut app = PReferZApp::new();
+        let min_x = points.iter().map(|p| p.0).fold(f32::MAX, f32::min);
+        let min_y = points.iter().map(|p| p.1).fold(f32::MAX, f32::min);
+        let max_x = points.iter().map(|p| p.0).fold(f32::MIN, f32::max);
+        let max_y = points.iter().map(|p| p.1).fold(f32::MIN, f32::max);
+        let item = Item::new_polyline(
+            points,
+            (max_x - min_x, max_y - min_y),
+            None,
+            None,
+            closed,
+            0.0,
+            0.0,
+            StrokeStyle::default(),
+        );
+        let id = item.id;
+        app.scene.add_item(item);
+        (app, id)
+    }
+
+    fn polyline_points(app: &PReferZApp, id: ItemId) -> Vec<(f32, f32)> {
+        match &app.scene.get_item(&id).unwrap().kind {
+            ItemKind::Shape { points, .. } => points.clone(),
+            _ => panic!("应为 Shape"),
         }
     }
-}
 
-/// 导出场景到文件（后台线程调用）。
-/// 逐像素反向采样：对每个输出像素，画布坐标 → 遍历 Z 序倒序 → 命中 Pixmap 则采样。
-/// 文本便签渲染为纯色矩形（MVP 简化）。
-fn export_scene_to_file(
-    items: &[Item],
-    pixmaps: &[(u64, Vec<u8>, u32, u32)],
-    path: &Path,
-    format: ExportFormat,
-) -> Result<(), String> {
-    use euclid::Point2D;
-    use preferz_core::spaces::CanvasSpace;
-
-    if items.is_empty() {
-        return Err("画布为空".to_string());
+    #[test]
+    fn should_auto_close_requires_three_points_real_endpoint_and_screen_threshold() {
+        let looped = vec![(0.0, 0.0), (50.0, 0.0), (1.0, 1.0)];
+        assert!(
+            should_auto_close(&looped, 2, 1.0),
+            "末点拖回首点附近 → 闭合"
+        );
+        assert!(should_auto_close(&looped, 0, 1.0), "首点侧同样判定");
+        assert!(!should_auto_close(&looped, 1, 1.0), "内部顶点不参与闭合");
+        let two = vec![(0.0, 0.0), (1.0, 0.0)];
+        assert!(!should_auto_close(&two, 1, 1.0), "两点恒开放");
+        // 阈值按屏幕像素：zoom=4 时画布 1.5px ≈ 屏 6px 过；3px = 屏 12px 不过
+        let near = vec![(0.0, 0.0), (50.0, 0.0), (1.5, 0.0)];
+        assert!(should_auto_close(&near, 2, 4.0));
+        let far = vec![(0.0, 0.0), (50.0, 0.0), (3.0, 0.0)];
+        assert!(!should_auto_close(&far, 2, 4.0));
     }
 
-    // 计算所有 item 画布 AABB 并集
-    let mut min_x = f32::MAX;
-    let mut min_y = f32::MAX;
-    let mut max_x = f32::MIN;
-    let mut max_y = f32::MIN;
-    for item in items {
-        let bbox = item.bounding_rect();
-        min_x = min_x.min(bbox.min().x);
-        min_y = min_y.min(bbox.min().y);
-        max_x = max_x.max(bbox.max().x);
-        max_y = max_y.max(bbox.max().y);
-    }
-    // 加 padding 防止边缘裁切
-    let padding = 8.0_f32;
-    min_x -= padding;
-    min_y -= padding;
-    max_x += padding;
-    max_y += padding;
-
-    let canvas_w = (max_x - min_x).max(1.0).ceil() as u32;
-    let canvas_h = (max_y - min_y).max(1.0).ceil() as u32;
-    // 限制最大尺寸避免 OOM（100MP 上限）
-    const MAX_PIXELS: u64 = 100_000_000;
-    if (canvas_w as u64) * (canvas_h as u64) > MAX_PIXELS {
-        return Err(format!(
-            "导出尺寸过大: {}x{} (上限 {} 像素)",
-            canvas_w, canvas_h, MAX_PIXELS
-        ));
+    #[test]
+    fn delete_vertex_guard_keeps_minimum_points() {
+        // 两点开放线删端点：拒绝、不入 undo 栈、有 flash
+        let (mut app, id) = app_with_polyline(vec![(0.0, 0.0), (50.0, 0.0)], false);
+        app.try_delete_vertex(id, 0);
+        assert!(app.undo_stack.undo.is_empty(), "守卫失败不应产生命令");
+        assert_eq!(polyline_points(&app, id).len(), 2);
+        assert!(app.flash_status.is_some(), "应提示拒绝原因");
+        // 闭合三角形删顶点：拒绝（保 ≥3）
+        let (mut app, id) = app_with_polyline(vec![(0.0, 0.0), (50.0, 0.0), (25.0, 40.0)], true);
+        app.try_delete_vertex(id, 1);
+        assert!(app.undo_stack.undo.is_empty());
+        assert_eq!(polyline_points(&app, id).len(), 3);
+        // 开放三点删中间点：成功剩两点，一步 undo 还原
+        let (mut app, id) = app_with_polyline(vec![(0.0, 0.0), (25.0, 10.0), (50.0, 0.0)], false);
+        app.try_delete_vertex(id, 1);
+        assert_eq!(app.undo_stack.undo.len(), 1);
+        assert_eq!(polyline_points(&app, id), vec![(0.0, 0.0), (50.0, 0.0)]);
+        assert!(app.perform_undo());
+        assert_eq!(polyline_points(&app, id).len(), 3);
     }
 
-    // 预构建 Pixmap 像素查找表（texture_id → (rgba, w, h)）
-    use std::collections::HashMap;
-    let pixmap_map: HashMap<u64, (&Vec<u8>, u32, u32)> = pixmaps
-        .iter()
-        .map(|(id, rgba, w, h)| (*id, (rgba, *w, *h)))
-        .collect();
-
-    // 按 Z 序倒序（顶层先采样）
-    let mut sorted: Vec<&Item> = items.iter().collect();
-    sorted.sort_by_key(|b| std::cmp::Reverse(b.z));
-
-    // 逐像素合成
-    let mut out_rgba: Vec<u8> = vec![0u8; (canvas_w as usize) * (canvas_h as usize) * 4];
-    // 背景填充为白色（JPG 不支持透明，PNG 也用白底更实用）
-    for px in out_rgba.as_chunks_mut::<4>().0 {
-        px[0] = 255;
-        px[1] = 255;
-        px[2] = 255;
-        px[3] = 255;
-    }
-
-    // 遍历每个像素，反向找命中的顶层 item
-    for y in 0..canvas_h {
-        let canvas_y = min_y + y as f32 + 0.5;
-        for x in 0..canvas_w {
-            let canvas_x = min_x + x as f32 + 0.5;
-            let canvas_pos: Point2D<f32, CanvasSpace> = Point2D::new(canvas_x, canvas_y);
-
-            // Z 序倒序查找命中的 item
-            for item in &sorted {
-                if !item.contains_canvas_point(canvas_pos) {
-                    continue;
-                }
-                // 命中：采样颜色
-                let pixel = sample_item_pixel(item, &pixmap_map, canvas_pos);
-                if let Some((r, g, b, a)) = pixel {
-                    let idx = ((y as usize) * (canvas_w as usize) + x as usize) * 4;
-                    // alpha 混合到白底
-                    let alpha = a as f32 / 255.0;
-                    out_rgba[idx] = (r as f32 * alpha + 255.0 * (1.0 - alpha)) as u8;
-                    out_rgba[idx + 1] = (g as f32 * alpha + 255.0 * (1.0 - alpha)) as u8;
-                    out_rgba[idx + 2] = (b as f32 * alpha + 255.0 * (1.0 - alpha)) as u8;
-                    // PNG 保留原 alpha；JPG 后续会丢弃
-                    out_rgba[idx + 3] = 255;
-                }
-                break; // 只取顶层
+    #[test]
+    fn delete_endpoint_vertex_clears_its_binding_and_undoes() {
+        let (mut app, line_id) =
+            app_with_polyline(vec![(0.0, 0.0), (25.0, 10.0), (50.0, 0.0)], false);
+        let (target_app, target_id) = app_with_polyline(vec![(0.0, 0.0), (10.0, 10.0)], false);
+        drop(target_app); // 只取一个 id 作绑定目标占位
+        if let Some(it) = app.scene.get_item_mut(&line_id) {
+            if let ItemKind::Shape { start_binding, .. } = &mut it.kind {
+                *start_binding = Some(EndpointBinding {
+                    target: target_id,
+                    anchor: None,
+                });
+            }
+        }
+        app.try_delete_vertex(line_id, 0);
+        if let Some(it) = app.scene.get_item(&line_id) {
+            if let ItemKind::Shape { start_binding, .. } = &it.kind {
+                assert!(start_binding.is_none(), "删首顶点应解除起点绑定");
+            }
+        }
+        assert!(app.perform_undo());
+        if let Some(it) = app.scene.get_item(&line_id) {
+            if let ItemKind::Shape { start_binding, .. } = &it.kind {
+                assert_eq!(
+                    *start_binding,
+                    Some(EndpointBinding {
+                        target: target_id,
+                        anchor: None,
+                    }),
+                    "undo 应连同绑定一起还原"
+                );
             }
         }
     }
 
-    // 编码到文件
-    let file = std::fs::File::create(path).map_err(|e| e.to_string())?;
-    let writer = std::io::BufWriter::new(file);
-    match format {
-        ExportFormat::Png => {
-            let encoder = image::codecs::png::PngEncoder::new(writer);
-            image::ImageEncoder::write_image(
-                encoder,
-                &out_rgba,
-                canvas_w,
-                canvas_h,
-                image::ExtendedColorType::Rgba8,
-            )
-            .map_err(|e| e.to_string())?;
-        }
-        ExportFormat::Jpeg => {
-            // JPEG 不支持 alpha：RGBA → RGB（背景已合成白底，直接丢弃 alpha）
-            let mut out_rgb: Vec<u8> =
-                Vec::with_capacity((canvas_w as usize) * (canvas_h as usize) * 3);
-            for px in out_rgba.as_chunks::<4>().0 {
-                // 丢弃 alpha（背景已合成白底）
-                out_rgb.extend_from_slice(&px[..3]);
-            }
-            let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(writer, 90);
-            image::ImageEncoder::write_image(
-                encoder,
-                &out_rgb,
-                canvas_w,
-                canvas_h,
-                image::ExtendedColorType::Rgb8,
-            )
-            .map_err(|e| e.to_string())?;
-        }
+    // ───────── 流程图（plan #7） ─────────
+
+    fn app_with_rect(pos: (f32, f32), size: (f32, f32)) -> (PReferZApp, ItemId) {
+        let mut app = PReferZApp::new();
+        let item = Item::new_shape(
+            ShapeType::Rectangle,
+            size,
+            pos.0,
+            pos.1,
+            StrokeStyle::default(),
+            None,
+        );
+        let id = item.id;
+        app.scene.add_item(item);
+        app.scene.select(id);
+        (app, id)
     }
 
-    Ok(())
-}
-
-/// 批量将 Pixmap RGBA 数据写入指定目录，每个 entry 一个 PNG 文件。
-/// 单个失败不中断后续，最终汇总错误数。返回成功数与错误数描述。
-fn export_pixmaps_to_dir(
-    entries: &[(String, Vec<u8>, u32, u32)],
-    dir: &Path,
-) -> Result<(), String> {
-    if !dir.exists() {
-        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    #[test]
+    fn edge_anchor_local_gives_facing_edge_midpoints() {
+        assert_eq!(
+            edge_anchor_local(FlowDir::Right, 120.0, 80.0),
+            (120.0, 40.0)
+        );
+        assert_eq!(edge_anchor_local(FlowDir::Left, 120.0, 80.0), (0.0, 40.0));
+        assert_eq!(edge_anchor_local(FlowDir::Down, 120.0, 80.0), (60.0, 80.0));
+        assert_eq!(edge_anchor_local(FlowDir::Up, 120.0, 80.0), (60.0, 0.0));
     }
-    let mut ok = 0u32;
-    let mut errs: Vec<String> = Vec::new();
-    for (name, rgba, w, h) in entries {
-        let path = dir.join(name);
-        match std::fs::File::create(&path) {
-            Ok(file) => {
-                let writer = std::io::BufWriter::new(file);
-                let encoder = image::codecs::png::PngEncoder::new(writer);
-                if let Err(e) = image::ImageEncoder::write_image(
-                    encoder,
-                    rgba,
-                    *w,
-                    *h,
-                    image::ExtendedColorType::Rgba8,
-                ) {
-                    errs.push(format!("{}: {}", name, e));
-                } else {
-                    ok += 1;
-                }
-            }
-            Err(e) => errs.push(format!("{}: {}", name, e)),
-        }
-    }
-    if errs.is_empty() {
-        Ok(())
-    } else if ok == 0 {
-        Err(format!("全部失败 ({}): {}", errs.len(), errs.join("; ")))
-    } else {
-        // 部分成功也视为成功，但带上错误信息
-        Ok(()) // 成功条数通过 flash 消息体现；err 信息记录到日志
-    }
-}
 
-/// 采样 item 在画布坐标处的像素颜色。
-/// Pixmap：逆变换到局部坐标 → 应用 crop → 采样 RGBA（含 opacity、grayscale）。
-/// Text：返回纯色（背景灰 + 文字色混合的简化表示）。
-fn sample_item_pixel(
-    item: &Item,
-    pixmap_map: &std::collections::HashMap<u64, (&Vec<u8>, u32, u32)>,
-    canvas_pos: preferz_core::spaces::CanvasPoint,
-) -> Option<(u8, u8, u8, u8)> {
-    let inv = item.local_to_canvas().inverse()?;
-    let local = inv.transform_point(canvas_pos);
-    let base = item.base_size();
+    #[test]
+    fn add_connected_shape_creates_bound_clone_with_one_undo_step() {
+        let (mut app, src_id) = app_with_rect((10.0, 10.0), (120.0, 80.0));
+        app.add_connected_shape(FlowDir::Right);
 
-    match &item.kind {
-        ItemKind::Pixmap {
-            texture_id,
-            opacity,
-            grayscale,
-            crop,
-            ..
-        } => {
-            let (rgba, w, h) = pixmap_map.get(texture_id)?;
-            let w = *w as f32;
-            let h = *h as f32;
-
-            // 应用 crop：crop 定义在局部空间，需把 local 映射到 crop 后的图片坐标
-            let (cx, cy, cw, ch) = if let Some(c) = crop {
-                (c.x, c.y, c.width, c.height)
-            } else {
-                (0.0, 0.0, w, h)
-            };
-
-            // local 坐标 → crop 内偏移
-            let px = local.x;
-            let py = local.y;
-            // crop 区域 = [cx, cx+cw] × [cy, cy+ch]，超出则透明
-            if px < cx || px >= cx + cw || py < cy || py >= cy + ch {
-                return Some((0, 0, 0, 0)); // crop 外透明
-            }
-
-            // 把 crop 内坐标映射回原始图片像素坐标
-            // crop 把 [cx, cx+cw] 拉伸到 [0, w]（scale 使然），所以：
-            //   原图 x = cx + (local.x / base.x) * cw  -- 但 local 已是变换后坐标，base 已含 scale
-            // 简化：crop 在 base_size 空间定义，base_size 是 original_size * scale，
-            //       所以 local 直接对应 base_size 空间，px/cw * 原图宽 即原图坐标
-            let img_x = ((px - cx) / cw * w).clamp(0.0, w - 1.0) as u32;
-            let img_y = ((py - cy) / ch * h).clamp(0.0, h - 1.0) as u32;
-
-            let idx = ((img_y as usize) * (w as usize) + img_x as usize) * 4;
-            if idx + 3 >= rgba.len() {
-                return None;
-            }
-            let r = rgba[idx];
-            let g = rgba[idx + 1];
-            let b = rgba[idx + 2];
-            let a = rgba[idx + 3];
-
-            // 灰度（BT.601）
-            let (r, g, b) = if *grayscale {
-                let y = (0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32).round() as u8;
-                (y, y, y)
-            } else {
-                (r, g, b)
-            };
-
-            // opacity
-            let alpha = (a as f32 * opacity.clamp(0.0, 1.0)) as u8;
-            Some((r, g, b, alpha))
-        }
-        ItemKind::Text { color, .. } => {
-            // 简化：整个文本区域用文字色填充（MVP）
-            // 仅当 local 在 [0, base.x] × [0, base.y] 内（contains_canvas_point 已保证）
-            let _ = (local, base);
-            Some((color[0], color[1], color[2], color[3]))
-        }
-        // A1 数据模型先行，取色采样在 Phase A6 后补充
-        ItemKind::Shape { .. } => None,
-        // 画框不参与导出采样
-        ItemKind::Frame { .. } => None,
-    }
-}
-
-// ─────────────────────────── 最近文件 ───────────────────────────
-
-/// 最近文件列表的持久化路径：`~/.preferz/recent.json`。
-fn recent_files_path() -> Option<PathBuf> {
-    let home = dirs_or_home()?;
-    Some(home.join(".preferz").join("recent.json"))
-}
-
-/// 用户配置的持久化路径：`~/.preferz/config.json`。
-fn config_path() -> Option<PathBuf> {
-    let home = dirs_or_home()?;
-    Some(home.join(".preferz").join("config.json"))
-}
-
-/// 用户配置（语言 + 快捷键 + 主题；均带 `#[serde(default)]` 以便老配置兼容）。
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
-struct UserConfig {
-    #[serde(default)]
-    lang: Lang,
-    /// 旧版本遗留：不再消费（启动恒用 `Keymap::new()`，见 `PReferZApp::new`）。
-    /// 保留字段是为了老配置文件能正常解析；序列化时写空表，避免把过期默认值
-    /// 继续散播给未来的版本。
-    #[serde(default)]
-    keymap: KeymapMap,
-    /// 主题模式（Light/Dark/Auto），缺省回退 `Dark`。
-    #[serde(default)]
-    theme: ThemeMode,
-}
-
-/// 从 `~/.preferz/config.json` 加载配置。文件不存在或解析失败时返回默认值。
-fn load_config() -> UserConfig {
-    let path = match config_path() {
-        Some(p) => p,
-        None => return UserConfig::default(),
-    };
-    match std::fs::read_to_string(&path) {
-        Ok(content) => serde_json::from_str::<UserConfig>(&content).unwrap_or_default(),
-        Err(_) => UserConfig::default(),
-    }
-}
-
-/// 保存配置到 `~/.preferz/config.json`。
-fn save_config(cfg: &UserConfig) {
-    let path = match config_path() {
-        Some(p) => p,
-        None => return,
-    };
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    if let Ok(json) = serde_json::to_string_pretty(cfg) {
-        let _ = std::fs::write(path, json);
-    }
-}
-
-/// 获取用户 home 目录（跨平台）。
-fn dirs_or_home() -> Option<PathBuf> {
-    // 优先用 std::env，回退到常见环境变量
-    if let Some(home) = std::env::var_os("HOME") {
-        return Some(PathBuf::from(home));
-    }
-    if let Some(userprofile) = std::env::var_os("USERPROFILE") {
-        return Some(PathBuf::from(userprofile));
-    }
-    None
-}
-
-/// 从 `~/.preferz/recent.json` 加载最近文件列表。
-/// 文件不存在或解析失败时返回空列表。
-fn load_recent_files() -> Vec<PathBuf> {
-    let path = match recent_files_path() {
-        Some(p) => p,
-        None => return Vec::new(),
-    };
-    let content = match std::fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(_) => return Vec::new(),
-    };
-    #[derive(serde::Deserialize)]
-    struct RecentFile {
-        path: String,
-    }
-    #[derive(serde::Deserialize)]
-    struct RecentFiles {
-        files: Vec<RecentFile>,
-    }
-    match serde_json::from_str::<RecentFiles>(&content) {
-        Ok(parsed) => parsed
-            .files
-            .into_iter()
-            .map(|f| PathBuf::from(f.path))
-            .filter(|p| p.exists())
-            .collect(),
-        Err(_) => Vec::new(),
-    }
-}
-
-/// 保存最近文件列表到 `~/.preferz/recent.json`。
-fn save_recent_files(files: &[PathBuf]) {
-    let path = match recent_files_path() {
-        Some(p) => p,
-        None => return,
-    };
-    // 确保父目录存在
-    if let Some(parent) = path.parent() {
-        if std::fs::create_dir_all(parent).is_err() {
-            return;
-        }
-    }
-    #[derive(serde::Serialize)]
-    struct RecentFile {
-        path: String,
-    }
-    #[derive(serde::Serialize)]
-    struct RecentFiles {
-        files: Vec<RecentFile>,
-    }
-    let recent = RecentFiles {
-        files: files
+        assert_eq!(app.scene.items.len(), 3, "应新增节点+箭头各一");
+        let src = app.scene.get_item(&src_id).unwrap().clone();
+        let dup = app
+            .scene
+            .items
             .iter()
-            .map(|p| RecentFile {
-                path: p.to_string_lossy().into_owned(),
+            .find(|i| {
+                i.id != src_id
+                    && matches!(
+                        i.kind,
+                        ItemKind::Shape {
+                            shape_type: ShapeType::Rectangle,
+                            ..
+                        }
+                    )
             })
-            .collect(),
-    };
-    if let Ok(json) = serde_json::to_string_pretty(&recent) {
-        let _ = std::fs::write(path, json);
+            .expect("克隆的矩形节点")
+            .clone();
+        let arrow = app
+            .scene
+            .items
+            .iter()
+            .find(|i| {
+                matches!(
+                    i.kind,
+                    ItemKind::Shape {
+                        shape_type: ShapeType::Polyline,
+                        ..
+                    }
+                )
+            })
+            .expect("连接箭头")
+            .clone();
+        assert_ne!(dup.id, src.id);
+        // 主轴 = 源右边界 + 100 间距；交叉轴（同尺寸克隆）即 y 不变。
+        assert_eq!((dup.transform.pos.x, dup.transform.pos.y), (230.0, 10.0));
+        // 箭头：起点=源右边中点 (130,50)，终点=克隆左边中点 (230,50)，
+        // 局部点集对齐 AABB 左上角；端头 = Arrow。
+        match &arrow.kind {
+            ItemKind::Shape {
+                points,
+                base_size,
+                end_arrow,
+                start_binding,
+                end_binding,
+                ..
+            } => {
+                assert_eq!(
+                    (arrow.transform.pos.x, arrow.transform.pos.y),
+                    (130.0, 50.0)
+                );
+                assert_eq!(*points, vec![(0.0, 0.0), (100.0, 0.0)]);
+                assert_eq!(*base_size, (100.0, 0.0));
+                assert_eq!(*end_arrow, Some(ArrowHeadStyle::Arrow));
+                assert_eq!(
+                    start_binding.as_ref().map(|b| (b.target, b.anchor)),
+                    Some((src_id, Some((120.0, 40.0))))
+                );
+                assert_eq!(
+                    end_binding.as_ref().map(|b| (b.target, b.anchor)),
+                    Some((dup.id, Some((0.0, 40.0))))
+                );
+            }
+            _ => unreachable!(),
+        }
+        // z 序：箭头在两者之上；选区 = 新节点（连按可接链）。
+        assert!(arrow.z > dup.z && arrow.z > src.z);
+        assert_eq!(app.scene.selection.len(), 1);
+        assert!(app.scene.selection.contains(&dup.id));
+        // 一条 undo 撤回整对；redo 恢复。
+        assert_eq!(app.undo_stack.undo.len(), 1);
+        assert!(app.perform_undo());
+        assert_eq!(app.scene.items.len(), 1);
+        assert!(app.perform_redo());
+        assert_eq!(app.scene.items.len(), 3);
     }
-}
 
-/// 把路径添加到最近文件列表头部，去重，限制最多 10 条。
-fn add_recent_file(files: &mut Vec<PathBuf>, path: PathBuf) {
-    files.retain(|p| p != &path);
-    files.insert(0, path);
-    if files.len() > 10 {
-        files.truncate(10);
+    #[test]
+    fn add_connected_shape_ignores_non_node_selection() {
+        // 线性对象（Polyline）不作源（对齐 Excalidraw isFlowchartNodeElement），
+        // 静默：不加 item、不入 undo。
+        let (mut app, line_id) = app_with_polyline(vec![(0.0, 0.0), (50.0, 0.0)], false);
+        app.scene.deselect_all();
+        app.scene.select(line_id);
+        app.add_connected_shape(FlowDir::Right);
+        assert_eq!(app.scene.items.len(), 1);
+        assert!(app.undo_stack.undo.is_empty());
     }
-    save_recent_files(files);
+
+    #[test]
+    fn navigate_connected_jumps_along_bound_arrows() {
+        let (mut app, src_id) = app_with_rect((10.0, 10.0), (120.0, 80.0));
+        app.add_connected_shape(FlowDir::Right); // 选区已在 dup 上
+        let dup_id = *app.scene.selection.iter().next().unwrap();
+        let undo_len = app.undo_stack.undo.len(); // 创建本身占 1 条
+
+        // 从 dup 向左回到 src；从 src 向右到 dup。
+        app.navigate_connected(FlowDir::Left);
+        assert_eq!(app.scene.selection.len(), 1);
+        assert!(app.scene.selection.contains(&src_id));
+        app.navigate_connected(FlowDir::Right);
+        assert!(app.scene.selection.contains(&dup_id));
+        // 无该方向邻居：选区保持不动（不产生命令、不清选区）。
+        app.navigate_connected(FlowDir::Up);
+        assert!(app.scene.selection.contains(&dup_id));
+        assert_eq!(app.undo_stack.undo.len(), undo_len, "导航不应新增命令");
+    }
+
+    // ───────── 验收反馈批次（#4-1 / #7-2） ─────────
+
+    /// 模拟"端点拖拽预览后释放"：直接摆好场景终态 + DragState，走 end_drag。
+    fn finish_endpoint_drag(
+        app: &mut PReferZApp,
+        item_id: ItemId,
+        endpoint: usize,
+        start_points: Vec<(f32, f32)>,
+    ) {
+        let base_pos = start_points[endpoint];
+        app.drag = DragState::LineEndpoint {
+            item_id,
+            endpoint,
+            start_canvas: CanvasPoint::new(0.0, 0.0),
+            start_points,
+            base_pos,
+            alt_extend: false,
+        };
+        app.end_drag();
+    }
+
+    #[test]
+    fn dragging_merged_endpoint_away_reopens_closed_shape() {
+        // 验收反馈 #4-1：自动闭合产物（首尾重合 + closed）把其中一个端点拖开
+        // （> 屏幕 8px）→ 释放时自动恢复开放，一条 undo 可还原重合 + closed。
+        let start = vec![(0.0, 0.0), (50.0, 0.0), (0.0, 50.0), (0.0, 0.0)];
+        let (mut app, id) = app_with_polyline(start.clone(), true);
+        if let Some(it) = app.scene.get_item_mut(&id) {
+            if let ItemKind::Shape { points, .. } = &mut it.kind {
+                points[3] = (30.0, 20.0); // 预览已拖开
+            }
+        }
+        finish_endpoint_drag(&mut app, id, 3, start);
+        match &app.scene.get_item(&id).unwrap().kind {
+            ItemKind::Shape { closed, points, .. } => {
+                assert!(!*closed, "拖开合并点应自动恢复开放");
+                assert_eq!(points[3], (30.0, 20.0));
+            }
+            _ => unreachable!(),
+        }
+        assert_eq!(app.undo_stack.undo.len(), 1);
+        assert!(app.perform_undo());
+        match &app.scene.get_item(&id).unwrap().kind {
+            ItemKind::Shape { closed, points, .. } => {
+                assert!(*closed, "undo 应还原闭合态");
+                assert_eq!(points[3], (0.0, 0.0), "undo 应还原合并位置");
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn dragging_vertex_of_unmerged_closed_shape_stays_closed() {
+        // 非重合的普通闭合多边形（侧栏手动闭合）拖顶点**不得**被自动开放。
+        let start = vec![(0.0, 0.0), (50.0, 0.0), (25.0, 40.0)];
+        let (mut app, id) = app_with_polyline(start.clone(), true);
+        if let Some(it) = app.scene.get_item_mut(&id) {
+            if let ItemKind::Shape { points, .. } = &mut it.kind {
+                points[0] = (60.0, 10.0);
+            }
+        }
+        finish_endpoint_drag(&mut app, id, 0, start);
+        assert!(
+            matches!(
+                &app.scene.get_item(&id).unwrap().kind,
+                ItemKind::Shape { closed: true, .. }
+            ),
+            "首尾不重合的闭合形状拖顶点保持闭合"
+        );
+    }
+
+    #[test]
+    fn add_connected_shape_places_sibling_next_to_existing_neighbor() {
+        // 验收反馈 #7-2：A→B 已连，选中 A 再按 Ctrl+→ —— 新节点 C 放到 B 旁
+        // （主轴 = B 远边 + GAP），不与 B 重合；箭头仍是 A→C。
+        let (mut app, a_id) = app_with_rect((10.0, 10.0), (120.0, 80.0));
+        app.add_connected_shape(FlowDir::Right); // A→B，选区在 B
+        let b_id = *app.scene.selection.iter().next().unwrap();
+        app.scene.deselect_all();
+        app.scene.select(a_id);
+        app.add_connected_shape(FlowDir::Right);
+
+        assert_eq!(app.scene.items.len(), 5, "3 节点 + 2 箭头");
+        let c = app
+            .scene
+            .items
+            .iter()
+            .find(|i| {
+                i.id != a_id
+                    && i.id != b_id
+                    && matches!(
+                        i.kind,
+                        ItemKind::Shape {
+                            shape_type: ShapeType::Rectangle,
+                            ..
+                        }
+                    )
+            })
+            .expect("第三个节点");
+        // B 位于 (230,10)，B.max.x = 350 → C = (450, 10)
+        assert_eq!((c.transform.pos.x, c.transform.pos.y), (450.0, 10.0));
+        // 第二条箭头：A→C
+        let arrow = app
+            .scene
+            .items
+            .iter()
+            .filter(|i| {
+                matches!(
+                    i.kind,
+                    ItemKind::Shape {
+                        shape_type: ShapeType::Polyline,
+                        ..
+                    }
+                )
+            })
+            .max_by_key(|i| i.z)
+            .expect("第二条箭头");
+        match &arrow.kind {
+            ItemKind::Shape {
+                start_binding,
+                end_binding,
+                ..
+            } => {
+                assert_eq!(start_binding.as_ref().map(|b| b.target), Some(a_id));
+                assert_eq!(end_binding.as_ref().map(|b| b.target), Some(c.id));
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    /// flash 提示必须跟随界面语言。这批文案曾直接写死中文（`已删除 3 项`…），
+    /// 切到 EN 界面后弹出的仍是中文。这里跑一遍常用动作，断言 EN 下提示里无 CJK。
+    #[test]
+    fn flash_messages_follow_selected_language() {
+        fn has_cjk(s: &str) -> bool {
+            s.chars()
+                .any(|c| matches!(c, '\u{2e80}'..='\u{9fff}' | '\u{ff00}'..='\u{ffef}'))
+        }
+
+        let mut app = PReferZApp::new();
+        app.lang = Lang::En;
+        let a = Item::new_shape(
+            ShapeType::Rectangle,
+            (40.0, 40.0),
+            0.0,
+            0.0,
+            StrokeStyle::default(),
+            None,
+        );
+        let b = Item::new_shape(
+            ShapeType::Rectangle,
+            (40.0, 40.0),
+            120.0,
+            60.0,
+            StrokeStyle::default(),
+            None,
+        );
+        let (a_id, b_id) = (a.id, b.id);
+        app.scene.add_item(a);
+        app.scene.add_item(b);
+
+        // 取出本步产生的 flash，断言已按英文出文案
+        let expect_ascii_flash = |app: &mut PReferZApp, what: &str| {
+            let msg = app
+                .flash_status
+                .take()
+                .map(|(m, _)| m)
+                .unwrap_or_else(|| panic!("{what} 应给出 flash 提示"));
+            assert!(!msg.is_empty(), "{what} 的提示不应为空");
+            assert!(!has_cjk(&msg), "EN 界面下 {what} 的提示未翻译: {msg}");
+        };
+
+        app.scene.deselect_all();
+        app.scene.select(a_id);
+        app.scene.select(b_id);
+        app.align_selected(AlignMode::Left);
+        expect_ascii_flash(&mut app, "对齐");
+        app.arrange_selected(ArrangeMode::Grid);
+        expect_ascii_flash(&mut app, "排列");
+
+        app.scene.deselect_all();
+        app.scene.select(b_id);
+        app.delete_selected();
+        expect_ascii_flash(&mut app, "删除");
+
+        app.finish_create_frame(CanvasPoint::new(0.0, 0.0), CanvasPoint::new(200.0, 200.0));
+        expect_ascii_flash(&mut app, "创建画框");
+    }
 }
