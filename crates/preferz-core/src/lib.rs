@@ -6,6 +6,7 @@ pub mod shape;
 pub mod snap;
 pub mod spaces;
 pub mod transform;
+pub mod viewport;
 
 pub use commands::Command;
 pub use item::{CropRect, EndpointBinding, Item, ItemId, ItemKind};
@@ -16,3 +17,4 @@ pub use shape::{
 };
 pub use spaces::{CanvasPoint, CanvasRect, CanvasSize, CanvasSpace, CanvasVector, ScreenSpace};
 pub use transform::Transform;
+pub use viewport::ViewportState;

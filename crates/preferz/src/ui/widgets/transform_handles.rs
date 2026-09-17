@@ -3,7 +3,7 @@ use preferz_core::shape::ShapeType;
 use preferz_core::{Item, ItemKind};
 
 use crate::ui::stylers::item_local_to_screen;
-use crate::viewport::ViewportState;
+use crate::viewport::{ViewportEgui, ViewportState};
 
 /// 是否显示翻转手柄（仅 Pixmap 支持；Shape 无镜像、Frame 无翻转）。
 pub fn should_show_flip(item: &Item) -> bool {
@@ -83,10 +83,10 @@ impl TransformHandles {
     /// 旋转手柄始终在视觉上方（翻转后不跑到下方）。
     fn handle_screen_positions(item: &Item, viewport: &ViewportState) -> [egui::Pos2; 9] {
         let corners = item.canvas_corners();
-        let tl = viewport.canvas_to_screen(corners[0]);
-        let tr = viewport.canvas_to_screen(corners[1]);
-        let bl = viewport.canvas_to_screen(corners[2]);
-        let br = viewport.canvas_to_screen(corners[3]);
+        let tl = viewport.canvas_to_pos2(corners[0]);
+        let tr = viewport.canvas_to_pos2(corners[1]);
+        let bl = viewport.canvas_to_pos2(corners[2]);
+        let br = viewport.canvas_to_pos2(corners[3]);
 
         let top_mid = (tr + tl.to_vec2()) * 0.5;
         let bottom_mid = (br + bl.to_vec2()) * 0.5;

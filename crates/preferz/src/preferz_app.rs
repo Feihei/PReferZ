@@ -7,7 +7,7 @@ use crate::ui::widgets::palette;
 use crate::ui::widgets::transform_handles::{
     should_show_flip, should_show_rotate, Handle, TransformHandles,
 };
-use crate::viewport::ViewportState;
+use crate::viewport::{ViewportEgui, ViewportState};
 use eframe::egui;
 use image::GenericImageView;
 use preferz_core::arrange::{
@@ -1294,7 +1294,7 @@ impl eframe::App for PReferZApp {
         let central_panel = egui::CentralPanel::default().frame(central_frame);
         central_panel.show(ui, |ui| {
             let rect = ui.max_rect();
-            self.viewport.set_screen_rect(rect);
+            self.viewport.set_screen_rect_egui(rect);
 
             let response =
                 ui.interact(rect, egui::Id::new("canvas"), egui::Sense::click_and_drag());
@@ -1318,8 +1318,8 @@ impl eframe::App for PReferZApp {
                 ..
             } = &self.drag
             {
-                let min = self.viewport.canvas_to_screen(*start_canvas);
-                let max = self.viewport.canvas_to_screen(*current_canvas);
+                let min = self.viewport.canvas_to_pos2(*start_canvas);
+                let max = self.viewport.canvas_to_pos2(*current_canvas);
                 let rect = egui::Rect::from_min_max(min, max);
                 ui.painter().rect_filled(
                     rect,
@@ -1347,7 +1347,7 @@ impl eframe::App for PReferZApp {
                 let h = (current.y - start.y).abs();
                 let min_canvas = CanvasPoint::new(min_x, min_y);
                 let rect_canvas = CanvasRect::new(min_canvas, CanvasSize::new(w, h));
-                let screen_rect = self.viewport.canvas_to_screen_rect(rect_canvas);
+                let screen_rect = self.viewport.canvas_rect_to_egui(rect_canvas);
                 let stroke = egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(100, 200, 255));
                 match shape_type {
                     ShapeType::Rectangle => {
@@ -1370,7 +1370,7 @@ impl eframe::App for PReferZApp {
                         ];
                         let corners_screen: Vec<egui::Pos2> = corners_canvas
                             .iter()
-                            .map(|p| self.viewport.canvas_to_screen(*p))
+                            .map(|p| self.viewport.canvas_to_pos2(*p))
                             .collect();
                         ui.painter().add(egui::Shape::convex_polygon(
                             corners_screen,
@@ -1397,7 +1397,7 @@ impl eframe::App for PReferZApp {
                                 let a = i as f32 / segments as f32 * std::f32::consts::TAU;
                                 let px = cx_canvas + rx_canvas * a.cos();
                                 let py = cy_canvas + ry_canvas * a.sin();
-                                self.viewport.canvas_to_screen(CanvasPoint::new(px, py))
+                                self.viewport.canvas_to_pos2(CanvasPoint::new(px, py))
                             })
                             .collect();
                         pts.push(pts[0]); // 闭合路径
@@ -1405,8 +1405,8 @@ impl eframe::App for PReferZApp {
                     }
                     // 线性对象：画 start → current 线段；箭头另画头部（与 CleanStyler 一致）
                     ShapeType::Polyline => {
-                        let s0 = self.viewport.canvas_to_screen(*start);
-                        let s1 = self.viewport.canvas_to_screen(*current);
+                        let s0 = self.viewport.canvas_to_pos2(*start);
+                        let s1 = self.viewport.canvas_to_pos2(*current);
                         ui.painter().line_segment([s0, s1], stroke);
                         if let Some(ArrowHeadStyle::Arrow) = end_arrow {
                             let dir = s1 - s0;
@@ -1434,7 +1434,7 @@ impl eframe::App for PReferZApp {
                 let h = (current.y - start.y).abs();
                 let rect_canvas =
                     CanvasRect::new(CanvasPoint::new(min_x, min_y), CanvasSize::new(w, h));
-                let screen_rect = self.viewport.canvas_to_screen_rect(rect_canvas);
+                let screen_rect = self.viewport.canvas_rect_to_egui(rect_canvas);
                 let stroke = egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(100, 200, 255));
                 ui.painter()
                     .rect_stroke(screen_rect, 0.0, stroke, egui::StrokeKind::Middle);
@@ -1447,7 +1447,7 @@ impl eframe::App for PReferZApp {
             // 未按下时也要跟随指针（两点式工具的预览只在按住时更新），故在此同步 current。
             if let DragState::CreatingPolygon { current, .. } = &mut self.drag {
                 if let Some(pos) = pointer_pos {
-                    *current = self.viewport.screen_to_canvas(pos);
+                    *current = self.viewport.pos2_to_canvas(pos);
                 }
             }
             let polygon_preview = match &self.drag {
@@ -1468,16 +1468,16 @@ impl eframe::App for PReferZApp {
                 let stroke = egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(100, 200, 255));
                 let mut screen_pts: Vec<egui::Pos2> = points
                     .iter()
-                    .map(|p| self.viewport.canvas_to_screen(*p))
+                    .map(|p| self.viewport.canvas_to_pos2(*p))
                     .collect();
-                screen_pts.push(self.viewport.canvas_to_screen(tip));
+                screen_pts.push(self.viewport.canvas_to_pos2(tip));
                 if screen_pts.len() >= 2 {
                     ui.painter().add(egui::Shape::line(screen_pts, stroke));
                 }
                 // ≥3 个顶点时才提示"再确认一下就闭合成面"：两点连不出面
                 if points.len() >= 3 {
-                    let a = self.viewport.canvas_to_screen(tip);
-                    let b = self.viewport.canvas_to_screen(points[0]);
+                    let a = self.viewport.canvas_to_pos2(tip);
+                    let b = self.viewport.canvas_to_pos2(points[0]);
                     const CLOSE_HINT_DASHES: usize = 10;
                     for i in 0..CLOSE_HINT_DASHES {
                         let t0 = i as f32 / CLOSE_HINT_DASHES as f32;
@@ -1488,7 +1488,7 @@ impl eframe::App for PReferZApp {
                 }
                 // 顶点小方块：让"点了几个点"一眼可数
                 for p in points.iter() {
-                    let s = self.viewport.canvas_to_screen(*p);
+                    let s = self.viewport.canvas_to_pos2(*p);
                     ui.painter().rect_filled(
                         egui::Rect::from_center_size(s, egui::vec2(6.0, 6.0)),
                         egui::CornerRadius::ZERO,
@@ -1499,14 +1499,14 @@ impl eframe::App for PReferZApp {
 
             // 鼠标中键拖拽平移
             if response.dragged_by(egui::PointerButton::Middle) {
-                self.viewport.pan_by_screen(response.drag_delta());
+                self.viewport.pan_by_screen_egui(response.drag_delta());
             }
 
             // 滚轮缩放（以鼠标位置为锚点）
             let scroll = ctx.input(|i| i.smooth_scroll_delta);
             if scroll.y != 0.0 {
                 if let Some(pos) = ctx.input(|i| i.pointer.latest_pos()) {
-                    self.viewport.zoom_at(scroll.y, pos);
+                    self.viewport.zoom_at_egui(scroll.y, pos);
                 }
             }
 
@@ -1550,7 +1550,7 @@ impl eframe::App for PReferZApp {
                         Some((id, false, _)) if self.start_text_edit(id) => {}
                         // 其余（线/箭头/空白）→ 新建自由文本
                         _ => {
-                            let canvas_pos = self.viewport.screen_to_canvas(pos);
+                            let canvas_pos = self.viewport.pos2_to_canvas(pos);
                             self.editing_text = Some(EditingText {
                                 editing_item_id: None,
                                 canvas_pos,
@@ -1806,7 +1806,7 @@ impl PReferZApp {
         // additive（=Shift 按住）用于正方形锁定，free_scale（=Ctrl 按住）用于椭圆解锁。
         match self.tool {
             Tool::Shape(shape_type) => {
-                let start_canvas = self.viewport.screen_to_canvas(screen_pos);
+                let start_canvas = self.viewport.pos2_to_canvas(screen_pos);
                 self.drag = DragState::CreatingShape {
                     shape_type,
                     end_arrow: None,
@@ -1818,7 +1818,7 @@ impl PReferZApp {
                 return;
             }
             Tool::Linear { end_arrow } => {
-                let start_canvas = self.viewport.screen_to_canvas(screen_pos);
+                let start_canvas = self.viewport.pos2_to_canvas(screen_pos);
                 self.drag = DragState::CreatingShape {
                     shape_type: ShapeType::Polyline,
                     end_arrow,
@@ -1830,7 +1830,7 @@ impl PReferZApp {
                 return;
             }
             Tool::Frame => {
-                let start_canvas = self.viewport.screen_to_canvas(screen_pos);
+                let start_canvas = self.viewport.pos2_to_canvas(screen_pos);
                 self.drag = DragState::CreatingFrame {
                     start: start_canvas,
                     current: start_canvas,
@@ -1839,7 +1839,7 @@ impl PReferZApp {
             }
             // 多拍工具：第一拍落首个顶点，后续每拍追加一个顶点（见 finish_create_polygon）
             Tool::Polygon => {
-                let p = self.viewport.screen_to_canvas(screen_pos);
+                let p = self.viewport.pos2_to_canvas(screen_pos);
                 match &mut self.drag {
                     DragState::CreatingPolygon {
                         points,
@@ -1919,7 +1919,7 @@ impl PReferZApp {
                             return;
                         }
                         let base_pos = start_points.get(endpoint).copied().unwrap_or((0.0, 0.0));
-                        let start_canvas = self.viewport.screen_to_canvas(screen_pos);
+                        let start_canvas = self.viewport.pos2_to_canvas(screen_pos);
                         self.drag = DragState::LineEndpoint {
                             item_id: item.id,
                             endpoint,
@@ -1956,7 +1956,7 @@ impl PReferZApp {
                                     points.insert(insert_idx, mid);
                                 }
                             }
-                            let start_canvas = self.viewport.screen_to_canvas(screen_pos);
+                            let start_canvas = self.viewport.pos2_to_canvas(screen_pos);
                             self.drag = DragState::LineEndpoint {
                                 item_id: item.id,
                                 endpoint: insert_idx,
@@ -2088,7 +2088,7 @@ impl PReferZApp {
                 .into_iter()
                 .filter_map(|sid| self.scene.get_item(&sid).map(|it| (sid, it.transform)))
                 .collect();
-            let start_canvas = self.viewport.screen_to_canvas(screen_pos);
+            let start_canvas = self.viewport.pos2_to_canvas(screen_pos);
             // plan #14：移动组内的 Polyline 快照（预览吸附 + 释放打包入栈）
             let line_snaps: Vec<LineSnapState> = start_transforms
                 .iter()
@@ -2123,7 +2123,7 @@ impl PReferZApp {
         }
 
         // 3) 空白：开始框选（spec L240）。Shift = 加选模
-        let start_canvas = self.viewport.screen_to_canvas(screen_pos);
+        let start_canvas = self.viewport.pos2_to_canvas(screen_pos);
         self.drag = DragState::BoxSelect {
             start_canvas,
             current_canvas: start_canvas,
@@ -2156,7 +2156,7 @@ impl PReferZApp {
                 alt_extend: true,
             } = &self.drag
             {
-                let cur = self.viewport.screen_to_canvas(screen_pos);
+                let cur = self.viewport.pos2_to_canvas(screen_pos);
                 let moved =
                     (cur - *start_canvas).length() >= EXTEND_TRIGGER_PX / self.viewport.zoom;
                 if moved {
@@ -2202,7 +2202,7 @@ impl PReferZApp {
                 let start_screen = *start_screen;
                 let start_transform = *start_transform;
                 let start_corners = *start_corners;
-                let mouse_canvas = self.viewport.screen_to_canvas(screen_pos);
+                let mouse_canvas = self.viewport.pos2_to_canvas(screen_pos);
                 if let Some(item) = self.scene.get_item_mut(&item_id) {
                     match handle {
                         Handle::Rotate => {
@@ -2243,7 +2243,7 @@ impl PReferZApp {
                 line_snaps,
                 ..
             } => {
-                let current_canvas = self.viewport.screen_to_canvas(screen_pos);
+                let current_canvas = self.viewport.pos2_to_canvas(screen_pos);
                 let mut delta = current_canvas - *start_canvas;
                 if axis_lock {
                     // Shift 轴约束：只保留位移较大的那一轴，另一轴清零
@@ -2367,7 +2367,7 @@ impl PReferZApp {
                         return;
                     }
                 }
-                let current_canvas = self.viewport.screen_to_canvas(screen_pos);
+                let current_canvas = self.viewport.pos2_to_canvas(screen_pos);
                 let delta_canvas = current_canvas - start_canvas;
 
                 // plan #5：端点吸附。仅真实端点（0 / 末点）可绑定；查询点取**被拖端点**
@@ -2457,18 +2457,18 @@ impl PReferZApp {
         }
         // BoxSelect / CreatingShape 更新 current（match &self.drag 不可写，故单独 &mut）
         if let DragState::BoxSelect { current_canvas, .. } = &mut self.drag {
-            *current_canvas = self.viewport.screen_to_canvas(screen_pos);
+            *current_canvas = self.viewport.pos2_to_canvas(screen_pos);
         }
         if let DragState::CreatingShape { current, ctrl, .. } = &mut self.drag {
-            *current = self.viewport.screen_to_canvas(screen_pos);
+            *current = self.viewport.pos2_to_canvas(screen_pos);
             // 拖动中实时更新 Ctrl 状态（椭圆正圆/自由宽高比切换）
             *ctrl = free_scale;
         }
         if let DragState::CreatingFrame { current, .. } = &mut self.drag {
-            *current = self.viewport.screen_to_canvas(screen_pos);
+            *current = self.viewport.pos2_to_canvas(screen_pos);
         }
         if let DragState::CreatingPolygon { current, .. } = &mut self.drag {
-            *current = self.viewport.screen_to_canvas(screen_pos);
+            *current = self.viewport.pos2_to_canvas(screen_pos);
         }
     }
 
@@ -3087,9 +3087,7 @@ impl PReferZApp {
                 // 绑定文本：换行到容器宽度，按对齐枚举定位（plan #1；默认居中 = 历史行为）
                 Some(cid) => {
                     let container = self.scene.get_item(&cid).expect("filter 已保证存在");
-                    let cr = self
-                        .viewport
-                        .canvas_to_screen_rect(container.bounding_rect());
+                    let cr = self.viewport.canvas_rect_to_egui(container.bounding_rect());
                     let wrap = (cr.width() - 12.0).max(20.0);
                     let pad = 6.0 * zoom;
                     if hand {
@@ -3150,7 +3148,7 @@ impl PReferZApp {
                 // 自由文本（或容器已丢失）：按自身 transform 定位，字号叠加 scale；
                 // 对齐枚举不生效（单行无框，恒 top-left）
                 None => {
-                    let origin = self.viewport.canvas_to_screen(item.canvas_corners()[0]);
+                    let origin = self.viewport.canvas_to_pos2(item.canvas_corners()[0]);
                     // scale.x（等比缩放场景下 scale.y 相同；非等比 egui text 不支持非均匀缩放）
                     let effective_font_size = *font_size * item.transform.scale.x.abs() * zoom;
                     if hand {
@@ -3252,13 +3250,13 @@ impl PReferZApp {
     /// Edit 与 Present 模式共用的渲染原语，保证两处观感一致。
     fn draw_item_visual(&self, ui: &mut egui::Ui, item: &Item, editing_id: Option<ItemId>) {
         let canvas_bbox = item.bounding_rect();
-        let item_screen_rect = self.viewport.canvas_to_screen_rect(canvas_bbox);
+        let item_screen_rect = self.viewport.canvas_rect_to_egui(canvas_bbox);
         let corners = item.canvas_corners();
         let screen_corners = [
-            self.viewport.canvas_to_screen(corners[0]),
-            self.viewport.canvas_to_screen(corners[1]),
-            self.viewport.canvas_to_screen(corners[2]),
-            self.viewport.canvas_to_screen(corners[3]),
+            self.viewport.canvas_to_pos2(corners[0]),
+            self.viewport.canvas_to_pos2(corners[1]),
+            self.viewport.canvas_to_pos2(corners[2]),
+            self.viewport.canvas_to_pos2(corners[3]),
         ];
         match &item.kind {
             ItemKind::Pixmap {
@@ -3327,7 +3325,7 @@ impl PReferZApp {
                 ui.painter().extend(shapes);
             }
             ItemKind::Frame { .. } => {
-                let sr = self.viewport.canvas_to_screen_rect(item.bounding_rect());
+                let sr = self.viewport.canvas_rect_to_egui(item.bounding_rect());
                 let border = egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(90, 90, 95));
                 ui.painter()
                     .rect_stroke(sr, 0.0, border, egui::StrokeKind::Middle);
@@ -3482,14 +3480,14 @@ impl PReferZApp {
             return;
         }
         let screen_rect = ctx.content_rect();
-        self.viewport.set_screen_rect(screen_rect);
+        self.viewport.set_screen_rect_egui(screen_rect);
 
         let Some(frame) = self.scene.get_item(&slides[index]) else {
             return;
         };
         let frame_rect = frame.bounding_rect();
         self.present_apply_fit(ctx, screen_rect, frame_rect);
-        let frame_screen_rect = self.viewport.canvas_to_screen_rect(frame_rect);
+        let frame_screen_rect = self.viewport.canvas_rect_to_egui(frame_rect);
 
         // 画布背景跟随主题（D2）；Present 为不透明演示背景。
         let present_bg = self.theme.canvas_bg(ctx);
@@ -3507,7 +3505,7 @@ impl PReferZApp {
                     let Some(item) = self.scene.get_item(id).cloned() else {
                         continue;
                     };
-                    let cull = self.viewport.canvas_to_screen_rect(item.bounding_rect());
+                    let cull = self.viewport.canvas_rect_to_egui(item.bounding_rect());
                     if screen_rect.intersects(cull) {
                         self.draw_item_visual(ui, &item, None);
                     }
@@ -3594,17 +3592,17 @@ impl PReferZApp {
         for item in items {
             // 视口剔除（修 S9/M11）：用画AABB 转屏幕矩形，不相交则跳过
             let canvas_bbox = item.bounding_rect();
-            let item_screen_rect = self.viewport.canvas_to_screen_rect(canvas_bbox);
+            let item_screen_rect = self.viewport.canvas_rect_to_egui(canvas_bbox);
             if !screen_rect.intersects(item_screen_rect) {
                 continue;
             }
 
             let corners = item.canvas_corners();
             let screen_corners = [
-                self.viewport.canvas_to_screen(corners[0]),
-                self.viewport.canvas_to_screen(corners[1]),
-                self.viewport.canvas_to_screen(corners[2]),
-                self.viewport.canvas_to_screen(corners[3]),
+                self.viewport.canvas_to_pos2(corners[0]),
+                self.viewport.canvas_to_pos2(corners[1]),
+                self.viewport.canvas_to_pos2(corners[2]),
+                self.viewport.canvas_to_pos2(corners[3]),
             ];
 
             let is_selected = self.scene.selection_contains(&item.id);
@@ -3691,7 +3689,7 @@ impl PReferZApp {
                 ItemKind::Frame { number, name, .. } => {
                     // 边框矩形（画布 AABB 转屏幕：frame 不旋转，直接用 bounding_rect）。
                     let fc = item.bounding_rect();
-                    let sr = self.viewport.canvas_to_screen_rect(fc);
+                    let sr = self.viewport.canvas_rect_to_egui(fc);
                     let border = egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(90, 90, 95));
                     ui.painter()
                         .rect_stroke(sr, 0.0, border, egui::StrokeKind::Middle);
@@ -3759,7 +3757,7 @@ impl PReferZApp {
         // 多选统一外框（spec L241：多选时画一个统一 bbox
         if selection_count > 1 {
             if let Some(bbox) = self.scene.selection_bounding_rect() {
-                let screen_bbox = self.viewport.canvas_to_screen_rect(bbox);
+                let screen_bbox = self.viewport.canvas_rect_to_egui(bbox);
                 let stroke = egui::Stroke::new(1.5_f32, egui::Color32::YELLOW);
                 ui.painter()
                     .rect_stroke(screen_bbox, 0.0, stroke, egui::StrokeKind::Middle);
@@ -3786,8 +3784,8 @@ impl PReferZApp {
                 let segs = snap::outline_segments(item);
                 let stroke = egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(255, 170, 40));
                 for (a, b) in segs {
-                    let sa = self.viewport.canvas_to_screen(a);
-                    let sb = self.viewport.canvas_to_screen(b);
+                    let sa = self.viewport.canvas_to_pos2(a);
+                    let sb = self.viewport.canvas_to_pos2(b);
                     ui.painter().line_segment([sa, sb], stroke);
                 }
             }
@@ -3906,9 +3904,9 @@ impl PReferZApp {
         // 会膨胀且不含旋转，裁剪框与图片会错位。
         let item_quad = item
             .canvas_corners_ring()
-            .map(|p| self.viewport.canvas_to_screen(p));
+            .map(|p| self.viewport.canvas_to_pos2(p));
         let crop_quad = match item.crop_corners(crop_state.rect) {
-            Some(q) => q.map(|p| self.viewport.canvas_to_screen(p)),
+            Some(q) => q.map(|p| self.viewport.canvas_to_pos2(p)),
             None => return,
         };
 
@@ -4159,12 +4157,12 @@ impl PReferZApp {
             Some(e) => e,
             None => return,
         };
-        let screen_pos = self.viewport.canvas_to_screen(edit.canvas_pos);
+        let screen_pos = self.viewport.canvas_to_pos2(edit.canvas_pos);
         // 绑定文本：获取容器屏幕矩形，用于居中 + 定宽（换行）。
         let container_screen_rect = edit.container_id.and_then(|cid| {
             self.scene
                 .get_item(&cid)
-                .map(|it| self.viewport.canvas_to_screen_rect(it.bounding_rect()))
+                .map(|it| self.viewport.canvas_rect_to_egui(it.bounding_rect()))
         });
         let mut commit = false;
         let mut cancel = false;
@@ -4305,7 +4303,7 @@ impl PReferZApp {
             return;
         };
         let old_number = frame.frame_number().unwrap_or(1);
-        let sr = self.viewport.canvas_to_screen_rect(frame.bounding_rect());
+        let sr = self.viewport.canvas_rect_to_egui(frame.bounding_rect());
         let mut commit = false;
         let mut cancel = false;
 
@@ -8194,7 +8192,7 @@ impl PReferZApp {
         // crop_corners 走完整 local_to_canvas（含旋转），手柄因此跟随图片一起转
         let crop_quad = item
             .crop_corners(crop_state.rect)?
-            .map(|p| self.viewport.canvas_to_screen(p));
+            .map(|p| self.viewport.canvas_to_pos2(p));
         let handle_size = TransformHandles::handle_size() * 2.0;
         // 角点顺序：TL → TR → BR → BL
         let handles = [
@@ -8230,7 +8228,7 @@ impl PReferZApp {
 
         // 屏幕 → 画布 → 原图像素：走 item 变换的逆变换，旋转下同样正确
         // （旧的 AABB 线性映射在旋转下会算出错误的像素位置）。
-        let canvas_pos = self.viewport.screen_to_canvas(screen_pos);
+        let canvas_pos = self.viewport.pos2_to_canvas(screen_pos);
         let (raw_px, raw_py) = match item.canvas_to_crop_pixel(canvas_pos) {
             Some(p) => p,
             None => return,
@@ -8298,7 +8296,7 @@ impl PReferZApp {
             Some(m) => m,
             None => return,
         };
-        let canvas_pos = self.viewport.screen_to_canvas(screen_pos);
+        let canvas_pos = self.viewport.pos2_to_canvas(screen_pos);
         let local = inv.transform_point(canvas_pos);
         let ow = original_size.0 as f32;
         let oh = original_size.1 as f32;

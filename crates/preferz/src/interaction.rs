@@ -1,4 +1,4 @@
-use crate::viewport::ViewportState;
+use crate::viewport::{ViewportEgui, ViewportState};
 use eframe::egui;
 use preferz_core::item::ItemKind;
 use preferz_core::{Item, Scene};
@@ -16,7 +16,7 @@ pub fn get_item_at<'a>(
     scene: &'a Scene,
     viewport: &ViewportState,
 ) -> Option<&'a Item> {
-    let canvas_pos = viewport.screen_to_canvas(screen_pos);
+    let canvas_pos = viewport.pos2_to_canvas(screen_pos);
     // 边框命中的屏幕像素松弛阈值（Phase D）→ 画布单位。
     let frame_threshold = 6.0 / viewport.zoom;
     // items_by_z_order 升序，倒序遍历 = 从顶层到底层
