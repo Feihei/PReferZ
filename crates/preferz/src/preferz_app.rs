@@ -5736,8 +5736,8 @@ impl PReferZApp {
             _ => None,
         }) {
             let mut o = p.value();
-            // 下限 0.1（与背景透明度滑块一致）：避免拖到 0 完全透明导致图片不可见。
-            if ui.add(egui::Slider::new(&mut o, 0.1..=1.0)).changed() {
+            // 下限 0.15（与背景透明度滑块一致）：避免拖太低导致图片几乎不可见。
+            if ui.add(egui::Slider::new(&mut o, 0.15..=1.0)).changed() {
                 self.apply_continuous(
                     ids,
                     PropKind::Pixmap,
@@ -8661,10 +8661,12 @@ impl PReferZApp {
                 {
                     frame_changed = true;
                 }
-                // 背景透明度：0.1~1.0，配无边框+置顶可作悬浮看图板。
-                // 限制最小 0.1 避免空场景下窗口完全不可见（spec §2.3 透明背景注意事项）。
+                // 背景透明度：0.15~1.0，配无边框+置顶可作悬浮看图板。
+                // 限制最小 0.15 避免空场景下窗口过于不可见（spec §2.3 透明背景注意事项）；
+                // egui 0.36 换成 glow 后端后为单层线性 alpha 合成，同值比旧 wgpu 更透，故下限由
+                // 0.1 抬到 0.15。
                 ui.add(
-                    egui::Slider::new(&mut self.bg_alpha, 0.1..=1.0)
+                    egui::Slider::new(&mut self.bg_alpha, 0.15..=1.0)
                         .text(t(self.lang, T::SettingsBgAlpha))
                         .fixed_decimals(2),
                 );
