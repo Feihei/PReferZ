@@ -3233,7 +3233,7 @@ impl PReferZApp {
                         (0.0, 1.0, 0.0, 1.0)
                     };
                     let alpha = (opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
-                    let tint = egui::Color32::from_rgba_premultiplied(255, 255, 255, alpha);
+                    let tint = pixmap_tint(alpha);
                     let [tl, tr, bl, br] = screen_corners;
                     let verts = [
                         ([tl.x, tl.y], [u_min, v_min]),
@@ -3586,7 +3586,7 @@ impl PReferZApp {
                         };
                         // 透明度：tint_color alpha = opacity（spec §2.2 透明度）
                         let alpha = (opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
-                        let tint = egui::Color32::from_rgba_premultiplied(255, 255, 255, alpha);
+                        let tint = pixmap_tint(alpha);
                         // mesh quad 渲染，让图片真正跟着旋转/flip（screen_corners 已包含全部几何变换）
                         // screen_corners 顺序：[TL, TR, BL, BR]，重排为 [TL, TR, BR, BL] 顺时
                         let [tl, tr, bl, br] = screen_corners;
@@ -3900,7 +3900,7 @@ impl PReferZApp {
                 _ => 1.0,
             };
             let alpha = (opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
-            let tint = egui::Color32::from_rgba_premultiplied(255, 255, 255, alpha);
+            let tint = pixmap_tint(alpha);
             let [tl, tr, br, bl] = crop_quad;
             let verts = [
                 ([tl.x, tl.y], [u0, v0]),
@@ -6106,6 +6106,16 @@ fn is_text_container(kind: &ItemKind) -> bool {
     } else {
         false
     }
+}
+
+/// 图片 mesh 顶点色（tint）：把「白色 × 不透明度」按 egui 的**预乘 alpha** 语义展开。
+///
+/// egui painter 以预乘 alpha 混合（`ONE, ONE_MINUS_SRC_ALPHA`），顶点色 RGB 必须已随
+/// alpha 缩放。此前直接写 `from_rgba_premultiplied(255,255,255,alpha)`——RGB=255 > alpha
+/// 是非法的过亮预乘色，与描边/填充曾出现的「设 50% 却几乎不透明」同源。白色 (255,255,255)
+/// 乘 alpha/255 即 (alpha,alpha,alpha)，与 [`crate::ui::stylers`] 里填充的预乘处理一致。
+fn pixmap_tint(alpha: u8) -> egui::Color32 {
+    egui::Color32::from_rgba_premultiplied(alpha, alpha, alpha, alpha)
 }
 
 /// 判断路径是否PReferZ 项目文件prz）
