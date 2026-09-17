@@ -6,7 +6,7 @@
 
 use crate::item::{Item, ItemKind, ItemLocalSpace};
 use crate::shape::ShapeType;
-use crate::spaces::CanvasPoint;
+use crate::spaces::{CanvasPoint, CanvasVector};
 
 /// 把一段线段离散为 `n` 条边（首尾相连）。
 fn ellipse_ring(r: crate::spaces::CanvasRect, n: usize) -> Vec<(CanvasPoint, CanvasPoint)> {
@@ -135,6 +135,23 @@ pub fn nearest_outline_point(item: &Item, query: CanvasPoint) -> CanvasPoint {
     nearest_point_on_segments(query, &segs).0
 }
 
+/// 多边形/折线绘点时的 Shift 约束吸附（plan #4）：把 `from→to` 这条段的角度
+/// 归到最近的 45° 方向、**保持段长不变**（等长转向，非投影）。`shift=false` 时
+/// 原样返回 `to`；段长趋零时退化返回 `from`（无法定方向）。纯几何、只吃画布坐标。
+pub fn snap_polygon_point(from: CanvasPoint, to: CanvasPoint, shift: bool) -> CanvasPoint {
+    if !shift {
+        return to;
+    }
+    let dx = to.x - from.x;
+    let dy = to.y - from.y;
+    let len = (dx * dx + dy * dy).sqrt();
+    if len < 1e-3 {
+        return from;
+    }
+    let angle = (dy.atan2(dx) / std::f32::consts::FRAC_PI_4).round() * std::f32::consts::FRAC_PI_4;
+    from + CanvasVector::new(len * angle.cos(), len * angle.sin())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -232,5 +249,46 @@ mod tests {
         let p = nearest_outline_point(&it, q);
         assert!((p.x - 130.0).abs() < 1e-3);
         assert!((p.y - 90.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn snap_polygon_point_without_shift_returns_target_unchanged() {
+        let from = CanvasPoint::new(10.0, 10.0);
+        let to = CanvasPoint::new(100.0, 37.0);
+        assert_eq!(snap_polygon_point(from, to, false), to);
+    }
+
+    #[test]
+    fn snap_polygon_point_with_shift_snaps_to_45_degrees_keeping_length() {
+        // 约 11° → 吸附到 0°；长度保持（不是投影，是等长转向）
+        let snapped = snap_polygon_point(
+            CanvasPoint::new(0.0, 0.0),
+            CanvasPoint::new(100.0, 20.0),
+            true,
+        );
+        let len = (100.0f32 * 100.0 + 20.0f32 * 20.0).sqrt();
+        assert!(
+            (snapped.x - len).abs() < 1e-3 && snapped.y.abs() < 1e-3,
+            "应吸附到 0° 且保持长度 {len}，实际 {snapped:?}"
+        );
+    }
+
+    #[test]
+    fn snap_polygon_point_snaps_near_45_to_exact_diagonal() {
+        let snapped = snap_polygon_point(
+            CanvasPoint::new(0.0, 0.0),
+            CanvasPoint::new(100.0, 90.0),
+            true,
+        );
+        assert!(
+            (snapped.x - snapped.y).abs() < 1e-3,
+            "应落在 45° 对角线上，实际 {snapped:?}"
+        );
+    }
+
+    #[test]
+    fn snap_polygon_point_degenerate_segment_returns_from() {
+        let from = CanvasPoint::new(5.0, 7.0);
+        assert_eq!(snap_polygon_point(from, from, true), from);
     }
 }

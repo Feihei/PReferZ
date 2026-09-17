@@ -1458,7 +1458,7 @@ impl eframe::App for PReferZApp {
                 } => {
                     let tip = points
                         .last()
-                        .map(|last| Self::snap_polygon_point(*last, *current, *shift))
+                        .map(|last| snap::snap_polygon_point(*last, *current, *shift))
                         .unwrap_or(*current);
                     Some((points.clone(), tip))
                 }
@@ -1847,7 +1847,7 @@ impl PReferZApp {
                         shift,
                     } => {
                         let last = *points.last().expect("CreatingPolygon 至少有一个顶点");
-                        let next = Self::snap_polygon_point(last, *current, *shift);
+                        let next = snap::snap_polygon_point(last, *current, *shift);
                         // 双击的第二下会先落到 begin_drag：落点与上一顶点重合时
                         // 视为"收尾"而非新增顶点（双击闭合的第二拍不该多加一个点）
                         if (next - last).length() >= POLYLINE_CLOSE_DISTANCE {
@@ -2984,23 +2984,6 @@ impl PReferZApp {
         ));
         // 默认回 Select
         self.tool = Tool::Select;
-    }
-
-    /// Shift 方向锁定：把 `from → to` 这段吸附到 45° 整数倍，保持长度不变。
-    /// 与 `finish_create_shape` 里的折线吸附同一套算法（阈值除外）。
-    fn snap_polygon_point(from: CanvasPoint, to: CanvasPoint, shift: bool) -> CanvasPoint {
-        if !shift {
-            return to;
-        }
-        let dx = to.x - from.x;
-        let dy = to.y - from.y;
-        let len = (dx * dx + dy * dy).sqrt();
-        if len < 1e-3 {
-            return from;
-        }
-        let angle =
-            (dy.atan2(dx) / std::f32::consts::FRAC_PI_4).round() * std::f32::consts::FRAC_PI_4;
-        from + CanvasVector::new(len * angle.cos(), len * angle.sin())
     }
 
     /// 多边形工具收尾（Phase I）：把已落定的顶点固化成一个 `closed: true` 的 Polyline。
@@ -6320,47 +6303,6 @@ mod tests {
     }
 
     #[test]
-    fn snap_polygon_point_without_shift_returns_target_unchanged() {
-        let from = CanvasPoint::new(10.0, 10.0);
-        let to = CanvasPoint::new(100.0, 37.0);
-        assert_eq!(PReferZApp::snap_polygon_point(from, to, false), to);
-    }
-
-    #[test]
-    fn snap_polygon_point_with_shift_snaps_to_45_degrees_keeping_length() {
-        // 约 11° → 吸附到 0°；长度保持（不是投影，是等长转向）
-        let snapped = PReferZApp::snap_polygon_point(
-            CanvasPoint::new(0.0, 0.0),
-            CanvasPoint::new(100.0, 20.0),
-            true,
-        );
-        let len = (100.0f32 * 100.0 + 20.0f32 * 20.0).sqrt();
-        assert!(
-            (snapped.x - len).abs() < 1e-3 && snapped.y.abs() < 1e-3,
-            "应吸附到 0° 且保持长度 {len}，实际 {snapped:?}"
-        );
-    }
-
-    #[test]
-    fn snap_polygon_point_snaps_near_45_to_exact_diagonal() {
-        let snapped = PReferZApp::snap_polygon_point(
-            CanvasPoint::new(0.0, 0.0),
-            CanvasPoint::new(100.0, 90.0),
-            true,
-        );
-        assert!(
-            (snapped.x - snapped.y).abs() < 1e-3,
-            "应落在 45° 对角线上，实际 {snapped:?}"
-        );
-    }
-
-    #[test]
-    fn snap_polygon_point_degenerate_segment_returns_from() {
-        let from = CanvasPoint::new(5.0, 7.0);
-        assert_eq!(PReferZApp::snap_polygon_point(from, from, true), from);
-    }
-
-    #[test]
     fn finish_create_polygon_builds_closed_polyline_in_aabb_local_space() {
         let mut app = app_creating_polygon(
             vec![
@@ -8084,24 +8026,13 @@ impl PReferZApp {
     }
 
     fn fit_to_screen(&mut self) {
-        if self.scene.items.is_empty() {
-            self.viewport.reset();
-            self.flash(t(self.lang, T::FlashFitToCanvas).to_string());
-            return;
+        // 「全部内容 AABB 并集」决策归 core（Scene::content_bounding_rect）；
+        // app 只负责视口动作与提示。None ⟺ 空场景 → 重置视口。
+        match self.scene.content_bounding_rect() {
+            Some(b) => self.viewport.fit_to_content(b),
+            None => self.viewport.reset(),
         }
-        // 用所item AABB 并集
-        let mut bbox: Option<preferz_core::spaces::CanvasRect> = None;
-        for item in &self.scene.items {
-            let r = item.bounding_rect();
-            bbox = Some(match bbox {
-                Some(b) => b.union(&r),
-                None => r,
-            });
-        }
-        if let Some(b) = bbox {
-            self.viewport.fit_to_content(b);
-            self.flash(t(self.lang, T::FlashFitToCanvas).to_string());
-        }
+        self.flash(t(self.lang, T::FlashFitToCanvas).to_string());
     }
 
     /// Shift+2：缩放视口到选中元素（Excalidraw 同款 Zoom to selection）。
@@ -8111,17 +8042,8 @@ impl PReferZApp {
             self.flash(t(self.lang, T::FlashNoSelection).to_string());
             return;
         }
-        let mut bbox: Option<preferz_core::spaces::CanvasRect> = None;
-        for id in &self.scene.selection {
-            if let Some(item) = self.scene.get_item(id) {
-                let r = item.bounding_rect();
-                bbox = Some(match bbox {
-                    Some(b) => b.union(&r),
-                    None => r,
-                });
-            }
-        }
-        if let Some(b) = bbox {
+        // 「选区 AABB 并集」决策归 core（Scene::selection_bounding_rect）。
+        if let Some(b) = self.scene.selection_bounding_rect() {
             self.viewport.fit_to_content(b);
             self.flash(t(self.lang, T::FlashZoomToSelection).to_string());
         }

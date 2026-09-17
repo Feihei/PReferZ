@@ -62,8 +62,8 @@
 
 | 步 | 内容 | 归属变化 | 测试闸 |
 |---|---|---|---|
-| **Step 0** | 安全网：本分支基线三件套全绿；`.agents/plan.md` 加一行指向本文档；（若 D1 通过）起草 ADR-0008 | 文档 | 三件套绿；本文档 + 指针入库 |
-| **Step 1** | 零 egui 纠缠的纯决策下沉 core：`snap_polygon_point`→`core::snap`；`fit_to_screen`/`zoom_to_selection` 里的 **bbox 并集 → rect 决策**（算 rect 进 core，`viewport.fit_to_content`+`flash` 留 app）；`Prop` 混合值合并纯部分（仿 `arrange.rs::plan_*` 样板，返回数据、UI 包命令） | L1 → core | 每簇补 core headless 单测；`test -p preferz-core` 增，`preferz` 对应逻辑变薄；三件套绿 |
+| **Step 0** ✅ | 安全网：基线三件套全绿；plan.md 指针；ADR-0008 已立（提交 `a27704d`） | 文档 | 三件套绿；本文档 + 指针入库 |
+| **Step 1** ✅ | 零 egui 纠缠的纯决策下沉 core。**已落**：`snap_polygon_point`→`preferz_core::snap`（+4 单测迁）；新增 `Scene::content_bounding_rect`（+2 单测），`fit_to_screen`/`zoom_to_selection` 改为委托 core 决策。**经代码事实判定不下沉**：`Prop`/`prop`/`prop_cmd` 是属性面板 L2 机器——`Prop::Mixed` 是控件呈现词汇、18 处调用各绑一个属性专属提取闭包，下沉无 headless 收益反污染 core 领域词汇（原计划"prop 合并纯部分"据此作废，D3 同步）。 | L1 → core | core 测试 104→110，`preferz_app.rs` 9230→9152，三件套全绿 |
 | **Step 2**（枢纽，阻塞于 D1） | `ViewportState` 下沉 core + 封坐标漏；`viewport.rs` 现 3 个测试随之搬入 core（`egui::Rect`→`ScreenRect`） | L1 数学 → core，边界收口 | core 无头测变换/夹取/侧栏开合补偿；`--workspace` 全绿；**手测：滚轮缩放锚点不漂、中键平移、侧栏开合内容不跳变、Shift+1/2/3 视口动作** |
 | **Step 3** | `preferz_app.rs` 模块拆分：残留 L1 继续删+进 core；L2/L3 拆进 `crates/preferz/src/app/` 子模块，`preferz_app.rs` 退化为 struct + `ui()` 派发壳 | L2/L3 重排（同 crate） | 逐簇搬，每搬一簇三件套绿；行为零改 |
 | **Step 4**（可选，最晚） | 劈 `update_drag_preview`：`给定(起点,当前点,aspect,snap,mode)→新 Transform/Command` 抽成 core 决策；读指针+`screen_to_canvas`+改 `self.drag`+`request_repaint` 的壳留 app | 再抽一层 L1 → core | **先写 core 决策单测钉死语义再动壳**；三件套绿 |

@@ -513,6 +513,21 @@ impl Scene {
         rect
     }
 
+    /// 全部 item 的 AABB 并集（画布空间）；空场景返回 `None`。
+    /// 「适配全部 / Zoom to fit」（Shift+1）的纯决策——过去在 app 层内联重算，现归 core。
+    /// 与 [`selection_bounding_rect`] 共用同一 union 语义，只是遍历全集而非选区。
+    pub fn content_bounding_rect(&self) -> Option<CanvasRect> {
+        let mut rect: Option<CanvasRect> = None;
+        for item in &self.items {
+            let r = item.bounding_rect();
+            rect = Some(match rect {
+                Some(b) => b.union(&r),
+                None => r,
+            });
+        }
+        rect
+    }
+
     pub fn clear(&mut self) {
         self.items.clear();
         self.selection.clear();
@@ -555,6 +570,29 @@ mod tests {
 
     fn text(container: ItemId) -> Item {
         Item::new_text_in("hello".into(), 50.0, 30.0, 20.0, [255; 4], container)
+    }
+
+    #[test]
+    fn content_bounding_rect_is_none_for_empty_scene() {
+        let scene = Scene::new();
+        assert!(scene.content_bounding_rect().is_none());
+    }
+
+    #[test]
+    fn content_bounding_rect_unions_all_items() {
+        let mut a = shape(); // 100×60 于原点
+        a.transform.pos = CanvasVector::new(0.0, 0.0);
+        let mut b = shape();
+        b.transform.pos = CanvasVector::new(150.0, 0.0); // 右移，留 50px 间隙
+        let mut scene = Scene::new();
+        scene.add_item(a);
+        scene.add_item(b);
+
+        let r = scene.content_bounding_rect().expect("非空应有并集");
+        assert_eq!(
+            (r.min_x(), r.min_y(), r.max_x(), r.max_y()),
+            (0.0, 0.0, 250.0, 60.0)
+        );
     }
 
     #[test]
