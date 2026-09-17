@@ -1084,6 +1084,17 @@ fn edge_anchor_local(dir: FlowDir, w: f32, h: f32) -> (f32, f32) {
 }
 
 impl eframe::App for PReferZApp {
+    /// 透明窗口底色：完全透明。
+    ///
+    /// eframe 默认 `clear_color` 是固定的半透明 `(12,12,12,180)`（alpha≈0.706），会给
+    /// 透明窗口叠一层「最低 70% 不透明」的下駄——无论 `bg_alpha` 拖到多低都透不出去，
+    /// 且与各面板/画布的 bg_alpha 叠加后映射严重非线性（用户反馈「50% 几乎不透明、
+    /// 10% 才半透明」）。此处返回全透明清屏色，未绘制区域直接透出桌面，使背景不透明度
+    /// 由面板/画布那一层 bg_alpha 单层决定，从而与滑块线性对应。
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        [0.0, 0.0, 0.0, 0.0]
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // 每帧重置连续编辑标记；本帧结束时据此决定是否结算待合并的拖拽编辑（Phase H）。
         self.prop_changed_this_frame = false;
@@ -1204,18 +1215,29 @@ impl eframe::App for PReferZApp {
         }
 
         // 中央画布
-        egui::CentralPanel::default().show(ctx, |ui| {
+        //
+        // 透明映射修复：默认 `CentralPanel::default()` 的 frame 会用 panel_fill
+        // （已含 alpha=bg_alpha）铺满面板，随后这里又用同一 bg_alpha 叠画一层画布底色——
+        // 两层同色透明叠加导致中央区二次合成（50% 实测≈75% 不透明）。改为「单张半透明底」：
+        // 保留默认 frame 的 inner_margin（视口交互矩形 / 元素坐标不变）但把 fill 置为透明，
+        // 使面板本身不再贡献 alpha；背景只由下面这一张铺满整个面板（把内缩的 max_rect 按
+        // inner_margin 外扩回面板外沿，消除 8px 接缝）的 rect 决定，窗口 alpha 即线性等于 bg_alpha。
+        let central_frame =
+            egui::Frame::central_panel(&ctx.style()).fill(egui::Color32::TRANSPARENT);
+        let central_margin = central_frame.inner_margin;
+        let central_panel = egui::CentralPanel::default().frame(central_frame);
+        central_panel.show(ctx, |ui| {
             let rect = ui.max_rect();
             self.viewport.set_screen_rect(rect);
 
             let response =
                 ui.interact(rect, egui::Id::new("canvas"), egui::Sense::click_and_drag());
 
-            // 画布背景：随主题翻转（D2），并应用 bg_alpha（与 panel_fill 一致，确保透明效果生效）
+            // 画布背景：随主题翻转（D2），并应用 bg_alpha（单张半透明底，铺满整个面板）
             let bg_alpha_u8 = (self.bg_alpha * 255.0).round() as u8;
             let [cb_r, cb_g, cb_b] = self.theme.canvas_bg(ctx);
             ui.painter().rect_filled(
-                rect,
+                rect + central_margin,
                 egui::Rounding::same(0.0),
                 egui::Color32::from_rgba_unmultiplied(cb_r, cb_g, cb_b, bg_alpha_u8),
             );
