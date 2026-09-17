@@ -69,6 +69,38 @@ jobs:
           name: linux-x64
           path: preferz-*.tar.gz
 
+  # ──────────────────────── Linux aarch64 ─────────────────────────────
+  build-linux-aarch64:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux deps
+        # eframe/glow 编译需要 OpenGL headers；egui-winit 需要 X11/Wayland dev 包
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libxcb1-dev libxkbcommon-dev libx11-dev \
+            libgl1-mesa-dev libegl1-mesa-dev \
+            libfontconfig-dev libfreetype6-dev \
+            pkg-config
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --release -p preferz
+      - name: Extract version
+        # 从 workspace Cargo.toml 读取版本号，供产物命名使用
+        shell: bash
+        run: |
+          VER=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
+          echo "VERSION=${VER}" >> "${GITHUB_ENV}"
+      - name: Package
+        run: |
+          tar -czf preferz-${{ env.VERSION }}-linux-aarch64.tar.gz -C target/release preferz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-aarch64
+          path: preferz-*.tar.gz
+
   # ──────────────────────── macOS universal binary ───────────────────
   build-macos:
     runs-on: macos-latest
@@ -103,7 +135,7 @@ jobs:
 
   # ──────────────────────── 创建 GitHub Release ──────────────────────
   release:
-    needs: [build-windows, build-linux, build-macos]
+    needs: [build-windows, build-linux, build-linux-aarch64, build-macos]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -115,5 +147,6 @@ jobs:
           files: |
             dist/windows-x64/*.zip
             dist/linux-x64/*.tar.gz
+            dist/linux-aarch64/*.tar.gz
             dist/macos-universal/*.tar.gz
           generate_release_notes: true
