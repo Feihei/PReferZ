@@ -1,6 +1,6 @@
 # Plan: egui/eframe 0.29 → 0.36 一步到位升级
 
-- **状态**: 待执行
+- **状态**: ✅ 代码迁移完成、静态门（fmt / clippy `-D warnings` / cargo test / build）全绿并已提交；⚠ §6 的 GUI 全功能手测与视觉回归待人工执行（见 §10）
 - **创建日期**: 2026-09-17
 - **目标版本**: egui 0.36.2 / eframe 0.36.2
 - **当前版本**: egui 0.29.1 / eframe 0.29.1（Cargo.lock 锁定）
@@ -136,3 +136,49 @@ egui 是本项目唯一的 GUI 框架，直接影响渲染质量与交互性能�
 ## 9. 回滚策略
 
 单分支多 commit，任一步骤出问题 `git reset` 到上一个类别 commit 重来；整分支不合并即等效回滚。若最终发现 0.36 存在无法绕过的 blocker（如某 epaint 结构变化导致渲染输出不可接受且无等价 API），整分支放弃回 main；兜底方案为停在 0.34（已含 skrifa 字体等主要收益，但需接受部分 deprecated 写法），届时另议。
+
+## 10. 执行结果记录（2026-09-17，分支 `chore/egui-0.36-upgrade`）
+
+### 10.1 静态验证（全绿）
+
+- `cargo fmt --all --check` ✅
+- `cargo clippy --workspace --all-targets -- -D warnings` ✅ 零警告
+- `cargo test --workspace` ✅ 180 测试全通过（68+1+104+7）
+- `cargo build -p preferz` ✅ 可执行文件链接成功（glow 后端，debug exe）
+- 残留扫描：`Rounding / from_id_source / screen_rect() / allocate_new_ui / allow(deprecated) / SidePanel / popup_below_widget / toggle_popup / close_menu / Frame::none / raw_scroll_delta / ctx.style()` 全部零命中
+
+### 10.2 提交切分（3 个）
+
+1. `chore: bump egui/eframe to 0.36` — 版本 bump + Cargo.lock
+2. `build: switch eframe to glow backend, drop wgpu` — 后端切换（见 10.3-A）
+3. `refactor: migrate egui/eframe call sites to 0.36 API` — 全部调用点迁移
+
+### 10.3 与计划的偏差 / 补充（计划 §3 未预见或需现场定夺）
+
+- **A. 渲染后端 wgpu → glow（环境强制，非计划项）**：本机 `wgpu 30` 在 `windows 0.62`/MSVC 下编译失败（wgpu-hal dx12 绑定 trait bound 不满足），而 eframe 0.36 默认 features 含 wgpu 且**不再含 glow**。因项目代码零 wgpu 引用、AGENTS.md 本就记 glow，故 `eframe = { default-features = false, features = [accesskit, default_fonts, glow, links, wayland, web_screen_reader, x11] }`。⚠ 这意味着运行时渲染器从 0.29 时代的 wgpu 变为 glow——**透明窗口 alpha 合成**（项目曾精调 clear_color/单层中央填充）在两套渲染器下可能不同，是本次最高优先级的视觉回归点。
+- **B. `InputState::raw_scroll_delta` 已在上游移除**，仅剩 `smooth_scroll_delta`。画布滚轮缩放与 Present 滚轮翻页改用 `smooth_scroll_delta`（行为近似但带平滑，非逐帧原始值）。需实跑确认缩放/翻页手感可接受。
+- **C. `Painter::rect_stroke` 新增 `StrokeKind` 参数**：为与 0.29 的居中描边视觉等价，全部选 `StrokeKind::Middle`（计划建议矩形用 `Inside`，但 `Inside` 会使选中框/画框边线相对旧版内移半个线宽，故选 `Middle` 保持等价）。
+- **D. 计划未列出的额外变更点**（编译器暴露）：`ColorImage` 新增必填 `source_size`；`Frame::none()` → `Frame::new()`；`Ui::close_menu()` → `Ui::close()`；`DroppedFile.path` 字段 → `path()` 方法（去 Option）；`Margin` 由 f32 → i8（3 处 `symmetric`）；`FontDefinitions.font_data` 值类型 → `Arc<FontData>`；palette 的 `popup_below_widget`+`Memory::toggle_popup`（后者已私有）→ `egui::Popup::from_toggle_button_response(..).close_behavior(..).show(..)`。
+- **E. `App::ui` 内 ctx 的保留方式**：未按计划逐行 `ctx.foo()→ui.foo()`（9211 行大函数，风险高），改为在函数体顶 `let ctx = &ui.ctx().clone();`（Arc 克隆得独立所有权、不借 `ui`），使 `ctx.input/clone/…` 与背景线程 `ctx.clone()` 全部零改动即可编译；仅需 `&mut Ui` 的 Panel/popup 调用点直接传 `ui`。等价且改动面最小。
+
+### 10.4 待人工执行（无头环境无法完成，需 `cargo run -p preferz` 实跑）
+
+§6 全功能手测 + 视觉回归。高优先验证清单（按风险排序）：
+
+1. **透明窗口**：无边框 + bg_alpha 各档（0.1/0.5/1.0）观感是否与升级前一致（受 10.3-A 渲染器切换影响最大）。
+2. **滚轮**：画布缩放手感、Present 翻页（10.3-B）。
+3. **描边**：选中框、画框边线、多选统一外框、端点/顶点小方块的粗细与位置（10.3-C）。
+4. **调色板弹层**：描边/填充色按钮点击弹出与「点外部关闭」（popup 重写）。
+5. **设置面板 ComboBox**（语言/主题/画框预设）下拉可正常展开选择。
+6. **menu_button**（0.32 起默认点击即关闭，计划 §E）逐项确认弹出菜单点击行为。
+7. **文字**：中文清晰度/hinting（0.34 skrifa 红利，应变好）、文字编辑 overlay、字号默认 12.5→13.0 的观感。
+8. 快捷键全表 / 导入导出 / 拖放 / 撤销重做 / 变换手柄 / 灰度 / Present —— 常规回归。
+
+## 11. 首轮实跑回归与处置（2026-09-17）
+
+用户 `cargo run` 手测反馈两处异常，已各自定位并修复：
+
+- **Shift+数字 快捷键失效（FitToScreen/ZoomToSelection/Zoom100）**：根因是 egui 0.36 把 `Event::Key.key` 改为「逻辑键」，按 Shift+数字时逻辑键被解析成符号而不再等于 `Key::Num1`，`key_pressed` 只比对逻辑键故失配；`Shift+字母`/`Ctrl+…` 因逻辑键不变仍正常，右键菜单不涉按键也正常。修复：`keymap::pressed_bind` 改为扫描本帧 `events`，命中放宽为「逻辑 key 或 `physical_key` 等于目标」，修饰键仍按 `i.modifiers` 严格全等（裸数字与 Shift+数字仍靠修饰键区分、不误触发），触发沿语义等价。附回归测试 `shift_digit_binding_matches_via_physical_key`。commit `fix: restore Shift+digit shortcuts under egui 0.36`。
+- **透明窗口同值更透（0.1 几乎不可见）**：根因即 §10.3-A 的后端切换——glow 为单层线性 alpha 合成（帧缓冲 alpha == bg_alpha），而 0.29 运行时用 wgpu、同值观感更不透明。我们的 alpha 代码逐字节未变。处置（按用户决定）：把背景透明度与图片不透明度两条滑块的**最低值 0.1 → 0.15**，二者保持一致。注意这只抬升控制下限，此前存到 config 里的更低值在用户再次拖动前仍按旧值渲染。commit `tune: raise background/image alpha slider floor 0.1 -> 0.15`。
+
+其余项用户手测未见异常。§10.4 清单里尚未覆盖到的项（Present 细节、灰度、导出、多语言切换等）可继续抽查；本分支已可正常构建运行。

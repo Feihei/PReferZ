@@ -41,8 +41,20 @@ euclid = { version = "0.22", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 
 # GUI
-eframe = "0.29"
-egui = "0.29"
+# eframe 0.36 默认含 wgpu 渲染后端，但 wgpu 30 在本机 windows 0.62/MSVC 下编译失败
+# （wgpu-hal dx12 绑定 trait bound 不满足）。项目零 wgpu 引用、约定用 glow 后端，故显式关默认
+# features：保留原默认项（accesskit/default_fonts/links/wayland/web_screen_reader/x11），
+# 把渲染后端从 wgpu 换成 glow，既绕开损坏的传递依赖又对齐既定后端。
+eframe = { version = "0.36", default-features = false, features = [
+    "accesskit",
+    "default_fonts",
+    "glow",
+    "links",
+    "wayland",
+    "web_screen_reader",
+    "x11",
+] }
+egui = "0.36"
 
 # File I/O
 rusqlite = { version = "0.31", features = ["bundled"] }

@@ -1154,7 +1154,14 @@ impl eframe::App for PReferZApp {
         [0.0, 0.0, 0.0, 0.0]
     }
 
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        // 0.36 的 App::ui 只给 `&mut Ui`。下面整段函数体沿用 `ctx`（含 `.show(ctx, ..)`、
+        // 各 `self.render_*(ctx)`、以及后台线程 `ctx.clone()`），故从 ui 取一份独立所有权的
+        // Context 克隆（egui::Context 是 Arc 承载，clone 廉价），再绑定为 `&Context`——既保持
+        // 函数体里 `ctx` 的原有类型零改动，又不会让 `ui` 被不可变借用而挡住后续 `&mut ui` 使用。
+        let ctx_owned = ui.ctx().clone();
+        let ctx = &ctx_owned;
+
         // 每帧重置连续编辑标记；本帧结束时据此决定是否结算待合并的拖拽编辑（Phase H）。
         self.prop_changed_this_frame = false;
 
@@ -1180,7 +1187,7 @@ impl eframe::App for PReferZApp {
             i.raw
                 .dropped_files
                 .iter()
-                .filter_map(|f| f.path.clone())
+                .map(|f| f.path().to_owned())
                 .collect()
         });
         for path in dropped {
@@ -1217,15 +1224,15 @@ impl eframe::App for PReferZApp {
         // Present 演示模式：纯展示态，跳过所有编辑界面，进入独立渲染与导航。
         if matches!(self.app_mode, AppMode::Present { .. }) {
             self.handle_present_input(ctx);
-            self.render_present(ctx);
+            self.render_present(ui);
             return;
         }
 
         // 左侧工具条（spec §5.1：绘制工具切换）
-        egui::SidePanel::left("tool_panel")
-            .exact_width(44.0)
+        egui::Panel::left("tool_panel")
+            .exact_size(44.0)
             .resizable(false)
-            .show(ctx, |ui| {
+            .show(ui, |ui| {
                 ui.add_space(6.0);
                 let tools = [
                     (Tool::Select, "↖", T::ToolSelect),
@@ -1263,7 +1270,7 @@ impl eframe::App for PReferZApp {
         // 「新建元素默认样式」不再占用底部面板：绘制工具激活且无选中时，
         // 由 render_props_panel 在右侧栏渲染（与选中属性侧栏同一位置，避免两套控件）。
         // 右侧属性侧栏（Phase H）：选中项 per-item 编辑，按 ItemKind 分节。
-        self.render_props_panel(ctx);
+        self.render_props_panel(ui);
 
         // 注：底部状态栏已移除，缩放百分数 / 语言切换 / flash 提示改由画布之上的
         // 悬浮 HUD 承载（`render_hud`），在 CentralPanel 之后调用。
@@ -1282,10 +1289,10 @@ impl eframe::App for PReferZApp {
         // 使面板本身不再贡献 alpha；背景只由下面这一张铺满整个面板（把内缩的 max_rect 按
         // inner_margin 外扩回面板外沿，消除 8px 接缝）的 rect 决定，窗口 alpha 即线性等于 bg_alpha。
         let central_frame =
-            egui::Frame::central_panel(&ctx.style()).fill(egui::Color32::TRANSPARENT);
+            egui::Frame::central_panel(&ctx.global_style()).fill(egui::Color32::TRANSPARENT);
         let central_margin = central_frame.inner_margin;
         let central_panel = egui::CentralPanel::default().frame(central_frame);
-        central_panel.show(ctx, |ui| {
+        central_panel.show(ui, |ui| {
             let rect = ui.max_rect();
             self.viewport.set_screen_rect(rect);
 
@@ -1297,7 +1304,7 @@ impl eframe::App for PReferZApp {
             let [cb_r, cb_g, cb_b] = self.theme.canvas_bg(ctx);
             ui.painter().rect_filled(
                 rect + central_margin,
-                egui::Rounding::same(0.0),
+                egui::CornerRadius::same(0),
                 egui::Color32::from_rgba_unmultiplied(cb_r, cb_g, cb_b, bg_alpha_u8),
             );
 
@@ -1320,7 +1327,8 @@ impl eframe::App for PReferZApp {
                     egui::Color32::from_rgba_unmultiplied(100, 200, 255, 30),
                 );
                 let stroke = egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(100, 200, 255));
-                ui.painter().rect_stroke(rect, 0.0, stroke);
+                ui.painter()
+                    .rect_stroke(rect, 0.0, stroke, egui::StrokeKind::Middle);
             }
 
             // 绘制工具拖拽预览（两点式：start → current）
@@ -1343,7 +1351,12 @@ impl eframe::App for PReferZApp {
                 let stroke = egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(100, 200, 255));
                 match shape_type {
                     ShapeType::Rectangle => {
-                        ui.painter().rect_stroke(screen_rect, 0.0, stroke);
+                        ui.painter().rect_stroke(
+                            screen_rect,
+                            0.0,
+                            stroke,
+                            egui::StrokeKind::Middle,
+                        );
                     }
                     ShapeType::Diamond => {
                         // 绘制实际菱形轮廓：四个顶点坐标
@@ -1423,7 +1436,8 @@ impl eframe::App for PReferZApp {
                     CanvasRect::new(CanvasPoint::new(min_x, min_y), CanvasSize::new(w, h));
                 let screen_rect = self.viewport.canvas_to_screen_rect(rect_canvas);
                 let stroke = egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(100, 200, 255));
-                ui.painter().rect_stroke(screen_rect, 0.0, stroke);
+                ui.painter()
+                    .rect_stroke(screen_rect, 0.0, stroke, egui::StrokeKind::Middle);
             }
 
             // 指针状态：多边形预览要用到，故提到绘制预览之前声明
@@ -1477,7 +1491,7 @@ impl eframe::App for PReferZApp {
                     let s = self.viewport.canvas_to_screen(*p);
                     ui.painter().rect_filled(
                         egui::Rect::from_center_size(s, egui::vec2(6.0, 6.0)),
-                        egui::Rounding::ZERO,
+                        egui::CornerRadius::ZERO,
                         egui::Color32::from_rgb(100, 200, 255),
                     );
                 }
@@ -1489,7 +1503,7 @@ impl eframe::App for PReferZApp {
             }
 
             // 滚轮缩放（以鼠标位置为锚点）
-            let scroll = ctx.input(|i| i.raw_scroll_delta);
+            let scroll = ctx.input(|i| i.smooth_scroll_delta);
             if scroll.y != 0.0 {
                 if let Some(pos) = ctx.input(|i| i.pointer.latest_pos()) {
                     self.viewport.zoom_at(scroll.y, pos);
@@ -1690,7 +1704,7 @@ impl eframe::App for PReferZApp {
                     // 同 flash toast：把排版上限钉死（屏宽 − 两侧留白），带长路径的
                     // 消息稳定折行留在屏内，而不是横向溢出被裁或逐帧收缩。
                     let max_w =
-                        (ctx.screen_rect().width() - 2.0 * FLASH_TOAST_SIDE_MARGIN).max(200.0);
+                        (ctx.content_rect().width() - 2.0 * FLASH_TOAST_SIDE_MARGIN).max(200.0);
                     ui.set_max_width(max_w);
                     ui.vertical_centered(|ui| {
                         ui.add_space(4.0);
@@ -3124,7 +3138,7 @@ impl PReferZApp {
                         let rect = egui::Rect::from_min_size(cr.min + egui::vec2(dx, dy), size);
                         (pieces, rect)
                     } else {
-                        let galley = ui.ctx().fonts(|f| {
+                        let galley = ui.ctx().fonts_mut(|f| {
                             f.layout_job(egui::text::LayoutJob::simple(
                                 content.clone(),
                                 egui::FontId::proportional(*font_size * zoom),
@@ -3172,7 +3186,7 @@ impl PReferZApp {
                         }
                         (pieces, egui::Rect::from_min_size(origin, size))
                     } else {
-                        let galley = ui.ctx().fonts(|f| {
+                        let galley = ui.ctx().fonts_mut(|f| {
                             f.layout_no_wrap(
                                 content.clone(),
                                 egui::FontId::proportional(effective_font_size),
@@ -3192,7 +3206,7 @@ impl PReferZApp {
             let pad = 4.0 * zoom;
             ui.painter().rect_filled(
                 content_rect.expand(pad),
-                egui::Rounding::same(2.0),
+                egui::CornerRadius::same(2),
                 egui::Color32::from_rgba_unmultiplied(bg[0], bg[1], bg[2], bg[3]),
             );
         }
@@ -3229,7 +3243,7 @@ impl PReferZApp {
             line_h = 0.0;
             for ch in line.chars() {
                 let s = font_px * (1.0 + rng.signed() * 0.08);
-                let g = ctx.fonts(|f| {
+                let g = ctx.fonts_mut(|f| {
                     f.layout_no_wrap(ch.to_string(), egui::FontId::proportional(s), color)
                 });
                 let gsize = g.size();
@@ -3316,7 +3330,7 @@ impl PReferZApp {
                 } else {
                     ui.painter().rect_filled(
                         item_screen_rect,
-                        egui::Rounding::same(0.0),
+                        egui::CornerRadius::same(0),
                         egui::Color32::from_rgb(70, 70, 70),
                     );
                 }
@@ -3332,7 +3346,8 @@ impl PReferZApp {
             ItemKind::Frame { .. } => {
                 let sr = self.viewport.canvas_to_screen_rect(item.bounding_rect());
                 let border = egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(90, 90, 95));
-                ui.painter().rect_stroke(sr, 0.0, border);
+                ui.painter()
+                    .rect_stroke(sr, 0.0, border, egui::StrokeKind::Middle);
             }
         }
     }
@@ -3463,13 +3478,14 @@ impl PReferZApp {
             *slot = idx;
         }
         if let Some(frame) = self.scene.get_item(&slides[idx]) {
-            let (z, p) = self.present_compute_fit(ctx.screen_rect(), frame.bounding_rect());
+            let (z, p) = self.present_compute_fit(ctx.content_rect(), frame.bounding_rect());
             self.present_anim = Some((z, p));
         }
         ctx.request_repaint();
     }
 
-    fn render_present(&mut self, ctx: &egui::Context) {
+    fn render_present(&mut self, ui: &mut egui::Ui) {
+        let ctx = &ui.ctx().clone();
         let (slides, members, index) = match &self.app_mode {
             AppMode::Present {
                 slides,
@@ -3482,7 +3498,7 @@ impl PReferZApp {
         if slides.is_empty() {
             return;
         }
-        let screen_rect = ctx.screen_rect();
+        let screen_rect = ctx.content_rect();
         self.viewport.set_screen_rect(screen_rect);
 
         let Some(frame) = self.scene.get_item(&slides[index]) else {
@@ -3495,12 +3511,12 @@ impl PReferZApp {
         // 画布背景跟随主题（D2）；Present 为不透明演示背景。
         let present_bg = self.theme.canvas_bg(ctx);
         egui::CentralPanel::default()
-            .frame(egui::Frame::none().fill(egui::Color32::from_rgb(
+            .frame(egui::Frame::new().fill(egui::Color32::from_rgb(
                 present_bg[0],
                 present_bg[1],
                 present_bg[2],
             )))
-            .show(ctx, |ui| {
+            .show(ui, |ui| {
                 let original_clip = ui.clip_rect();
                 // 只绘制当前帧成员，且裁剪到帧矩形，形成独立"幻灯片"画布。
                 ui.set_clip_rect(frame_screen_rect);
@@ -3559,7 +3575,7 @@ impl PReferZApp {
         } else if self.keymap.pressed(Action::PresentLast, ctx) {
             delta = i32::MAX;
         }
-        let scroll = ctx.input(|i| i.raw_scroll_delta).y;
+        let scroll = ctx.input(|i| i.smooth_scroll_delta).y;
         if scroll != 0.0 {
             // Present 模式滚轮 = 翻页（滚轮向下 → 下一页）
             delta = if scroll < 0.0 { 1 } else { -1 };
@@ -3671,7 +3687,7 @@ impl PReferZApp {
                     } else {
                         ui.painter().rect_filled(
                             item_screen_rect,
-                            egui::Rounding::same(0.0),
+                            egui::CornerRadius::same(0),
                             if is_selected {
                                 egui::Color32::from_rgb(80, 80, 40)
                             } else {
@@ -3694,7 +3710,8 @@ impl PReferZApp {
                     let fc = item.bounding_rect();
                     let sr = self.viewport.canvas_to_screen_rect(fc);
                     let border = egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(90, 90, 95));
-                    ui.painter().rect_stroke(sr, 0.0, border);
+                    ui.painter()
+                        .rect_stroke(sr, 0.0, border, egui::StrokeKind::Middle);
                     // 编号角标（左上角）
                     let label = format!("#{}", number);
                     let galley = ui.painter().layout_no_wrap(
@@ -3706,7 +3723,7 @@ impl PReferZApp {
                     let badge_rect = egui::Rect::from_min_size(sr.min, badge_size);
                     ui.painter().rect_filled(
                         badge_rect,
-                        egui::Rounding::same(3.0),
+                        egui::CornerRadius::same(3),
                         egui::Color32::from_rgba_unmultiplied(70, 110, 200, 255),
                     );
                     ui.painter().galley(
@@ -3761,7 +3778,8 @@ impl PReferZApp {
             if let Some(bbox) = self.scene.selection_bounding_rect() {
                 let screen_bbox = self.viewport.canvas_to_screen_rect(bbox);
                 let stroke = egui::Stroke::new(1.5_f32, egui::Color32::YELLOW);
-                ui.painter().rect_stroke(screen_bbox, 0.0, stroke);
+                ui.painter()
+                    .rect_stroke(screen_bbox, 0.0, stroke, egui::StrokeKind::Middle);
                 // 4 角小方块标识
                 let handle_size = TransformHandles::handle_size();
                 let fill = egui::Color32::YELLOW;
@@ -3772,7 +3790,8 @@ impl PReferZApp {
                     screen_bbox.max,
                 ] {
                     let r = egui::Rect::from_center_size(p, egui::Vec2::splat(handle_size));
-                    ui.painter().rect_filled(r, egui::Rounding::same(1.0), fill);
+                    ui.painter()
+                        .rect_filled(r, egui::CornerRadius::same(1), fill);
                 }
             }
         }
@@ -3990,7 +4009,8 @@ impl PReferZApp {
         let fill = egui::Color32::from_rgb(100, 200, 255);
         for p in crop_quad {
             let r = egui::Rect::from_center_size(p, egui::Vec2::splat(handle_size));
-            ui.painter().rect_filled(r, egui::Rounding::same(1.0), fill);
+            ui.painter()
+                .rect_filled(r, egui::CornerRadius::same(1), fill);
         }
 
         // 提示文字：挂在 item 屏幕包围盒左上角上方
@@ -4123,14 +4143,14 @@ impl PReferZApp {
                             egui::Color32::WHITE,
                             wrap,
                         );
-                        let gal = ctx.fonts(|f| f.layout_job(job));
+                        let gal = ctx.fonts_mut(|f| f.layout_job(job));
                         updates.push((item.id, (gal.size().x / zoom, gal.size().y / zoom)));
                         continue;
                     }
                 }
                 if measured_size.is_none() {
                     // 自由文本：仅在未测量时测（content 变化会清空触发重测）。
-                    let gal = ctx.fonts(|fonts| {
+                    let gal = ctx.fonts_mut(|fonts| {
                         fonts.layout_no_wrap(
                             content.clone(),
                             egui::FontId::proportional(*font_size),
@@ -4733,6 +4753,7 @@ impl PReferZApp {
                         "welcome-logo",
                         egui::ColorImage {
                             size: [w as usize, h as usize],
+                            source_size: egui::vec2(w as f32, h as f32),
                             pixels: raw
                                 .as_chunks::<4>()
                                 .0
@@ -4749,6 +4770,7 @@ impl PReferZApp {
                     "welcome-logo-fallback",
                     egui::ColorImage {
                         size: [1, 1],
+                        source_size: egui::vec2(1.0, 1.0),
                         pixels: vec![egui::Color32::TRANSPARENT],
                     },
                     egui::TextureOptions::LINEAR,
@@ -4802,7 +4824,7 @@ impl PReferZApp {
                 let row_rect =
                     egui::Rect::from_min_size(egui::pos2(panel_x, y), egui::vec2(panel_w, 26.0));
                 let resp = ui
-                    .allocate_new_ui(egui::UiBuilder::new().max_rect(row_rect), |ui| {
+                    .scope_builder(egui::UiBuilder::new().max_rect(row_rect), |ui| {
                         let btn = egui::Button::new(path.to_string_lossy())
                             .min_size(egui::vec2(panel_w, 0.0));
                         ui.add(btn).clicked()
@@ -4828,22 +4850,23 @@ impl PReferZApp {
     ///
     /// D3 语义（见 [`prop`]）：多选时显示交集值；值不一致仍显示代表值，但改动
     /// 批量应用到所有选中项。连续控件（滑块 / 取色器）经 [`PropEdit`] 合并成一条 undo 命令。
-    fn render_props_panel(&mut self, ctx: &egui::Context) {
+    fn render_props_panel(&mut self, ui: &mut egui::Ui) {
+        let ctx = &ui.ctx().clone();
         if self.scene.selection.is_empty() {
             // 无选中且绘制工具激活：右侧栏显示「新建元素默认样式」
             // （原底部样式面板移入侧栏；Frame 无样式可调，不显示）。
             if self.tool != Tool::Select && self.tool != Tool::Frame {
-                self.render_defaults_panel(ctx);
+                self.render_defaults_panel(ui);
             }
             return;
         }
         let ids: Vec<ItemId> = self.scene.selection.iter().copied().collect();
         let lang = self.lang;
         let dark = self.theme.is_dark(ctx);
-        egui::SidePanel::right("props_panel")
-            .default_width(230.0)
+        egui::Panel::right("props_panel")
+            .default_size(230.0)
             .resizable(true)
-            .show(ctx, |ui| {
+            .show(ui, |ui| {
                 ui.label(fill(t(lang, T::PropsSelectedCount), &[ids.len().to_string()]));
                 ui.separator();
 
@@ -4997,14 +5020,15 @@ impl PReferZApp {
     ///
     /// 控件直接改 `default_*` 字段（非 item 属性，不走 undo 栈）；
     /// 填充节仅对能产生封闭图形的工具显示（线 / 箭头无填充）。
-    fn render_defaults_panel(&mut self, ctx: &egui::Context) {
+    fn render_defaults_panel(&mut self, ui: &mut egui::Ui) {
+        let ctx = &ui.ctx().clone();
         let lang = self.lang;
         let dark = self.theme.is_dark(ctx);
         let show_fill = matches!(self.tool, Tool::Shape(_) | Tool::Polygon);
-        egui::SidePanel::right("defaults_panel")
-            .default_width(230.0)
+        egui::Panel::right("defaults_panel")
+            .default_size(230.0)
             .resizable(true)
-            .show(ctx, |ui| {
+            .show(ui, |ui| {
                 ui.label(t(lang, T::PropsDefaultsTitle));
                 ui.separator();
                 // 描边颜色（Excalidraw 式调色板）
@@ -5712,8 +5736,8 @@ impl PReferZApp {
             _ => None,
         }) {
             let mut o = p.value();
-            // 下限 0.1（与背景透明度滑块一致）：避免拖到 0 完全透明导致图片不可见。
-            if ui.add(egui::Slider::new(&mut o, 0.1..=1.0)).changed() {
+            // 下限 0.15（与背景透明度滑块一致）：避免拖太低导致图片几乎不可见。
+            if ui.add(egui::Slider::new(&mut o, 0.15..=1.0)).changed() {
                 self.apply_continuous(
                     ids,
                     PropKind::Pixmap,
@@ -5803,15 +5827,13 @@ impl PReferZApp {
         // 中心锚定、一步 undo。下拉为一次性动作（不记忆当前值），故占位项恒显示。
         ui.add_space(6.0);
         ui.label(t(lang, T::FramePresetLabel));
-        // from_id_source 在 egui 0.29.1 已重命名（同设置面板），局部抑制告警保持跨版本稳定。
-        #[allow(deprecated)]
-        egui::ComboBox::from_id_source("frame_preset")
+        egui::ComboBox::from_id_salt("frame_preset")
             .selected_text(t(lang, T::FramePresetPick))
             .show_ui(ui, |ui| {
                 for preset in FRAME_PRESETS {
                     if ui.button(t(lang, preset.label())).clicked() {
                         self.apply_frame_preset(preset, ids);
-                        ui.close_menu();
+                        ui.close();
                     }
                 }
             });
@@ -6037,7 +6059,7 @@ impl PReferZApp {
                 // 行内布局 + 关闭 wrap：窄屏/缩放数值下也保持单行、宽度自适应内容。
                 ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                 egui::Frame::popup(ui.style())
-                    .inner_margin(egui::Margin::symmetric(10.0, 5.0))
+                    .inner_margin(egui::Margin::symmetric(10, 5))
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             ui.label(egui::RichText::new(&zoom_pct).monospace());
@@ -6055,7 +6077,7 @@ impl PReferZApp {
             .show(ctx, |ui| {
                 ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                 egui::Frame::popup(ui.style())
-                    .inner_margin(egui::Margin::symmetric(10.0, 5.0))
+                    .inner_margin(egui::Margin::symmetric(10, 5))
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             if ui
@@ -6152,10 +6174,10 @@ impl PReferZApp {
                 // 一个字），只在有重绘时发生所以"有时正常有时竖条"。显式 set_max_width
                 // 后收缩链被切断：短文案单行，超长文案（带路径的错误）稳定折行且
                 // 始终留在屏幕内（Extend 会让它横向溢出被两侧裁掉）。
-                let max_w = (ctx.screen_rect().width() - 2.0 * FLASH_TOAST_SIDE_MARGIN).max(200.0);
+                let max_w = (ctx.content_rect().width() - 2.0 * FLASH_TOAST_SIDE_MARGIN).max(200.0);
                 ui.set_max_width(max_w);
                 egui::Frame::popup(ui.style())
-                    .inner_margin(egui::Margin::symmetric(12.0, 6.0))
+                    .inner_margin(egui::Margin::symmetric(12, 6))
                     .show(ui, |ui| {
                         ui.colored_label(egui::Color32::LIGHT_GREEN, msg);
                     });
@@ -7092,7 +7114,7 @@ impl PReferZApp {
             self.context_menu_open = true;
             self.context_menu_pos = ctx
                 .input(|i| i.pointer.latest_pos())
-                .unwrap_or_else(|| ctx.screen_rect().center());
+                .unwrap_or_else(|| ctx.content_rect().center());
         }
 
         // 取消键：关闭菜单 / 退出颜色采样
@@ -8639,10 +8661,12 @@ impl PReferZApp {
                 {
                     frame_changed = true;
                 }
-                // 背景透明度：0.1~1.0，配无边框+置顶可作悬浮看图板。
-                // 限制最小 0.1 避免空场景下窗口完全不可见（spec §2.3 透明背景注意事项）。
+                // 背景透明度：0.15~1.0，配无边框+置顶可作悬浮看图板。
+                // 限制最小 0.15 避免空场景下窗口过于不可见（spec §2.3 透明背景注意事项）；
+                // egui 0.36 换成 glow 后端后为单层线性 alpha 合成，同值比旧 wgpu 更透，故下限由
+                // 0.1 抬到 0.15。
                 ui.add(
-                    egui::Slider::new(&mut self.bg_alpha, 0.1..=1.0)
+                    egui::Slider::new(&mut self.bg_alpha, 0.15..=1.0)
                         .text(t(self.lang, T::SettingsBgAlpha))
                         .fixed_decimals(2),
                 );
@@ -8650,11 +8674,7 @@ impl PReferZApp {
 
                 // 语言切换
                 ui.label(t(self.lang, T::SettingsLanguage));
-                // egui 0.29.1 把 from_id_source 重命名为 id_salt，但 id_salt 仅经
-                // WidgetWithId trait 暴露且对 ComboBox 为私有字段，故用
-                // from_id_source 并局部抑制重命名告警；效果等价、跨小版本稳定。
-                #[allow(deprecated)]
-                egui::ComboBox::from_id_source("settings_language")
+                egui::ComboBox::from_id_salt("settings_language")
                     .selected_text(lang.display_name())
                     .show_ui(ui, |ui| {
                         for option in [Lang::En, Lang::Zh] {
@@ -8671,9 +8691,7 @@ impl PReferZApp {
 
                 // 主题切换（Phase G）：Light / Dark / Auto（跟随系统）。
                 ui.label(t(self.lang, T::SettingsTheme));
-                // 同上：from_id_source 在 egui 0.29.1 已重命名，局部抑制告警。
-                #[allow(deprecated)]
-                egui::ComboBox::from_id_source("settings_theme")
+                egui::ComboBox::from_id_salt("settings_theme")
                     .selected_text(theme.display_name())
                     .show_ui(ui, |ui| {
                         for option in [ThemeMode::Dark, ThemeMode::Light, ThemeMode::Auto] {
@@ -8760,6 +8778,7 @@ impl PReferZApp {
                             rect,
                             2.0,
                             egui::Stroke::new(1.0_f32, egui::Color32::BLACK),
+                            egui::StrokeKind::Middle,
                         );
                         ui.vertical(|ui| {
                             ui.label(format!("RGB: {}, {}, {}", sample.r, sample.g, sample.b));
