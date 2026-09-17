@@ -592,15 +592,30 @@ impl Keymap {
             return None;
         }
         ctx.input(|i| {
+            // 0.36 起 Event::Key.key 是「逻辑键」（跟随布局/符号），按 Shift+数字时
+            // 逻辑键变成 '!'/'@' 等而不再等于 Key::Num1，故这里同时接受 physical_key，
+            // 让 Shift+数字这类绑定仍能命中物理键位。触发沿语义与原 key_pressed /
+            // key_released 等价（按下沿看任一 pressed 事件，释放沿看任一 !pressed 事件）。
+            let edge_hit = |b: &KeyBind| -> bool {
+                let want = b.key.to_egui();
+                i.events.iter().any(|ev| match ev {
+                    egui::Event::Key {
+                        key,
+                        physical_key,
+                        pressed,
+                        ..
+                    } => {
+                        let same_key = *key == want || *physical_key == Some(want);
+                        same_key && (if b.on_release { !*pressed } else { *pressed })
+                    }
+                    _ => false,
+                })
+            };
             binds
                 .iter()
                 .find(|b| {
-                    let edge = if b.on_release {
-                        i.key_released(b.key.to_egui())
-                    } else {
-                        i.key_pressed(b.key.to_egui())
-                    };
-                    edge && i.modifiers.ctrl == b.ctrl
+                    edge_hit(b)
+                        && i.modifiers.ctrl == b.ctrl
                         && i.modifiers.shift == b.shift
                         && i.modifiers.alt == b.alt
                 })
@@ -894,5 +909,40 @@ mod tests {
                 "{action:?} 往返不一致"
             );
         }
+    }
+
+    /// egui 0.36 把 `Event::Key.key` 改为「逻辑键」：按 Shift+数字时逻辑键被解析成
+    /// 与目标不同的值（如符号），只有 `physical_key` 仍是 Num1。本测试模拟这一场景
+    /// （key 设为 A、physical_key 设为 Num1），锁定「Shift+数字」经物理键回退仍命中，
+    /// 且严格修饰匹配不误触发裸键。
+    #[test]
+    fn shift_digit_binding_matches_via_physical_key() {
+        let km = Keymap::new();
+        let ctx = egui::Context::default();
+        ctx.input_mut(|i| {
+            i.modifiers = egui::Modifiers {
+                shift: true,
+                ..Default::default()
+            };
+            i.events.push(egui::Event::Key {
+                key: egui::Key::A,
+                physical_key: Some(egui::Key::Num1),
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers {
+                    shift: true,
+                    ..Default::default()
+                },
+            });
+        });
+        assert!(
+            km.pressed(Action::FitToScreen, &ctx),
+            "Shift+Num1 应经物理键命中 FitToScreen"
+        );
+        assert!(
+            !km.pressed(Action::ToolSelect, &ctx),
+            "ToolSelect 绑裸 Num1，Shift 按下时不应误触发（修饰键须严格全等）"
+        );
+        ctx.input_mut(|i| i.events.clear());
     }
 }
