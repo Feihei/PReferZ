@@ -1,6 +1,6 @@
 # ADR-0002: 三坐标系与 euclid 类型约束
 
-- 状态：已接受
+- 状态：已接受（**其中 "Viewport → binary 层" 归属行被 [ADR-0008](0008-viewport-in-core.md) 修订**：`ViewportState` 改归 core 层；本 ADR 其余决策——三坐标系 euclid 标签、禁裸 f32 跨系、跨系只走显式矩阵、命中用 OBB、物理量以画布像素定义 × zoom——全部保留不变）
 - 日期：2026-07（项目立项）
 - 参考：[spec §4](../specs/preferz-spec.md)（spaces）、`crates/preferz-core/src/spaces.rs`
 
@@ -16,7 +16,7 @@ zoom 放大、手柄位置错位。裸 `f32` 传参在编译期无法发现这�
 | 空间 | 单位 | 归属 |
 |---|---|---|
 | `ScreenSpace` | 屏幕像素 | egui 绘制 |
-| Viewport | 缩放/平移状态（`ViewportState`） | binary 层 |
+| Viewport | 缩放/平移状态（`ViewportState`） | ~~binary 层~~ → **core 层**（[ADR-0008](0008-viewport-in-core.md)） |
 | `CanvasSpace` | 世界坐标（画布像素） | 场景数据 |
 
 - 跨系变换只走 `canvas_to_screen_transform()` / `screen_to_canvas()` 等显式矩阵
