@@ -232,6 +232,8 @@ pub enum T {
     PropsSectionText,
     PropsSectionPixmap,
     PropsSectionFrame,
+    /// 画框节：编号字段的标签。
+    PropsFrameNumber,
     // ── 对齐 / 分布（plan #6）──
     /// 属性栏分节标题：对齐。
     PropsSectionAlign,
@@ -298,6 +300,22 @@ pub enum T {
     TextAlignTop,
     TextAlignMiddle,
     TextAlignBottom,
+    // ── 画框比例预设（plan #3）──
+    /// 属性栏：画框比例/纸张预设下拉的分节标签。
+    FramePresetLabel,
+    /// 下拉框未选中任何预设时的占位项。
+    FramePresetPick,
+    /// 预设：演示比例（纯比例，保持当前长边长度）。
+    Preset16x9,
+    Preset16x10,
+    Preset4x3,
+    Preset3x2,
+    Preset1x1,
+    /// 预设：A4 纸张（96 DPI 绝对尺寸，竖 / 横）。
+    PresetA4Portrait,
+    PresetA4Landscape,
+    /// 套用预设后的提示。
+    FlashFramePresetApplied,
 }
 
 /// 查表翻译。未命中的 key 返回 debug 字符串（开发期易发现遗漏）。
@@ -482,6 +500,7 @@ fn translate_en(key: T) -> &'static str {
         T::PropsSectionText => "Text",
         T::PropsSectionPixmap => "Image",
         T::PropsSectionFrame => "Frame",
+        T::PropsFrameNumber => "Number",
         T::PropsSectionAlign => "Align",
         T::AlignLeft => "Align left",
         T::AlignHCenter => "Center horizontally",
@@ -524,6 +543,16 @@ fn translate_en(key: T) -> &'static str {
         T::TextAlignTop => "Top",
         T::TextAlignMiddle => "Middle",
         T::TextAlignBottom => "Bottom",
+        T::FramePresetLabel => "Aspect / paper preset",
+        T::FramePresetPick => "Choose preset...",
+        T::Preset16x9 => "16:9",
+        T::Preset16x10 => "16:10",
+        T::Preset4x3 => "4:3",
+        T::Preset3x2 => "3:2",
+        T::Preset1x1 => "1:1",
+        T::PresetA4Portrait => "A4 portrait",
+        T::PresetA4Landscape => "A4 landscape",
+        T::FlashFramePresetApplied => "Applied preset: {0}",
     }
 }
 
@@ -701,6 +730,7 @@ fn translate_zh(key: T) -> &'static str {
         T::PropsSectionText => "文字",
         T::PropsSectionPixmap => "图片",
         T::PropsSectionFrame => "画框",
+        T::PropsFrameNumber => "编号",
         T::PropsSectionAlign => "对齐",
         T::AlignLeft => "左对齐",
         T::AlignHCenter => "水平居中",
@@ -743,6 +773,16 @@ fn translate_zh(key: T) -> &'static str {
         T::TextAlignTop => "上",
         T::TextAlignMiddle => "中",
         T::TextAlignBottom => "下",
+        T::FramePresetLabel => "比例 / 纸张预设",
+        T::FramePresetPick => "选择预设…",
+        T::Preset16x9 => "16:9",
+        T::Preset16x10 => "16:10",
+        T::Preset4x3 => "4:3",
+        T::Preset3x2 => "3:2",
+        T::Preset1x1 => "1:1",
+        T::PresetA4Portrait => "A4 竖版",
+        T::PresetA4Landscape => "A4 横版",
+        T::FlashFramePresetApplied => "已套用预设：{0}",
     }
 }
 

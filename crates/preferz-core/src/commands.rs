@@ -890,6 +890,67 @@ impl Command for SetFrameNumber {
     }
 }
 
+// ─────────────────────────── Set frame size ───────────────────────────
+
+/// 画框几何快照：位置（左上角）、局部基准尺寸、缩放。三者共同决定画框的有效尺寸
+/// （= base × scale）与在画布上的落点。画框不旋转不翻转，故只需这三项。
+#[derive(Clone, Copy)]
+pub struct FrameGeom {
+    pub pos: (f32, f32),
+    pub base: (f32, f32),
+    pub scale: (f32, f32),
+}
+
+/// 批量设置画框几何（plan #3 演示比例预设）。
+///
+/// 侧栏「比例预设」下拉用它：一次套用 = 一条 undo 记录。每项存变更前后的完整几何
+/// （pos + base + scale），撤销可精确回到原状态（含套用前 scale≠1 的情形）。
+/// 命令本身只负责写回快照，"由预设算出新几何"的逻辑在 UI 层完成。
+pub struct SetFrameSize {
+    items: Vec<(ItemId, FrameGeom, FrameGeom)>,
+}
+
+impl SetFrameSize {
+    /// 单画框构造。
+    pub fn new(item_id: ItemId, old: FrameGeom, new: FrameGeom) -> Self {
+        Self {
+            items: vec![(item_id, old, new)],
+        }
+    }
+
+    /// 批量构造：`(item_id, old, new)` 三元组列表。
+    pub fn new_batch(items: Vec<(ItemId, FrameGeom, FrameGeom)>) -> Self {
+        Self { items }
+    }
+
+    fn apply(scene: &mut Scene, items: &[(ItemId, FrameGeom, FrameGeom)], new: bool) {
+        for (id, old, new_geom) in items {
+            let g = if new { *new_geom } else { *old };
+            if let Some(item) = scene.get_item_mut(id) {
+                if let ItemKind::Frame { base_size, .. } = &mut item.kind {
+                    *base_size = g.base;
+                }
+                item.transform.pos = CanvasVector::new(g.pos.0, g.pos.1);
+                item.transform.scale = CanvasVector::new(g.scale.0, g.scale.1);
+            }
+        }
+    }
+}
+
+impl Command for SetFrameSize {
+    fn redo(&mut self, scene: &mut Scene) {
+        let items = std::mem::take(&mut self.items);
+        Self::apply(scene, &items, true);
+        self.items = items;
+    }
+
+    fn undo(&mut self, scene: &mut Scene) {
+        let items = std::mem::take(&mut self.items);
+        Self::apply(scene, &items, false);
+        self.items = items;
+    }
+}
+
 // ─────────────────────────── Move ───────────────────────────
 
 /// 平移多个 item（拖拽移动的命令）。
@@ -2125,5 +2186,47 @@ mod tests {
                 .skip_first_redo(),
             "滑块拖动释放固化时应为 true（预览已直接改过 item）"
         );
+    }
+
+    #[test]
+    fn set_frame_size_roundtrip_restores_full_geom() {
+        use crate::item::ItemKind;
+        let mut scene = Scene::new();
+        // 一个 scale≠1 的画框（模拟已被手柄缩放）：base 200×100，scale 1.5×1.5。
+        let mut frame = Item::new_frame(1, (200.0, 100.0), 50.0, 40.0, None);
+        frame.transform.scale = CanvasVector::new(1.5, 1.5);
+        let fid = frame.id;
+        scene.add_item(frame);
+
+        let old = FrameGeom {
+            pos: (50.0, 40.0),
+            base: (200.0, 100.0),
+            scale: (1.5, 1.5),
+        };
+        // 套用预设后归一：base 直接等于新尺寸、scale 复位 1、pos 重新锚定中心。
+        let new = FrameGeom {
+            pos: (25.0, 65.0),
+            base: (300.0, 150.0),
+            scale: (1.0, 1.0),
+        };
+        let mut cmd = SetFrameSize::new(fid, old, new);
+
+        cmd.redo(&mut scene);
+        let it = scene.get_item(&fid).unwrap();
+        match &it.kind {
+            ItemKind::Frame { base_size, .. } => assert_eq!(*base_size, (300.0, 150.0)),
+            _ => panic!("expected Frame"),
+        }
+        assert_eq!(it.transform.pos, CanvasVector::new(25.0, 65.0));
+        assert_eq!(it.transform.scale, CanvasVector::new(1.0, 1.0));
+
+        cmd.undo(&mut scene);
+        let it = scene.get_item(&fid).unwrap();
+        match &it.kind {
+            ItemKind::Frame { base_size, .. } => assert_eq!(*base_size, (200.0, 100.0)),
+            _ => panic!("expected Frame"),
+        }
+        assert_eq!(it.transform.pos, CanvasVector::new(50.0, 40.0));
+        assert_eq!(it.transform.scale, CanvasVector::new(1.5, 1.5));
     }
 }

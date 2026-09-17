@@ -16,10 +16,10 @@ use preferz_core::arrange::{
 };
 use preferz_core::commands::{
     AddItem, AddItems, ArrangeItems, ArrowHeads, CropItems, DeleteItems, EditShapePoints,
-    EditTextContent, FillChange, FillState, FlipItems, MoveItems, MultiCommand, NormalizeItems,
-    RenumberFrame, ReorderItems, SetArrowHeads, SetClosed, SetCurveType, SetFrameNumber, SetGroup,
-    SetPixmapProps, SetPixmapStyle, SetRoundness, SetShapeFill, SetSloppiness, SetStrokeStyle,
-    SetTextStyle, TransformItem,
+    EditTextContent, FillChange, FillState, FlipItems, FrameGeom, MoveItems, MultiCommand,
+    NormalizeItems, RenumberFrame, ReorderItems, SetArrowHeads, SetClosed, SetCurveType,
+    SetFrameNumber, SetFrameSize, SetGroup, SetPixmapProps, SetPixmapStyle, SetRoundness,
+    SetShapeFill, SetSloppiness, SetStrokeStyle, SetTextStyle, TransformItem,
 };
 use preferz_core::shape::{
     ArrowHeadStyle, CurveType, DashStyle, FillStyle, FontFamily, PixmapStyle, SeededRng, ShapeType,
@@ -96,6 +96,65 @@ enum Tool {
     /// 存为 `closed: true` 的 Polyline，不新增 ShapeType。
     Polygon,
 }
+
+/// 画框比例 / 纸张预设（plan #3）。
+///
+/// - [`FramePreset::Ratio`]：纯演示比例——套用后保持画框当前**有效长边**长度不变，
+///   只把短边调成目标比例（缩放观感稳定，不涉及 DPI）。
+/// - [`FramePreset::Paper`]：纸张尺寸——固定像素绝对值（A4 按 **96 DPI** 换算：
+///   210×297mm → 794×1123px）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum FramePreset {
+    Ratio { w: f32, h: f32, label: T },
+    Paper { w: f32, h: f32, label: T },
+}
+
+impl FramePreset {
+    fn label(self) -> T {
+        match self {
+            FramePreset::Ratio { label, .. } | FramePreset::Paper { label, .. } => label,
+        }
+    }
+}
+
+/// 预设清单：5 个演示比例 + A4 竖/横两种纸张。
+const FRAME_PRESETS: [FramePreset; 7] = [
+    FramePreset::Ratio {
+        w: 16.0,
+        h: 9.0,
+        label: T::Preset16x9,
+    },
+    FramePreset::Ratio {
+        w: 16.0,
+        h: 10.0,
+        label: T::Preset16x10,
+    },
+    FramePreset::Ratio {
+        w: 4.0,
+        h: 3.0,
+        label: T::Preset4x3,
+    },
+    FramePreset::Ratio {
+        w: 3.0,
+        h: 2.0,
+        label: T::Preset3x2,
+    },
+    FramePreset::Ratio {
+        w: 1.0,
+        h: 1.0,
+        label: T::Preset1x1,
+    },
+    FramePreset::Paper {
+        w: 794.0,
+        h: 1123.0,
+        label: T::PresetA4Portrait,
+    },
+    FramePreset::Paper {
+        w: 1123.0,
+        h: 794.0,
+        label: T::PresetA4Landscape,
+    },
+];
 
 /// 应用运行模式。Present 为全屏幻灯片演示（Phase E）。
 enum AppMode {
@@ -5712,6 +5771,7 @@ impl PReferZApp {
 
     /// 画框节：编号（Phase H）。
     fn render_frame_props(&mut self, ui: &mut egui::Ui, lang: Lang, ids: &[ItemId]) {
+        ui.label(t(lang, T::PropsFrameNumber));
         if let Some(p) = prop(&self.scene, ids, |it| match &it.kind {
             ItemKind::Frame { number, .. } => Some(*number),
             _ => None,
@@ -5738,6 +5798,75 @@ impl PReferZApp {
                 ui.label(t(lang, T::PropsMixedValue));
             }
         }
+
+        // 比例 / 纸张预设（plan #3）：把选中的画框调整为常见演示比例或 A4 纸张尺寸，
+        // 中心锚定、一步 undo。下拉为一次性动作（不记忆当前值），故占位项恒显示。
+        ui.add_space(6.0);
+        ui.label(t(lang, T::FramePresetLabel));
+        // from_id_source 在 egui 0.29.1 已重命名（同设置面板），局部抑制告警保持跨版本稳定。
+        #[allow(deprecated)]
+        egui::ComboBox::from_id_source("frame_preset")
+            .selected_text(t(lang, T::FramePresetPick))
+            .show_ui(ui, |ui| {
+                for preset in FRAME_PRESETS {
+                    if ui.button(t(lang, preset.label())).clicked() {
+                        self.apply_frame_preset(preset, ids);
+                        ui.close_menu();
+                    }
+                }
+            });
+    }
+
+    /// 把某个比例/纸张预设套用到选中的画框（plan #3），打包成一条 [`SetFrameSize`]。
+    ///
+    /// - `Ratio` 预设：保持画框当前**有效长边**长度，另一条边按 ratio 调整（只改形状不改观感大小）。
+    /// - `Paper` 预设：套用固定像素尺寸（A4 按 96 DPI 换算）。
+    ///
+    /// 两种都以**画框中心**为锚点重算左上角位置；把 scale 归一到 1、尺寸写进 base_size，
+    /// 使结果确定且后续手柄缩放从干净状态开始。套用前 `scale≠1` 的旧几何由命令快照精确还原。
+    fn apply_frame_preset(&mut self, preset: FramePreset, ids: &[ItemId]) {
+        let mut items: Vec<(ItemId, FrameGeom, FrameGeom)> = Vec::new();
+        for id in ids {
+            let Some(it) = self.scene.get_item(id) else {
+                continue;
+            };
+            let (bw, bh) = match &it.kind {
+                ItemKind::Frame { base_size, .. } => *base_size,
+                _ => continue,
+            };
+            let (sx, sy) = (it.transform.scale.x, it.transform.scale.y);
+            let (px, py) = (it.transform.pos.x, it.transform.pos.y);
+            let (ew, eh) = (bw * sx, bh * sy);
+            let (cx, cy) = (px + ew / 2.0, py + eh / 2.0);
+            let (nw, nh) = match preset {
+                FramePreset::Ratio { w, h, .. } => {
+                    let long = ew.max(eh);
+                    if w >= h {
+                        (long, long * h / w)
+                    } else {
+                        (long * w / h, long)
+                    }
+                }
+                FramePreset::Paper { w, h, .. } => (w, h),
+            };
+            let old = FrameGeom {
+                pos: (px, py),
+                base: (bw, bh),
+                scale: (sx, sy),
+            };
+            let new = FrameGeom {
+                pos: (cx - nw / 2.0, cy - nh / 2.0),
+                base: (nw, nh),
+                scale: (1.0, 1.0),
+            };
+            items.push((*id, old, new));
+        }
+        if items.is_empty() {
+            return;
+        }
+        let label = t(self.lang, preset.label()).to_string();
+        self.push_cmd(Box::new(SetFrameSize::new_batch(items)));
+        self.flash(fill(t(self.lang, T::FlashFramePresetApplied), &[label]));
     }
 
     /// 线性对象批量切换曲线模式（离散，整批改命令）。

@@ -289,6 +289,29 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 
 ---
 
+## 画框演示比例预设（plan #3，2026-09-17）
+
+> Excalidraw 无此功能（`.ref/excalidraw` 画框仅自由缩放、无比例/纸张预设），为 PReferZ 产品特性。
+> 设计沿用 `.issues` #3 并做保守取舍：入口收在选中画框的属性栏，不在创建期做候选面板。
+
+- **core**：新增批量命令 `SetFrameSize`（`commands.rs`）+ `FrameGeom{pos, base, scale}` 几何快照，
+  一次套用 = 一条 undo。redo 写新几何（base_size 落尺寸、scale 归 1、pos 按中心重算），
+  undo 精确还原（含套用前 `scale≠1` 的情形）。1 个往返单测。
+- **app**：`FramePreset` 枚举 + `FRAME_PRESETS` 清单（演示比例 `16:9/16:10/4:3/3:2/1:1`
+  + 纸张 `A4 竖/横`）；`apply_frame_preset` 几何换算——
+  - 比例类：保持画框当前**有效长边**长度、只调短边到目标比（缩放观感稳定，不引入 DPI 假设）；
+  - 纸张类：固定像素绝对值（A4 按 **96 DPI** 换算 210×297mm → 794×1123）；
+  - 两种均以**画框中心**为锚点重算左上角。`render_frame_props` 编号节加标签 + 新增「比例/纸张预设」
+    `ComboBox`，点击即套用并 flash；多选画框一次批量应用。
+- **i18n**：新增 `PropsFrameNumber` + 预设标签/`FramePresetLabel`/`FramePresetPick`/
+  `FlashFramePresetApplied` 共 10 词条（比例名为 ASCII，A4 用 "A4 portrait/landscape"，
+  英文表无 CJK 回归闸通过）。
+- **取舍**：自定义比例输入本轮不做（留后续）；仅改画框边框几何，框内成员按既有几何归属
+  在演示进入时重算（与手柄缩放同口径）。
+- 待 `cargo run` 人工验收（选中画框→属性栏套预设→中心不变地变形→`Ctrl+Z` 一步还原）。
+
+---
+
 ## 决策点归档（D1–D6 / I1–I4）
 
 > 原列于 plan.md，G/I/H/K 交付后蒸馏归档于此，使 CHANGELOG 自包含、plan.md 仅保留前瞻内容。
