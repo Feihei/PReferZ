@@ -5653,7 +5653,8 @@ impl PReferZApp {
             _ => None,
         }) {
             let mut o = p.value();
-            if ui.add(egui::Slider::new(&mut o, 0.0..=1.0)).changed() {
+            // 下限 0.1（与背景透明度滑块一致）：避免拖到 0 完全透明导致图片不可见。
+            if ui.add(egui::Slider::new(&mut o, 0.1..=1.0)).changed() {
                 self.apply_continuous(
                     ids,
                     PropKind::Pixmap,
