@@ -173,3 +173,12 @@ egui 是本项目唯一的 GUI 框架，直接影响渲染质量与交互性能�
 6. **menu_button**（0.32 起默认点击即关闭，计划 §E）逐项确认弹出菜单点击行为。
 7. **文字**：中文清晰度/hinting（0.34 skrifa 红利，应变好）、文字编辑 overlay、字号默认 12.5→13.0 的观感。
 8. 快捷键全表 / 导入导出 / 拖放 / 撤销重做 / 变换手柄 / 灰度 / Present —— 常规回归。
+
+## 11. 首轮实跑回归与处置（2026-09-17）
+
+用户 `cargo run` 手测反馈两处异常，已各自定位并修复：
+
+- **Shift+数字 快捷键失效（FitToScreen/ZoomToSelection/Zoom100）**：根因是 egui 0.36 把 `Event::Key.key` 改为「逻辑键」，按 Shift+数字时逻辑键被解析成符号而不再等于 `Key::Num1`，`key_pressed` 只比对逻辑键故失配；`Shift+字母`/`Ctrl+…` 因逻辑键不变仍正常，右键菜单不涉按键也正常。修复：`keymap::pressed_bind` 改为扫描本帧 `events`，命中放宽为「逻辑 key 或 `physical_key` 等于目标」，修饰键仍按 `i.modifiers` 严格全等（裸数字与 Shift+数字仍靠修饰键区分、不误触发），触发沿语义等价。附回归测试 `shift_digit_binding_matches_via_physical_key`。commit `fix: restore Shift+digit shortcuts under egui 0.36`。
+- **透明窗口同值更透（0.1 几乎不可见）**：根因即 §10.3-A 的后端切换——glow 为单层线性 alpha 合成（帧缓冲 alpha == bg_alpha），而 0.29 运行时用 wgpu、同值观感更不透明。我们的 alpha 代码逐字节未变。处置（按用户决定）：把背景透明度与图片不透明度两条滑块的**最低值 0.1 → 0.15**，二者保持一致。注意这只抬升控制下限，此前存到 config 里的更低值在用户再次拖动前仍按旧值渲染。commit `tune: raise background/image alpha slider floor 0.1 -> 0.15`。
+
+其余项用户手测未见异常。§10.4 清单里尚未覆盖到的项（Present 细节、灰度、导出、多语言切换等）可继续抽查；本分支已可正常构建运行。
