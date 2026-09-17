@@ -258,7 +258,7 @@ impl TransformHandles {
             let fill = egui::Color32::YELLOW;
             for p in &eps {
                 let r = egui::Rect::from_center_size(*p, egui::Vec2::splat(handle_size));
-                painter.rect_filled(r, egui::Rounding::same(1.0), fill);
+                painter.rect_filled(r, egui::CornerRadius::same(1), fill);
             }
             let n = eps.len();
             if n >= 2 {
@@ -270,7 +270,7 @@ impl TransformHandles {
                     let b = eps[(i + 1) % n];
                     let m = (a + b.to_vec2()) * 0.5;
                     let r = egui::Rect::from_center_size(m, egui::Vec2::splat(6.0));
-                    painter.rect_filled(r, egui::Rounding::same(1.0), mid_fill);
+                    painter.rect_filled(r, egui::CornerRadius::same(1), mid_fill);
                 }
             }
             return;
@@ -297,7 +297,7 @@ impl TransformHandles {
         let fill = egui::Color32::YELLOW;
         for p in [tl, tr, bl, br] {
             let r = egui::Rect::from_center_size(p, egui::Vec2::splat(handle_size));
-            painter.rect_filled(r, egui::Rounding::same(1.0), fill);
+            painter.rect_filled(r, egui::CornerRadius::same(1), fill);
         }
         // 旋转手柄圆（仅 Pixmap 显示）
         if show_rotate {
@@ -310,7 +310,7 @@ impl TransformHandles {
             // FlipV（上/下边中点）
             for p in [top_mid, bottom_mid] {
                 let r = egui::Rect::from_center_size(p, egui::Vec2::splat(handle_size));
-                painter.rect_filled(r, egui::Rounding::same(1.0), flip_fill);
+                painter.rect_filled(r, egui::CornerRadius::same(1), flip_fill);
                 painter.text(
                     p,
                     egui::Align2::CENTER_CENTER,
@@ -322,7 +322,7 @@ impl TransformHandles {
             // FlipH（左/右边中点）
             for p in [left_mid, right_mid] {
                 let r = egui::Rect::from_center_size(p, egui::Vec2::splat(handle_size));
-                painter.rect_filled(r, egui::Rounding::same(1.0), flip_fill);
+                painter.rect_filled(r, egui::CornerRadius::same(1), flip_fill);
                 painter.text(
                     p,
                     egui::Align2::CENTER_CENTER,

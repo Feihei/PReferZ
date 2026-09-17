@@ -150,17 +150,20 @@ fn swatch(ui: &mut egui::Ui, color: egui::Color32, selected: bool, size: f32) ->
             rect.expand(1.0),
             3.0,
             egui::Stroke::new(2.0_f32, egui::Color32::WHITE),
+            egui::StrokeKind::Middle,
         );
         painter.rect_stroke(
             rect.expand(1.0),
             3.0,
             egui::Stroke::new(1.0_f32, egui::Color32::BLACK),
+            egui::StrokeKind::Middle,
         );
     } else {
         painter.rect_stroke(
             rect.expand(1.0),
             3.0,
             egui::Stroke::new(0.5_f32, ui.visuals().widgets.noninteractive.bg_stroke.color),
+            egui::StrokeKind::Middle,
         );
     }
     false
@@ -240,17 +243,10 @@ fn palette_button_with_picks(
             ui.visuals().widgets.inactive.bg_stroke.color,
         ));
     let resp = ui.add(btn);
-    let popup_id = resp.id.with("palette_popup");
-    if resp.clicked() {
-        ui.memory_mut(|m| m.toggle_popup(popup_id));
-    }
     let mut changed = false;
-    egui::popup_below_widget(
-        ui,
-        popup_id,
-        &resp,
-        egui::PopupCloseBehavior::CloseOnClickOutside,
-        |ui| {
+    egui::Popup::from_toggle_button_response(&resp)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
             if let Some((c, from_swatch)) = palette_popup(ui, shown, dark, picks) {
                 let mut rgba = [c.r(), c.g(), c.b(), c.a()];
                 if from_swatch {
@@ -261,8 +257,7 @@ fn palette_button_with_picks(
                 *current = rgba;
                 changed = true;
             }
-        },
-    );
+        });
     changed
 }
 
@@ -328,7 +323,7 @@ fn draw_fill_icon(
     let stroke = egui::Stroke::new(1.2_f32, fg);
     let inner = rect.shrink(3.0);
     // 外框
-    painter.rect_stroke(inner, 1.5, stroke);
+    painter.rect_stroke(inner, 1.5, stroke, egui::StrokeKind::Middle);
     match style {
         None => {}
         Some(FillStyle::Solid) => {

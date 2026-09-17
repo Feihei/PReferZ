@@ -11,7 +11,7 @@ fn main() -> eframe::Result<()> {
     // 思源黑体（Source Han Sans CN）— OFL-1.1 许可，支持中英文且字形美观
     font_definitions.font_data.insert(
         "SourceHanSansCN".to_string(),
-        egui::FontData::from_owned(load_font()),
+        egui::FontData::from_owned(load_font()).into(),
     );
     // Proportional 和 Monospace 都插入，保证任何字体族下中文都不回落到系统默认
     for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
@@ -34,7 +34,7 @@ fn main() -> eframe::Result<()> {
         native_options,
         Box::new(move |cc| {
             cc.egui_ctx.set_fonts(font_definitions.clone());
-            // 初始 Visuals 占位；真正的主题（Light/Dark/Auto）在 PReferZApp::update()
+            // 初始 Visuals 占位；真正的主题（Light/Dark/Auto）在 PReferZApp::ui()
             // 每帧根据 config.json 的 theme 字段重建，故这里只需给个暗色默认值避免首帧闪烁。
             cc.egui_ctx.set_visuals(egui::Visuals::dark());
             Ok(Box::new(PReferZApp::new()))
