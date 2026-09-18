@@ -53,6 +53,8 @@ pub enum T {
     ExportScene,
     ExportImagesToDir,
     DeleteSelected,
+    Copy, // 复制选中（右键菜单，有选中时才显示）
+    Cut,  // 剪切选中（右键菜单，有选中时才显示）
     BringToFront,
     SendToBack,
     CropMode,
@@ -118,6 +120,8 @@ pub enum T {
     FlashExportFailed,         // 导出失败: {err}
     FlashProcessing,           // 处理中...（进度条默认）
     FlashDuplicated,           // 已复制 {0} 个元素（Ctrl+拖动 / Ctrl+D）
+    FlashCopied,               // 已复制 {0} 项（Ctrl+C）
+    FlashCut,                  // 已剪切 {0} 项（Ctrl+X）
     // ── flash / 进度条文案（原散落在 preferz_app.rs 里写死中文，收进表内）──
     FlashSaved,              // 已保存: {0}
     FlashSaveFailed,         // 保存失败: {0}
@@ -337,6 +341,8 @@ fn translate_en(key: T) -> &'static str {
         T::SaveAs => "Save As...",
         T::ExportScene => "Export Scene",
         T::ExportImagesToDir => "Export Images to Folder",
+        T::Copy => "Copy",
+        T::Cut => "Cut",
         T::DeleteSelected => "Delete Selected",
         T::BringToFront => "Bring to Front",
         T::SendToBack => "Send to Back",
@@ -403,6 +409,8 @@ fn translate_en(key: T) -> &'static str {
         T::FlashExportFailed => "Export failed", // 后接错误
         T::FlashProcessing => "Processing...",
         T::FlashDuplicated => "Duplicated {0} elements",
+        T::FlashCopied => "Copied {0} item(s)",
+        T::FlashCut => "Cut {0} item(s)",
         T::FlashSaved => "Saved {0}",
         T::FlashSaveFailed => "Save failed: {0}",
         T::FlashOpened => "Opened {0}",
@@ -567,6 +575,8 @@ fn translate_zh(key: T) -> &'static str {
         T::SaveAs => "另存为...",
         T::ExportScene => "导出场景",
         T::ExportImagesToDir => "导出图片到目录",
+        T::Copy => "复制",
+        T::Cut => "剪切",
         T::DeleteSelected => "删除选中",
         T::BringToFront => "置于顶层",
         T::SendToBack => "置于底层",
@@ -633,6 +643,8 @@ fn translate_zh(key: T) -> &'static str {
         T::FlashExportFailed => "导出失败",
         T::FlashProcessing => "处理中...",
         T::FlashDuplicated => "已复制 {0} 个元素",
+        T::FlashCopied => "已复制 {0} 项",
+        T::FlashCut => "已剪切 {0} 项",
         T::FlashSaved => "已保存: {0}",
         T::FlashSaveFailed => "保存失败: {0}",
         T::FlashOpened => "已打开: {0}",
@@ -800,6 +812,8 @@ pub fn action_label(lang: Lang, action: Action) -> &'static str {
             Undo => "Undo",
             Redo => "Redo",
             Paste => "Paste from clipboard",
+            Copy => "Copy selection",
+            Cut => "Cut selection",
             DeleteSelected => "Delete selection",
             FitToScreen => "Fit to canvas",
             ZoomToSelection => "Zoom to selection",
@@ -838,6 +852,8 @@ pub fn action_label(lang: Lang, action: Action) -> &'static str {
             Undo => "撤销",
             Redo => "重做",
             Paste => "从剪贴板粘贴",
+            Copy => "复制选中项",
+            Cut => "剪切选中项",
             DeleteSelected => "删除选中",
             FitToScreen => "适应画布",
             ZoomToSelection => "缩放到选中",

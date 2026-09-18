@@ -370,6 +370,13 @@ pub enum Action {
     Undo,
     Redo,
     Paste,
+    /// 复制选中项（Excalidraw 同款 `Ctrl+C`）。单张图片时同时写入系统剪贴板
+    /// （可粘到外部应用）；多张图 / 形状 / 混合选区只进应用内剪贴板缓冲。
+    /// 必须用释放沿，同 Paste（egui-winit 拦截 `is_copy_command`）。
+    Copy,
+    /// 剪切选中项（Excalidraw 同款 `Ctrl+X`）：同 Copy 分流 + 删除选中
+    /// （删除走 undo stack）。释放沿绑定，同 Copy。
+    Cut,
     DeleteSelected,
     // 视图
     FitToScreen,
@@ -431,6 +438,8 @@ impl Action {
         Action::Undo,
         Action::Redo,
         Action::Paste,
+        Action::Copy,
+        Action::Cut,
         Action::DeleteSelected,
         Action::FitToScreen,
         Action::ZoomToSelection,
@@ -476,6 +485,9 @@ impl Action {
             Redo => vec![KeyBind::new(Z).ctrl().shift(), KeyBind::new(Y).ctrl()],
             // 粘贴必须用释放沿，见模块文档第 1 条
             Paste => vec![KeyBind::new(V).ctrl().on_release()],
+            // 复制/剪切同 Paste：egui-winit 拦截 is_copy_command，按下沿触发不了
+            Copy => vec![KeyBind::new(C).ctrl().on_release()],
+            Cut => vec![KeyBind::new(X).ctrl().on_release()],
             DeleteSelected => vec![KeyBind::new(Delete)],
             // 适应画布 → 对齐 Excalidraw「缩放到适应/Zoom to fit」= Shift+1。
             // 裸 F 让给画框（见下）。

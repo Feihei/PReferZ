@@ -343,6 +343,10 @@ pub struct PReferZApp {
     present_anim: Option<(f32, CanvasVector)>,
     /// 当前打开的文件路径（保存时若 None 则弹出对话框）
     current_file: Option<PathBuf>,
+    /// 应用内剪贴板缓冲（Ctrl+C / Ctrl+X 存选中项快照）。单张图片时同时写系统
+    /// 剪贴板；粘贴（Ctrl+V）优先于此缓冲，缓冲为空才回退系统剪贴板图片。
+    /// 存原位置快照，粘贴时分配新 id 并重定位到鼠标处。
+    clipboard_items: Vec<Item>,
     /// 后台任务（导入解/ 文件加载 / 文件保存）
     bg_ops: BackgroundOps,
     /// 颜色采样模式（spec §2.2 颜色采样）。true 时鼠标在 Pixmap 上读取像RGB 显示
@@ -710,6 +714,7 @@ impl PReferZApp {
             app_mode: AppMode::Edit,
             present_anim: None,
             current_file: None,
+            clipboard_items: Vec::new(),
             bg_ops: BackgroundOps::default(),
             color_picker_active: false,
             color_sample: None,
@@ -2202,9 +2207,20 @@ impl PReferZApp {
         if self.keymap.pressed(Action::NewCanvas, ctx) {
             self.new_canvas(ctx);
         }
-        // 粘贴必须用释放沿，见 keymap 模块文档第 1 条
+        // 复制 / 剪切（释放沿，同 Paste，见 keymap 模块文档第 1 条）
+        if self.keymap.pressed(Action::Copy, ctx) {
+            self.copy_selected();
+        }
+        if self.keymap.pressed(Action::Cut, ctx) {
+            self.cut_selected();
+        }
+        // 粘贴必须用释放沿，见 keymap 模块文档第 1 条。
+        // 分流：应用内缓冲非空 → 粘缓冲到鼠标位置；空 → 回退系统剪贴板图片。
         if self.keymap.pressed(Action::Paste, ctx) {
-            self.paste_from_clipboard(ctx);
+            let mouse = ctx.input(|i| i.pointer.latest_pos());
+            if !self.paste_internal(mouse) {
+                self.paste_from_clipboard(ctx);
+            }
         }
 
         // 适应画布（Excalidraw Shift+1 = Zoom to fit all）

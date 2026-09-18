@@ -118,6 +118,144 @@ impl PReferZApp {
         self.flash(fill(t(self.lang, T::FlashDuplicated), &[n.to_string()]));
     }
 
+    /// 复制选中项到剪贴板（`Ctrl+C`）。容器联动与 [`Self::duplicate_in_place`]
+    /// 一致（封闭形状的绑定文本、画框成员）。分流：
+    /// - 选区恰为**单张图片**时，同时把 RGBA 像素写入系统剪贴板（可粘到外部应用）；
+    /// - 其余（多张图 / 形状 / 文字 / 混合）只进应用内缓冲 `clipboard_items`，
+    ///   需要图片形式走「导出选区」。
+    pub(crate) fn copy_selected(&mut self) {
+        let selected: Vec<ItemId> = self.scene.selection.iter().cloned().collect();
+        if selected.is_empty() {
+            return;
+        }
+        // 容器联动：与拖拽 / Ctrl+D 一致
+        let mut collected = selected.clone();
+        for sid in &selected {
+            collected.extend(self.scene.texts_bound_to(*sid));
+            if self
+                .scene
+                .get_item(sid)
+                .map(|it| it.is_frame())
+                .unwrap_or(false)
+            {
+                collected.extend(self.scene.frame_members(*sid));
+            }
+        }
+        collected.sort();
+        collected.dedup();
+        // 存原位置快照；粘贴时才分配新 id 并重定位
+        let items: Vec<Item> = collected
+            .iter()
+            .filter_map(|id| self.scene.get_item(id).cloned())
+            .collect();
+        let n = items.len();
+        if n == 0 {
+            return;
+        }
+        // 单张图片 → 系统剪贴板（多选 / 非图片不走此路）
+        if n == 1 {
+            if let Some(item) = items.first() {
+                if let ItemKind::Pixmap { texture_id, .. } = &item.kind {
+                    self.copy_pixmap_to_system_clipboard(*texture_id);
+                }
+            }
+        }
+        self.clipboard_items = items;
+        self.flash(fill(t(self.lang, T::FlashCopied), &[n.to_string()]));
+    }
+
+    /// 剪切选中项（`Ctrl+X`）：同 [`Self::copy_selected`] 分流 + 删除选中
+    /// （删除走 undo stack，一次 undo 恢复）。
+    pub(crate) fn cut_selected(&mut self) {
+        let had_selection = !self.scene.selection.is_empty();
+        self.copy_selected();
+        // copy_selected 里清不掉选区；仅在实际复制到内容后删除。
+        // 复制失败（选区空）时 delete_selected 自身也会空转，无需回滚缓冲。
+        if had_selection && !self.clipboard_items.is_empty() {
+            self.delete_selected();
+            self.flash(fill(
+                t(self.lang, T::FlashCut),
+                &[self.clipboard_items.len().to_string()],
+            ));
+        }
+    }
+
+    /// 把 `rgba_pixel_cache` 中该纹理的像素写入系统剪贴板（单图复制）。
+    /// 像素缓存缺失（理论上不该发生：可见 Pixmap 均已解码）或剪贴板打开失败
+    /// 时静默降级——内部缓冲已存，Ctrl+V 仍可用。
+    fn copy_pixmap_to_system_clipboard(&mut self, texture_id: u64) {
+        let Some(rgba) = self.rgba_pixel_cache.get(&texture_id).cloned() else {
+            return;
+        };
+        let Some(&(w, h)) = self.rgba_size_cache.get(&texture_id) else {
+            return;
+        };
+        let Ok(mut clipboard) = arboard::Clipboard::new() else {
+            return;
+        };
+        let _ = clipboard.set_image(arboard::ImageData {
+            width: w as usize,
+            height: h as usize,
+            bytes: std::borrow::Cow::Owned(rgba),
+        });
+    }
+
+    /// 粘贴应用内剪贴板缓冲（Ctrl+V 的内部路径）。以缓冲内容包围盒**中心**对齐
+    /// 鼠标位置整体平移，分配新 id（`duplicate_items` 复用：组结构 / 容器绑定
+    /// 映射语义与 Ctrl+D 一致），选区切到副本，一条 undo 可撤。
+    /// 返回是否实际粘贴。
+    pub(crate) fn paste_internal(&mut self, mouse: Option<egui::Pos2>) -> bool {
+        if self.clipboard_items.is_empty() {
+            return false;
+        }
+        // 缓冲的包围盒中心（原位置快照）
+        let mut ids: Vec<ItemId> = self.clipboard_items.iter().map(|it| it.id).collect();
+        ids.sort();
+        ids.dedup();
+        let mut min = CanvasPoint::new(f32::MAX, f32::MAX);
+        let mut max = CanvasPoint::new(f32::MIN, f32::MIN);
+        for it in &self.clipboard_items {
+            let r = it.bounding_rect();
+            min.x = min.x.min(r.min().x);
+            min.y = min.y.min(r.min().y);
+            max.x = max.x.max(r.max().x);
+            max.y = max.y.max(r.max().y);
+        }
+        if min.x > max.x {
+            return false;
+        }
+        let center = CanvasPoint::new((min.x + max.x) / 2.0, (min.y + max.y) / 2.0);
+        let target = match mouse {
+            Some(p) => self.viewport.pos2_to_canvas(p),
+            // 无指针位置（极少见）：原位偏移，同 Ctrl+D
+            None => center + CanvasVector::new(10.0, 10.0),
+        };
+        let offset = target - center;
+        // 临时 Scene 才能调 duplicate_items（它按 id 从 items 查原件）。
+        // 缓冲快照不持旧场景引用，仅借其 id 查询。
+        let mut probe = Scene::default();
+        for it in &self.clipboard_items {
+            probe.add_item(it.clone());
+        }
+        let dups = probe.duplicate_items(&ids, offset);
+        if dups.is_empty() {
+            return false;
+        }
+        for dup in &dups {
+            self.scene.add_item(dup.clone());
+        }
+        self.scene.deselect_all();
+        for dup in &dups {
+            self.scene.select(dup.id);
+        }
+        let n = dups.len();
+        // 副本已手动入场景（同 duplicate_in_place），push 时跳过首次 redo——
+        // 否则命令 redo 再加一遍：同 id 两份重叠，点击一个两个都被选中。
+        self.push_cmd(Box::new(AddItems::new(dups).with_preview_applied(true)));
+        self.flash(fill(t(self.lang, T::FlashDuplicated), &[n.to_string()]));
+        true
+    }
+
     /// plan #7：流程图节点创建（`Ctrl+方向`，单选矩形/椭圆/菱形时）。沿该向
     /// 克隆一个**同源同风格**节点（主轴 = 源边界 + [`FLOWCHART_GAP`]，交叉轴
     /// 中心对齐——同尺寸克隆时偏移天然实现；不复制绑定文字），并连一条两端

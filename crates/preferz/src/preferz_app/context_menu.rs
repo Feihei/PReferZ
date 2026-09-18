@@ -120,6 +120,20 @@ impl PReferZApp {
 
                     if has_selection {
                         if ui
+                            .button(format!("\u{1F4CB} {}", t(self.lang, T::Copy)))
+                            .clicked()
+                        {
+                            self.copy_selected();
+                            self.context_menu_open = false;
+                        }
+                        if ui
+                            .button(format!("\u{2702} {}", t(self.lang, T::Cut)))
+                            .clicked()
+                        {
+                            self.cut_selected();
+                            self.context_menu_open = false;
+                        }
+                        if ui
                             .button(format!("\u{1F5D1} {}", t(self.lang, T::DeleteSelected)))
                             .clicked()
                         {
