@@ -39,17 +39,20 @@ cargo clippy --workspace --all-targets -- -D warnings   # 把警告当错误，�
 
 ```
 preferz (binary, eframe::App)
-  ├── preferz-core        Item, Transform, Scene, Selection, Commands, Arrange
+  ├── preferz-core        Item, Transform, Scene, Selection, Commands, Arrange, ViewportState, snap
   └── preferz-fileio      BeeFile, ImageLoader, Export, Assets
 ```
 
-`PReferZApp` holds `Scene`, `UndoStack`, `ViewportState`. `update()` dispatches each frame.
+`PReferZApp` holds `Scene`, `UndoStack`, `ViewportState`. `update()` dispatches each frame. `PReferZApp` is defined in `crates/preferz/src/preferz_app/` — `mod.rs` keeps the struct + shared types/constants + `ui()` dispatch, with per-cluster method groups split into sibling submodules (`export`/`config`/`background_ops`/`render`/`present`/`text_edit`/`context_menu`/`file_io`/`actions`/`settings`/`drag`/`props`); each does `use super::*;` to reach the parent's private vocabulary.
+
+**Layering (core-sink discipline).** `preferz-core` holds only side-effect-free domain decisions over core types (L1) — egui-free, headless-testable, e.g. `ViewportState`, `snap`, `arrange` planners, `Scene::content_bounding_rect`. egui↔core orchestration (L2: event reads, live `ViewportState`/`UndoStack`/`DragState`, `request_repaint`, `BackgroundOps`, config persistence) and egui rendering (L3, `ui/`) both stay in the binary.
 
 ## Must-Know Conventions
 
 - **All item mutations go through the undo stack.** Never mutate `Item.transform` or `Scene.items` directly in the UI layer.
 - **Item IDs are `uuid::Uuid`.** Do not use integer auto-increment ids.
 - **Three coordinate systems**: `ScreenSpace` (pixels), `Viewport` (screen/zoom), `CanvasSpace` (world). Use `euclid` types — never cast between them with raw `f32`.
+- **Coordinate boundary is sealed at `ViewportEgui`.** `preferz_core::ViewportState` (and all core geometry) speaks only egui-free `Screen*`/`Canvas*` euclid types. The single `egui::Pos2 ↔ ScreenPoint` / `egui::Rect ↔ ScreenRect` conversion seam lives in the binary's `viewport.rs` (`ViewportEgui` trait: `pos2_to_canvas`/`canvas_to_pos2`/`canvas_rect_to_egui`/`set_screen_rect_egui`/`pan_by_screen_egui`/`zoom_at_egui`). Do not push `egui` types into core; convert at this trait, once, on the L2 input / L3 paint edges.
 - **Texture ownership**: `egui::TextureHandle` lives on `egui::Context`. Create/release textures inside `update()`. Do not hold bare `TextureId` across frames without registration.
 - **Undo "preview" mode**: interactive drag/scale rotates items directly, then `push(cmd)` on release with `skip_first_redo: true`. The `undo` crate has no built-in skip — this field is on the `Command` impl.
 - **`.prz` is the only format**（`.bee` 兼容层已移除，commit `62692a8`）：`.prz` 为 SQLite，含 `items`（5 列，主键为 UUID 字符串，transform 存单列 JSON）、`sqlar`（`name` / `sz` 未压缩大小 / `data` 压缩 blob）、`metadata`（`format` 恒为 `prz`、视口状态、`next_z`）。与 BeeRef `.bee` **不兼容**：后者 items 为 9 列、INTEGER 主键、transform 分列存储，且会写 `PRAGMA user_version`；详见 spec §5.4。`BeeFile::open()` 校验 `metadata.format == 'prz'`，不符直接报错。
