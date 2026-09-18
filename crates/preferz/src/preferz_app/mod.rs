@@ -1309,11 +1309,14 @@ impl eframe::App for PReferZApp {
                 self.viewport.pan_by_screen_egui(response.drag_delta());
             }
 
-            // 滚轮缩放（以鼠标位置为锚点）
+            // 滚轮缩放（以鼠标位置为锚点）。SCROLL_ZOOM_SENSITIVITY：换 glow 后端后
+            // smooth_scroll_delta 每格增量比原后端大，乘系数放慢，手感对齐旧后端。
+            const SCROLL_ZOOM_SENSITIVITY: f32 = 0.5;
             let scroll = ctx.input(|i| i.smooth_scroll_delta);
             if scroll.y != 0.0 {
                 if let Some(pos) = ctx.input(|i| i.pointer.latest_pos()) {
-                    self.viewport.zoom_at_egui(scroll.y, pos);
+                    self.viewport
+                        .zoom_at_egui(scroll.y * SCROLL_ZOOM_SENSITIVITY, pos);
                 }
             }
 
