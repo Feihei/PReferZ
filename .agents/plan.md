@@ -1,7 +1,7 @@
 # PReferZ Roadmap（plan.md）
 
-> 本文档是 PReferZ 的**前瞻路线图**：顶部是已交付阶段一览（索引），主体是待验收项与下一步计划。
-> 各阶段**完整交付清单**见 [`CHANGELOG.md`](CHANGELOG.md)；设计规格见 [`specs/`](specs/)，架构决策见 [`adr/`](adr/)。
+> 本文档是 PReferZ 的**前瞻路线图**：主体是待验收项与下一步计划；**已交付内容一律见**
+> [`CHANGELOG.md`](CHANGELOG.md)（本文件不重复维护阶段索引）；设计规格见 [`specs/`](specs/)，架构决策见 [`adr/`](adr/)。
 >
 > 工作流惯例：**规划文档先提交，实现拆独立 commit**（Conventional Commits）；质量门槛
 > `cargo fmt --check` / `clippy -D warnings` / `cargo test --workspace` 全绿才算交付。
@@ -22,14 +22,7 @@
 
 ## 已交付阶段一览
 
-| 阶段 | 状态 | 一句话目标 | 交付清单 |
-|---|---|---|---|
-| Phase 1–4 | ✅ | MVP：无限画布 / 图片导入变换 / 布局整理 / .prz 存取 | [CHANGELOG.md](CHANGELOG.md) §Phase 1–4 |
-| Phase A–E | ✅ | Shape 基础集 / 线性对象 / 文本入形 / Frame 编号 / Slide 演示 | [CHANGELOG.md](CHANGELOG.md) §Phase A–E |
-| Phase F | ✅ | 手绘风描边 RoughStyler（rough.js 同款，确定性种子） | [CHANGELOG.md](CHANGELOG.md) §Phase F |
-| Phase 6 收尾 | ✅ | 键鼠映射可配置（keymap + 派发层 + 设置面板）。2026-09-01 拍板：不再投入自定义，默认键位改对齐 Excalidraw（[ADR-0007](adr/0007-keymap-no-customization.md)） | [CHANGELOG.md](CHANGELOG.md) §Phase 6 |
-| 体验修复批次 | ✅ | 文字无背景 / 手绘椭圆光滑曲线 / Enter 编辑文字 / 绑定文本不可独立选中 | [CHANGELOG.md](CHANGELOG.md) §修复批次 |
-| Phase G | ✅ | 明暗两套样式主题（Light/Dark/Auto）+ D6 移除键鼠改绑设置入口（架构保留） | [CHANGELOG.md](CHANGELOG.md) §Phase G |
+> 全部已交付阶段与批次的完整清单统一见 [`CHANGELOG.md`](CHANGELOG.md)——本文件不再重复维护阶段索引表（避免双处更新失真）。
 
 ---
 
