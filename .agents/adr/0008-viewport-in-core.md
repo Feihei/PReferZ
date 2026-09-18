@@ -2,7 +2,7 @@
 
 - 状态：已接受
 - 日期：2026-09-17
-- 参考：[ADR-0001](0001-workspace-crate-layout.md)、[ADR-0002](0002-coordinate-systems-euclid.md)、[plan](../plans/core-sink-and-app-decomposition.md)
+- 参考：[ADR-0001](0001-workspace-crate-layout.md)、[ADR-0002](0002-coordinate-systems-euclid.md)、[CHANGELOG.md §架构整固](../CHANGELOG.md)（原计划文档 `plans/core-sink-and-app-decomposition.md` 完成后已归档删除）
 - 修订：本 ADR **修订 ADR-0002 的 "Viewport → binary 层" 归属行**，将其改为 core 层。
 
 ## 背景

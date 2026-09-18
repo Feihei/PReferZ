@@ -312,6 +312,41 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 
 ---
 
+## 架构整固：core 下沉 + preferz_app.rs 拆分（Steps 0–3，2026-09-17~18）
+
+> 框架级重构，**全程零行为改动**、分步落地、每步独立跑质量门；测试计数恒定
+> （bin 62 / core 113 / fileio 7）。原 `.agents/plans/core-sink-and-app-decomposition.md`
+> 已归档删除，本节即其交付收拢。分层不变量已固化进 `AGENTS.md`「Architecture /
+> Must-Know」与 [ADR-0008](adr/0008-viewport-in-core.md)。
+
+- **触发**：`preferz_app.rs` 单文件 9230 行（全库 src 的 43%）= 装了 9 类职责的上帝对象；
+  binary（13681 行）远厚于 core（6870 行），core 显薄。**边界结论 = 保留三 crate 不合并**
+  （兑现而非推翻 [ADR-0001](adr/0001-workspace-crate-layout.md)）：真问题是"太多 L1 被困在
+  binary"，方向是往 core 下沉，不是往上合并。
+- **分层判据（L1/L2/L3）**：core 只收"无副作用、只吃领域数据的决策"（L1）；egui↔core 编排
+  （L2：读事件、活 `ViewportState`/`UndoStack`/`DragState`、`request_repaint`、`BackgroundOps`、
+  config 落盘、键位派发）与 egui 渲染（L3）明确留 binary（D2 已拍板）。
+- **Step 1**（`9462e8f`）：纯决策下沉——`snap_polygon_point`→`preferz_core::snap`（+4 单测迁）、
+  新增 `Scene::content_bounding_rect`（+2 单测），`fit_to_screen`/`zoom_to_selection` 改委托 core。
+  `Prop`/`prop`/`prop_cmd` 属性面板经代码事实判定为 L2 机器，**不下沉**。
+- **Step 2（枢纽）**（`7b70c2a` + ADR-0008 `a27704d`）：`ViewportState` 下沉 `preferz_core::viewport`
+  （纯 `Screen*`/`Canvas*` euclid 类型，3 测试随之迁入）；`app/viewport.rs` 收为**桥接层**
+  （重导出 + 本地扩展 trait `ViewportEgui`）。egui↔core 坐标边界收缩成唯一两个转换点
+  （`Pos2↔ScreenPoint`、`Rect↔ScreenRect`），只落在 L2 输入边 / L3 绘制边。修订
+  [ADR-0002](adr/0002-coordinate-systems-euclid.md) 的 "Viewport→binary" 归属行。
+- **Step 3**（`20ef824`/`b62bc96`/`cb0b304`/`8df4c14`）：`preferz_app.rs`→`preferz_app/mod.rs`，
+  拆为 **12 个同级子模块**（export/config/background_ops/render/present/text_edit/context_menu/
+  file_io/actions/settings/drag/props）；mod.rs **9230→2839**，只留 struct + 共享类型/常量 +
+  `ui()` 派发 + infra + 快捷键。机制：子模块 `use super::*;` 够到父私有项，搬出方法加 `pub(crate)`；
+  逐字搬迁、每簇三件套全绿。
+- **Step 4（按 D2/D3 判定不做）**：`update_drag_preview` 的 `(起点,当前点,aspect,snap,mode)→
+  Transform/Command` 与端点/延伸/闭合交互态强耦合 egui 事件与瞬时 `DragState`，属 L2 编排，
+  留 app；如未来要无头测，先写 core 决策单测钉死语义再动壳。
+- **文档面**（`97bc505`）：`AGENTS.md` 同步架构布局、L1/L2/L3 分层与 `ViewportEgui` 坐标边界约定。
+- 自动化门全绿 + `cargo run` 启动无 panic；GUI 交互动画手感为 Feihei 手工验收项。
+
+---
+
 ## 决策点归档（D1–D6 / I1–I4）
 
 > 原列于 plan.md，G/I/H/K 交付后蒸馏归档于此，使 CHANGELOG 自包含、plan.md 仅保留前瞻内容。

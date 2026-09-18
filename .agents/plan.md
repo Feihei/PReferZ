@@ -33,15 +33,6 @@
 
 ---
 
-## 进行中：架构整固（core 下沉 + preferz_app.rs 拆分）
-
-> ⏳ 计划中。框架级重构，**零行为改动**、分步落地、每步独立跑质量门（fmt / clippy `-D warnings` / test）。
-> **2026-09-17 拍板 D1**：`ViewportState` 归 core，新增 [ADR-0008](adr/0008-viewport-in-core.md) 修订
-> [ADR-0002](adr/0002-coordinate-systems-euclid.md) 的 "Viewport→binary" 归属行；L2 编排留 app、三 crate 不合并。
-> 完整分步计划见 [plans/core-sink-and-app-decomposition.md](plans/core-sink-and-app-decomposition.md)。
-
----
-
 ## 人工验收（GUI）
 
 > 自动化测试全绿 ≠ 观感正确，需 Feihei 跑 `cargo run` 确认。
