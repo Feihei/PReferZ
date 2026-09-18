@@ -799,6 +799,27 @@ pub fn build_shape_visuals(kind: &ItemKind, to_screen: &LocalToScreen, zoom: f32
     }
 }
 
+/// 墨迹（plan #10）渲染：局部中心线点 + 逐点笔宽 → core `local_ribbon` 合成闭合
+/// 轮廓 → 变换到屏幕 → 一条填充多边形。宽度已是局部单位，随 `to_screen`（含 item
+/// scale + 视口 zoom）自动缩放，无需额外乘系数。非 Freedraw kind 返回空。
+pub fn build_freedraw_visuals(kind: &ItemKind, to_screen: &LocalToScreen) -> Vec<Shape> {
+    let ItemKind::Freedraw {
+        points,
+        widths,
+        color,
+    } = kind
+    else {
+        return Vec::new();
+    };
+    let ribbon = preferz_core::freedraw::local_ribbon(points, widths);
+    if ribbon.len() < 3 {
+        return Vec::new();
+    }
+    let screen = to_screen_points(&ribbon, to_screen);
+    // 凹多边形经耳切三角化正确填充（与多边形工具同路径）；不描边，纯填充即墨迹。
+    vec![closed_filled_path(screen, color_from(*color))]
+}
+
 /// 便捷入口：Item 局部 → 屏幕 的变换（供 render_scene 使用）。
 pub fn item_local_to_screen(
     item: &preferz_core::Item,

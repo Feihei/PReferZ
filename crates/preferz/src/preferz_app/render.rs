@@ -288,6 +288,12 @@ impl PReferZApp {
                 let shapes = build_shape_visuals(&item.kind, &to_screen, self.viewport.zoom);
                 ui.painter().extend(shapes);
             }
+            // 墨迹（plan #10）：速度锥形 ribbon 填充轮廓。
+            ItemKind::Freedraw { .. } => {
+                let to_screen = item_local_to_screen(item, &self.viewport);
+                let shapes = build_freedraw_visuals(&item.kind, &to_screen);
+                ui.painter().extend(shapes);
+            }
             ItemKind::Frame { .. } => {
                 let sr = self.viewport.canvas_rect_to_egui(item.bounding_rect());
                 let border = egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(90, 90, 95));
@@ -412,6 +418,12 @@ impl PReferZApp {
                 ItemKind::Shape { .. } => {
                     let to_screen = item_local_to_screen(item, &self.viewport);
                     let shapes = build_shape_visuals(&item.kind, &to_screen, self.viewport.zoom);
+                    ui.painter().extend(shapes);
+                }
+                // 墨迹（plan #10）：速度锥形 ribbon 填充轮廓。
+                ItemKind::Freedraw { .. } => {
+                    let to_screen = item_local_to_screen(item, &self.viewport);
+                    let shapes = build_freedraw_visuals(&item.kind, &to_screen);
                     ui.painter().extend(shapes);
                 }
                 // Frame：虚线边框 + 左上角编号角标 + 名称。不裁剪内容，仅作底框。

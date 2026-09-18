@@ -1,5 +1,6 @@
 pub mod arrange;
 pub mod commands;
+pub mod freedraw;
 pub mod item;
 pub mod scene;
 pub mod shape;

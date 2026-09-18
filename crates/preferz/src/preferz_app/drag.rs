@@ -144,6 +144,13 @@ impl PReferZApp {
                 }
                 return;
             }
+            // 徒手绘制（plan #10）：按下起笔，采集首个画布点，随后由
+            // update_drag_preview 连续追点、end_drag 定型成墨迹。
+            Tool::Freehand => {
+                let p = self.viewport.pos2_to_canvas(screen_pos);
+                self.drag = DragState::Drawing { raw: vec![p] };
+                return;
+            }
             _ => {}
         }
 
@@ -735,6 +742,8 @@ impl PReferZApp {
             }
             // 多拍工具：current 由 match 后统一更新
             DragState::CreatingPolygon { .. } => {}
+            // 徒手绘制：采样点由 match 后统一追加（需 &mut self.drag）
+            DragState::Drawing { .. } => {}
             DragState::Idle => {}
         }
         // BoxSelect / CreatingShape 更新 current（match &self.drag 不可写，故单独 &mut）
@@ -751,6 +760,15 @@ impl PReferZApp {
         }
         if let DragState::CreatingPolygon { current, .. } = &mut self.drag {
             *current = self.viewport.pos2_to_canvas(screen_pos);
+        }
+        // 徒手绘制（plan #10）：按屏幕最小间距过滤后连续追点（去抖/去重合，但保留
+        // 间距→速度的信号供释放时定锥形笔宽）。
+        if let DragState::Drawing { raw } = &mut self.drag {
+            let p = self.viewport.pos2_to_canvas(screen_pos);
+            let min_d = FREEDRAW_MIN_SPACING_PX / self.viewport.zoom;
+            if raw.last().is_none_or(|last| (p - *last).length() >= min_d) {
+                raw.push(p);
+            }
         }
     }
 
@@ -951,6 +969,9 @@ impl PReferZApp {
                 ctrl,
             } => {
                 self.finish_create_shape(shape_type, end_arrow, start, current, shift, ctrl);
+            }
+            DragState::Drawing { raw } => {
+                self.finish_create_freedraw(raw);
             }
             DragState::CreatingFrame { start, current } => {
                 self.finish_create_frame(start, current);
@@ -1237,6 +1258,25 @@ impl PReferZApp {
         self.flash(t(self.lang, T::FlashShapeCreated));
         // 默认回 Select
         self.tool = Tool::Select;
+    }
+
+    /// 徒手绘制收尾（plan #10）：把连续采样的画布点按「间距→速度」算出逐点笔宽，
+    /// 归一化成 `ItemKind::Freedraw`（点存 AABB 局部坐标、位置进 transform.pos），
+    /// `AddItem` 一步入 undo、随即回 Select。点数 <2（误触/单击）丢弃、不产生命令。
+    pub(crate) fn finish_create_freedraw(&mut self, raw: Vec<CanvasPoint>) {
+        self.tool = Tool::Select;
+        if raw.len() < 2 {
+            return;
+        }
+        let pts: Vec<(f32, f32)> = raw.iter().map(|p| (p.x, p.y)).collect();
+        let widths = preferz_core::freedraw::widths_from_spacing(
+            &pts,
+            self.default_stroke.width,
+            self.viewport.zoom,
+        );
+        let item = Item::new_freedraw(&pts, &widths, self.default_stroke.color);
+        self.push_new_item(AddItem::new(item));
+        self.flash(t(self.lang, T::FlashFreedrawCreated));
     }
 
     /// 用 Frame 工具完成画框创建：计算矩形 → AddItem → 置底（z=min-1）→ 选中 → 回 Select。

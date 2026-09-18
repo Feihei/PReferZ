@@ -166,6 +166,17 @@ pub enum ItemKind {
         #[serde(default)]
         name: Option<String>,
     },
+    /// 徒手绘制墨迹（plan #10）。中心线点（局部坐标，AABB 左上角为原点）+ 逐点笔宽
+    /// （画布单位），渲染成速度锥形的填充 ribbon 轮廓（见 `crate::freedraw`）。
+    /// 与线性对象共用「points 相对 AABB 左上角、整体位置交给 transform.pos」的约定。
+    Freedraw {
+        /// 墨迹中心线点，局部坐标（N ≥ 2）。
+        points: Vec<(f32, f32)>,
+        /// 与 `points` 一一对应的笔宽（画布单位）。
+        widths: Vec<f32>,
+        /// 墨迹颜色 RGBA。
+        color: [u8; 4],
+    },
 }
 
 impl ItemKind {
@@ -568,6 +579,36 @@ impl Item {
         }
     }
 
+    /// 墨迹（Freedraw）构造器：入参为**画布坐标**中心线点 + 逐点笔宽（画布单位），
+    /// 内部归一化成「AABB 左上角为原点」的局部点，整体位置交给 `transform.pos`——
+    /// 与线性对象/多边形创建共用同一约定，后续移动/缩放/命中都走既有点集代码路径。
+    pub fn new_freedraw(canvas_points: &[(f32, f32)], widths: &[f32], color: [u8; 4]) -> Self {
+        let (min_x, min_y) = canvas_points
+            .iter()
+            .fold((f32::MAX, f32::MAX), |(mx, my), &(x, y)| {
+                (mx.min(x), my.min(y))
+            });
+        let (min_x, min_y) = (
+            if min_x == f32::MAX { 0.0 } else { min_x },
+            if min_y == f32::MAX { 0.0 } else { min_y },
+        );
+        let points: Vec<(f32, f32)> = canvas_points
+            .iter()
+            .map(|&(x, y)| (x - min_x, y - min_y))
+            .collect();
+        Self {
+            id: Uuid::new_v4(),
+            kind: ItemKind::Freedraw {
+                points,
+                widths: widths.to_vec(),
+                color,
+            },
+            transform: Transform::new(min_x, min_y, 1.0, 1.0),
+            z: 0,
+            group_id: None,
+        }
+    }
+
     /// 手绘风抖动档位（非 Shape 恒为 `Off`）。
     pub fn sloppiness(&self) -> Sloppiness {
         match &self.kind {
@@ -720,6 +761,24 @@ impl Item {
             ItemKind::Frame { base_size, .. } => {
                 CanvasVector::new(base_size.0.max(1.0), base_size.1.max(1.0))
             }
+            // 墨迹：base_size 取中心线点 AABB（与线性对象同约定；笔宽超出部分由
+            // bounding_rect/hit-test 的 slop 容忍，变换框略小于最粗处可接受）。
+            ItemKind::Freedraw { points, .. } => {
+                if points.is_empty() {
+                    return CanvasVector::new(1.0, 1.0);
+                }
+                let mut min_x = f32::MAX;
+                let mut min_y = f32::MAX;
+                let mut max_x = f32::MIN;
+                let mut max_y = f32::MIN;
+                for (x, y) in points.iter() {
+                    min_x = min_x.min(*x);
+                    min_y = min_y.min(*y);
+                    max_x = max_x.max(*x);
+                    max_y = max_y.max(*y);
+                }
+                CanvasVector::new((max_x - min_x).max(1.0), (max_y - min_y).max(1.0))
+            }
         }
     }
 
@@ -773,6 +832,29 @@ impl Item {
             None => return false,
         };
         let local = inv.transform_point(canvas_pos);
+        // 墨迹：命中 = 到中心线任一段的距离 ≤ 该段半宽 + 少量容差（细笔也点得中）。
+        // 与线类一致，逆变换已消化旋转/缩放/翻转。
+        if let ItemKind::Freedraw { points, widths, .. } = &self.kind {
+            if points.len() < 2 {
+                // 退化：单点墨迹按点距命中。
+                return points
+                    .first()
+                    .map(|&p| dist_point_segment(local, p, p) <= HIT_SLOP)
+                    .unwrap_or(false);
+            }
+            for i in 0..points.len() - 1 {
+                let half = widths
+                    .get(i)
+                    .copied()
+                    .zip(widths.get(i + 1).copied())
+                    .map(|(a, b)| a.max(b) * 0.5)
+                    .unwrap_or(0.0);
+                if dist_point_segment(local, points[i], points[i + 1]) <= half + HIT_SLOP {
+                    return true;
+                }
+            }
+            return false;
+        }
         if let ItemKind::Shape {
             shape_type,
             points,
@@ -1009,6 +1091,9 @@ impl Item {
 
 /// 曲线（Curved）每段的采样点数；16 足够平滑且廉价。
 pub const CURVE_SAMPLES: usize = 16;
+
+/// 墨迹命中容差（画布单位）：在逐点半宽之外额外放宽，保证细笔/收笔处也点得中。
+const HIT_SLOP: f32 = 3.0;
 
 /// 单段 Catmull-Rom 插值点（标准 α=0.5 的 centripetal 近似）。
 fn catmull_rom_point(
@@ -2054,6 +2139,70 @@ mod tests {
                 assert!(name.is_none());
             }
             _ => panic!("expected Frame kind"),
+        }
+    }
+
+    // ── 墨迹（Freedraw，plan #10）──
+
+    fn make_freedraw() -> Item {
+        // 画布点：一条从 (100,50) 向右下走的短斜线，笔宽 4。
+        let canvas = vec![(100.0, 50.0), (140.0, 50.0), (160.0, 90.0)];
+        Item::new_freedraw(&canvas, &[4.0, 4.0, 4.0], [10, 20, 30, 255])
+    }
+
+    #[test]
+    fn freedraw_normalizes_points_to_aabb_origin() {
+        let it = make_freedraw();
+        // transform.pos 落在点集 AABB 左上角 (100,50)。
+        assert!((it.transform.pos.x - 100.0).abs() < 1e-3);
+        assert!((it.transform.pos.y - 50.0).abs() < 1e-3);
+        match &it.kind {
+            ItemKind::Freedraw { points, .. } => {
+                assert_eq!(points[0], (0.0, 0.0));
+                assert_eq!(points[1], (40.0, 0.0));
+            }
+            _ => panic!("expected Freedraw kind"),
+        }
+        // base_size = 点集 AABB 宽高 (60,40)。
+        let size = it.base_size();
+        assert!((size.x - 60.0).abs() < 1e-3);
+        assert!((size.y - 40.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn freedraw_hit_uses_variable_half_width() {
+        let it = make_freedraw();
+        // 第一段中心线中点上方 1px（半宽 2 + 容差 3 = 5 阈值内）→ 命中。
+        assert!(it.contains_canvas_point(CanvasPoint::new(120.0, 51.0)));
+        // 远离所有段（右上方 40px）→ 不命中。
+        assert!(!it.contains_canvas_point(CanvasPoint::new(140.0, 5.0)));
+    }
+
+    #[test]
+    fn freedraw_serde_roundtrip() {
+        let it = make_freedraw();
+        let s = serde_json::to_string(&it).unwrap();
+        assert!(s.contains("\"Freedraw\""));
+        let back: Item = serde_json::from_str(&s).unwrap();
+        assert_eq!(back.id, it.id);
+        match (&it.kind, &back.kind) {
+            (
+                ItemKind::Freedraw {
+                    points: pa,
+                    widths: wa,
+                    color: ca,
+                },
+                ItemKind::Freedraw {
+                    points: pb,
+                    widths: wb,
+                    color: cb,
+                },
+            ) => {
+                assert_eq!(pa, pb);
+                assert_eq!(wa, wb);
+                assert_eq!(ca, cb);
+            }
+            _ => panic!("expected Freedraw on both"),
         }
     }
 }

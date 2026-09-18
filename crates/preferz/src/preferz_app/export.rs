@@ -291,6 +291,8 @@ pub(crate) fn sample_item_pixel(
         }
         // A1 数据模型先行，取色采样在 Phase A6 后补充
         ItemKind::Shape { .. } => None,
+        // 墨迹（plan #10）：与 Shape 一致，取色器不采样矢量笔迹
+        ItemKind::Freedraw { .. } => None,
         // 画框不参与导出采样
         ItemKind::Frame { .. } => None,
     }

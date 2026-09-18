@@ -2,7 +2,7 @@ use crate::i18n::{t, Lang, T};
 use crate::interaction;
 use crate::keymap::{Action, BindKey, KeyBind, Keymap, KeymapMap};
 use crate::theme::{self, ThemeMode};
-use crate::ui::stylers::{build_shape_visuals, item_local_to_screen};
+use crate::ui::stylers::{build_freedraw_visuals, build_shape_visuals, item_local_to_screen};
 use crate::ui::widgets::palette;
 use crate::ui::widgets::transform_handles::{
     should_show_flip, should_show_rotate, Handle, TransformHandles,
@@ -111,6 +111,9 @@ enum Tool {
     /// 多边形（Phase I）：点击加点、双击/Enter 闭合、Esc 取消。
     /// 存为 `closed: true` 的 Polyline，不新增 ShapeType。
     Polygon,
+    /// 徒手绘制（plan #10）：按住连续采样，释放定型为一条 `ItemKind::Freedraw` 墨迹。
+    /// 对齐 Excalidraw freedraw（裸 P + 本项目 Num7）。
+    Freehand,
 }
 
 /// 画框比例 / 纸张预设（plan #3）。
@@ -266,6 +269,12 @@ enum DragState {
         current: CanvasPoint,
         /// Shift 锁 45° 方向（作用于"上一个顶点 → current"这段）。
         shift: bool,
+    },
+    /// 徒手绘制（plan #10）：按住左键连续采样的原始画布点（含首点）。
+    /// 释放时按速度→笔宽定锥形成 `ItemKind::Freedraw` 并 `AddItem` 入 undo。
+    Drawing {
+        /// 采样中心线点（画布坐标，按屏幕最小间距过滤）。
+        raw: Vec<CanvasPoint>,
     },
 }
 
@@ -876,6 +885,11 @@ const POLYLINE_CLOSE_DISTANCE: f32 = 8.0;
 /// 顶点手势）互相误触。
 const EXTEND_TRIGGER_PX: f32 = 4.0;
 
+/// plan #10：徒手绘制采样的屏幕最小间距（像素）——只做去抖/去重合，阈值取小，
+/// 保留「快→点稀、慢→点密」的间距速度信号（`freedraw::widths_from_spacing` 依赖它）。
+/// 画布阈值 = 此值 / zoom，缩放不改手感。
+const FREEDRAW_MIN_SPACING_PX: f32 = 2.0;
+
 /// 首尾点的**屏幕距离**（画布距离 × zoom；闭合/开放阈值均按屏幕像素计，缩放不
 /// 改手感）。点数 <2 返回 0。
 fn first_last_screen_dist(points: &[(f32, f32)], zoom: f32) -> f32 {
@@ -1055,6 +1069,7 @@ impl eframe::App for PReferZApp {
                         T::ToolArrow,
                     ),
                     (Tool::Polygon, "⬟", T::ToolPolygon),
+                    (Tool::Freehand, "✎", T::ToolFreehand),
                     (Tool::Frame, "▢", T::ToolFrame),
                 ];
                 for (tool, icon, key) in tools {
@@ -1301,6 +1316,33 @@ impl eframe::App for PReferZApp {
                         egui::CornerRadius::ZERO,
                         egui::Color32::from_rgb(100, 200, 255),
                     );
+                }
+            }
+
+            // 徒手绘制实时预览（plan #10）：用与终稿同一套锥形 ribbon 几何，把当前
+            // 采样墨迹以描边色填充画在指针下，落笔即见收笔尖、运笔粗的观感。
+            if let DragState::Drawing { raw } = &self.drag {
+                let pts: Vec<(f32, f32)> = raw.iter().map(|p| (p.x, p.y)).collect();
+                if pts.len() >= 2 {
+                    let widths = preferz_core::freedraw::widths_from_spacing(
+                        &pts,
+                        self.default_stroke.width,
+                        self.viewport.zoom,
+                    );
+                    let ribbon = preferz_core::freedraw::local_ribbon(&pts, &widths);
+                    if ribbon.len() >= 3 {
+                        let screen: Vec<egui::Pos2> = ribbon
+                            .iter()
+                            .map(|(x, y)| self.viewport.canvas_to_pos2(CanvasPoint::new(*x, *y)))
+                            .collect();
+                        let c = self.default_stroke.color;
+                        ui.painter().add(egui::Shape::Path(egui::epaint::PathShape {
+                            points: screen,
+                            closed: true,
+                            fill: egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]),
+                            stroke: egui::epaint::PathStroke::NONE,
+                        }));
+                    }
                 }
             }
 
@@ -1862,6 +1904,7 @@ fn drag_state_name(d: &DragState) -> &'static str {
         DragState::LineEndpoint { .. } => "LineEndpoint",
         DragState::CreatingFrame { .. } => "CreatingFrame",
         DragState::CreatingPolygon { .. } => "CreatingPolygon",
+        DragState::Drawing { .. } => "Drawing",
     }
 }
 
@@ -2106,6 +2149,10 @@ impl PReferZApp {
                 if matches!(self.drag, DragState::CreatingPolygon { .. }) {
                     self.drag = DragState::Idle;
                 }
+                // 徒手绘制进行中：Esc 丢弃当前未定型的墨迹采样
+                if matches!(self.drag, DragState::Drawing { .. }) {
+                    self.drag = DragState::Idle;
+                }
                 self.tool = Tool::Select;
             }
             return;
@@ -2285,6 +2332,8 @@ impl PReferZApp {
             Some(Tool::Polygon)
         } else if pressed(Action::ToolFrame) {
             Some(Tool::Frame)
+        } else if pressed(Action::ToolFreehand) {
+            Some(Tool::Freehand)
         } else {
             None
         }
@@ -2370,6 +2419,59 @@ mod tests {
             _ => panic!("多边形应为 Shape item"),
         }
         assert_eq!(app.tool, Tool::Select, "收尾后应回 Select");
+    }
+
+    // ───────── 徒手绘制工具（plan #10） ─────────
+
+    #[test]
+    fn finish_create_freedraw_builds_tapered_ink_and_resets_tool() {
+        let mut app = PReferZApp::new();
+        app.tool = Tool::Freehand;
+        let base_width = app.default_stroke.width;
+        let color = app.default_stroke.color;
+        // 一段先慢后快的采样（画布坐标）：点数≥2 应成墨迹。速度→笔宽的曲线由
+        // core `freedraw` 单测覆盖，这里只验手势落地的不变量。
+        let raw = vec![
+            CanvasPoint::new(10.0, 30.0),
+            CanvasPoint::new(14.0, 30.0),
+            CanvasPoint::new(18.0, 30.0),
+            CanvasPoint::new(80.0, 30.0), // 大步距 = 快
+            CanvasPoint::new(160.0, 30.0),
+            CanvasPoint::new(240.0, 30.0),
+        ];
+        app.finish_create_freedraw(raw);
+        assert_eq!(app.scene.items.len(), 1);
+        assert_eq!(app.tool, Tool::Select, "收尾后应回 Select");
+        let item = &app.scene.items[0];
+        // 整体位置 = 点集 AABB 左上角 (10,30)。
+        assert_eq!((item.transform.pos.x, item.transform.pos.y), (10.0, 30.0));
+        match &item.kind {
+            ItemKind::Freedraw {
+                points,
+                widths,
+                color: c,
+            } => {
+                assert_eq!(points.len(), 6);
+                assert_eq!(points[0], (0.0, 0.0));
+                assert_eq!(widths.len(), points.len());
+                assert!(widths.iter().all(|&w| w > 0.0 && w.is_finite()));
+                assert_eq!(*c, color);
+                // 笔宽恒不超过基准（慢速 = 基准，快速/收笔 ≤ 基准）。
+                let max_w = widths.iter().fold(0.0f32, |a, &b| a.max(b));
+                assert!(max_w <= base_width + 1e-3);
+            }
+            _ => panic!("徒手产物应为 Freedraw item"),
+        }
+    }
+
+    #[test]
+    fn finish_create_freedraw_discards_degenerate_stroke_but_resets_tool() {
+        let mut app = PReferZApp::new();
+        app.tool = Tool::Freehand;
+        // 单点（误触/单击）：不产生 item，但仍回 Select。
+        app.finish_create_freedraw(vec![CanvasPoint::new(5.0, 5.0)]);
+        assert!(app.scene.items.is_empty(), "单点墨迹应被丢弃");
+        assert_eq!(app.tool, Tool::Select);
     }
 
     #[test]

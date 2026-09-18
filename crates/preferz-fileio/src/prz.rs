@@ -333,6 +333,7 @@ fn item_kind_str(kind: &ItemKind) -> &'static str {
         ItemKind::Text { .. } => "text",
         ItemKind::Shape { .. } => "shape",
         ItemKind::Frame { .. } => "frame",
+        ItemKind::Freedraw { .. } => "freedraw",
     }
 }
 
@@ -520,6 +521,46 @@ mod tests {
             _ => panic!("expected Shape kind"),
         }
         assert_eq!(line.transform.pos, CanvasVector::new(30.0, 40.0));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn prz_save_load_freedraw_roundtrip() {
+        // plan #10：墨迹 kind 存于 data JSON blob，无 schema 迁移——存读保真。
+        let path = tmp_path("freedraw_roundtrip.prz");
+        let mut scene = Scene::new();
+        scene.add_item(Item::new_freedraw(
+            &[(50.0, 60.0), (90.0, 60.0), (110.0, 100.0)],
+            &[5.0, 3.0, 1.5],
+            [200, 40, 40, 255],
+        ));
+        let viewport = ViewportMeta {
+            pan_x: 0.0,
+            pan_y: 0.0,
+            zoom: 1.0,
+        };
+        {
+            let mut prz = PrzFile::create(&path).unwrap();
+            prz.save_scene(&scene, &HashMap::new(), viewport).unwrap();
+        }
+        let prz = PrzFile::open(&path).unwrap();
+        let (loaded, _, _) = prz.load_scene().unwrap();
+        assert_eq!(loaded.items.len(), 1);
+        let it = &loaded.items[0];
+        // 中心线 AABB 左上角 (50,60) 落进 transform.pos，点归一到局部。
+        assert_eq!(it.transform.pos, CanvasVector::new(50.0, 60.0));
+        match &it.kind {
+            ItemKind::Freedraw {
+                points,
+                widths,
+                color,
+            } => {
+                assert_eq!(points, &vec![(0.0, 0.0), (40.0, 0.0), (60.0, 40.0)]);
+                assert_eq!(widths, &vec![5.0, 3.0, 1.5]);
+                assert_eq!(*color, [200, 40, 40, 255]);
+            }
+            _ => panic!("expected Freedraw kind"),
+        }
         let _ = std::fs::remove_file(&path);
     }
 

@@ -394,6 +394,8 @@ pub enum Action {
     ToolArrow,
     ToolFrame,
     ToolPolygon,
+    /// 徒手绘制（plan #10，Excalidraw freedraw=裸 P；本项目另绑 Num7 对齐数字工具行）。
+    ToolFreehand,
     // 模式
     Crop,
     ColorPicker,
@@ -453,6 +455,7 @@ impl Action {
         Action::ToolArrow,
         Action::ToolFrame,
         Action::ToolPolygon,
+        Action::ToolFreehand,
         Action::Crop,
         Action::ColorPicker,
         Action::ContextMenu,
@@ -509,6 +512,9 @@ impl Action {
             // 故无官方键位可对。裸 P 在 Excalidraw 是 freedraw（本项目未实现），
             // 占它会让 Excalidraw 用户按错，故用 Shift+P 让开那个字母位。
             ToolPolygon => vec![KeyBind::new(P).shift()],
+            // 徒手绘制（plan #10）：裸 P 对齐 Excalidraw freedraw（此位原为它预留），
+            // Num7 续上本项目 1–6 的数字工具行。两者均无修饰键，严格匹配不冲突。
+            ToolFreehand => vec![KeyBind::new(P), KeyBind::new(Num7)],
             Crop => vec![KeyBind::new(C)],
             ColorPicker => vec![KeyBind::new(I)],
             ContextMenu => vec![KeyBind::new(P).ctrl().shift()],
