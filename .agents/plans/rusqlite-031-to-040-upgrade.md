@@ -1,6 +1,6 @@
 # Plan: rusqlite 0.31 → 0.40 升级
 
-- **状态**: 待评审（仅规划，未实施）
+- **状态**: 已实施（2026-09-20，`4e40667` 修订 + `a72c508` 升级）；待手测验收（真实 `.prz` 往返）
 - **创建日期**: 2026-09-20
 - **目标版本**: rusqlite 0.40.2（当前 0.31.0，`features = ["bundled"]`）
 - **跨度**: 0.31 → 0.40，跨 9 个 minor（0.32…0.40）
@@ -76,11 +76,11 @@
 
 ## 8. 验收清单
 
-- [ ] `Cargo.toml`/`Cargo.lock` 中 rusqlite = 0.40.x，`bundled` 保留
-- [ ] 无新增 feature（除非确有 `prepare_cached` 等需求）
-- [ ] `cargo clippy -D warnings` 零警告、`cargo test --workspace` 全绿
+- [x] `Cargo.toml`/`Cargo.lock` 中 rusqlite = 0.40.2，`bundled` 保留
+- [x] 无新增 feature（未用 `prepare_cached`；hashlink 0.12 新传递依赖 `rsqlite-vfs`/`sqlite-wasm-rs` 为 lockfile 解析产物，非本项 feature）
+- [x] `cargo clippy -D warnings` 零警告、`cargo test --workspace` 全绿（202 tests）
 - [ ] 真实 `.prz` 保存→重开往返无损（含旧文件）
-- [ ] `.prz` 文件格式语义未改（schema/`metadata.format` 仍 `prz`）
+- [x] `.prz` 文件格式语义未改（schema/`metadata.format` 仍 `prz`，schema.rs 零改动）
 
 ## 9. 回滚
 
