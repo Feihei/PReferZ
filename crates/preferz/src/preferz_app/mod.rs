@@ -2,7 +2,9 @@ use crate::i18n::{t, Lang, T};
 use crate::interaction;
 use crate::keymap::{Action, BindKey, KeyBind, Keymap, KeymapMap};
 use crate::theme::{self, ThemeMode};
-use crate::ui::stylers::{build_freedraw_visuals, build_shape_visuals, item_local_to_screen};
+use crate::ui::stylers::{
+    build_freedraw_visuals, build_shape_visuals, freedraw_stroke_shapes, item_local_to_screen,
+};
 use crate::ui::widgets::palette;
 use crate::ui::widgets::transform_handles::{
     should_show_flip, should_show_rotate, Handle, TransformHandles,
@@ -1319,8 +1321,8 @@ impl eframe::App for PReferZApp {
                 }
             }
 
-            // 徒手绘制实时预览（plan #10）：用与终稿同一套锥形 ribbon 几何，把当前
-            // 采样墨迹以描边色填充画在指针下，落笔即见收笔尖、运笔粗的观感。
+            // 徒手绘制实时预览（plan #10）：用与终稿同一套逐段描边几何（笔宽随 zoom），
+            // 落笔即见收笔尖、运笔粗的墨迹，且不会是填充区域。
             if let DragState::Drawing { raw } = &self.drag {
                 let pts: Vec<(f32, f32)> = raw.iter().map(|p| (p.x, p.y)).collect();
                 if pts.len() >= 2 {
@@ -1329,20 +1331,16 @@ impl eframe::App for PReferZApp {
                         self.default_stroke.width,
                         self.viewport.zoom,
                     );
-                    let ribbon = preferz_core::freedraw::local_ribbon(&pts, &widths);
-                    if ribbon.len() >= 3 {
-                        let screen: Vec<egui::Pos2> = ribbon
-                            .iter()
-                            .map(|(x, y)| self.viewport.canvas_to_pos2(CanvasPoint::new(*x, *y)))
-                            .collect();
-                        let c = self.default_stroke.color;
-                        ui.painter().add(egui::Shape::Path(egui::epaint::PathShape {
-                            points: screen,
-                            closed: true,
-                            fill: egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]),
-                            stroke: egui::epaint::PathStroke::NONE,
-                        }));
-                    }
+                    let screen_pts: Vec<egui::Pos2> = pts
+                        .iter()
+                        .map(|&(x, y)| self.viewport.canvas_to_pos2(CanvasPoint::new(x, y)))
+                        .collect();
+                    let screen_widths: Vec<f32> =
+                        widths.iter().map(|w| w * self.viewport.zoom).collect();
+                    let c = self.default_stroke.color;
+                    let color = egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]);
+                    ui.painter()
+                        .extend(freedraw_stroke_shapes(&screen_pts, &screen_widths, color));
                 }
             }
 

@@ -1,5 +1,5 @@
 //! 徒手绘制（freedraw）的纯几何（L1）：把一串采样点变成一条**速度锥形**的
-//! 可变宽墨迹——中心线点 + 每点笔宽，再合成闭合的 ribbon 轮廓。
+//! 可变宽墨迹——中心线点 + 逐点笔宽。渲染层（L3）据此逐段描边画墨迹（非填充轮廓）。
 //!
 //! 全部为无副作用、egui-free、可无头测试的函数（core-sink 纪律）：
 //! - egui 无指针压感输入，宽度由**相邻点间距**（局部速度代理）模拟：运笔快→点稀→细，
@@ -92,48 +92,6 @@ fn apply_end_taper(widths: &[f32], base_width: f32) -> Vec<f32> {
     out
 }
 
-/// 由中心线点 + 每点笔宽合成闭合的 ribbon 轮廓（局部坐标）。
-///
-/// 逐点取法向（首/末点用单边切向，中间用前后点差），沿法向各偏移 `width/2` 得
-/// 左边界（正序）与右边界（逆序），拼成一条闭合点列供填充。笔宽已含首尾收笔，
-/// 端帽退化到近点，故用平接（butt cap）即可、接缝不可见。
-///
-/// `points.len() != widths.len()` 或 `points.len() < 2` 时返回空。
-pub fn local_ribbon(points: &[(f32, f32)], widths: &[f32]) -> Vec<(f32, f32)> {
-    let n = points.len();
-    if n < 2 || widths.len() != n {
-        return Vec::new();
-    }
-
-    let normal_at = |i: usize| -> (f32, f32) {
-        let (a, b) = if i == 0 {
-            (points[0], points[1])
-        } else if i == n - 1 {
-            (points[n - 2], points[n - 1])
-        } else {
-            (points[i - 1], points[i + 1])
-        };
-        let dx = b.0 - a.0;
-        let dy = b.1 - a.1;
-        let len = (dx * dx + dy * dy).sqrt().max(1e-6);
-        // 单位切向顺时针旋转 90°（(dx,dy) → (−dy,dx)）得法向。
-        (-dy / len, dx / len)
-    };
-
-    let mut left = Vec::with_capacity(n);
-    let mut right = Vec::with_capacity(n);
-    for i in 0..n {
-        let (nx, ny) = normal_at(i);
-        let half = (widths[i] * 0.5).max(0.0);
-        left.push((points[i].0 + nx * half, points[i].1 + ny * half));
-        right.push((points[i].0 - nx * half, points[i].1 - ny * half));
-    }
-
-    let mut out = left;
-    out.extend(right.into_iter().rev());
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -188,33 +146,5 @@ mod tests {
         assert!(w[w.len() - 1] < w[7]);
         // 首尾对称。
         assert!((w[0] - w[w.len() - 1]).abs() < 1e-3);
-    }
-
-    #[test]
-    fn ribbon_is_closed_loop_with_two_offsets_per_point() {
-        let pts = vec![(0.0, 0.0), (10.0, 0.0), (20.0, 5.0)];
-        let widths = vec![4.0, 4.0, 4.0];
-        let r = local_ribbon(&pts, &widths);
-        // 左右各 n 点。
-        assert_eq!(r.len(), pts.len() * 2);
-        assert!(r.iter().all(|(x, y)| x.is_finite() && y.is_finite()));
-    }
-
-    #[test]
-    fn ribbon_width_matches_half_offset_perpendicular() {
-        // 水平线、恒定宽 4 → 法向为 ±y，左右边界分别在 y=±2。
-        let pts = vec![(0.0, 0.0), (10.0, 0.0), (20.0, 0.0)];
-        let widths = vec![4.0, 4.0, 4.0];
-        let r = local_ribbon(&pts, &widths);
-        // 左边界前 3 点 y 应为 +2，右边界后 3 点（逆序）y 应为 −2。
-        assert!(r[..3].iter().all(|(_, y)| (*y - 2.0).abs() < 1e-4));
-        assert!(r[3..].iter().all(|(_, y)| (*y + 2.0).abs() < 1e-4));
-    }
-
-    #[test]
-    fn ribbon_rejects_degenerate_input() {
-        assert!(local_ribbon(&[(0.0, 0.0)], &[2.0]).is_empty());
-        // points/widths 长度不一致 → 空。
-        assert!(local_ribbon(&[(0.0, 0.0), (1.0, 0.0)], &[2.0]).is_empty());
     }
 }

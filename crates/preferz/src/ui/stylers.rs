@@ -799,9 +799,41 @@ pub fn build_shape_visuals(kind: &ItemKind, to_screen: &LocalToScreen, zoom: f32
     }
 }
 
-/// 墨迹（plan #10）渲染：局部中心线点 + 逐点笔宽 → core `local_ribbon` 合成闭合
-/// 轮廓 → 变换到屏幕 → 一条填充多边形。宽度已是局部单位，随 `to_screen`（含 item
-/// scale + 视口 zoom）自动缩放，无需额外乘系数。非 Freedraw kind 返回空。
+/// 墨迹描边形状：屏幕中心线点 + 每点**屏幕**笔宽 → 逐段按端点均宽画描边线 +
+/// 每点补一个圆帽（半径 = 该点半宽）。
+///
+/// **用描边而非填充 ribbon 轮廓**：填充闭合轮廓在笔迹弯曲/回环处两侧偏移边界会
+/// 自交，被 epaint 非零环绕三角化填成一整块实心区域（正是「画出区域而非笔」的
+/// 根因）；逐段描边结构上不可能填内部，且段缝/转角靠圆帽自然圆滑。速度锥形仍保留
+/// （段宽取相邻两点均值）。终稿渲染与实时预览共用此函数。
+pub fn freedraw_stroke_shapes(
+    screen_pts: &[Pos2],
+    screen_widths: &[f32],
+    color: Color32,
+) -> Vec<Shape> {
+    let n = screen_pts.len();
+    if n < 2 || screen_widths.len() != n {
+        return Vec::new();
+    }
+    // 每点半宽（含最小可见宽度 0.4px，防细笔/收笔处消失）。
+    let halves: Vec<f32> = screen_widths.iter().map(|&w| w.max(0.8) * 0.5).collect();
+    let mut out = Vec::with_capacity(2 * n - 1);
+    for i in 0..n - 1 {
+        let w = halves[i] + halves[i + 1];
+        out.push(Shape::line_segment(
+            [screen_pts[i], screen_pts[i + 1]],
+            egui::Stroke::new(w, color),
+        ));
+    }
+    // 圆帽/圆角连接：每点补一个半径 = 该点半宽的实心圆，段缝与转角自然圆滑。
+    for (&p, &h) in screen_pts.iter().zip(&halves) {
+        out.push(Shape::circle_filled(p, h, color));
+    }
+    out
+}
+
+/// 墨迹（plan #10）终稿渲染：局部中心线点 + 逐点笔宽（画布单位）→ 变换到屏幕，
+/// 笔宽按 `to_screen` 的像元长度（含 item scale + 视口 zoom）同步缩放 → 描边。
 pub fn build_freedraw_visuals(kind: &ItemKind, to_screen: &LocalToScreen) -> Vec<Shape> {
     let ItemKind::Freedraw {
         points,
@@ -811,13 +843,15 @@ pub fn build_freedraw_visuals(kind: &ItemKind, to_screen: &LocalToScreen) -> Vec
     else {
         return Vec::new();
     };
-    let ribbon = preferz_core::freedraw::local_ribbon(points, widths);
-    if ribbon.len() < 3 {
+    if points.len() < 2 || widths.len() != points.len() {
         return Vec::new();
     }
-    let screen = to_screen_points(&ribbon, to_screen);
-    // 凹多边形经耳切三角化正确填充（与多边形工具同路径）；不描边，纯填充即墨迹。
-    vec![closed_filled_path(screen, color_from(*color))]
+    // 屏幕像素 / 局部单位：取 x 方向像元长度（含缩放，旋转下均匀故取其模长）。
+    let v = to_screen.transform_vector(euclid::Vector2D::<f32, ItemLocalSpace>::new(1.0, 0.0));
+    let scale = v.length().max(1e-4);
+    let screen_pts = to_screen_points(points, to_screen);
+    let screen_widths: Vec<f32> = widths.iter().map(|w| w * scale).collect();
+    freedraw_stroke_shapes(&screen_pts, &screen_widths, color_from(*color))
 }
 
 /// 便捷入口：Item 局部 → 屏幕 的变换（供 render_scene 使用）。
@@ -1376,5 +1410,44 @@ mod tests {
     fn build_shape_visuals_returns_empty_for_non_shape() {
         let txt = Item::new_text("x".to_string(), 0.0, 0.0, 16.0, [255; 4]);
         assert!(build_shape_visuals(&txt.kind, &identity(), 1.0).is_empty());
+    }
+
+    #[test]
+    fn freedraw_renders_as_strokes_not_filled_region() {
+        // 回归（用户反馈）：墨迹必须是**逐段描边**，不能是填充闭合轮廓——后者在
+        // 弯曲/回环处会自交、被非零环绕三角化填成实心区域。
+        let item = Item::new_freedraw(
+            &[(0.0, 0.0), (10.0, 2.0), (20.0, 0.0), (30.0, 3.0)],
+            &[4.0, 3.0, 2.0, 1.5],
+            [10, 10, 10, 255],
+        );
+        let shapes = build_freedraw_visuals(&item.kind, &identity());
+        let n = 4;
+        assert_eq!(shapes.len(), 2 * n - 1, "应产出 (n-1) 段描边线 + n 个圆帽");
+        let segs = shapes
+            .iter()
+            .filter(|s| matches!(s, Shape::LineSegment { .. }))
+            .count();
+        let discs = shapes
+            .iter()
+            .filter(|s| matches!(s, Shape::Circle { .. }))
+            .count();
+        assert_eq!(segs, n - 1);
+        assert_eq!(discs, n);
+        assert!(
+            !shapes
+                .iter()
+                .any(|s| matches!(s, Shape::Path(p) if p.closed)),
+            "绝不能再出现闭合填充轮廓（那正是区域填充 bug）"
+        );
+    }
+
+    #[test]
+    fn freedraw_visuals_empty_for_non_freedraw_or_degenerate() {
+        let txt = Item::new_text("x".to_string(), 0.0, 0.0, 16.0, [255; 4]);
+        assert!(build_freedraw_visuals(&txt.kind, &identity()).is_empty());
+        // 单点墨迹（<2）→ 空。
+        let dot = Item::new_freedraw(&[(5.0, 5.0)], &[3.0], [0, 0, 0, 255]);
+        assert!(build_freedraw_visuals(&dot.kind, &identity()).is_empty());
     }
 }
