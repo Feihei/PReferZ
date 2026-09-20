@@ -15,8 +15,18 @@ pub(crate) fn config_path() -> Option<PathBuf> {
     Some(home.join(".preferz").join("config.json"))
 }
 
+/// 自动保存默认开关（plan #5）。
+fn default_autosave_enabled() -> bool {
+    true
+}
+
+/// 自动保存默认间隔秒数（plan #5）。
+fn default_autosave_interval() -> u32 {
+    30
+}
+
 /// 用户配置（语言 + 快捷键 + 主题；均带 `#[serde(default)]` 以便老配置兼容）。
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct UserConfig {
     #[serde(default)]
     pub(crate) lang: Lang,
@@ -28,6 +38,24 @@ pub(crate) struct UserConfig {
     /// 主题模式（Light/Dark/Auto），缺省回退 `Dark`。
     #[serde(default)]
     pub(crate) theme: ThemeMode,
+    /// 自动保存开关（plan #5），默认开。
+    #[serde(default = "default_autosave_enabled")]
+    pub(crate) autosave_enabled: bool,
+    /// 自动保存 debounce 间隔秒数（plan #5），默认 30，最小 10。
+    #[serde(default = "default_autosave_interval")]
+    pub(crate) autosave_interval: u32,
+}
+
+impl Default for UserConfig {
+    fn default() -> Self {
+        Self {
+            lang: Lang::default(),
+            keymap: KeymapMap::default(),
+            theme: ThemeMode::default(),
+            autosave_enabled: default_autosave_enabled(),
+            autosave_interval: default_autosave_interval(),
+        }
+    }
 }
 
 /// 从 `~/.preferz/config.json` 加载配置。文件不存在或解析失败时返回默认值。

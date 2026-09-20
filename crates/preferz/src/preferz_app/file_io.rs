@@ -121,15 +121,33 @@ impl PReferZApp {
                 self.scene = scene;
                 // 清理孤儿 container_id（容器已不存在则置 None），Phase C/Step 4
                 self.scene.cleanup_orphan_containers();
-                self.current_file = Some(outcome.path.clone());
-                self.dirty = false;
-                // 加载成功后加入最近文件列表
-                add_recent_file(&mut self.recent_files, outcome.path.clone());
+                // plan #5：从 .autosave 恢复时，当前文件仍指向原 .prz，
+                // 恢复的内容尚未写回原文件 → 视作未保存（dirty）。
+                match self.restoring_from_autosave.take() {
+                    Some(orig) => {
+                        self.current_file = Some(orig);
+                        self.dirty = true;
+                    }
+                    None => {
+                        self.current_file = Some(outcome.path.clone());
+                        self.dirty = false;
+                        // 加载成功后加入最近文件列表
+                        add_recent_file(&mut self.recent_files, outcome.path.clone());
+                    }
+                }
+                self.autosave_dirty_since = None;
                 self.flash(fill(
                     t(self.lang, T::FlashOpened),
                     &[outcome.path.display().to_string()],
                 ));
                 ctx.request_repaint();
+                // 打开文件后检测同目录较新的 .autosave，弹恢复提示（plan #5）
+                if self.autosave_enabled {
+                    self.pending_autosave_restore = newer_autosave_for(&outcome.path);
+                    if self.pending_autosave_restore.is_some() {
+                        ctx.request_repaint();
+                    }
+                }
             }
             Err(e) => {
                 self.flash(fill(
@@ -176,6 +194,9 @@ impl PReferZApp {
         self.color_picker_active = false;
         self.color_sample = None;
         self.pending_save_prompt = None;
+        self.pending_autosave_restore = None;
+        self.restoring_from_autosave = None;
+        self.autosave_dirty_since = None;
         self.viewport.reset();
         self.flash(t(self.lang, T::FlashNewCanvas).to_string());
         ctx.request_repaint();
@@ -388,6 +409,25 @@ impl PReferZApp {
 
     /// 启动后台保存
     pub(crate) fn start_save(&mut self, ctx: &egui::Context, path: PathBuf) {
+        let msg = fill(
+            t(self.lang, T::ProgressSaveFile),
+            &[path.display().to_string()],
+        );
+        self.start_save_common(ctx, path, msg);
+    }
+
+    /// 启动后台自动保存（plan #5）：写 `.prz.autosave`，进度条文案区分于
+    /// 手动保存；完成后的分支处理见 `poll_background`（按路径后缀识别）。
+    pub(crate) fn start_autosave(&mut self, ctx: &egui::Context, path: PathBuf) {
+        let msg = fill(
+            t(self.lang, T::ProgressAutosave),
+            &[path.display().to_string()],
+        );
+        self.start_save_common(ctx, path, msg);
+    }
+
+    /// 保存公共流程：收集 image_data_cache + 视口元数据 → 后台写文件。
+    fn start_save_common(&mut self, ctx: &egui::Context, path: PathBuf, msg: String) {
         // 收集 image_data_cache（key 转字符串以匹sqlar name
         let mut images: HashMap<String, Vec<u8>> = HashMap::new();
         for item in &self.scene.items {
@@ -403,7 +443,7 @@ impl PReferZApp {
             zoom: self.viewport.zoom,
         };
         self.bg_ops
-            .start_save(ctx, path, self.scene.clone(), images, viewport, self.lang);
+            .start_save_msg(ctx, path, self.scene.clone(), images, viewport, msg);
     }
 
     /// 启动后台导出（spec §2.3 导出）。

@@ -157,15 +157,24 @@ pub enum T {
     MermaidGenerate,         // 生成
     FlashMermaidParseFailed, // 解析失败：{0}
     FlashMermaidCreated,     // 已生成流程图：{0} 个节点、{1} 条边
-    FlashNoSelectedImages,   // 无选中的图片项
-    FlashNoExportableImages, // 无可导出的图片项
-    FlashArranged,           // 排列：{0}
-    FlashAligned,            // 对齐：{0}
-    FlashDistributed,        // 分布：{0}
-    FlashNormalized,         // 归一化：{0}
-    ArrangeModeLinear,       // 线形（toast 用，不带菜单里的快捷键提示）
-    ArrangeModeGrid,         // 网格
-    ArrangeModeOptimal,      // 最优装箱
+    // ── 自动保存（plan #5）──
+    SettingsAutosave,         // 设置面板节标题
+    SettingsAutosaveEnabled,  // 启用自动保存（checkbox）
+    SettingsAutosaveInterval, // 间隔秒数（滑块）
+    ProgressAutosave,         // 自动保存: {path}（进度条）
+    AutosaveRestorePrompt,    // 检测到较新的自动保存备份…
+    AutosaveRestore,          // 恢复
+    AutosaveDismiss,          // 忽略
+    FlashAutosaveFailed,      // 自动保存失败: {0}
+    FlashNoSelectedImages,    // 无选中的图片项
+    FlashNoExportableImages,  // 无可导出的图片项
+    FlashArranged,            // 排列：{0}
+    FlashAligned,             // 对齐：{0}
+    FlashDistributed,         // 分布：{0}
+    FlashNormalized,          // 归一化：{0}
+    ArrangeModeLinear,        // 线形（toast 用，不带菜单里的快捷键提示）
+    ArrangeModeGrid,          // 网格
+    ArrangeModeOptimal,       // 最优装箱
     // ── 欢迎页 ──
     WelcomeTitle, // PReferZ（固定不翻译）
     WelcomeSubtitle,
@@ -464,6 +473,14 @@ fn translate_en(key: T) -> &'static str {
         T::MermaidGenerate => "Generate",
         T::FlashMermaidParseFailed => "Parse failed: {0}",
         T::FlashMermaidCreated => "Flowchart created: {0} nodes, {1} edges",
+        T::SettingsAutosave => "Autosave",
+        T::SettingsAutosaveEnabled => "Enable autosave",
+        T::SettingsAutosaveInterval => "Idle seconds",
+        T::ProgressAutosave => "Autosaving: {0}",
+        T::AutosaveRestorePrompt => "A newer autosave backup was found for this file. Restore it?",
+        T::AutosaveRestore => "Restore",
+        T::AutosaveDismiss => "Dismiss",
+        T::FlashAutosaveFailed => "Autosave failed: {0}",
         T::FlashNoSelectedImages => "No selected image items",
         T::FlashNoExportableImages => "No exportable image items",
         T::FlashArranged => "Arranged: {0}",
@@ -715,6 +732,14 @@ fn translate_zh(key: T) -> &'static str {
         T::MermaidGenerate => "生成",
         T::FlashMermaidParseFailed => "解析失败：{0}",
         T::FlashMermaidCreated => "已生成流程图：{0} 个节点、{1} 条边",
+        T::SettingsAutosave => "自动保存",
+        T::SettingsAutosaveEnabled => "启用自动保存",
+        T::SettingsAutosaveInterval => "无操作秒数",
+        T::ProgressAutosave => "自动保存: {0}",
+        T::AutosaveRestorePrompt => "检测到该文件有较新的自动保存备份，是否恢复？",
+        T::AutosaveRestore => "恢复",
+        T::AutosaveDismiss => "忽略",
+        T::FlashAutosaveFailed => "自动保存失败: {0}",
         T::FlashNoSelectedImages => "无选中的图片项",
         T::FlashNoExportableImages => "无可导出的图片项",
         T::FlashArranged => "排列：{0}",

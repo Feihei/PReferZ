@@ -65,13 +65,55 @@ impl PReferZApp {
         }
     }
 
-    /// 把当前配置（语言 + 主题）落盘到 `~/.preferz/config.json`。
+    /// 自动保存恢复提示（plan #5）：打开 `.prz` 时检测到较新的
+    /// `.prz.autosave` 弹出。恢复=载入备份内容（current_file 仍指原文件、
+    /// 内容视作未保存）；忽略=保留备份文件不删。
+    pub(crate) fn render_autosave_restore_prompt(&mut self, ctx: &egui::Context) {
+        let mut restore = false;
+        let mut dismiss = false;
+        egui::Window::new("autosave_restore")
+            .title_bar(false)
+            .resizable(false)
+            .collapsible(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.set_min_width(320.0);
+                ui.vertical_centered(|ui| {
+                    ui.add_space(8.0);
+                    ui.label(t(self.lang, T::AutosaveRestorePrompt));
+                    ui.add_space(12.0);
+                    ui.horizontal(|ui| {
+                        if ui.button(t(self.lang, T::AutosaveRestore)).clicked() {
+                            restore = true;
+                        }
+                        if ui.button(t(self.lang, T::AutosaveDismiss)).clicked() {
+                            dismiss = true;
+                        }
+                    });
+                    ui.add_space(8.0);
+                });
+            });
+        if restore {
+            let Some(auto) = self.pending_autosave_restore.take() else {
+                return;
+            };
+            let original = self.current_file.clone();
+            self.restoring_from_autosave = original;
+            self.bg_ops.start_load(ctx, auto, self.lang);
+        } else if dismiss {
+            self.pending_autosave_restore = None;
+        }
+    }
+
+    /// 把当前配置（语言 + 主题 + 自动保存）落盘到 `~/.preferz/config.json`。
     /// keymap 不再持久化（改绑入口已随 D6 移除，见 `PReferZApp::new`）。
     pub(crate) fn persist_config(&self) {
         save_config(&UserConfig {
             lang: self.lang,
             keymap: KeymapMap::default(),
             theme: self.theme,
+            autosave_enabled: self.autosave_enabled,
+            autosave_interval: self.autosave_interval,
         });
     }
 
@@ -83,10 +125,13 @@ impl PReferZApp {
         let mut frameless = self.frameless;
         let mut lang = self.lang;
         let mut theme = self.theme;
+        let mut autosave_enabled = self.autosave_enabled;
+        let mut autosave_interval = self.autosave_interval;
         let mut top_changed = false;
         let mut frame_changed = false;
         let mut lang_changed = false;
         let mut theme_changed = false;
+        let mut autosave_changed = false;
         egui::Window::new(t(self.lang, T::SettingsTitle))
             .open(&mut open)
             .resizable(false)
@@ -120,6 +165,31 @@ impl PReferZApp {
                         .text(t(self.lang, T::SettingsBgAlpha))
                         .fixed_decimals(2),
                 );
+                ui.separator();
+
+                // 自动保存（plan #5）：开关 + debounce 间隔（最小 10s）
+                ui.label(t(self.lang, T::SettingsAutosave));
+                if ui
+                    .checkbox(
+                        &mut autosave_enabled,
+                        t(self.lang, T::SettingsAutosaveEnabled),
+                    )
+                    .changed()
+                {
+                    autosave_changed = true;
+                }
+                ui.add_enabled(
+                    autosave_enabled,
+                    egui::Slider::new(&mut autosave_interval, 10..=300)
+                        .text(t(self.lang, T::SettingsAutosaveInterval)),
+                );
+                if autosave_changed {
+                    // 立即持久化（与语言/主题同惯例）
+                    self.autosave_enabled = autosave_enabled;
+                    self.autosave_interval = autosave_interval;
+                    self.persist_config();
+                    autosave_changed = false;
+                }
                 ui.separator();
 
                 // 语言切换

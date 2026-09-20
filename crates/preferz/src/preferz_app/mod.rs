@@ -372,6 +372,19 @@ pub struct PReferZApp {
     mermaid_open: bool,
     /// mermaid 输入弹窗的文本缓冲。
     mermaid_buf: String,
+    /// 自动保存开关（plan #5，config.json 持久化，默认开）。
+    autosave_enabled: bool,
+    /// 自动保存 debounce 间隔秒数（plan #5，默认 30，最小 10）。
+    autosave_interval: u32,
+    /// 自动保存 debounce 计时起点（plan #5）：最近一次变更的时刻；
+    /// `None` = 无待备份变更（刚备份过 / 刚保存过 / 尚未变更过）。
+    autosave_dirty_since: Option<std::time::Instant>,
+    /// 待提示恢复的自动保存文件（plan #5）：打开 `.prz` 时检测到较新的
+    /// `.prz.autosave` 则暂存其路径，弹「恢复/忽略」。
+    pending_autosave_restore: Option<PathBuf>,
+    /// 正在从 `.autosave` 恢复（plan #5）：Some(原 `.prz` 路径)。加载完成后
+    /// current_file 仍指向原文件、内容视作未保存（dirty）。
+    restoring_from_autosave: Option<PathBuf>,
     /// 后台任务（导入解/ 文件加载 / 文件保存）
     bg_ops: BackgroundOps,
     /// 颜色采样模式（spec §2.2 颜色采样）。true 时鼠标在 Pixmap 上读取像RGB 显示
@@ -422,6 +435,28 @@ enum SavePromptAction {
     Close,
     /// 用户点了新建画布（Ctrl+N）
     NewCanvas,
+}
+
+/// 自动保存文件后缀（plan #5）：`foo.prz` → `foo.prz.autosave`。
+const AUTOSAVE_SUFFIX: &str = ".autosave";
+
+/// `.prz` 路径 → 对应自动保存路径（原路径追加 `.autosave`）。
+pub(crate) fn autosave_path_for(path: &Path) -> PathBuf {
+    let mut s = path.as_os_str().to_owned();
+    s.push(AUTOSAVE_SUFFIX);
+    PathBuf::from(s)
+}
+
+/// 找 `path` 的**较新**自动保存备份：`.autosave` 存在且 mtime 晚于原文件时
+/// 返回其路径；原文件 mtime 不可得时只要有备份就提示；否则 None。
+pub(crate) fn newer_autosave_for(path: &Path) -> Option<PathBuf> {
+    let auto = autosave_path_for(path);
+    let auto_mtime = std::fs::metadata(&auto).and_then(|m| m.modified()).ok()?;
+    match std::fs::metadata(path).and_then(|m| m.modified()) {
+        Ok(orig_mtime) if auto_mtime > orig_mtime => Some(auto),
+        Ok(_) => None,
+        Err(_) => Some(auto),
+    }
 }
 
 /// 端点拖拽中暂存的绑定：`(端点索引, 目标 id, 锚点)`。
@@ -781,6 +816,11 @@ impl PReferZApp {
             pending_chart: None,
             mermaid_open: false,
             mermaid_buf: String::new(),
+            autosave_enabled: cfg.autosave_enabled,
+            autosave_interval: cfg.autosave_interval.max(10),
+            autosave_dirty_since: None,
+            pending_autosave_restore: None,
+            restoring_from_autosave: None,
             bg_ops: BackgroundOps::default(),
             color_picker_active: false,
             color_sample: None,
@@ -815,13 +855,43 @@ impl PReferZApp {
     /// push undo command 并标记画布为 dirty（有未保存修改）
     fn push_cmd(&mut self, cmd: Box<dyn Command>) {
         self.undo_stack.push(cmd, &mut self.scene);
+        self.mark_dirty();
+    }
+
+    /// 标记画布为 dirty，并重置自动保存 debounce 计时（plan #5：
+    /// 「变更后 N 秒无操作」——每次变更都重置计时起点）。
+    fn mark_dirty(&mut self) {
         self.dirty = true;
+        self.autosave_dirty_since = Some(std::time::Instant::now());
+    }
+
+    /// 自动保存计时（plan #5）：变更后 `autosave_interval` 秒无操作且当前
+    /// 打开着 `.prz` 文件 → 后台写 `.prz.autosave`。不进 undo、不改变文档的
+    /// 未保存状态（原文件 Ctrl+S 语义不变）；保存进行中（手动 Ctrl+S 或
+    /// 上一次自动保存未完成）跳过本轮。
+    fn tick_autosave(&mut self, ctx: &egui::Context) {
+        if !self.autosave_enabled || !self.dirty {
+            return;
+        }
+        if self.current_file.is_none() || self.bg_ops.save_rx.is_some() {
+            return;
+        }
+        let Some(since) = self.autosave_dirty_since else {
+            return;
+        };
+        if since.elapsed() < std::time::Duration::from_secs(self.autosave_interval as u64) {
+            return;
+        }
+        let path = autosave_path_for(self.current_file.as_deref().expect("已检查 Some"));
+        // 计时清零：本轮备份已启动；下次变更重新计时
+        self.autosave_dirty_since = None;
+        self.start_autosave(ctx, path);
     }
 
     /// 执行 undo：成功则标记 dirty
     fn perform_undo(&mut self) -> bool {
         if self.undo_stack.undo(&mut self.scene) {
-            self.dirty = true;
+            self.mark_dirty();
             true
         } else {
             false
@@ -842,7 +912,7 @@ impl PReferZApp {
     /// 执行 redo：成功则标记 dirty
     fn perform_redo(&mut self) -> bool {
         if self.undo_stack.redo(&mut self.scene) {
-            self.dirty = true;
+            self.mark_dirty();
             true
         } else {
             false
@@ -861,33 +931,43 @@ impl PReferZApp {
         }
         // 保存
         if let Some(outcome) = self.bg_ops.take_save() {
-            match outcome.result {
-                Ok(()) => {
-                    self.flash(fill(
-                        t(self.lang, T::FlashSaved),
-                        &[outcome.path.display().to_string()],
-                    ));
-                    self.current_file = Some(outcome.path.clone());
-                    self.dirty = false;
-                    // 若有 pending 关闭/新建请求，现在保存完成可以执行了
-                    if let Some(action) = self.pending_save_prompt.take() {
-                        match action {
-                            SavePromptAction::Close => {
-                                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                            }
-                            SavePromptAction::NewCanvas => {
-                                self.reset_canvas(ctx);
+            // 自动保存（plan #5）：目标为 `.prz.autosave` —— 静默完成，不
+            // 改 current_file / 不清 dirty / 不执行 pending 关闭/新建动作；
+            // 失败才提示（原文件的 Ctrl+S 语义不变）。
+            if outcome.path.to_string_lossy().ends_with(AUTOSAVE_SUFFIX) {
+                if let Err(e) = outcome.result {
+                    self.flash(fill(t(self.lang, T::FlashAutosaveFailed), &[e]));
+                }
+            } else {
+                match outcome.result {
+                    Ok(()) => {
+                        self.flash(fill(
+                            t(self.lang, T::FlashSaved),
+                            &[outcome.path.display().to_string()],
+                        ));
+                        self.current_file = Some(outcome.path.clone());
+                        self.dirty = false;
+                        self.autosave_dirty_since = None;
+                        // 若有 pending 关闭/新建请求，现在保存完成可以执行了
+                        if let Some(action) = self.pending_save_prompt.take() {
+                            match action {
+                                SavePromptAction::Close => {
+                                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                                }
+                                SavePromptAction::NewCanvas => {
+                                    self.reset_canvas(ctx);
+                                }
                             }
                         }
                     }
-                }
-                Err(e) => {
-                    self.flash(fill(
-                        t(self.lang, T::FlashSaveFailed),
-                        std::slice::from_ref(&e),
-                    ));
-                    // 保存失败：取消 pending，让用户自行决定
-                    self.pending_save_prompt = None;
+                    Err(e) => {
+                        self.flash(fill(
+                            t(self.lang, T::FlashSaveFailed),
+                            std::slice::from_ref(&e),
+                        ));
+                        // 保存失败：取消 pending，让用户自行决定
+                        self.pending_save_prompt = None;
+                    }
                 }
             }
         }
@@ -1083,6 +1163,9 @@ impl eframe::App for PReferZApp {
 
         // poll 后台任务结果（导入/加载/保存/导出）。
         self.poll_background(ctx);
+
+        // 自动保存计时（plan #5）：变更后 N 秒无操作写 .prz.autosave
+        self.tick_autosave(ctx);
 
         // 懒重建缺失纹理：undo 恢复 / 共享纹理删除后兜底（修 .issues #1 灰方块）。
         self.ensure_pixmap_textures(ctx);
@@ -1606,6 +1689,11 @@ impl eframe::App for PReferZApp {
 
         // 保存提示对话框（关闭/新建时若 dirty 弹出
         self.render_save_prompt(ctx);
+
+        // 自动保存恢复提示（plan #5）：打开 .prz 时检测到较新备份
+        if self.pending_autosave_restore.is_some() {
+            self.render_autosave_restore_prompt(ctx);
+        }
 
         // 后台任务进度条（spec L298：加保存时显示进度）
         if self.bg_ops.pending > 0 {
@@ -2904,6 +2992,103 @@ mod tests {
         assert!(app.scene.items.is_empty(), "解析失败不应生成 item");
         assert!(app.undo_stack.undo.is_empty());
         assert_eq!(app.mermaid_buf, "a --> b", "输入保留供修改");
+    }
+
+    // ───────── 自动保存（plan #5） ─────────
+
+    #[test]
+    fn autosave_path_appends_suffix() {
+        let p = Path::new("D:/tmp/foo.prz");
+        assert_eq!(
+            autosave_path_for(p),
+            PathBuf::from("D:/tmp/foo.prz.autosave")
+        );
+    }
+
+    #[test]
+    fn newer_autosave_detects_fresh_backup_only() {
+        let dir = std::env::temp_dir().join(format!("pz_as_detect_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let prz = dir.join("doc.prz");
+        let auto = dir.join("doc.prz.autosave");
+        std::fs::write(&prz, b"orig").unwrap();
+        // 无备份 → None
+        assert!(newer_autosave_for(&prz).is_none());
+        // 备份比原文件新 → Some
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&auto, b"backup").unwrap();
+        assert_eq!(newer_autosave_for(&prz), Some(auto.clone()));
+        // 备份不比原文件新（这里把原文件再写一次使其更新）→ None
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&prz, b"orig-newer").unwrap();
+        assert!(newer_autosave_for(&prz).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn tick_autosave_writes_sidecar_and_keeps_doc_dirty() {
+        let dir = std::env::temp_dir().join(format!("pz_as_tick_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let prz = dir.join("doc.prz");
+        let auto = dir.join("doc.prz.autosave");
+
+        let mut app = PReferZApp::new();
+        app.current_file = Some(prz.clone());
+        // 变更（重置计时）→ 把计时起点拨回 31s 前，等效「已无操作 31s」
+        app.mark_dirty();
+        app.autosave_dirty_since =
+            Some(std::time::Instant::now() - std::time::Duration::from_secs(31));
+        let ctx = egui::Context::default();
+        app.tick_autosave(&ctx);
+
+        // 已启动备份任务、计时清零；文档的未保存状态不受影响
+        assert!(app.bg_ops.save_rx.is_some(), "应启动后台备份写盘");
+        assert!(app.autosave_dirty_since.is_none());
+        assert!(app.dirty, "自动保存不清除未保存标记");
+        assert_eq!(app.current_file, Some(prz.clone()), "当前文件不变");
+
+        // 等后台写盘完成 → poll 消费结果：静默（无 current_file / dirty 变化）
+        for _ in 0..100 {
+            if app.bg_ops.save_rx.is_none() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            app.poll_background(&ctx);
+        }
+        assert!(auto.exists(), ".autosave 应已写盘");
+        assert!(app.dirty);
+        assert_eq!(app.current_file, Some(prz.clone()));
+
+        // 备份完成后，无新变更不再重复启动（计时起点为 None）
+        app.poll_background(&ctx);
+        assert!(app.bg_ops.save_rx.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn tick_autosave_skips_untitled_and_recent_changes() {
+        let mut app = PReferZApp::new();
+        let ctx = egui::Context::default();
+        // 未命名文档（从未存盘）：不自动保存
+        app.mark_dirty();
+        app.tick_autosave(&ctx);
+        assert!(app.bg_ops.save_rx.is_none());
+        // 刚变更（计时未到）：不触发
+        let tmp = std::env::temp_dir().join(format!("pz_as_skip_{}.prz", std::process::id()));
+        app.current_file = Some(tmp);
+        app.mark_dirty();
+        app.tick_autosave(&ctx);
+        assert!(app.bg_ops.save_rx.is_none());
+    }
+
+    #[test]
+    fn autosave_outcome_is_silent_not_manual() {
+        // 手动保存 vs 自动保存按路径后缀分流：autosave 路径走静默分支。
+        // 直接验证分流谓词（行为级测试见 tick_autosave_writes_sidecar）。
+        let p = PathBuf::from("x/y.prz.autosave");
+        assert!(p.to_string_lossy().ends_with(AUTOSAVE_SUFFIX));
+        let p2 = PathBuf::from("x/y.prz");
+        assert!(!p2.to_string_lossy().ends_with(AUTOSAVE_SUFFIX));
     }
 
     // ───────── 验收反馈批次（#4-1 / #7-2） ─────────

@@ -124,22 +124,21 @@ impl BackgroundOps {
         });
     }
 
-    pub(crate) fn start_save(
+    /// 启动后台保存（plan #5 拆分：进度条文案由调用方给定——手动保存为
+    /// 「保存文件: {path}」，自动保存为「自动保存: {path}」，其余流程相同）。
+    pub(crate) fn start_save_msg(
         &mut self,
         ctx: &egui::Context,
         path: PathBuf,
         scene: Scene,
         images: HashMap<String, Vec<u8>>,
         viewport: ViewportMeta,
-        lang: Lang,
+        msg: String,
     ) {
         let (tx, rx) = mpsc::channel();
         self.save_rx = Some(rx);
         self.pending += 1;
-        self.msg = Some(fill(
-            t(lang, T::ProgressSaveFile),
-            &[path.display().to_string()],
-        ));
+        self.msg = Some(msg);
         let ctx2 = ctx.clone();
         std::thread::spawn(move || {
             let result = (|| {
