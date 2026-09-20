@@ -1353,13 +1353,20 @@ impl eframe::App for PReferZApp {
                 }
             }
 
-            // 徒手绘制实时预览（plan #10）：用与终稿同一套逐段描边几何（笔宽随 zoom），
-            // 落笔即见收笔尖、运笔粗的墨迹，且不会是填充区域。
+            // 徒手绘制实时预览（plan #10）：与终稿同款——Catmull-Rom 平滑中心线 +
+            // 逐段描边（笔宽随 zoom），所见即所得，且不会是填充区域。
             if let DragState::Drawing { raw } = &self.drag {
-                let pts: Vec<(f32, f32)> = raw.iter().map(|p| (p.x, p.y)).collect();
-                if pts.len() >= 2 {
-                    let pressures =
-                        preferz_core::freedraw::pressures_from_spacing(&pts, self.viewport.zoom);
+                let raw_pts: Vec<(f32, f32)> = raw.iter().map(|p| (p.x, p.y)).collect();
+                if raw_pts.len() >= 2 {
+                    let raw_pressures = preferz_core::freedraw::pressures_from_spacing(
+                        &raw_pts,
+                        self.viewport.zoom,
+                    );
+                    let (pts, pressures) = preferz_core::freedraw::smooth_centerline(
+                        &raw_pts,
+                        &raw_pressures,
+                        preferz_core::freedraw::SMOOTH_SAMPLES,
+                    );
                     let screen_pts: Vec<egui::Pos2> = pts
                         .iter()
                         .map(|&(x, y)| self.viewport.canvas_to_pos2(CanvasPoint::new(x, y)))
@@ -2479,8 +2486,9 @@ mod tests {
                 stroke_width,
                 color: c,
             } => {
-                assert_eq!(points.len(), 6);
-                assert_eq!(points[0], (0.0, 0.0));
+                // 落笔定型时做了 Catmull-Rom 重采样 → 点集被加密（远多于原始 6 点）。
+                assert!(points.len() > 6, "平滑后点集应被加密");
+                assert_eq!(points[0], (0.0, 0.0), "首点（AABB 左上角）保留");
                 assert_eq!(pressures.len(), points.len());
                 // 相对笔宽乘子恒在 (0,1]；基准宽 = 创建时的描边宽。
                 assert!(pressures.iter().all(|&p| p > 0.0 && p <= 1.0 + 1e-6));

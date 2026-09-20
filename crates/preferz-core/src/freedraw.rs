@@ -89,6 +89,67 @@ fn apply_end_taper(pressures: &[f32]) -> Vec<f32> {
     out
 }
 
+/// 中心线平滑：每段插值的采样点数（Catmull-Rom）。8 足够把折角抹平又不显著膨点集。
+pub const SMOOTH_SAMPLES: usize = 8;
+
+/// 单段 Catmull-Rom 插值点（与 `item::catmull_rom_polyline` 同式，0.5 centripetal 近似）。
+fn catmull_rom_point(
+    p0: (f32, f32),
+    p1: (f32, f32),
+    p2: (f32, f32),
+    p3: (f32, f32),
+    t: f32,
+) -> (f32, f32) {
+    let t2 = t * t;
+    let t3 = t2 * t;
+    let x = 0.5
+        * ((2.0 * p1.0)
+            + (-p0.0 + p2.0) * t
+            + (2.0 * p0.0 - 5.0 * p1.0 + 4.0 * p2.0 - p3.0) * t2
+            + (-p0.0 + 3.0 * p1.0 - 3.0 * p2.0 + p3.0) * t3);
+    let y = 0.5
+        * ((2.0 * p1.1)
+            + (-p0.1 + p2.1) * t
+            + (2.0 * p0.1 - 5.0 * p1.1 + 4.0 * p2.1 - p3.1) * t2
+            + (-p0.1 + 3.0 * p1.1 - 3.0 * p2.1 + p3.1) * t3);
+    (x, y)
+}
+
+/// 落笔定型时对中心线做 **Catmull-Rom 重采样**，并沿弧按段**线性插值逐点压力**，
+/// 返回等长的平滑点集 + 压力。目的：消除快运笔稀疏采样的折角分段感，且**存储即平滑**
+/// ——命中测试与渲染用同一份点集（避免「看着在曲线上却点不中」）。
+///
+/// 端点严格保留（首末采样点 = 原首末点）。点数 < 3 时原样返回（两点直线无需平滑）。
+/// `points.len() != pressures.len()` 亦原样返回（防御）。
+pub fn smooth_centerline(
+    points: &[(f32, f32)],
+    pressures: &[f32],
+    samples: usize,
+) -> (Vec<(f32, f32)>, Vec<f32>) {
+    let n = points.len();
+    if n < 3 || pressures.len() != n {
+        return (points.to_vec(), pressures.to_vec());
+    }
+    let samples = samples.max(2);
+    // 开放端点用 clamp（首/末点复制）取控制点，与 item::catmull_rom_polyline 同策。
+    let cp = |i: usize| points[i.min(n - 1)];
+    let pp = |i: usize| pressures[i.min(n - 1)];
+    let mut out_pts = Vec::with_capacity((n - 1) * samples + 1);
+    let mut out_pr = Vec::with_capacity((n - 1) * samples + 1);
+    for k in 0..n - 1 {
+        let (p0, p1, p2, p3) = (cp(k.saturating_sub(1)), cp(k), cp(k + 1), cp(k + 2));
+        let (pr1, pr2) = (pp(k), pp(k + 1));
+        for s in 0..samples {
+            let t = s as f32 / samples as f32;
+            out_pts.push(catmull_rom_point(p0, p1, p2, p3, t));
+            out_pr.push(pr1 + (pr2 - pr1) * t);
+        }
+    }
+    out_pts.push(cp(n - 1));
+    out_pr.push(pp(n - 1));
+    (out_pts, out_pr)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -154,5 +215,45 @@ mod tests {
                 .iter()
                 .all(|&p| (MIN_PRESSURE - 1e-4..=1.0 + 1e-4).contains(&p)));
         }
+    }
+
+    #[test]
+    fn smooth_passthrough_for_short_or_mismatched() {
+        // 两点直线：原样返回。
+        let (p, pr) = smooth_centerline(&[(0.0, 0.0), (10.0, 0.0)], &[1.0, 0.5], 8);
+        assert_eq!(p, vec![(0.0, 0.0), (10.0, 0.0)]);
+        assert_eq!(pr, vec![1.0, 0.5]);
+        // points/pressures 长度不一致：原样返回。
+        let (p2, _) = smooth_centerline(&[(0.0, 0.0), (1.0, 1.0), (2.0, 0.0)], &[1.0], 8);
+        assert_eq!(p2.len(), 3);
+    }
+
+    #[test]
+    fn smooth_densifies_and_preserves_endpoints() {
+        let pts = vec![(0.0, 0.0), (10.0, 12.0), (20.0, 0.0), (30.0, 10.0)];
+        let prs = vec![1.0, 0.6, 0.3, 0.8];
+        let (sp, spr) = smooth_centerline(&pts, &prs, SMOOTH_SAMPLES);
+        // (n-1)*samples + 1 个点，压力等长。
+        assert_eq!(sp.len(), (pts.len() - 1) * SMOOTH_SAMPLES + 1);
+        assert_eq!(spr.len(), sp.len());
+        // 端点严格保留。
+        assert_eq!(sp[0], pts[0]);
+        assert_eq!(sp[sp.len() - 1], pts[pts.len() - 1]);
+        assert!((spr[0] - prs[0]).abs() < 1e-4);
+        assert!((spr[spr.len() - 1] - prs[prs.len() - 1]).abs() < 1e-4);
+        let lo = MIN_PRESSURE - 1e-4;
+        let hi = 1.0 + 1e-4;
+        assert!(spr.iter().all(|&p| p.is_finite() && (lo..=hi).contains(&p)));
+    }
+
+    #[test]
+    fn smooth_of_straight_line_stays_straight() {
+        // 共线点集 Catmull-Rom 后仍应近似共线（y≈0），压力线性。
+        let pts: Vec<(f32, f32)> = (0..5).map(|i| (i as f32 * 10.0, 0.0)).collect();
+        let prs: Vec<f32> = (0..5).map(|i| 1.0 - i as f32 * 0.1).collect();
+        let (sp, spr) = smooth_centerline(&pts, &prs, 8);
+        assert!(sp.iter().all(|&(_, y)| y.abs() < 1e-3));
+        // 压力沿 x 单调不增（插值不自创极值）。
+        assert!(spr.windows(2).all(|w| w[1] <= w[0] + 1e-4));
     }
 }

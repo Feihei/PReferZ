@@ -1268,8 +1268,16 @@ impl PReferZApp {
         if raw.len() < 2 {
             return;
         }
-        let pts: Vec<(f32, f32)> = raw.iter().map(|p| (p.x, p.y)).collect();
-        let pressures = preferz_core::freedraw::pressures_from_spacing(&pts, self.viewport.zoom);
+        let raw_pts: Vec<(f32, f32)> = raw.iter().map(|p| (p.x, p.y)).collect();
+        let raw_pressures =
+            preferz_core::freedraw::pressures_from_spacing(&raw_pts, self.viewport.zoom);
+        // 落笔定型即做 Catmull-Rom 重采样（压力同步插值）：存储即平滑，命中与渲染用同
+        // 一份点集，消除快运笔稀疏采样的折角分段感。
+        let (pts, pressures) = preferz_core::freedraw::smooth_centerline(
+            &raw_pts,
+            &raw_pressures,
+            preferz_core::freedraw::SMOOTH_SAMPLES,
+        );
         let item = Item::new_freedraw(
             &pts,
             &pressures,
