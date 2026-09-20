@@ -57,7 +57,7 @@ eframe = { version = "0.36", default-features = false, features = [
 egui = "0.36"
 
 # File I/O
-rusqlite = { version = "0.31", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
 image = "0.25"
 
 # Utilities
