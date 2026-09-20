@@ -5,7 +5,7 @@
 - **Rust** (stable, >= 1.88), edition 2021 — 1.88 起才稳定的 `slice::as_chunks` / `as_chunks_mut` 已在代码中使用
 - **GUI**: `egui` + `eframe` (glow backend)
 - **2D geometry**: `euclid` (parameterized `CanvasSpace` / `ScreenSpace`)
-- **Undo**: 全手写——`preferz-core::commands::Command` trait + binary 层 `UndoStack`（`preferz_app.rs`）。注意 `undo` crate 虽列在 preferz-core 依赖里，但**零引用**（历史遗留）
+- **Undo**: 全手写——`preferz-core::commands::Command` trait + binary 层 `UndoStack`（`preferz_app.rs`）；不依赖任何第三方 undo crate
 - **File I/O**: `rusqlite` (`.prz` SQLite + sqlar), `image`, `rayon`
 - **File dialog**: `rfd`; **clipboard**: `arboard`; **config**: 手写 JSON（`~/.preferz/config.json` + `recent.json`，serde_json + `std::env` 取 home，**无 confy / dirs 依赖**）
 - **Workspace**: `crates/preferz` (binary), `crates/preferz-core`, `crates/preferz-fileio`
@@ -54,7 +54,7 @@ preferz (binary, eframe::App)
 - **Three coordinate systems**: `ScreenSpace` (pixels), `Viewport` (screen/zoom), `CanvasSpace` (world). Use `euclid` types — never cast between them with raw `f32`.
 - **Coordinate boundary is sealed at `ViewportEgui`.** `preferz_core::ViewportState` (and all core geometry) speaks only egui-free `Screen*`/`Canvas*` euclid types. The single `egui::Pos2 ↔ ScreenPoint` / `egui::Rect ↔ ScreenRect` conversion seam lives in the binary's `viewport.rs` (`ViewportEgui` trait: `pos2_to_canvas`/`canvas_to_pos2`/`canvas_rect_to_egui`/`set_screen_rect_egui`/`pan_by_screen_egui`/`zoom_at_egui`). Do not push `egui` types into core; convert at this trait, once, on the L2 input / L3 paint edges.
 - **Texture ownership**: `egui::TextureHandle` lives on `egui::Context`. Create/release textures inside `update()`. Do not hold bare `TextureId` across frames without registration.
-- **Undo "preview" mode**: interactive drag/scale rotates items directly, then `push(cmd)` on release with `skip_first_redo: true`. The `undo` crate has no built-in skip — this field is on the `Command` impl.
+- **Undo "preview" mode**: interactive drag/scale rotates items directly, then `push(cmd)` on release with `skip_first_redo: true`. `skip_first_redo` 是全手写 `Command` impl 上的字段（本项目不依赖任何第三方 undo crate），语义：预览已改过状态，首次 redo 跳过以免二次应用。
 - **`.prz` is the only format**（`.bee` 兼容层已移除，commit `62692a8`）：`.prz` 为 SQLite，含 `items`（5 列，主键为 UUID 字符串，transform 存单列 JSON）、`sqlar`（`name` / `sz` 未压缩大小 / `data` 压缩 blob）、`metadata`（`format` 恒为 `prz`、视口状态、`next_z`）。与 BeeRef `.bee` **不兼容**：后者 items 为 9 列、INTEGER 主键、transform 分列存储，且会写 `PRAGMA user_version`；详见 spec §5.4。`BeeFile::open()` 校验 `metadata.format == 'prz'`，不符直接报错。
 - **Image decode runs on background threads** (`std::thread::spawn` or `rayon`), post result via channel, call `egui_ctx.request_repaint()`.
 - **Canvas rendering**: egui is immediate-mode — viewport culling is mandatory. LOD (thumbnail textures at small zoom) is Phase 5+.
