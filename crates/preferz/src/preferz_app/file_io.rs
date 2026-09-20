@@ -107,13 +107,16 @@ impl PReferZApp {
                     }
                 }
 
-                // 应用视口元数据。zoom 需按当前钳制范围收敛：旧文件可能存着
-                // 超出新 min/max（10%–1000%）的极端值，不 clamp 会让滚轮缩放在
-                // 越界值上"空转"好几圈才有反应。
+                // 应用视口元数据。zoom 不再按 min/max 钳制：fit 视图（Shift+1）
+                // 可合法低于 min_zoom（内容过大），保存后重开必须忠实还原；且
+                // zoom_at 已处理越界渐进回归，旧版"滚轮在越界值上空转"的问题
+                // 不复存在。仅防御损坏数据（NaN / 非正数）。
                 self.viewport.pan = CanvasVector::new(viewport_meta.pan_x, viewport_meta.pan_y);
-                self.viewport.zoom = viewport_meta
-                    .zoom
-                    .clamp(self.viewport.min_zoom, self.viewport.max_zoom);
+                self.viewport.zoom = if viewport_meta.zoom.is_finite() && viewport_meta.zoom > 0.0 {
+                    viewport_meta.zoom
+                } else {
+                    1.0
+                };
 
                 self.scene = scene;
                 // 清理孤儿 container_id（容器已不存在则置 None），Phase C/Step 4

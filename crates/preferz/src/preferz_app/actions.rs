@@ -437,15 +437,15 @@ impl PReferZApp {
     }
 
     /// 计算把 `content_rect` 适配到当前视口（90% 填充）的目标 (zoom, pan)，
-    /// 与 [`ViewportState::fit_to_content`] 同公式。用于判断"当前是否已是该内容
-    /// 的适配视图"，从而支持双击图片在"适配↔上一视图"间切换（.issues #2）。
+    /// 与 [`ViewportState::fit_to_content`] 同公式（同样不钳制 min/max，fit 是
+    /// 一次性精确赋值）。用于判断"当前是否已是该内容的适配视图"，从而支持
+    /// 双击图片在"适配↔上一视图"间切换（.issues #2）。
     pub(crate) fn compute_fit(&self, content_rect: CanvasRect) -> (f32, CanvasVector) {
         let content_w = content_rect.width().max(1.0);
         let content_h = content_rect.height().max(1.0);
         let screen_w = self.viewport.screen_rect.width().max(1.0);
         let screen_h = self.viewport.screen_rect.height().max(1.0);
         let scale = (screen_w / content_w).min(screen_h / content_h) * 0.9;
-        let scale = scale.clamp(self.viewport.min_zoom, self.viewport.max_zoom);
         (scale, content_rect.center().to_vector())
     }
 

@@ -58,7 +58,8 @@ impl PReferZApp {
     }
 
     /// 计算 Present 模式下把 `frame_rect` 适配到 `screen_rect` 的目标视口 `(zoom, pan)`。
-    /// 按渲染标准和设计取 95% 填充；Present 临时放宽 max_zoom（不 clamp 上限）。
+    /// 按渲染标准和设计取 95% 填充；fit 为一次性精确赋值，不钳制 min/max
+    /// （与 `fit_to_content` 同策）：画框过大也要完整呈现，过小也不钳上限。
     pub(crate) fn present_compute_fit(
         &self,
         screen_rect: egui::Rect,
@@ -69,7 +70,6 @@ impl PReferZApp {
         let sw = screen_rect.width().max(1.0);
         let sh = screen_rect.height().max(1.0);
         let zoom = (sw / fw).min(sh / fh) * 0.95;
-        let zoom = zoom.max(self.viewport.min_zoom);
         (zoom, frame_rect.center().to_vector())
     }
 

@@ -24,7 +24,10 @@ pub struct ViewportState {
     pub pan: CanvasVector,
     /// 缩放比例（屏幕像素 / 画布像素）。
     pub zoom: f32,
+    /// 交互式缩放（滚轮 [`ViewportState::zoom_at`]）的活动范围下限。
+    /// fit 类一次性赋值（[`ViewportState::fit_to_content`]）可越界。
     pub min_zoom: f32,
+    /// 交互式缩放活动范围上限，语义同 [`ViewportState::min_zoom`]。
     pub max_zoom: f32,
     /// 画布面板在屏幕上的矩形（由 CentralPanel 每帧更新，app 层把 `egui::Rect`
     /// 转成 `ScreenRect` 后喂入）。
@@ -127,7 +130,18 @@ impl ViewportState {
         // delta 钳制防止 NaN/爆炸；基数 1.05 每单位 delta 缩放 5%（原 1.02 太慢）。
         let normalized_delta = delta.clamp(-2.0, 2.0);
         let zoom_factor = 1.05_f32.powf(normalized_delta);
-        let new_zoom = (self.zoom * zoom_factor).clamp(self.min_zoom, self.max_zoom);
+        // min/max 只约束常规交互式缩放；fit 视图（fit_to_content）可合法落在
+        // 范围之外（内容过大时 < min_zoom，内容过小时 > max_zoom）。越界状态下
+        // 不做硬钳制——朝范围内滚渐进回归、朝范围外滚继续放行，避免从 4% 一滚
+        // 直接跳回 10% 的突兀跳变。
+        let raw = self.zoom * zoom_factor;
+        let new_zoom = if self.zoom < self.min_zoom {
+            raw.min(self.min_zoom)
+        } else if self.zoom > self.max_zoom {
+            raw.max(self.max_zoom)
+        } else {
+            raw.clamp(self.min_zoom, self.max_zoom)
+        };
         if (new_zoom - self.zoom).abs() < 1e-9 {
             return;
         }
@@ -150,6 +164,11 @@ impl ViewportState {
     }
 
     /// 适配内容矩形到视口中心（90% 填充）。
+    ///
+    /// 结果**不**钳制到 `[min_zoom, max_zoom]`：fit 是一次性精确赋值
+    /// （Shift+1 / Shift+2 / 双击适配 / 右键菜单），内容超出交互范围时也必须
+    /// 完整装下——这正是 fit 的语义（对齐 Present 模式"放宽 max 不钳上限"的
+    /// 既有先例）。滚轮缩放（[`zoom_at`]）仍受 min/max 约束，且从越界值渐进回归。
     pub fn fit_to_content(&mut self, content_rect: CanvasRect) {
         let content_w = content_rect.width().max(1.0);
         let content_h = content_rect.height().max(1.0);
@@ -158,10 +177,7 @@ impl ViewportState {
 
         let scale_x = screen_w / content_w;
         let scale_y = screen_h / content_h;
-        let scale = scale_x.min(scale_y) * 0.9;
-        let scale = scale.clamp(self.min_zoom, self.max_zoom);
-
-        self.zoom = scale;
+        self.zoom = scale_x.min(scale_y) * 0.9;
         // pan = 内容中心
         self.pan = content_rect.center().to_vector();
     }
@@ -235,5 +251,90 @@ mod tests {
             vp.zoom_at(2.0, center);
         }
         assert!((vp.zoom - vp.max_zoom).abs() < 1e-6, "zoom={}", vp.zoom);
+    }
+
+    /// fit 视图可越过交互范围：内容远大于视口时 Shift+1 应完整装下（不钳在
+    /// 10%），内容远小于视口时也不钳在 1000%。
+    #[test]
+    fn fit_to_content_can_exceed_interactive_bounds() {
+        let mut vp = ViewportState::default();
+        vp.set_screen_rect(ScreenRect::new(
+            ScreenPoint::new(0.0, 0.0),
+            euclid::Size2D::new(1000.0, 800.0),
+        ));
+
+        // 20000×16000 → zoom = 1000/20000 * 0.9 = 0.045 < min_zoom
+        let huge = CanvasRect::new(
+            CanvasPoint::new(-10000.0, -8000.0),
+            euclid::Size2D::new(20000.0, 16000.0),
+        );
+        vp.fit_to_content(huge);
+        assert!((vp.zoom - 0.045).abs() < 1e-6, "zoom={}", vp.zoom);
+
+        // 50×50 → 限制轴为高度：zoom = 800/50 * 0.9 = 14.4 > max_zoom
+        let tiny = CanvasRect::new(
+            CanvasPoint::new(-25.0, -25.0),
+            euclid::Size2D::new(50.0, 50.0),
+        );
+        vp.fit_to_content(tiny);
+        assert!((vp.zoom - 14.4).abs() < 1e-6, "zoom={}", vp.zoom);
+    }
+
+    /// 越界状态下滚轮缩放渐进回归：朝范围内滚不得一步跳回边界，朝范围外滚
+    /// 继续放行（zoom_at 越界守卫）。
+    #[test]
+    fn zoom_at_out_of_range_returns_gradually() {
+        let mut vp = ViewportState::default();
+        let center = ScreenPoint::new(500.0, 400.0);
+        vp.set_screen_rect(ScreenRect::new(
+            ScreenPoint::new(0.0, 0.0),
+            euclid::Size2D::new(1000.0, 800.0),
+        ));
+
+        // 低于 min_zoom（模拟内容过大的 fit 视图）
+        vp.zoom = 0.04;
+        vp.zoom_at(-2.0, center);
+        let z_out = vp.zoom;
+        assert!(z_out < 0.04, "向范围外滚应放行: zoom={}", vp.zoom);
+        vp.zoom_at(2.0, center);
+        assert!(
+            vp.zoom > z_out && vp.zoom < vp.min_zoom,
+            "朝范围内滚应渐进、不跳边界: zoom={}",
+            vp.zoom
+        );
+        for _ in 0..100 {
+            if (vp.zoom - vp.min_zoom).abs() < 1e-6 {
+                break;
+            }
+            vp.zoom_at(2.0, center);
+        }
+        assert!(
+            (vp.zoom - vp.min_zoom).abs() < 1e-6,
+            "最终停在 min: zoom={}",
+            vp.zoom
+        );
+
+        // 高于 max_zoom（模拟内容过小的 fit 视图）
+        vp.zoom = 20.0;
+        vp.zoom_at(2.0, center);
+        let z_up = vp.zoom;
+        assert!(z_up > 20.0, "向范围外滚应放行: zoom={}", vp.zoom);
+        vp.zoom_at(-2.0, center);
+        assert!(
+            vp.zoom < z_up && vp.zoom > vp.max_zoom,
+            "朝范围内滚应渐进、不跳边界: zoom={}",
+            vp.zoom
+        );
+        for _ in 0..100 {
+            if (vp.zoom - vp.max_zoom).abs() < 1e-6 {
+                break;
+            }
+            vp.zoom_at(-2.0, center);
+        }
+        assert!(
+            (vp.zoom - vp.max_zoom).abs() < 1e-6,
+            "最终停在 max: zoom={}",
+            vp.zoom
+        );
     }
 }
