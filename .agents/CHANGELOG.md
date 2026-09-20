@@ -347,6 +347,53 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 
 ---
 
+## 徒手绘制（freedraw）速度锥形墨迹（plan #10，2026-09-18~20）
+
+> 向 Excalidraw 对齐的徒手笔迹：新增 `Tool::Freehand` + `ItemKind::Freedraw`，用**运笔速度**
+> 模拟压感（egui 无指针压感输入）给出「收笔尖、运笔粗」的锥形墨迹。交付四步：
+> `1a8cda6`（墨迹主体）→ `f869b86`（改逐段描边，修「画成区域而非描边」）→
+> `b70c2a3`（选中可改属性）→ `e1f46d8`（Catmull-Rom 平滑）。✅ 2026-09-20 Feihei `cargo run` 复验通过。
+
+- **数据模型**：`ItemKind::Freedraw { points(局部坐标，AABB 左上原点), pressures(相对笔宽乘子
+  0..1，速度锥形), stroke_width(基准宽，画布单位), color }`。**形状与粗细分离**——`pressures`
+  只承载「每点多细」的相对乘子，绝对宽 = `stroke_width × pressure × scale`；改粗细只动一个标量，
+  属性 undo 快照因此保持 `Copy`（不随点携带 `Vec`）。
+- **core（L1，无头可测）** `freedraw.rs`：
+  - `pressures_from_spacing(points, zoom)`——相邻点间距 / zoom 当速度代理（快→点稀→细），
+    三点滑动平均 + 首尾 `apply_end_taper` 收笔锥形，乘子恒 ∈ (`MIN_PRESSURE`, 1]，zoom 稳定；
+  - `smooth_centerline(points, pressures, samples)`——Catmull-Rom 逐段加密重采样（`SMOOTH_SAMPLES=8`）
+    + 逐点压力线性插值；端点严格保留；少于 3 点或点/压力长度不匹配时原样直通；
+  - `Item::new_freedraw`（AABB 局部归一，`pos` = AABB 左上）+ `base_size`/`bounding_rect`/
+    `contains_canvas_point`（到中心线距离 ≤ 该点半宽 + `HIT_SLOP`）加 Freedraw 分支；
+  - 批量命令 `SetFreedrawStyle` + `FreedrawStyle{color, stroke_width}`（`Copy` 快照，只回写
+    宽/色两点，点集与压力不动）。
+- **stylers（L3）** `freedraw_stroke_shapes`：沿中心线**逐段** `line_segment`（段宽 = 两端点半宽之和）
+  + 每点 `circle_filled` 圆帽拼描边。**关键教训**：不能把中心线两侧偏移闭合成 ribbon 轮廓再填充——
+  弯曲/回环处两侧边界自交，非零环绕三角化会把内部填成实心区域（即用户所报「画出区域而非描边」）。
+  `build_freedraw_visuals` 把局部点/宽经 `to_screen` 变到屏幕（宽随 item scale + zoom 自然缩放），
+  终稿与实时预览共用同一套描边函数。
+- **app（L2）**：`Tool::Freehand` / `Action::ToolFreehand`（裸 `P` + `Num7` 双绑，对齐 Excalidraw
+  字母位与本项目数字工具行）；`DragState::Drawing{raw}` 按下采集、移动按屏幕 2px 阈值过滤追点、
+  释放 `finish_create_freedraw`（raw → `pressures_from_spacing` → `smooth_centerline` →
+  `new_freedraw` → **一条** `AddItem` undo，<2 点丢弃、回 Select、Esc 丢笔）；实时预览同样走
+  `smooth_centerline`，与落笔定型完全一致（WYSIWYG，命中检测与绘制同源）。
+- **props（选中可编辑）**：`render_props_panel` 按 kind 分节，Freedraw 单列「墨迹」节
+  `render_freedraw_props`——颜色调色板 + 粗细滑块（`0.5..=12` 对数），均走 `apply_continuous`
+  + 新 `PropKind::Freedraw`/`PropValue::Freedraw`。dash/fill/roundness 对笔迹无意义故不给。
+- **fileio**：kind 整体存于 `items.data` JSON blob，**无 `.prz` schema 迁移**（version 仍 3），
+  仅 `item_kind_str` 补判别串 `"freedraw"`；存读往返单测。
+- **i18n**：`ToolFreehand`（徒手 / Freedraw）、`FlashFreedrawCreated`（已绘制墨迹 / Ink created）、
+  `PropsSectionFreedraw`（墨迹 / Ink）、`Action::ToolFreehand` 标签；英文表无 CJK 回归闸通过。
+- **与 Excalidraw 对齐核实**：Excalidraw 的 freedraw **不吃 roughness/sloppiness**（那是几何形状级
+  属性），笔迹面板暴露的是 stroke width / color / `pressure`（恒定↔变速切换）/ strokeStyle / opacity。
+  故本项属性面维持「颜色 + 粗细」与之一致，**未加**手绘风格档；后续若要对齐，有意义的候选是
+  pressure 开关（`pressures` 已存，切换成本低）与 strokeStyle 虚线，而非 roughness。
+- 测试：core（速度→压力 5 + 平滑 3 + item 3 + 命令 1）、stylers（描边非填充 + 退化/非 Freedraw
+  返回空 2）、bin 手势（锥形墨迹 + 退化丢弃仍回 Select 2）、fileio 往返 1；三件套计数
+  bin 62→66 / core 113→125 / fileio 7→8。
+
+---
+
 ## 决策点归档（D1–D6 / I1–I4）
 
 > 原列于 plan.md，G/I/H/K 交付后蒸馏归档于此，使 CHANGELOG 自包含、plan.md 仅保留前瞻内容。

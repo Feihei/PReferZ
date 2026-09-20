@@ -126,7 +126,7 @@
 | 7 | ✅ Ctrl+箭头 添加连接符 + Alt+箭头 沿连接导航（流程图）（2026-09-11 `56dd3d4` 代码交付；2026-09-14 反馈更正 `8ba4ac5`：同向已有邻居时新节点放**邻居旁**（主轴=邻居远边+GAP）而非与邻居重合，见验收节） | 单选矩形/椭圆/菱形按 Ctrl+方向 = **按下即提交**一对：同源同风格克隆节点 + 两端绑定直箭头（一条 undo，选区跳新节点）；Alt+方向沿绑定邻居跳转选区 | ✅ 已拍板（2026-09-11，调研更正见细节 §7）：克隆非"默认矩形+文字占位"；不做 pending 簇预览/避障；主轴间距 100px、交叉轴对齐；箭头风格跟源、端头默认 Arrow；导航用 Alt+方向（现行 Excalidraw 同款分键） |
 | 8 | 两列数据粘贴成柱状/折线图 | 剪贴板 2 列 TSV/CSV → 生成 Chart item（柱状/折线） | 图表用新 ItemKind+ChartStyler vs Pixmap 位图；单/多系列 |
 | 9 | mermaid 代码转图表 | mermaid 子集 → nodes+edges（复用 #5/#6/#7） | 解析器：受限自研 Rust（零依赖，倾向）vs WASM mermaid |
-| 10 | 🔶 徒手绘制（freedraw）速度锥形墨迹（2026-09-18 拍板 B 档 + 代码交付 `1a8cda6`，待 `cargo run` 复验） | 新增 `Tool::Freehand`（绑裸 P + Num7）+ `ItemKind::Freedraw`；按运笔速度给每点算宽度，渲染成填充 ribbon 轮廓（凹多边形经耳切三角化正确填充） | 已拍板：D1=速度锥形（非等宽复用，egui 无压感→点间距模拟）；D2=P+Num7 双绑；D3=最小距离阈值采点、宽度平滑+锥形、一条 AddItem undo |
+| 10 | ✅ 徒手绘制（freedraw）速度锥形墨迹（2026-09-18 拍板 B 档，交付 `1a8cda6`→`f869b86`→`b70c2a3`→`e1f46d8`；2026-09-20 Feihei 复验通过 ✅） | 新增 `Tool::Freehand`（绑裸 P + Num7）+ `ItemKind::Freedraw{points,pressures,stroke_width,color}`；按运笔速度（点间距/zoom）给每点算相对宽度乘子，落笔时 Catmull-Rom 重采样平滑，**逐段描边**渲染（line_segment + 圆帽，非 ribbon 填充）；选中可改颜色/粗细。详见 [CHANGELOG §徒手绘制](CHANGELOG.md) | 已拍板：D1=速度锥形（非等宽复用，egui 无压感→点间距模拟）；D2=P+Num7 双绑；D3=最小距离阈值采点、宽度平滑+锥形+Catmull-Rom 重采样、一条 AddItem undo；属性面维持颜色+粗细（对齐 Excalidraw freedraw，不吃 roughness） |
 | 11 | ✅ 选中拖动修饰键 + Ctrl+D 原位复制 | Ctrl+拖动=复制并移动副本；Shift+拖动=水平/垂直约束（PowerPoint 风）；Ctrl+D=原位复制 | 已交付（2026-09-03）：按下即建副本；约束基准=画布轴（视口无旋转，与屏幕轴同向）；Ctrl+D 偏移 10px |
 | 12 | ✅ 最大/最小缩放限制 | 默认 100%，最小 10%（0.1x），最大 1000%（10x）；`min_zoom`/`max_zoom` 改默认值 | 已交付（2026-09-03）：默认值 0.1/10.0；`.prz` 元数据越界时 clamp |
 | 13 | ✅ 元素编组 / 解组（2026-09-08 `4033726`，待人工验收） | `Item.group_id: Option<Uuid>`（单组，持久化）；点击组成员全选、移动整体；`Ctrl+G` 编组 / `Ctrl+Shift+G` 解组 | 已拍板（G1–G4 全按倾向列）：单组；点击整组；删/拖出成员其余保持编组；组粒度复制/对齐/分布 |
@@ -211,18 +211,7 @@
   - 复用 #5/#6/#7 生成结果。
 - 决策点：解析器选 (b) 受限自研 vs 接受 WASM；先支持 flowchart 子集。
 
-10. **徒手绘制（freedraw）速度锥形墨迹**
-- 现状：`Tool` 无 Freehand；keymap.rs:509-511 已把裸 `P` 显式预留给它（多边形用 Shift+P 避开）；渲染层现仅恒定线宽（stylers.rs:369/665），但 `Shape::Path{closed:true}` 走耳切三角化、**凹多边形填充正确**（stylers.rs:322-331）——锥形墨迹可渲染成一条填充轮廓，无需逐段拼。
-- **决策点已拍板（2026-09-18）**：
-  - **D1 宽度模型 = B 速度锥形墨迹**（非等宽复用）：新增 `ItemKind::Freedraw`，按运笔速度给每点算宽度、渲染成**填充 ribbon 轮廓**（Excalidraw「收笔尖、运笔粗」观感）。压感：egui 无指针压感输入，一律按**相邻点间距**（局部速度代理）模拟宽度，纯几何、无时间依赖、可复现、可无头测。
-  - **D2 快捷键 = 裸 P + Num7 双绑**：`Action::ToolFreehand` 绑 `P`（对齐 Excalidraw 字母位）与 `Num7`（对齐本项目 1–6 数字工具行）；`tool_switch_shortcut` 增臂，Esc/Cancel 回 Select 已通用。
-  - **D3 采样/平滑**：按下采集、移动按**最小距离阈值**过滤追点、释放定型一条 `AddItem` undo；核心宽度先平滑（移动平均）再锥形（首尾渐细收笔）；`Sloppiness::Off`（墨迹靠速度锥而非几何抖动）；RDP 抽稀本轮**不做**（点密度由阈值控制已够，见后续可评估）。
-- 落地分层（core-sink 纪律）：
-  - **core（L1，无头可测）**：`ItemKind::Freedraw { points(局部,AABB 左上原点), widths(画布单位), color, base_size }` + `Item::new_freedraw`；`freedraw.rs` 纯几何——`widths_from_spacing(raw_pts, base_width)` 速度→宽度、`local_ribbon(points, widths)` 左边界正序+右边界逆序合成闭合轮廓；`base_size`/`bounding_rect`/`contains_canvas_point`（到中心线距离 ≤ 该点半宽 + slop）加 Freedraw 分支。
-  - **fileio**：kind 存于 `data` JSON blob，**无 schema 迁移**（version 仍 3）；仅 `item_kind_str` 补判别串 `"freedraw"`。
-  - **app（L2）**：`Tool::Freehand`、`DragState::Drawing { raw: Vec<CanvasPoint> }`、`begin_drag` 起笔、`update_drag_preview` 阈值过滤追点、`end_drag→finish_create_freedraw`（raw→局部点+宽度→`Item::new_freedraw`→`push_new_item(AddItem)`→回 Select）。
-  - **stylers（L3）**：`build_freedraw_visuals(&kind, &to_screen)`——局部轮廓经 `item_local_to_screen` 变到屏幕（宽度随 scale/zoom 自然缩放）→ 一条 `closed_filled_path` 填充；接入 `draw_item_visual` 与 `render_scene` 两处 `match &item.kind`。
-- 交付（2026-09-18 `1a8cda6`）：core `freedraw.rs`（`widths_from_spacing` 三点平滑速度→宽度 + 首尾锥形 `apply_end_taper`、`local_ribbon` 左右边界闭合成 2n 点，7 单测：空/单点、快细慢粗、zoom 稳定、收笔、闭合、法向偏移、退化拒绝）；`ItemKind::Freedraw{points,widths,color}` + `new_freedraw`（AABB 局部归一）+ base_size/contains_canvas_point 分支（3 单测）；fileio 无迁移 + `item_kind_str` + 存读往返单测；app `Tool::Freehand`/`Action::ToolFreehand`(P+Num7)/`DragState::Drawing`（屏幕 2px 过滤采点）/`finish_create_freedraw`（一条 AddItem、<2 点丢弃、回 Select、Esc 丢笔）/实时预览/2 手势单测；stylers `build_freedraw_visuals`。**待 `cargo run` 复验**：P 或 7 起笔拖拽 → 收笔尖运笔粗的墨迹；笔色随描边色；选中/整体移动/缩放/旋转（点随变换、命中按半宽）/`Ctrl+Z` 一步撤/存盘重开形状恒定；EN 下 flash「Ink created」无中文。
+10. **✅ 徒手绘制（freedraw）速度锥形墨迹（2026-09-18 拍板，2026-09-18~20 交付，✅ 2026-09-20 Feihei 复验通过）** — 完整交付见 [CHANGELOG §徒手绘制（freedraw）速度锥形墨迹](CHANGELOG.md)。拍板：D1=**B 速度锥形墨迹**（新增 `ItemKind::Freedraw`，egui 无压感→以相邻点间距/zoom 当速度代理算每点相对宽度乘子，`pressures` 与标量 `stroke_width` 分离使属性 undo 保持 `Copy`）；D2=**裸 P + Num7 双绑**；D3=屏幕 2px 阈值采点、移动平均 + 首尾收笔锥形 + 落笔时 **Catmull-Rom 重采样平滑**、一条 `AddItem` undo。渲染经逐段描边（`line_segment` + 圆帽）而非 ribbon 填充；属性面维持「颜色 + 粗细」，与 Excalidraw freedraw 一致（不吃 roughness/sloppiness）。
 
 11. **选中拖动修饰键 + Ctrl+D 原位复制（PowerPoint 风）** — ✅ 已交付，见 [CHANGELOG §拖拽修饰键 + Ctrl+D 原位复制](CHANGELOG.md)。
 
