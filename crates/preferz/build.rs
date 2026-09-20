@@ -17,7 +17,9 @@ fn main() {
         // embed-resource 自动通过 vswhere/Windows SDK 查找 rc.exe，
         // 生成的 .res 通过 cargo:rustc-link-arg-bin 直接传给链接器，
         // 比 winres 的 +nostartfiles lib 机制更可靠（修 winres 在 MSVC 上 .rsrc 不生效的问题）
-        embed_resource::compile("icon.rc", embed_resource::NONE);
+        // v3 起 compile() 返回 #[must_use] 的 CompilationResult（描述本次动作）；嵌入本身照常
+        // 执行，此处不关心返回值，用 let _ 显式忽略以满足 unused_must_use。
+        let _ = embed_resource::compile("icon.rc", embed_resource::NONE);
     }
 
     compress_font();
