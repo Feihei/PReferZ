@@ -295,5 +295,10 @@ pub(crate) fn sample_item_pixel(
         ItemKind::Freedraw { .. } => None,
         // 画框不参与导出采样
         ItemKind::Frame { .. } => None,
+        // 图表（plan #8）：与 Text 同款简化采样——命中区域返回系列颜色
+        ItemKind::Chart { color, .. } => {
+            let _ = (local, base);
+            Some((color[0], color[1], color[2], color[3]))
+        }
     }
 }

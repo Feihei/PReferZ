@@ -300,9 +300,163 @@ impl PReferZApp {
                 ui.painter()
                     .rect_stroke(sr, 0.0, border, egui::StrokeKind::Middle);
             }
+            // 图表（plan #8）：矢量逐段绘制（坐标轴 + 柱/折线 + 文字标签）
+            ItemKind::Chart { .. } => self.draw_chart_item(ui, item),
         }
     }
     // ─────────────────────────── 渲染 ───────────────────────────
+    /// 图表（plan #8）矢量渲染：横向网格 + 数值刻度 + 左/下坐标轴 + 柱或
+    /// 折线 + 底部类别标签。几何经 `to_screen` 变换（支持移动/缩放/旋转；
+    /// 文字不随 item 旋转——首轮取舍，标签保持水平可读）。支持负值：
+    /// 零线随数据范围浮动，柱从零线画到数值处。
+    fn draw_chart_item(&self, ui: &mut egui::Ui, item: &Item) {
+        let ItemKind::Chart {
+            chart_type,
+            labels,
+            values,
+            color,
+            stroke_width,
+            ..
+        } = &item.kind
+        else {
+            return;
+        };
+        let n = values.len();
+        if n == 0 {
+            return;
+        }
+        let to_screen = item_local_to_screen(item, &self.viewport);
+        // 屏幕像素 / 局部单位（含 item scale + 视口 zoom），用于线宽与字号。
+        let unit =
+            to_screen.transform_vector(euclid::Vector2D::<f32, ItemLocalSpace>::new(1.0, 0.0));
+        let scale = unit.length().max(1e-4);
+
+        let dark = ui.visuals().dark_mode;
+        let axis_col = if dark {
+            egui::Color32::from_rgb(0x9a, 0x9a, 0x9a)
+        } else {
+            egui::Color32::from_rgb(0x33, 0x33, 0x33)
+        };
+        let grid_col = if dark {
+            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 28)
+        } else {
+            egui::Color32::from_rgba_unmultiplied(0, 0, 0, 28)
+        };
+        let label_col = if dark {
+            egui::Color32::from_rgb(0xaa, 0xaa, 0xaa)
+        } else {
+            egui::Color32::from_rgb(0x44, 0x44, 0x44)
+        };
+        let series = egui::Color32::from_rgba_unmultiplied(color[0], color[1], color[2], color[3]);
+
+        let painter = ui.painter();
+        // 局部 → 屏幕点
+        let p = |x: f32, y: f32| -> egui::Pos2 {
+            let q = to_screen.transform_point(euclid::point2(x, y));
+            egui::Pos2::new(q.x, q.y)
+        };
+
+        let size = item.base_size();
+        // 内边距（局部单位）：左侧留给数值刻度、底部留给类别标签。
+        let (ml, mr, mt, mb) = (48.0_f32, 12.0_f32, 12.0_f32, 28.0_f32);
+        let plot_x0 = ml;
+        let plot_y0 = mt;
+        let plot_x1 = (size.x - mr).max(ml + 1.0);
+        let plot_y1 = (size.y - mb).max(mt + 1.0);
+        let plot_w = plot_x1 - plot_x0;
+        let plot_h = plot_y1 - plot_y0;
+
+        let vmax = values.iter().cloned().fold(0.0_f32, f32::max);
+        let vmin = values.iter().cloned().fold(0.0_f32, f32::min);
+        let (lo, hi) = if (vmax - vmin).abs() < f32::EPSILON {
+            (-1.0, 1.0)
+        } else {
+            (vmin, vmax)
+        };
+        let y_of = |val: f32| plot_y1 - (val - lo) / (hi - lo) * plot_h;
+
+        // 横向网格线 + 左侧数值刻度（4 等分；网格先画，垫在柱/折线之下）
+        for k in 0..=4 {
+            let t = k as f32 / 4.0;
+            let val = hi - t * (hi - lo);
+            let ly = plot_y1 - t * plot_h;
+            painter.line_segment(
+                [p(plot_x0, ly), p(plot_x1, ly)],
+                egui::Stroke::new(scale, grid_col),
+            );
+            let tick = if (val.fract()).abs() < 1e-6 {
+                format!("{}", val as i64)
+            } else {
+                format!("{val:.1}")
+            };
+            let galley =
+                painter.layout_no_wrap(tick, egui::FontId::proportional(10.0 * scale), label_col);
+            let pos = p(plot_x0 - 6.0, ly) - egui::vec2(galley.size().x, galley.size().y * 0.5);
+            painter.galley(pos, galley, label_col);
+        }
+
+        // 坐标轴（左 + 下）
+        let axis_stroke = egui::Stroke::new(1.2 * scale, axis_col);
+        painter.line_segment([p(plot_x0, plot_y0), p(plot_x0, plot_y1)], axis_stroke);
+        painter.line_segment([p(plot_x0, plot_y1), p(plot_x1, plot_y1)], axis_stroke);
+
+        let slot_w = plot_w / n as f32;
+        let center_x = |i: usize| plot_x0 + (i as f32 + 0.5) * slot_w;
+
+        // 底部类别标签（居中于各槽；空标签跳过）
+        for (i, lb) in labels.iter().take(n).enumerate() {
+            if lb.is_empty() {
+                continue;
+            }
+            let galley = painter.layout_no_wrap(
+                lb.clone(),
+                egui::FontId::proportional(11.0 * scale),
+                label_col,
+            );
+            let pos = p(center_x(i), plot_y1 + 6.0) - egui::vec2(galley.size().x * 0.5, 0.0);
+            painter.galley(pos, galley, label_col);
+        }
+
+        let zero_y = y_of(0.0);
+        match chart_type {
+            preferz_core::ChartType::Bar => {
+                let bar_w = slot_w * 0.6;
+                for (i, val) in values.iter().enumerate() {
+                    if *val == 0.0 {
+                        continue;
+                    }
+                    let cx = center_x(i);
+                    let yv = y_of(*val);
+                    let corners = [
+                        p(cx - bar_w * 0.5, zero_y),
+                        p(cx + bar_w * 0.5, zero_y),
+                        p(cx + bar_w * 0.5, yv),
+                        p(cx - bar_w * 0.5, yv),
+                    ];
+                    painter.add(egui::Shape::convex_polygon(
+                        corners.to_vec(),
+                        series,
+                        egui::Stroke::NONE,
+                    ));
+                }
+            }
+            preferz_core::ChartType::Line => {
+                let pts: Vec<egui::Pos2> =
+                    (0..n).map(|i| p(center_x(i), y_of(values[i]))).collect();
+                if pts.len() >= 2 {
+                    painter.add(egui::Shape::line(
+                        pts.clone(),
+                        egui::Stroke::new(stroke_width * scale, series),
+                    ));
+                }
+                let r = (stroke_width * scale * 1.5).max(1.5);
+                for pt in &pts {
+                    painter.circle_filled(*pt, r, series);
+                }
+            }
+        }
+    }
+
     pub(crate) fn render_scene(&mut self, ui: &mut egui::Ui) {
         let screen_rect = ui.max_rect();
 
@@ -426,6 +580,8 @@ impl PReferZApp {
                     let shapes = build_freedraw_visuals(&item.kind, &to_screen);
                     ui.painter().extend(shapes);
                 }
+                // 图表（plan #8）：矢量逐段绘制（坐标轴 + 柱/折线 + 文字标签）
+                ItemKind::Chart { .. } => self.draw_chart_item(ui, item),
                 // Frame：虚线边框 + 左上角编号角标 + 名称。不裁剪内容，仅作底框。
                 ItemKind::Frame { number, name, .. } => {
                     // 边框矩形（画布 AABB 转屏幕：frame 不旋转，直接用 bounding_rect）。

@@ -334,6 +334,7 @@ fn item_kind_str(kind: &ItemKind) -> &'static str {
         ItemKind::Shape { .. } => "shape",
         ItemKind::Frame { .. } => "frame",
         ItemKind::Freedraw { .. } => "freedraw",
+        ItemKind::Chart { .. } => "chart",
     }
 }
 
@@ -466,6 +467,57 @@ mod tests {
         assert_eq_float(loaded_vp.zoom, 1.5);
         // 验证 next_z
         assert_eq!(loaded_scene.next_z, scene.next_z);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn prz_save_load_chart_roundtrip() {
+        use preferz_core::item::{ChartType, CHART_DEFAULT_COLOR, CHART_DEFAULT_SIZE};
+        let path = tmp_path("chart_roundtrip.prz");
+        let mut scene = Scene::new();
+        let item = Item::new_chart(
+            ChartType::Line,
+            vec!["一月".to_string(), "二月".to_string(), "三月".to_string()],
+            vec![12.0, -3.5, 40.0],
+            7.0,
+            8.0,
+        );
+        let expected_id = item.id;
+        scene.add_item(item);
+
+        {
+            let mut prz = PrzFile::create(&path).unwrap();
+            prz.save_scene(&scene, &HashMap::new(), ViewportMeta::default())
+                .unwrap();
+        }
+        let prz = PrzFile::open(&path).unwrap();
+        let (loaded, _images, _vp) = prz.load_scene().unwrap();
+
+        assert_eq!(loaded.items.len(), 1);
+        let it = &loaded.items[0];
+        assert_eq!(it.id, expected_id);
+        if let ItemKind::Chart {
+            chart_type,
+            base_size,
+            labels,
+            values,
+            color,
+            stroke_width,
+        } = &it.kind
+        {
+            assert_eq!(*chart_type, ChartType::Line);
+            assert_eq!(*base_size, CHART_DEFAULT_SIZE);
+            assert_eq!(
+                labels,
+                &vec!["一月".to_string(), "二月".to_string(), "三月".to_string()]
+            );
+            assert_eq!(values, &vec![12.0, -3.5, 40.0]);
+            assert_eq!(*color, CHART_DEFAULT_COLOR);
+            assert_eq_float(*stroke_width, 2.0);
+        } else {
+            panic!("应为 Chart kind");
+        }
 
         let _ = std::fs::remove_file(&path);
     }

@@ -10,6 +10,11 @@ use crate::transform::Transform;
 
 pub type ItemId = Uuid;
 
+/// 图表默认尺寸（局部空间宽×高，plan #8）。
+pub const CHART_DEFAULT_SIZE: (f32, f32) = (440.0, 300.0);
+/// 图表默认系列颜色（Excalidraw 蓝色档）。
+pub const CHART_DEFAULT_COLOR: [u8; 4] = [0x19, 0x71, 0xc2, 0xff];
+
 /// 端点绑定（plan #5/#14）：线端点钉在目标图形上。
 ///
 /// `target` 为被吸附图形；`anchor` 为端点钉在目标**局部坐标系**的表面点
@@ -183,6 +188,29 @@ pub enum ItemKind {
         /// 墨迹颜色 RGBA。
         color: [u8; 4],
     },
+    /// 单系列图表（plan #8）：两列剪贴板数据粘贴生成。数据存 item（.prz 随
+    /// kind JSON 落盘），渲染层逐段矢量绘制（binary `draw_chart_item`）。
+    /// 变换框走 `base_size`（同 Frame），可移动/缩放。
+    Chart {
+        chart_type: ChartType,
+        /// 局部空间尺寸（宽×高）。
+        base_size: (f32, f32),
+        /// 类别标签（与 `values` 一一对应）。
+        labels: Vec<String>,
+        /// 数值（单系列，支持负值：零线随数据范围浮动）。
+        values: Vec<f32>,
+        /// 柱/折线颜色 RGBA。
+        color: [u8; 4],
+        /// 折线宽（Line）/ 柱描边宽（Bar），画布单位。
+        stroke_width: f32,
+    },
+}
+
+/// 图表类型（plan #8）。首轮单系列柱状/折线。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ChartType {
+    Bar,
+    Line,
 }
 
 impl ItemKind {
@@ -369,6 +397,31 @@ impl Item {
                 align_h: TextAlignH::Center,
                 align_v: TextAlignV::Middle,
                 font_family: FontFamily::Normal,
+            },
+            transform: Transform::new(pos_x, pos_y, 1.0, 1.0),
+            z: 0,
+            group_id: None,
+        }
+    }
+
+    /// 新建单系列图表（plan #8）。位置以左上角锚定（调用方自行居中换算），
+    /// 颜色/线宽取默认常量，后续如需属性面板再暴露。
+    pub fn new_chart(
+        chart_type: ChartType,
+        labels: Vec<String>,
+        values: Vec<f32>,
+        pos_x: f32,
+        pos_y: f32,
+    ) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            kind: ItemKind::Chart {
+                chart_type,
+                base_size: CHART_DEFAULT_SIZE,
+                labels,
+                values,
+                color: CHART_DEFAULT_COLOR,
+                stroke_width: 2.0,
             },
             transform: Transform::new(pos_x, pos_y, 1.0, 1.0),
             z: 0,
@@ -772,6 +825,9 @@ impl Item {
                 CanvasVector::new(base_size.0.max(1.0), base_size.1.max(1.0))
             }
             ItemKind::Frame { base_size, .. } => {
+                CanvasVector::new(base_size.0.max(1.0), base_size.1.max(1.0))
+            }
+            ItemKind::Chart { base_size, .. } => {
                 CanvasVector::new(base_size.0.max(1.0), base_size.1.max(1.0))
             }
             // 墨迹：base_size 取中心线点 AABB（与线性对象同约定；笔宽超出部分由

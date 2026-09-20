@@ -30,7 +30,12 @@ use preferz_core::shape::{
 };
 use preferz_core::snap;
 use preferz_core::spaces::{CanvasPoint, CanvasRect, CanvasSize, CanvasVector};
-use preferz_core::{Command, CropRect, EndpointBinding, Item, ItemId, ItemKind, Scene};
+use preferz_core::{
+    parse_two_column_data, ChartType, Command, CropRect, EndpointBinding, Item, ItemId, ItemKind,
+    Scene,
+};
+// draw_chart_item 的局部坐标变换与图表默认尺寸常量（core 仅在 item 模块导出）。
+use preferz_core::item::{ItemLocalSpace, CHART_DEFAULT_SIZE};
 use preferz_fileio::ViewportMeta;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -359,6 +364,9 @@ pub struct PReferZApp {
     /// 剪贴板；粘贴（Ctrl+V）优先于此缓冲，缓冲为空才回退系统剪贴板图片。
     /// 存原位置快照，粘贴时分配新 id 并重定位到鼠标处。
     clipboard_items: Vec<Item>,
+    /// 待粘贴的图表数据（plan #8）：系统剪贴板文本解析为 2 列数值后暂存，
+    /// 等用户在「柱状/折线/取消」选择浮层里拍板；`None` = 无待决数据。
+    pending_chart: Option<PendingChartData>,
     /// 后台任务（导入解/ 文件加载 / 文件保存）
     bg_ops: BackgroundOps,
     /// 颜色采样模式（spec §2.2 颜色采样）。true 时鼠标在 Pixmap 上读取像RGB 显示
@@ -413,6 +421,13 @@ enum SavePromptAction {
 
 /// 端点拖拽中暂存的绑定：`(端点索引, 目标 id, 锚点)`。
 type PendingEndpointBinding = (usize, ItemId, Option<(f32, f32)>);
+
+/// 待粘贴的图表数据（plan #8）：`parse_two_column_data` 解析成功后的暂存，
+/// 选择浮层拍板柱状/折线后才生成 item，取消则丢弃。
+struct PendingChartData {
+    labels: Vec<String>,
+    values: Vec<f32>,
+}
 /// 端点吸附命中时的换算结果：`(目标 id, 线局部坐标)`。
 type SnapHitLocal = (ItemId, (f32, f32));
 
@@ -758,6 +773,7 @@ impl PReferZApp {
             present_anim: None,
             current_file: None,
             clipboard_items: Vec::new(),
+            pending_chart: None,
             bg_ops: BackgroundOps::default(),
             color_picker_active: false,
             color_sample: None,
@@ -1566,6 +1582,11 @@ impl eframe::App for PReferZApp {
         // 设置面板
         if self.settings_open {
             self.render_settings_window(ctx);
+        }
+
+        // 图表粘贴选择浮层（plan #8）
+        if self.pending_chart.is_some() {
+            self.render_chart_chooser(ctx);
         }
 
         // 快捷键派发（改绑捕获入口已按 ADR-0007 / D6 移除，这里只保留查表派发）

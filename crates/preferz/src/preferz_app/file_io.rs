@@ -220,6 +220,12 @@ impl PReferZApp {
     /// UI 线程：读剪贴板（毫秒级，arboard 同步访问）。
     /// 后台线程：PNG 编码（几十~几百毫秒，大图会卡 UI）。
     /// 通过 bg_ops.import_rx 复用 finish_import 完成纹理上传 + item 创建。
+    ///
+    /// plan #8：**先检文本**——Excel/表格软件复制单元格时剪贴板同时带位图和
+    /// 文本，若图片优先会把数据表截成位图。文本解析为 2 列数值（TSV/CSV）→
+    /// 暂存 `pending_chart` 并弹「柱状/折线/取消」选择浮层；非 2 列数值文本
+    /// 继续走图片路径（`get_image` 失败 → 既有「剪贴板无图片」提示，与改动
+    /// 前粘贴纯文本行为一致）。
     pub(crate) fn paste_from_clipboard(&mut self, ctx: &egui::Context) {
         let mut clipboard = match arboard::Clipboard::new() {
             Ok(c) => c,
@@ -231,6 +237,13 @@ impl PReferZApp {
                 return;
             }
         };
+        if let Ok(text) = clipboard.get_text() {
+            if let Some((labels, values)) = parse_two_column_data(&text) {
+                self.pending_chart = Some(PendingChartData { labels, values });
+                ctx.request_repaint();
+                return;
+            }
+        }
         let img_data = match clipboard.get_image() {
             Ok(img) => img,
             Err(_) => {
@@ -294,6 +307,83 @@ impl PReferZApp {
             let _ = tx.send(outcome);
             ctx2.request_repaint();
         });
+    }
+
+    /// 图表粘贴选择浮层（plan #8）：展示解析出的数据预览，
+    /// 柱状/折线/取消三选一。拍板动作在浮层关闭后统一执行（避免闭包内
+    /// 可变借用冲突）。
+    pub(crate) fn render_chart_chooser(&mut self, ctx: &egui::Context) {
+        let mut chosen: Option<ChartType> = None;
+        let mut cancelled = false;
+        egui::Window::new("chart_chooser")
+            .title_bar(false)
+            .resizable(false)
+            .collapsible(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.set_max_width(340.0);
+                ui.vertical_centered(|ui| {
+                    ui.label(t(self.lang, T::ChartChooserTitle));
+                });
+                ui.add_space(6.0);
+                if let Some(p) = &self.pending_chart {
+                    // 数据预览（最多 5 行：label: value）
+                    for (lb, v) in p.labels.iter().zip(&p.values).take(5) {
+                        let line = if lb.is_empty() {
+                            format!("{v}")
+                        } else {
+                            format!("{lb}: {v}")
+                        };
+                        ui.label(line);
+                    }
+                    let total = p.values.len();
+                    if total > 5 {
+                        ui.label(fill(
+                            t(self.lang, T::ChartChooserMore),
+                            &[total.to_string()],
+                        ));
+                    }
+                }
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button(t(self.lang, T::ChartChooserBar)).clicked() {
+                        chosen = Some(ChartType::Bar);
+                    }
+                    if ui.button(t(self.lang, T::ChartChooserLine)).clicked() {
+                        chosen = Some(ChartType::Line);
+                    }
+                    if ui.button(t(self.lang, T::ChartChooserCancel)).clicked() {
+                        cancelled = true;
+                    }
+                });
+            });
+        if let Some(chart_type) = chosen {
+            self.create_chart_from_pending(ctx, chart_type);
+        } else if cancelled {
+            self.pending_chart = None;
+        }
+    }
+
+    /// 按拍板的图表类型生成 `ItemKind::Chart`（落点=视口中心，同图片导入），
+    /// 一条 `AddItem` undo。数据来自 `pending_chart`，用后即清。
+    fn create_chart_from_pending(&mut self, ctx: &egui::Context, chart_type: ChartType) {
+        let Some(p) = self.pending_chart.take() else {
+            return;
+        };
+        let center = self
+            .viewport
+            .screen_to_canvas(self.viewport.screen_rect.center());
+        let (w, h) = CHART_DEFAULT_SIZE;
+        let item = Item::new_chart(
+            chart_type,
+            p.labels,
+            p.values,
+            center.x - w / 2.0,
+            center.y - h / 2.0,
+        );
+        self.push_cmd(Box::new(AddItem::new(item)));
+        self.flash(t(self.lang, T::FlashChartCreated).to_string());
+        ctx.request_repaint();
     }
 
     /// 启动后台保存

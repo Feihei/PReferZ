@@ -123,26 +123,33 @@ pub enum T {
     FlashCopied,               // 已复制 {0} 项（Ctrl+C）
     FlashCut,                  // 已剪切 {0} 项（Ctrl+X）
     // ── flash / 进度条文案（原散落在 preferz_app.rs 里写死中文，收进表内）──
-    FlashSaved,              // 已保存: {0}
-    FlashSaveFailed,         // 保存失败: {0}
-    FlashOpened,             // 已打开: {0}
-    FlashOpenFailed,         // 打开失败: {0}
-    FlashImported,           // 已导入: {0}
-    FlashImportFailed,       // 导入失败 {0}: {1}
-    FlashClipboardFailed,    // 剪贴板访问失败: {0}
-    ProgressImportImage,     // 导入图片: {0}（进度条）
-    ProgressOpenFile,        // 打开文件: {0}（进度条）
-    ProgressSaveFile,        // 保存文件: {0}（进度条）
-    FlashFlipH,              // 水平翻转
-    FlashFlipV,              // 垂直翻转
-    FlashTransform,          // 变换: 缩放=({0}, {1}) 旋转={2}°
-    FlashMoved,              // 移动: ({0}, {1})
-    FlashDeleted,            // 已删除 {0} 项
-    FlashShapeCreated,       // 已创建图形
-    FlashLineCreated,        // 已创建直线
-    FlashArrowCreated,       // 已创建箭头
-    FlashFrameCreated,       // 已创建画框 #{0}
-    FlashFrameRenumbered,    // 画框编号 → #{0}
+    FlashSaved,           // 已保存: {0}
+    FlashSaveFailed,      // 保存失败: {0}
+    FlashOpened,          // 已打开: {0}
+    FlashOpenFailed,      // 打开失败: {0}
+    FlashImported,        // 已导入: {0}
+    FlashImportFailed,    // 导入失败 {0}: {1}
+    FlashClipboardFailed, // 剪贴板访问失败: {0}
+    ProgressImportImage,  // 导入图片: {0}（进度条）
+    ProgressOpenFile,     // 打开文件: {0}（进度条）
+    ProgressSaveFile,     // 保存文件: {0}（进度条）
+    FlashFlipH,           // 水平翻转
+    FlashFlipV,           // 垂直翻转
+    FlashTransform,       // 变换: 缩放=({0}, {1}) 旋转={2}°
+    FlashMoved,           // 移动: ({0}, {1})
+    FlashDeleted,         // 已删除 {0} 项
+    FlashShapeCreated,    // 已创建图形
+    FlashLineCreated,     // 已创建直线
+    FlashArrowCreated,    // 已创建箭头
+    FlashFrameCreated,    // 已创建画框 #{0}
+    FlashFrameRenumbered, // 画框编号 → #{0}
+    // ── 图表粘贴（plan #8）──
+    ChartChooserTitle,       // 检测到两列数据，粘贴为图表
+    ChartChooserBar,         // 柱状图
+    ChartChooserLine,        // 折线图
+    ChartChooserCancel,      // 取消
+    ChartChooserMore,        // …还有 {0} 行
+    FlashChartCreated,       // 已创建图表
     FlashNoSelectedImages,   // 无选中的图片项
     FlashNoExportableImages, // 无可导出的图片项
     FlashArranged,           // 排列：{0}
@@ -436,6 +443,12 @@ fn translate_en(key: T) -> &'static str {
         T::FlashArrowCreated => "Arrow created",
         T::FlashFrameCreated => "Frame created #{0}",
         T::FlashFrameRenumbered => "Frame renumbered → #{0}",
+        T::ChartChooserTitle => "Two-column data detected — paste as chart",
+        T::ChartChooserBar => "Bar chart",
+        T::ChartChooserLine => "Line chart",
+        T::ChartChooserCancel => "Cancel",
+        T::ChartChooserMore => "…and {0} more rows",
+        T::FlashChartCreated => "Chart created",
         T::FlashNoSelectedImages => "No selected image items",
         T::FlashNoExportableImages => "No exportable image items",
         T::FlashArranged => "Arranged: {0}",
@@ -673,6 +686,12 @@ fn translate_zh(key: T) -> &'static str {
         T::FlashArrowCreated => "已创建箭头",
         T::FlashFrameCreated => "已创建画框 #{0}",
         T::FlashFrameRenumbered => "画框编号 → #{0}",
+        T::ChartChooserTitle => "检测到两列数据，粘贴为图表",
+        T::ChartChooserBar => "柱状图",
+        T::ChartChooserLine => "折线图",
+        T::ChartChooserCancel => "取消",
+        T::ChartChooserMore => "…还有 {0} 行",
+        T::FlashChartCreated => "已创建图表",
         T::FlashNoSelectedImages => "无选中的图片项",
         T::FlashNoExportableImages => "无可导出的图片项",
         T::FlashArranged => "排列：{0}",
