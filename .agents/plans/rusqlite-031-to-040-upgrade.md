@@ -57,11 +57,11 @@
 ## 5. 前置条件 / 环境
 
 1. **网络**：`cargo update` 走 tuna 镜像；如遇 `CRYPT_E_REVOCATION_OFFLINE`，临时 `CARGO_HTTP_CHECK_REVOKE=false`。
-2. **分支**：独立分支 `chore/rusqlite-0.40-upgrade`（同 egui 流程）。
+2. **分支**：不开分支，直接在 main 上实施——改动预期为单 commit（`Cargo.toml` + `Cargo.lock`），回滚用 `git revert` 即可，分支不提供额外保护。唯一前提：动手前工作区干净（"先提交再实现"惯例已覆盖）。
 3. **基线**：改前在 HEAD 跑通 `fmt/clippy/test` 与 `cargo run` 打开/保存一个真实 `.prz`，作为回退对照。
 4. **工具链**：rustc 1.98 ≥ 0.40 MSRV 1.88 ✓。
 
-## 6. 实施步骤（单分支，尽量单 commit；API 若需改再拆分）
+## 6. 实施步骤（不开分支，直接在 main；尽量单 commit，API 若需改再拆分）
 
 1. `Cargo.toml`：`rusqlite = { version = "0.40", features = ["bundled"] }`；`cargo update -p rusqlite`。
 2. `cargo check --workspace` → 若编译器报签名/类型不符再定点改（预期不报，因用法未变）。
@@ -84,4 +84,4 @@
 
 ## 9. 回滚
 
-单分支；`rusqlite` 版本改动仅触及 `Cargo.toml` + 可能的 `prz.rs` 微调，回滚 = 丢弃分支或 `git revert`。bundled 引擎降版本不影响已写出的 `.prz`（SQLite 库文件跨版本兼容读）。
+不开分支；`rusqlite` 版本改动仅触及 `Cargo.toml` + 可能的 `prz.rs` 微调，回滚 = `git revert`。bundled 引擎降版本不影响已写出的 `.prz`（SQLite 库文件跨版本兼容读）。
