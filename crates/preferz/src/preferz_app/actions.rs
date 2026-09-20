@@ -497,6 +497,177 @@ impl PReferZApp {
         false
     }
 
+    /// mermaid 输入弹窗（plan #9）：多行文本框 + 语法提示 + 生成/取消。
+    /// 解析失败不关窗（保留输入供修改），错误经 flash 指出行号。
+    pub(crate) fn render_mermaid_window(&mut self, ctx: &egui::Context) {
+        let mut generate = false;
+        let mut close = false;
+        egui::Window::new("mermaid_input")
+            .title_bar(false)
+            .resizable(false)
+            .collapsible(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.set_max_width(480.0);
+                ui.vertical_centered(|ui| {
+                    ui.label(t(self.lang, T::MermaidTitle));
+                });
+                ui.add_space(6.0);
+                let edit = egui::TextEdit::multiline(&mut self.mermaid_buf)
+                    .desired_rows(6)
+                    .desired_width(440.0)
+                    .code_editor();
+                ui.add(edit);
+                ui.add_space(4.0);
+                ui.small(t(self.lang, T::MermaidPlaceholder));
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button(t(self.lang, T::MermaidGenerate)).clicked() {
+                        generate = true;
+                    }
+                    if ui.button(t(self.lang, T::ChartChooserCancel)).clicked() {
+                        close = true;
+                    }
+                });
+            });
+        if generate {
+            self.generate_mermaid_flowchart(ctx);
+        } else if close {
+            self.mermaid_open = false;
+        }
+    }
+
+    /// 解析 mermaid 文本并生成分层布局的流程图（plan #9）：节点=矩形/椭圆/
+    /// 菱形 + 绑定文字；边=两端 `EndpointBinding` 绑定的直箭头（复用 plan #7
+    /// `edge_anchor_local`，锚点=双方相对的边中点）；整批 `AddItems` 一条
+    /// undo，生成后全选。落点=视口中心（整体包围盒居中，同图片导入惯例）。
+    pub(crate) fn generate_mermaid_flowchart(&mut self, ctx: &egui::Context) {
+        let src = std::mem::take(&mut self.mermaid_buf);
+        let fc = match parse_mermaid_flowchart(&src) {
+            Ok(fc) => fc,
+            Err(e) => {
+                // 保留输入供修改
+                self.mermaid_buf = src;
+                self.flash(fill(t(self.lang, T::FlashMermaidParseFailed), &[e]));
+                return;
+            }
+        };
+        let layout = layout_flowchart(&fc);
+        // 布局包围盒 → 整体居中到视口中心
+        let (mut bx0, mut by0, mut bx1, mut by1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+        for ln in &layout {
+            bx0 = bx0.min(ln.x);
+            by0 = by0.min(ln.y);
+            bx1 = bx1.max(ln.x + ln.w);
+            by1 = by1.max(ln.y + ln.h);
+        }
+        let center = self
+            .viewport
+            .screen_to_canvas(self.viewport.screen_rect.center());
+        let (off_x, off_y) = (center.x - (bx0 + bx1) / 2.0, center.y - (by0 + by1) / 2.0);
+
+        let stroke = self.default_stroke;
+        let mut added: Vec<Item> = Vec::with_capacity(fc.nodes.len() * 2 + fc.edges.len());
+        let mut node_ids: Vec<ItemId> = Vec::with_capacity(fc.nodes.len());
+        let mut node_rects: Vec<CanvasRect> = Vec::with_capacity(fc.nodes.len());
+        for ln in &layout {
+            let node = &fc.nodes[ln.index];
+            let shape_type = match node.shape {
+                MermaidShape::Rectangle => ShapeType::Rectangle,
+                MermaidShape::Ellipse => ShapeType::Ellipse,
+                MermaidShape::Diamond => ShapeType::Diamond,
+            };
+            let x = ln.x + off_x;
+            let y = ln.y + off_y;
+            let shape = Item::new_shape(shape_type, (ln.w, ln.h), x, y, stroke, None);
+            let shape_id = shape.id;
+            node_ids.push(shape_id);
+            node_rects.push(CanvasRect::new(
+                CanvasPoint::new(x, y),
+                CanvasSize::new(ln.w, ln.h),
+            ));
+            added.push(shape);
+            // 绑定文字：锚定容器中心（随容器联动，Phase C 模型）
+            if !node.label.is_empty() {
+                let txt = Item::new_text_in(
+                    node.label.clone(),
+                    x + ln.w / 2.0,
+                    y + ln.h / 2.0,
+                    18.0,
+                    stroke.color,
+                    shape_id,
+                );
+                added.push(txt);
+            }
+        }
+        for e in &fc.edges {
+            let from = node_rects[e.from];
+            let to = node_rects[e.to];
+            // 主轴方向取中心差的主导轴（与分层布局方向一致）
+            let dx = to.center().x - from.center().x;
+            let dy = to.center().y - from.center().y;
+            let dir = if dx.abs() >= dy.abs() {
+                if dx >= 0.0 {
+                    FlowDir::Right
+                } else {
+                    FlowDir::Left
+                }
+            } else if dy >= 0.0 {
+                FlowDir::Down
+            } else {
+                FlowDir::Up
+            };
+            let src_anchor = edge_anchor_local(dir, from.width(), from.height());
+            let dst_anchor = edge_anchor_local(dir.opposite(), to.width(), to.height());
+            let s = CanvasPoint::new(from.min().x + src_anchor.0, from.min().y + src_anchor.1);
+            let d = CanvasPoint::new(to.min().x + dst_anchor.0, to.min().y + dst_anchor.1);
+            let min = CanvasPoint::new(s.x.min(d.x), s.y.min(d.y));
+            let mut arrow = Item::new_polyline(
+                vec![(s.x - min.x, s.y - min.y), (d.x - min.x, d.y - min.y)],
+                ((d.x - s.x).abs(), (d.y - s.y).abs()),
+                None,
+                Some(ArrowHeadStyle::Arrow),
+                false,
+                min.x,
+                min.y,
+                stroke,
+            );
+            if let ItemKind::Shape {
+                start_binding,
+                end_binding,
+                ..
+            } = &mut arrow.kind
+            {
+                *start_binding = Some(EndpointBinding {
+                    target: node_ids[e.from],
+                    anchor: Some(src_anchor),
+                });
+                *end_binding = Some(EndpointBinding {
+                    target: node_ids[e.to],
+                    anchor: Some(dst_anchor),
+                });
+            }
+            added.push(arrow);
+        }
+
+        let node_count = fc.nodes.len();
+        let edge_count = fc.edges.len();
+        for it in &added {
+            self.scene.add_item(it.clone());
+        }
+        self.scene.deselect_all();
+        for id in &node_ids {
+            self.scene.select(*id);
+        }
+        self.push_cmd(Box::new(AddItems::new(added).with_preview_applied(true)));
+        self.mermaid_open = false;
+        self.flash(fill(
+            t(self.lang, T::FlashMermaidCreated),
+            &[node_count.to_string(), edge_count.to_string()],
+        ));
+        ctx.request_repaint();
+    }
+
     /// 切换选中 Pixmap item 的灰度标志（spec §2.2 灰度）
     pub(crate) fn toggle_grayscale_selected(&mut self) {
         // 收集 (id, old_gray) 后再处理，避免借用冲突

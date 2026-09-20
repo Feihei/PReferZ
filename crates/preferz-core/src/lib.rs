@@ -3,6 +3,7 @@ pub mod chart;
 pub mod commands;
 pub mod freedraw;
 pub mod item;
+pub mod mermaid;
 pub mod scene;
 pub mod shape;
 pub mod snap;

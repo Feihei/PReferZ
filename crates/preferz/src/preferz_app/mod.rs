@@ -24,6 +24,7 @@ use preferz_core::commands::{
     SetPixmapStyle, SetRoundness, SetShapeFill, SetSloppiness, SetStrokeStyle, SetTextStyle,
     TransformItem,
 };
+use preferz_core::mermaid::{layout_flowchart, parse_mermaid_flowchart, MermaidShape};
 use preferz_core::shape::{
     ArrowHeadStyle, CurveType, DashStyle, FillStyle, FontFamily, PixmapStyle, SeededRng, ShapeType,
     Sloppiness, StrokeStyle, TextAlignH, TextAlignV, TextStyle,
@@ -367,6 +368,10 @@ pub struct PReferZApp {
     /// 待粘贴的图表数据（plan #8）：系统剪贴板文本解析为 2 列数值后暂存，
     /// 等用户在「柱状/折线/取消」选择浮层里拍板；`None` = 无待决数据。
     pending_chart: Option<PendingChartData>,
+    /// mermaid 输入弹窗是否打开（plan #9）。
+    mermaid_open: bool,
+    /// mermaid 输入弹窗的文本缓冲。
+    mermaid_buf: String,
     /// 后台任务（导入解/ 文件加载 / 文件保存）
     bg_ops: BackgroundOps,
     /// 颜色采样模式（spec §2.2 颜色采样）。true 时鼠标在 Pixmap 上读取像RGB 显示
@@ -774,6 +779,8 @@ impl PReferZApp {
             current_file: None,
             clipboard_items: Vec::new(),
             pending_chart: None,
+            mermaid_open: false,
+            mermaid_buf: String::new(),
             bg_ops: BackgroundOps::default(),
             color_picker_active: false,
             color_sample: None,
@@ -1587,6 +1594,11 @@ impl eframe::App for PReferZApp {
         // 图表粘贴选择浮层（plan #8）
         if self.pending_chart.is_some() {
             self.render_chart_chooser(ctx);
+        }
+
+        // mermaid 输入弹窗（plan #9）
+        if self.mermaid_open {
+            self.render_mermaid_window(ctx);
         }
 
         // 快捷键派发（改绑捕获入口已按 ADR-0007 / D6 移除，这里只保留查表派发）
@@ -2823,6 +2835,75 @@ mod tests {
         app.navigate_connected(FlowDir::Up);
         assert!(app.scene.selection.contains(&dup_id));
         assert_eq!(app.undo_stack.undo.len(), undo_len, "导航不应新增命令");
+    }
+
+    // ───────── mermaid 流程图（plan #9） ─────────
+
+    #[test]
+    fn generate_mermaid_flowchart_creates_bound_diagram_in_one_undo() {
+        let mut app = PReferZApp::new();
+        app.mermaid_buf = "flowchart TD\n a[开始] --> b{判断}\n b --> c(结束)".to_string();
+        let ctx = egui::Context::default();
+        app.generate_mermaid_flowchart(&ctx);
+
+        // 3 节点形状 + 3 绑定文字 + 2 箭头
+        assert_eq!(app.scene.items.len(), 8);
+        let arrows: Vec<Item> = app
+            .scene
+            .items
+            .iter()
+            .filter(|i| {
+                matches!(
+                    i.kind,
+                    ItemKind::Shape {
+                        shape_type: ShapeType::Polyline,
+                        ..
+                    }
+                )
+            })
+            .cloned()
+            .collect();
+        assert_eq!(arrows.len(), 2);
+        for a in &arrows {
+            if let ItemKind::Shape {
+                start_binding,
+                end_binding,
+                ..
+            } = &a.kind
+            {
+                // 两端都绑定到节点形状（锚点 = 朝向边中点）
+                assert!(start_binding.is_some(), "箭头起点应绑定");
+                assert!(end_binding.is_some(), "箭头终点应绑定");
+            }
+        }
+        // 绑定文字：container_id 指向各自的节点形状
+        let texts = app
+            .scene
+            .items
+            .iter()
+            .filter(|i| matches!(i.kind, ItemKind::Text { .. }))
+            .count();
+        assert_eq!(texts, 3);
+        // 整批一条 undo：一步撤回全消；redo 恢复
+        assert_eq!(app.undo_stack.undo.len(), 1);
+        assert!(app.perform_undo());
+        assert!(app.scene.items.is_empty());
+        assert!(app.perform_redo());
+        assert_eq!(app.scene.items.len(), 8);
+        // 弹窗关闭、缓冲已消费
+        assert!(!app.mermaid_open);
+        assert!(app.mermaid_buf.is_empty());
+    }
+
+    #[test]
+    fn generate_mermaid_flowchart_keeps_input_on_parse_error() {
+        let mut app = PReferZApp::new();
+        app.mermaid_buf = "a --> b".to_string(); // 缺首行
+        let ctx = egui::Context::default();
+        app.generate_mermaid_flowchart(&ctx);
+        assert!(app.scene.items.is_empty(), "解析失败不应生成 item");
+        assert!(app.undo_stack.undo.is_empty());
+        assert_eq!(app.mermaid_buf, "a --> b", "输入保留供修改");
     }
 
     // ───────── 验收反馈批次（#4-1 / #7-2） ─────────

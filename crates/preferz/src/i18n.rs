@@ -144,12 +144,19 @@ pub enum T {
     FlashFrameCreated,    // 已创建画框 #{0}
     FlashFrameRenumbered, // 画框编号 → #{0}
     // ── 图表粘贴（plan #8）──
-    ChartChooserTitle,       // 检测到两列数据，粘贴为图表
-    ChartChooserBar,         // 柱状图
-    ChartChooserLine,        // 折线图
-    ChartChooserCancel,      // 取消
-    ChartChooserMore,        // …还有 {0} 行
-    FlashChartCreated,       // 已创建图表
+    ChartChooserTitle,  // 检测到两列数据，粘贴为图表
+    ChartChooserBar,    // 柱状图
+    ChartChooserLine,   // 折线图
+    ChartChooserCancel, // 取消
+    ChartChooserMore,   // …还有 {0} 行
+    FlashChartCreated,  // 已创建图表
+    // ── mermaid 流程图（plan #9）──
+    MenuMermaid,             // 右键菜单：Mermaid 图表…
+    MermaidTitle,            // 弹窗标题
+    MermaidPlaceholder,      // 语法提示
+    MermaidGenerate,         // 生成
+    FlashMermaidParseFailed, // 解析失败：{0}
+    FlashMermaidCreated,     // 已生成流程图：{0} 个节点、{1} 条边
     FlashNoSelectedImages,   // 无选中的图片项
     FlashNoExportableImages, // 无可导出的图片项
     FlashArranged,           // 排列：{0}
@@ -449,6 +456,14 @@ fn translate_en(key: T) -> &'static str {
         T::ChartChooserCancel => "Cancel",
         T::ChartChooserMore => "…and {0} more rows",
         T::FlashChartCreated => "Chart created",
+        T::MenuMermaid => "Mermaid chart…",
+        T::MermaidTitle => "Paste mermaid flowchart code",
+        T::MermaidPlaceholder => {
+            "Supported: flowchart/graph TD|LR · id[label] id(label) id{label} · a --> b"
+        }
+        T::MermaidGenerate => "Generate",
+        T::FlashMermaidParseFailed => "Parse failed: {0}",
+        T::FlashMermaidCreated => "Flowchart created: {0} nodes, {1} edges",
         T::FlashNoSelectedImages => "No selected image items",
         T::FlashNoExportableImages => "No exportable image items",
         T::FlashArranged => "Arranged: {0}",
@@ -692,6 +707,14 @@ fn translate_zh(key: T) -> &'static str {
         T::ChartChooserCancel => "取消",
         T::ChartChooserMore => "…还有 {0} 行",
         T::FlashChartCreated => "已创建图表",
+        T::MenuMermaid => "Mermaid 图表…",
+        T::MermaidTitle => "粘贴 mermaid 流程图代码",
+        T::MermaidPlaceholder => {
+            "支持：flowchart/graph TD|LR · id[标签] id(标签) id{标签} · a --> b"
+        }
+        T::MermaidGenerate => "生成",
+        T::FlashMermaidParseFailed => "解析失败：{0}",
+        T::FlashMermaidCreated => "已生成流程图：{0} 个节点、{1} 条边",
         T::FlashNoSelectedImages => "无选中的图片项",
         T::FlashNoExportableImages => "无可导出的图片项",
         T::FlashArranged => "排列：{0}",

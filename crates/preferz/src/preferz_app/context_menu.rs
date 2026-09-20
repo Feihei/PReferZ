@@ -62,6 +62,14 @@ impl PReferZApp {
                         self.paste_from_clipboard(ctx);
                         self.context_menu_open = false;
                     }
+                    // mermaid 流程图输入弹窗（plan #9）
+                    if ui
+                        .button(format!("\u{1F537} {}", t(self.lang, T::MenuMermaid)))
+                        .clicked()
+                    {
+                        self.mermaid_open = true;
+                        self.context_menu_open = false;
+                    }
                     ui.separator();
                     if ui
                         .button(format!("\u{1F4BE} {}", t(self.lang, T::Save)))
