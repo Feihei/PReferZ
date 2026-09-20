@@ -124,8 +124,8 @@
 | 5 | ✅ 直线/箭头端点吸附图形边缘（2026-09-07 `a803bbe` + `8d2465e` 修复） | 拖端点邻近 Shape 轮廓吸附 + 绑定模型（端点随形状移动） | 已拍板并交付（2026-09-08 复验通过）：阈值屏 10px；绑定=两端 `Option<ItemId>` 不存绝对坐标，`resolve_bindings` 动态重算；直线/箭头均可绑，与 #7 共用 |
 | 6 | ✅ 多元素对齐、分布（2026-09-05 `cad908b`） | `arrange.rs` 增 `plan_align`（6 向）+ `plan_distribute`（等距/等心 × 横/纵）；属性栏「对齐」节 + 右键菜单 | 已拍板并交付：两种分布都做；参考系=选区包围盒；UI=属性栏+右键菜单 |
 | 7 | ✅ Ctrl+箭头 添加连接符 + Alt+箭头 沿连接导航（流程图）（2026-09-11 `56dd3d4` 代码交付；2026-09-14 反馈更正 `8ba4ac5`：同向已有邻居时新节点放**邻居旁**（主轴=邻居远边+GAP）而非与邻居重合，见验收节） | 单选矩形/椭圆/菱形按 Ctrl+方向 = **按下即提交**一对：同源同风格克隆节点 + 两端绑定直箭头（一条 undo，选区跳新节点）；Alt+方向沿绑定邻居跳转选区 | ✅ 已拍板（2026-09-11，调研更正见细节 §7）：克隆非"默认矩形+文字占位"；不做 pending 簇预览/避障；主轴间距 100px、交叉轴对齐；箭头风格跟源、端头默认 Arrow；导航用 Alt+方向（现行 Excalidraw 同款分键） |
-| 8 | 两列数据粘贴成柱状/折线图 | 剪贴板 2 列 TSV/CSV → 生成 Chart item（柱状/折线） | 图表用新 ItemKind+ChartStyler vs Pixmap 位图；单/多系列 |
-| 9 | mermaid 代码转图表 | mermaid 子集 → nodes+edges（复用 #5/#6/#7） | 解析器：受限自研 Rust（零依赖，倾向）vs WASM mermaid |
+| 8 | ⏳ 两列数据粘贴成柱状/折线图（2026-09-20 拍板，待实施） | 剪贴板 2 列 TSV/CSV → 生成 Chart item（柱状/折线） | ✅ 已拍板（2026-09-20）：**新 `ItemKind::Chart` + 矢量渲染**（逐段 painter，同 freedraw 路线，非 Pixmap）；**单系列**（2 列 = label+value）；**粘贴触发**——先检文本（Excel 复制同时带位图+文本，图片优先会截错）→ 非 2 列数值回退图片路径；弹「柱状/折线/取消」选择浮层；手绘风渲染/多系列/数据编辑留后续 |
+| 9 | ⏳ mermaid 代码转图表（2026-09-20 拍板，待实施） | mermaid 子集 → nodes+edges（复用 #5/#6/#7） | ✅ 已拍板（2026-09-20）：解析器选 **(b) 受限自研 Rust**（零依赖，支持 `flowchart`/`graph` TD/LR 的 node/edge/label 子集）；节点形状 `[]` 矩形 / `()` 椭圆 / `{}` 菱形；分层布局生成 Shape + 两端绑定 Arrow（复用 #5/#14 `EndpointBinding` + #7 `edge_anchor_local`）；入口=弹窗输入 mermaid 文本（生成按钮），错误 flash |
 | 10 | ✅ 徒手绘制（freedraw）速度锥形墨迹（2026-09-18 拍板 B 档，交付 `1a8cda6`→`f869b86`→`b70c2a3`→`e1f46d8`；2026-09-20 Feihei 复验通过 ✅） | 新增 `Tool::Freehand`（绑裸 P + Num7）+ `ItemKind::Freedraw{points,pressures,stroke_width,color}`；按运笔速度（点间距/zoom）给每点算相对宽度乘子，落笔时 Catmull-Rom 重采样平滑，**逐段描边**渲染（line_segment + 圆帽，非 ribbon 填充）；选中可改颜色/粗细。详见 [CHANGELOG §徒手绘制](CHANGELOG.md) | 已拍板：D1=速度锥形（非等宽复用，egui 无压感→点间距模拟）；D2=P+Num7 双绑；D3=最小距离阈值采点、宽度平滑+锥形+Catmull-Rom 重采样、一条 AddItem undo；属性面维持颜色+粗细（对齐 Excalidraw freedraw，不吃 roughness） |
 | 11 | ✅ 选中拖动修饰键 + Ctrl+D 原位复制 | Ctrl+拖动=复制并移动副本；Shift+拖动=水平/垂直约束（PowerPoint 风）；Ctrl+D=原位复制 | 已交付（2026-09-03）：按下即建副本；约束基准=画布轴（视口无旋转，与屏幕轴同向）；Ctrl+D 偏移 10px |
 | 12 | ✅ 最大/最小缩放限制 | 默认 100%，最小 10%（0.1x），最大 1000%（10x）；`min_zoom`/`max_zoom` 改默认值 | 已交付（2026-09-03）：默认值 0.1/10.0；`.prz` 元数据越界时 clamp |
@@ -198,18 +198,23 @@
   - **几何/样式**：间距=主轴 100px 画布（新节点边到源边）、交叉轴中心对齐、同尺寸；连接=**直箭头 Polyline**（本仓库无 elbow），`end_arrow=Arrow`、`start_arrow=None`，stroke/手绘风参数跟源形状；两端 anchor=各自朝向对方的**边中点**（目标局部坐标），初始点位置即边中点（不加 Excalidraw 的 6px elbow padding，与 `resolve_bindings` 重算结果一致）；z 序=新节点在源之上、箭头最上（`add_item` 递增 z 天然满足）。
 - 交付（2026-09-11 `56dd3d4`）：keymap 新增 `Action::AddConnectedShape`（Ctrl+方向×4）/`Action::NavigateConnected`（Alt+方向×4，`KeyBind::alt()` 构造器）+ `pressed_bind` API（方向取实际命中绑定键，改绑仍可用；`pressed` 变薄封装）；app `add_connected_shape`（复用 `duplicate_items` 得新 uuid/未编组/不带绑定文字的克隆 + `Item::new_polyline` 双端 `EndpointBinding`，`AddItems` preview 一条 undo，选区跳新节点）、`navigate_connected`（两端绑定箭头 + 主轴投影 `prim>0 && prim>=|orth|` 取最近，`expand_to_groups` 展开，不入 undo）；模块级 `FlowDir`/`FLOWCHART_GAP`/`edge_anchor_local`；i18n action_label×2；测试 5 项（锚点矩阵、克隆几何/绑定/z 序/undo-redo、非节点源静默、导航双向+无邻居保持）。
 
-8. **两列数据粘贴成柱状/折线图**
+8. **两列数据粘贴成柱状/折线图（2026-09-20 拍板，待实施）**
 - 现状：粘贴仅图片（Ctrl+V 释放沿）；无数据→图表。
-- 方案：检测剪贴板文本为 2 列（TSV/CSV，≥2 行）弹「柱状/折线」选择，生成 `ItemKind::Chart`（新增）+ 独立 `ChartStyler` 离屏绘制（egui painter，零依赖）。先单系列，多系列排后。
-- 决策点：新 ItemKind+渲染器 vs 生成 Pixmap 位图（编辑性 vs 简单）；坐标轴/图例范围；粘贴触发 vs 工具栏。
+- 方案：检测剪贴板文本为 2 列（TSV/CSV，≥2 行）弹「柱状/折线」选择，生成 `ItemKind::Chart`（新增）+ 矢量渲染（逐段 painter，零依赖）。先单系列，多系列排后。
+- **决策点已拍板（2026-09-20）**：
+  - **实现**：✅ 新 `ItemKind::Chart`（数据存 item：`chart_type`/`labels`/`values` + 描边样式），**矢量逐段渲染**（同 freedraw 路线），否决 Pixmap 位图（不可编辑、放大糊、.prz 体积大）。
+  - **范围**：✅ 首轮**单系列**（2 列 = label+value）；粘贴后弹「柱状/折线/取消」选择浮层；手绘风渲染、多系列、图表数据再编辑均留后续。
+  - **触发**：✅ 仅粘贴触发。**关键顺序**：`paste_from_clipboard` 先 `get_text()`——Excel/表格软件复制单元格时剪贴板**同时带位图和文本**，若先试图片会把数据表截成位图；文本非 2 列数值时再回退 `get_image()` 图片路径（行为不变）。
 
-9. **mermaid 代码转图表**
+9. **mermaid 代码转图表（2026-09-20 拍板，待实施）**
 - 现状：无。
 - 方案：文本框/菜单输入 mermaid → 解析为 nodes（Shape）+ edges（Arrow，含 #5 绑定）。解析器选型：
   - (a) WASM mermaid（重，违零依赖/小包目标）；
-  - (b) 受限自研 Rust 解析器（支持 `graph TD`/`flowchart` 的 node/edge/label 子集，零依赖，可控但覆盖有限）——**倾向 (b)**；
-  - 复用 #5/#6/#7 生成结果。
-- 决策点：解析器选 (b) 受限自研 vs 接受 WASM；先支持 flowchart 子集。
+  - (b) 受限自研 Rust 解析器（支持 `graph TD`/`flowchart` 的 node/edge/label 子集，零依赖，可控但覆盖有限）；
+- **决策点已拍板（2026-09-20）**：
+  - **解析器**：✅ (b) 受限自研 Rust（零依赖）。支持首行 `flowchart TD|LR` / `graph TD|LR`；行语法 `id[标签] --> id2[标签2]`、`a --> b`（复用已有定义）；节点形状 `[]`=矩形、`()`=椭圆、`{}`=菱形；边标签 `|text|`、`---` 无向线等暂不支持（报错 flash 指出行号）。
+  - **布局**：分层布局——TD 自上而下 / LR 自左向右；层级=最长路径深度，同层按出现顺序排布，层间距/同层间距对齐 #7 的 100px 语义。
+  - **生成物**：每节点一个 Shape（同 Excalidraw isFlowchartNodeElement 三类）、每边一条 Polyline 直箭头，两端 `EndpointBinding{target, anchor}` 复用 #7 `edge_anchor_local`（锚点=双方相对的边中点）；整批 `AddItems` 一条 undo；入口=右键菜单/命令弹窗输入 mermaid 文本 + 生成按钮，解析失败 flash 行号。
 
 10. **✅ 徒手绘制（freedraw）速度锥形墨迹（2026-09-18 拍板，2026-09-18~20 交付，✅ 2026-09-20 Feihei 复验通过）** — 完整交付见 [CHANGELOG §徒手绘制（freedraw）速度锥形墨迹](CHANGELOG.md)。拍板：D1=**B 速度锥形墨迹**（新增 `ItemKind::Freedraw`，egui 无压感→以相邻点间距/zoom 当速度代理算每点相对宽度乘子，`pressures` 与标量 `stroke_width` 分离使属性 undo 保持 `Copy`）；D2=**裸 P + Num7 双绑**；D3=屏幕 2px 阈值采点、移动平均 + 首尾收笔锥形 + 落笔时 **Catmull-Rom 重采样平滑**、一条 `AddItem` undo。渲染经逐段描边（`line_segment` + 圆帽）而非 ribbon 填充；属性面维持「颜色 + 粗细」，与 Excalidraw freedraw 一致（不吃 roughness/sloppiness）。
 
@@ -242,7 +247,7 @@
 |---|---|---|---|
 | 3 | ✅ Frame 常用演示比例预设（16:9 / 16:10 / 4:3 / 3:2 / 1:1 + A4 竖/横）（2026-09-17 代码交付，待人工验收） | 选中 Frame 时属性栏提供比例/纸张下拉，中心锚定套用；比例保持长边长度、A4 按 96 DPI 换算像素 | 预设清单=5 比例+A4 双取向；A4 绑 96 DPI；自定义比例输入本轮不做（留后续）；入口仅选中态、不做创建期面板 |
 | 4 | ✅ 显示所有元素（Show All / Zoom to Fit）——**已由视口动作覆盖** | `Action::FitToScreen`（`Shift+1`，裸 `F` 让位给画框后仍保留 Shift+1）union **全部 item** AABB 后 `fit_to_content`，等价"显示所有"；`compute_fit`/`fit_to_content` 单点实现 | 无需新代码：已计入所有 item、空场景回退默认视口、快捷键 Shift+1 对齐 Excalidraw |
-| 5 | 自动保存（Autosave） | 定时/debounce 自动写 `.prz`（原文件或 `.autosave`），启动提示恢复 | 覆盖原文件 vs 独立 autosave；恢复 UX；间隔默认；不污染 undo |
+| 5 | ⏳ 自动保存（Autosave）（2026-09-20 拍板，待实施） | 变更后 30s 无操作写 `.prz.autosave`（独立文件不动原文件），打开文件时检测较新 autosave 弹恢复提示 | ✅ 已拍板（2026-09-20）：**独立 `.prz.autosave` 文件**（不覆盖原文件，防写入中断损坏）；**30s debounce**（变更后无操作计时，有操作重置）；打开 `.prz` 时若同目录 autosave 比原文件新 → 弹「恢复/忽略」提示；不进 undo、不改变当前文档的未保存状态；设置面板开关（默认开）+ 间隔可调；未命名文档（从未存过盘）不自动保存 |
 
 ### 细节
 
@@ -263,10 +268,13 @@
 - 结论：其语义即"适配全部内容"（`compute_fit`/`fit_to_content` 与"缩放到选中" `ZoomToSelection` 共用
   同一套公式），计入所有 item、空场景回退默认视口、Shift+1 对齐 Excalidraw。功能待办 #4 就此满足，勾掉。
 
-5. **自动保存（Autosave）**
+5. **自动保存（Autosave）（2026-09-20 拍板，待实施）**
 - 现状：仅手动 `Ctrl+S` 写 `.prz`，长时间编辑无自动落盘，崩溃丢工作。
-- 方案：定时（如每 60s）或变更后 debounce（如 30s）自动写入 `.prz`（同路径或 `.prz.autosave` 临时文件）；启动检测 autosave 文件并提示恢复；设置面板可开关 + 调间隔。
-- 决策点：自动保存目标（覆盖原文件 vs 独立 autosave 文件）；恢复提示 UX；间隔默认值；与 Command/Undo 栈解耦（autosave 不进 undo 历史）。
+- **决策点已拍板（2026-09-20）**：
+  - **保存目标**：✅ 独立 `.prz.autosave` 文件（与打开的 `.prz` 同目录同名）——不覆盖原文件，防写入中断损坏主档。
+  - **触发**：✅ **30s debounce**——任一变更（push_cmd）后计时，期间无新变更且达 30s 即写一次 autosave；新变更重置计时。定时器驱动复用 `request_repaint`，autosave 不进 undo 历史、**不清除文档的未保存状态**（原文件的 Ctrl+S 语义不变）。
+  - **恢复**：✅ 打开某个 `.prz` 时若同目录存在较新的 `.prz.autosave`（mtime 晚于原文件）→ 弹「恢复 / 忽略」浮层；恢复=载入 autosave 内容且当前路径仍指向原 `.prz`；忽略=保留 autosave 文件不删。未命名文档（从未存过盘）不自动保存。
+  - **设置**：✅ 设置面板开关（默认开）+ 间隔秒数（默认 30，最小 10）；持久化进 `config.json`。
 
 ---
 
