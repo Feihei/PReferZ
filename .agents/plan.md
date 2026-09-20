@@ -104,6 +104,20 @@
    回归闸：`i18n::tests::english_table_contains_no_cjk`（扫英文表禁 CJK）+
    `preferz_app::tests::flash_messages_follow_selected_language`（EN 下跑常用动作断言提示无中文）。
 
+新增：**图表/流程图/自动保存三件套（2026-09-20，`fafd262`+`edb6a6a`+`96cf8ac`）——
+🔶 代码交付，待 `cargo run` 复验**（详见 [CHANGELOG](CHANGELOG.md) 对应三节）：
+
+1. **#8 图表粘贴**：Excel 里框选两列（标签+数值）复制 → 画布 `Ctrl+V` → 弹「柱状/折线/取消」
+   居中浮层（附数据预览，>5 行有省略提示）→ 柱状/折线生成于视口中心、一条 undo；
+   纯文本粘贴行为不变（图片路径回退）。复验项：柱/折线观感（网格/轴/标签/负值零线浮动）、
+   移动缩放后渲染跟随、保存重开图表还在、切 EN 文案。
+2. **#9 mermaid 流程图**：右键菜单「Mermaid 图表…」→ 输入 `flowchart TD` + `a[开始] --> b{判断}`
+   等 → 生成 → 分层布局、节点=矩形/椭圆/菱形+绑定文字、边=两端绑定箭头（移动节点箭头跟随）、
+   整批一条 undo；解析错误（如 `---`/`|标签|`/subgraph）flash 行号且输入保留。
+3. **#5 自动保存**：打开某 `.prz` 编辑后静置 ≥30s（默认）→ 同目录出现 `.prz.autosave`、
+   无「已保存」toast、标题脏标记仍在；把 autosave 改新后重开原文件 → 弹「恢复/忽略」；
+   恢复后 current_file 仍指原文件且内容未保存；设置面板「自动保存」节开关+秒数滑块生效。
+
 ---
 
 ## 下一步：Excalidraw 打磨批次（Phase L 候选）
@@ -124,8 +138,8 @@
 | 5 | ✅ 直线/箭头端点吸附图形边缘（2026-09-07 `a803bbe` + `8d2465e` 修复） | 拖端点邻近 Shape 轮廓吸附 + 绑定模型（端点随形状移动） | 已拍板并交付（2026-09-08 复验通过）：阈值屏 10px；绑定=两端 `Option<ItemId>` 不存绝对坐标，`resolve_bindings` 动态重算；直线/箭头均可绑，与 #7 共用 |
 | 6 | ✅ 多元素对齐、分布（2026-09-05 `cad908b`） | `arrange.rs` 增 `plan_align`（6 向）+ `plan_distribute`（等距/等心 × 横/纵）；属性栏「对齐」节 + 右键菜单 | 已拍板并交付：两种分布都做；参考系=选区包围盒；UI=属性栏+右键菜单 |
 | 7 | ✅ Ctrl+箭头 添加连接符 + Alt+箭头 沿连接导航（流程图）（2026-09-11 `56dd3d4` 代码交付；2026-09-14 反馈更正 `8ba4ac5`：同向已有邻居时新节点放**邻居旁**（主轴=邻居远边+GAP）而非与邻居重合，见验收节） | 单选矩形/椭圆/菱形按 Ctrl+方向 = **按下即提交**一对：同源同风格克隆节点 + 两端绑定直箭头（一条 undo，选区跳新节点）；Alt+方向沿绑定邻居跳转选区 | ✅ 已拍板（2026-09-11，调研更正见细节 §7）：克隆非"默认矩形+文字占位"；不做 pending 簇预览/避障；主轴间距 100px、交叉轴对齐；箭头风格跟源、端头默认 Arrow；导航用 Alt+方向（现行 Excalidraw 同款分键） |
-| 8 | ⏳ 两列数据粘贴成柱状/折线图（2026-09-20 拍板，待实施） | 剪贴板 2 列 TSV/CSV → 生成 Chart item（柱状/折线） | ✅ 已拍板（2026-09-20）：**新 `ItemKind::Chart` + 矢量渲染**（逐段 painter，同 freedraw 路线，非 Pixmap）；**单系列**（2 列 = label+value）；**粘贴触发**——先检文本（Excel 复制同时带位图+文本，图片优先会截错）→ 非 2 列数值回退图片路径；弹「柱状/折线/取消」选择浮层；手绘风渲染/多系列/数据编辑留后续 |
-| 9 | ⏳ mermaid 代码转图表（2026-09-20 拍板，待实施） | mermaid 子集 → nodes+edges（复用 #5/#6/#7） | ✅ 已拍板（2026-09-20）：解析器选 **(b) 受限自研 Rust**（零依赖，支持 `flowchart`/`graph` TD/LR 的 node/edge/label 子集）；节点形状 `[]` 矩形 / `()` 椭圆 / `{}` 菱形；分层布局生成 Shape + 两端绑定 Arrow（复用 #5/#14 `EndpointBinding` + #7 `edge_anchor_local`）；入口=弹窗输入 mermaid 文本（生成按钮），错误 flash |
+| 8 | 🔶 两列数据粘贴成柱状/折线图（2026-09-20 代码交付 `fafd262`，待人工验收） | 剪贴板 2 列 TSV/CSV → 生成 Chart item（柱状/折线） | ✅ 已拍板（2026-09-20）：**新 `ItemKind::Chart` + 矢量渲染**（逐段 painter，同 freedraw 路线，非 Pixmap）；**单系列**（2 列 = label+value）；**粘贴触发**——先检文本（Excel 复制同时带位图+文本，图片优先会截错）→ 非 2 列数值回退图片路径；弹「柱状/折线/取消」选择浮层；手绘风渲染/多系列/数据编辑留后续。交付见 [CHANGELOG §两列数据粘贴成柱状/折线图](CHANGELOG.md) |
+| 9 | 🔶 mermaid 代码转流程图（2026-09-20 代码交付 `edb6a6a`，待人工验收） | mermaid 子集 → nodes+edges（复用 #5/#6/#7） | ✅ 已拍板（2026-09-20）：解析器选 **(b) 受限自研 Rust**（零依赖，支持 `flowchart`/`graph` TD/LR 的 node/edge/label 子集）；节点形状 `[]` 矩形 / `()` 椭圆 / `{}` 菱形；分层布局生成 Shape + 两端绑定 Arrow（复用 #5/#14 `EndpointBinding` + #7 `edge_anchor_local`）；入口=弹窗输入 mermaid 文本（生成按钮），错误 flash。交付见 [CHANGELOG §mermaid 代码转流程图](CHANGELOG.md) |
 | 10 | ✅ 徒手绘制（freedraw）速度锥形墨迹（2026-09-18 拍板 B 档，交付 `1a8cda6`→`f869b86`→`b70c2a3`→`e1f46d8`；2026-09-20 Feihei 复验通过 ✅） | 新增 `Tool::Freehand`（绑裸 P + Num7）+ `ItemKind::Freedraw{points,pressures,stroke_width,color}`；按运笔速度（点间距/zoom）给每点算相对宽度乘子，落笔时 Catmull-Rom 重采样平滑，**逐段描边**渲染（line_segment + 圆帽，非 ribbon 填充）；选中可改颜色/粗细。详见 [CHANGELOG §徒手绘制](CHANGELOG.md) | 已拍板：D1=速度锥形（非等宽复用，egui 无压感→点间距模拟）；D2=P+Num7 双绑；D3=最小距离阈值采点、宽度平滑+锥形+Catmull-Rom 重采样、一条 AddItem undo；属性面维持颜色+粗细（对齐 Excalidraw freedraw，不吃 roughness） |
 | 11 | ✅ 选中拖动修饰键 + Ctrl+D 原位复制 | Ctrl+拖动=复制并移动副本；Shift+拖动=水平/垂直约束（PowerPoint 风）；Ctrl+D=原位复制 | 已交付（2026-09-03）：按下即建副本；约束基准=画布轴（视口无旋转，与屏幕轴同向）；Ctrl+D 偏移 10px |
 | 12 | ✅ 最大/最小缩放限制 | 默认 100%，最小 10%（0.1x），最大 1000%（10x）；`min_zoom`/`max_zoom` 改默认值 | 已交付（2026-09-03）：默认值 0.1/10.0；`.prz` 元数据越界时 clamp |
@@ -198,7 +212,7 @@
   - **几何/样式**：间距=主轴 100px 画布（新节点边到源边）、交叉轴中心对齐、同尺寸；连接=**直箭头 Polyline**（本仓库无 elbow），`end_arrow=Arrow`、`start_arrow=None`，stroke/手绘风参数跟源形状；两端 anchor=各自朝向对方的**边中点**（目标局部坐标），初始点位置即边中点（不加 Excalidraw 的 6px elbow padding，与 `resolve_bindings` 重算结果一致）；z 序=新节点在源之上、箭头最上（`add_item` 递增 z 天然满足）。
 - 交付（2026-09-11 `56dd3d4`）：keymap 新增 `Action::AddConnectedShape`（Ctrl+方向×4）/`Action::NavigateConnected`（Alt+方向×4，`KeyBind::alt()` 构造器）+ `pressed_bind` API（方向取实际命中绑定键，改绑仍可用；`pressed` 变薄封装）；app `add_connected_shape`（复用 `duplicate_items` 得新 uuid/未编组/不带绑定文字的克隆 + `Item::new_polyline` 双端 `EndpointBinding`，`AddItems` preview 一条 undo，选区跳新节点）、`navigate_connected`（两端绑定箭头 + 主轴投影 `prim>0 && prim>=|orth|` 取最近，`expand_to_groups` 展开，不入 undo）；模块级 `FlowDir`/`FLOWCHART_GAP`/`edge_anchor_local`；i18n action_label×2；测试 5 项（锚点矩阵、克隆几何/绑定/z 序/undo-redo、非节点源静默、导航双向+无邻居保持）。
 
-8. **两列数据粘贴成柱状/折线图（2026-09-20 拍板，待实施）**
+8. **✅ 两列数据粘贴成柱状/折线图（2026-09-20 代码交付 `fafd262`，待人工验收）**
 - 现状：粘贴仅图片（Ctrl+V 释放沿）；无数据→图表。
 - 方案：检测剪贴板文本为 2 列（TSV/CSV，≥2 行）弹「柱状/折线」选择，生成 `ItemKind::Chart`（新增）+ 矢量渲染（逐段 painter，零依赖）。先单系列，多系列排后。
 - **决策点已拍板（2026-09-20）**：
@@ -206,7 +220,7 @@
   - **范围**：✅ 首轮**单系列**（2 列 = label+value）；粘贴后弹「柱状/折线/取消」选择浮层；手绘风渲染、多系列、图表数据再编辑均留后续。
   - **触发**：✅ 仅粘贴触发。**关键顺序**：`paste_from_clipboard` 先 `get_text()`——Excel/表格软件复制单元格时剪贴板**同时带位图和文本**，若先试图片会把数据表截成位图；文本非 2 列数值时再回退 `get_image()` 图片路径（行为不变）。
 
-9. **mermaid 代码转图表（2026-09-20 拍板，待实施）**
+9. **✅ mermaid 代码转流程图（2026-09-20 代码交付 `edb6a6a`，待人工验收）**
 - 现状：无。
 - 方案：文本框/菜单输入 mermaid → 解析为 nodes（Shape）+ edges（Arrow，含 #5 绑定）。解析器选型：
   - (a) WASM mermaid（重，违零依赖/小包目标）；
@@ -247,7 +261,7 @@
 |---|---|---|---|
 | 3 | ✅ Frame 常用演示比例预设（16:9 / 16:10 / 4:3 / 3:2 / 1:1 + A4 竖/横）（2026-09-17 代码交付，待人工验收） | 选中 Frame 时属性栏提供比例/纸张下拉，中心锚定套用；比例保持长边长度、A4 按 96 DPI 换算像素 | 预设清单=5 比例+A4 双取向；A4 绑 96 DPI；自定义比例输入本轮不做（留后续）；入口仅选中态、不做创建期面板 |
 | 4 | ✅ 显示所有元素（Show All / Zoom to Fit）——**已由视口动作覆盖** | `Action::FitToScreen`（`Shift+1`，裸 `F` 让位给画框后仍保留 Shift+1）union **全部 item** AABB 后 `fit_to_content`，等价"显示所有"；`compute_fit`/`fit_to_content` 单点实现 | 无需新代码：已计入所有 item、空场景回退默认视口、快捷键 Shift+1 对齐 Excalidraw |
-| 5 | ⏳ 自动保存（Autosave）（2026-09-20 拍板，待实施） | 变更后 30s 无操作写 `.prz.autosave`（独立文件不动原文件），打开文件时检测较新 autosave 弹恢复提示 | ✅ 已拍板（2026-09-20）：**独立 `.prz.autosave` 文件**（不覆盖原文件，防写入中断损坏）；**30s debounce**（变更后无操作计时，有操作重置）；打开 `.prz` 时若同目录 autosave 比原文件新 → 弹「恢复/忽略」提示；不进 undo、不改变当前文档的未保存状态；设置面板开关（默认开）+ 间隔可调；未命名文档（从未存过盘）不自动保存 |
+| 5 | 🔶 自动保存（Autosave）（2026-09-20 代码交付 `96cf8ac`，待人工验收） | 变更后 30s 无操作写 `.prz.autosave`（独立文件不动原文件），打开文件时检测较新 autosave 弹恢复提示 | ✅ 已拍板（2026-09-20）：**独立 `.prz.autosave` 文件**（不覆盖原文件，防写入中断损坏）；**30s debounce**（变更后无操作计时，有操作重置）；打开 `.prz` 时若同目录 autosave 比原文件新 → 弹「恢复/忽略」提示；不进 undo、不改变当前文档的未保存状态；设置面板开关（默认开）+ 间隔可调；未命名文档（从未存过盘）不自动保存。交付见 [CHANGELOG §自动保存](CHANGELOG.md) |
 
 ### 细节
 
@@ -268,7 +282,7 @@
 - 结论：其语义即"适配全部内容"（`compute_fit`/`fit_to_content` 与"缩放到选中" `ZoomToSelection` 共用
   同一套公式），计入所有 item、空场景回退默认视口、Shift+1 对齐 Excalidraw。功能待办 #4 就此满足，勾掉。
 
-5. **自动保存（Autosave）（2026-09-20 拍板，待实施）**
+5. **✅ 自动保存（Autosave）（2026-09-20 代码交付 `96cf8ac`，待人工验收）**
 - 现状：仅手动 `Ctrl+S` 写 `.prz`，长时间编辑无自动落盘，崩溃丢工作。
 - **决策点已拍板（2026-09-20）**：
   - **保存目标**：✅ 独立 `.prz.autosave` 文件（与打开的 `.prz` 同目录同名）——不覆盖原文件，防写入中断损坏主档。

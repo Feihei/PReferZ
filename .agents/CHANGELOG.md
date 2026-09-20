@@ -394,6 +394,83 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 
 ---
 
+## 两列数据粘贴成柱状/折线图（plan #8，2026-09-20，`fafd262`）
+
+> 🔶 代码交付，待 `cargo run` 人工复验。拍板：新 `ItemKind::Chart` 矢量渲染（非 Pixmap）、
+> 单系列、粘贴触发。
+
+- **数据模型**：`ItemKind::Chart { chart_type(Bar/Line), base_size, labels, values, color,
+  stroke_width }`（core `item.rs`，`ChartType` 枚举 + `CHART_DEFAULT_SIZE`(440×300) /
+  `CHART_DEFAULT_COLOR`(Excalidraw 蓝) 常量 + `Item::new_chart` 构造器）；`base_size()` 走
+  Frame 同款分支，变换框/命中/排列天然可用。
+- **粘贴检测顺序**：`paste_from_clipboard` **先 `get_text()`**——Excel/表格软件复制单元格时
+  剪贴板同时带位图+文本，图片优先会把数据表截成位图；文本解析为 2 列数值 → 暂存
+  `pending_chart` 弹「柱状/折线/取消」选择浮层；非 2 列数值回退图片路径（行为不变）。
+- **core（L1，无头可测）** `chart.rs`：`parse_two_column_data`——TSV/CSV、CRLF、首尾空行、
+  ≥2 数据行、仅首行可作表头丢弃（表头+单数据行拒绝）、恰 2 列否则拒绝、支持负值；8 单测。
+- **渲染**：`draw_chart_item`（render.rs）逐段矢量绘制——横向网格 + 数值刻度 + 左/下坐标轴 +
+  柱（凸多边形，零线随数据范围浮动，支持负值）或折线（含圆点标记）+ 底部类别标签；线宽/
+  字号乘 `scale`（item scale × zoom）随视图缩放；文字不随 item 旋转（首轮取舍，标签恒水平）；
+  明暗主题各自取轴/网格/标签色。
+- **fileio**：`item_kind_str` 补 `"chart"`；kind JSON blob 无 schema 迁移；存读往返单测。
+- **取色器**：`sample_item_pixel` Chart 分支与 Text 同款简化采样（命中返回系列色）。
+- **i18n**：`ChartChooser*` 4 词条 + `FlashChartCreated`；`create_chart_from_pending`
+  落点=视口中心（同图片导入），一条 `AddItem` undo。
+- 测试：core 解析 8 + fileio 往返 1（中文标签/负值/尺寸/颜色断言）。
+
+## mermaid 代码转流程图（plan #9，2026-09-20，`edb6a6a`）
+
+> 🔶 代码交付，待 `cargo run` 人工复验。拍板：受限自研 Rust 解析器（零依赖，否决 WASM）。
+
+- **core（L1，无头可测）** `mermaid.rs`：
+  - `parse_mermaid_flowchart`——首行 `flowchart|graph TD|TB|BT|LR|RL`；节点 `id[标签]`(矩形)/
+    `id(标签)`(椭圆)/`id{标签}`(菱形)/裸 `id`；边仅 `-->`（可链式 `a --> b --> c`，重复引用
+    合并同节点、定义覆盖裸引用默认）；边标签 `|text|`、无向线/虚线/粗线箭头、subgraph 均
+    **报错并带行号**；`%%` 注释与空行跳过；8 单测。
+  - `layout_flowchart`——分层布局：层级=最长路径深度（边松弛至多 n 轮，环自然收敛不挂起），
+    同层按出现顺序排布、整行交叉轴居中；层间距/同层间距 `MERMAID_GAP=100`（对齐 plan #7
+    `FLOWCHART_GAP` 语义）；节点尺寸按标签估宽（CJK 14px/ASCII 8px，菱形加宽防文字出界）。
+- **app 生成** `generate_mermaid_flowchart`（actions.rs）：解析+布局 → 每节点一个 Shape +
+  `Item::new_text_in` 绑定文字（随容器联动），每边一条两端 `EndpointBinding` 绑定的直箭头
+  （复用 plan #7 `edge_anchor_local`，锚点=双方相对的边中点、主轴取中心差主导轴）→ 整批
+  `AddItems` 一条 undo、生成后全选节点；落点=布局包围盒居中到视口中心。解析失败**不关窗、
+  保留输入**，错误经 flash 指出行号。
+- **入口**：右键菜单「Mermaid 图表…」（🔷）→ 居中弹窗：多行 code editor 输入 + 支持语法提示
+  + 生成/取消。
+- **i18n**：`MenuMermaid`/`MermaidTitle`/`MermaidPlaceholder`/`MermaidGenerate`/
+  `FlashMermaidParseFailed`/`FlashMermaidCreated`。
+- 测试：core 解析 5 + 布局 3；bin 生成（8 item = 3 形状+3 绑定文字+2 箭头、两端绑定、
+  一条 undo 一步撤回/redo 恢复）+ 解析失败保留输入 2。
+
+## 自动保存（plan #5，2026-09-20，`96cf8ac`）
+
+> 🔶 代码交付，待 `cargo run` 人工复验。拍板：独立 `.prz.autosave`（不覆盖原文件）+
+> 30s debounce + 打开文件时恢复提示。
+
+- **触发**：`mark_dirty()`（收口 push_cmd / perform_undo / perform_redo 的 dirty 标记）重置
+  debounce 计时起点 `autosave_dirty_since`；update 循环 `tick_autosave`——启用 && dirty &&
+  打开着 `.prz` && 无保存任务在途 && 距上次变更 ≥ 间隔（默认 30s，最小 10s）→ 后台写
+  `foo.prz.autosave`（`autosave_path_for`：原路径追加 `.autosave`）。**不进 undo、不清除文档
+  未保存状态、不改 current_file**（原文件 Ctrl+S 语义不变）；手动保存成功时计时清零。
+- **结果分流**：`poll_background` 按目标路径后缀 `.autosave` 识别——自动保存静默完成（失败才
+  flash），不触发「已保存」/ pending 关闭新建动作；手动保存分支原样。
+- **恢复**：`finish_load` 打开成功后 `newer_autosave_for`——同目录 `.autosave` 存在且 mtime
+  晚于原文件（原文件 mtime 不可得时有备份即提示）→ 弹「恢复/忽略」浮层；恢复=载入备份内容
+  但 current_file 仍指原 `.prz`、内容视作未保存（dirty），不污染最近文件列表；忽略=保留备份
+  不删。
+- **设置**：面板新增「自动保存」节——开关 checkbox（默认开）+ 无操作秒数滑块（10–300），
+  变更即持久化；`UserConfig` 增 `autosave_enabled`(serde default fn=**true**，手写
+  `Default` 防止缺省 false)/`autosave_interval`(default 30)。
+- **fileio 重构**：`start_save` 拆出 `start_save_common`（文案参数化），新增 `start_autosave`
+  （进度条文案「自动保存: {path}」）；`BackgroundOps::start_save_msg` 承接（原 `start_save`
+  删除，文案上移调用方）。
+- **i18n**：`SettingsAutosave*` 3 / `ProgressAutosave` / `AutosaveRestorePrompt` /
+  `AutosaveRestore` / `AutosaveDismiss` / `FlashAutosaveFailed`。
+- 测试：bin 5（路径后缀、备份检测新/旧/无、tick 触发写盘且保持 dirty/计时清零、未命名与
+  未到时不触发、分流谓词）。
+
+---
+
 ## 决策点归档（D1–D6 / I1–I4）
 
 > 原列于 plan.md，G/I/H/K 交付后蒸馏归档于此，使 CHANGELOG 自包含、plan.md 仅保留前瞻内容。
