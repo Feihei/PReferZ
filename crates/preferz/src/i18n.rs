@@ -237,6 +237,7 @@ pub enum T {
     PropsMixedValue,
     /// 分节标题：形状 / 文字 / 图片 / 画框。
     PropsSectionShape,
+    PropsSectionFreedraw,
     PropsSectionText,
     PropsSectionPixmap,
     PropsSectionFrame,
@@ -511,6 +512,7 @@ fn translate_en(key: T) -> &'static str {
         T::PropsMixedSelection => "Mixed types — no shared properties to edit.",
         T::PropsMixedValue => "Mixed",
         T::PropsSectionShape => "Shape",
+        T::PropsSectionFreedraw => "Ink",
         T::PropsSectionText => "Text",
         T::PropsSectionPixmap => "Image",
         T::PropsSectionFrame => "Frame",
@@ -747,6 +749,7 @@ fn translate_zh(key: T) -> &'static str {
         T::PropsMixedSelection => "选中了不同类型的元素，没有可批量编辑的共有属性",
         T::PropsMixedValue => "不一致",
         T::PropsSectionShape => "形状",
+        T::PropsSectionFreedraw => "墨迹",
         T::PropsSectionText => "文字",
         T::PropsSectionPixmap => "图片",
         T::PropsSectionFrame => "画框",

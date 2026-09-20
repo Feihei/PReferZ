@@ -18,10 +18,11 @@ use preferz_core::arrange::{
 };
 use preferz_core::commands::{
     AddItem, AddItems, ArrangeItems, ArrowHeads, CropItems, DeleteItems, EditShapePoints,
-    EditTextContent, FillChange, FillState, FlipItems, FrameGeom, MoveItems, MultiCommand,
-    NormalizeItems, RenumberFrame, ReorderItems, SetArrowHeads, SetClosed, SetCurveType,
-    SetFrameNumber, SetFrameSize, SetGroup, SetPixmapProps, SetPixmapStyle, SetRoundness,
-    SetShapeFill, SetSloppiness, SetStrokeStyle, SetTextStyle, TransformItem,
+    EditTextContent, FillChange, FillState, FlipItems, FrameGeom, FreedrawStyle, MoveItems,
+    MultiCommand, NormalizeItems, RenumberFrame, ReorderItems, SetArrowHeads, SetClosed,
+    SetCurveType, SetFrameNumber, SetFrameSize, SetFreedrawStyle, SetGroup, SetPixmapProps,
+    SetPixmapStyle, SetRoundness, SetShapeFill, SetSloppiness, SetStrokeStyle, SetTextStyle,
+    TransformItem,
 };
 use preferz_core::shape::{
     ArrowHeadStyle, CurveType, DashStyle, FillStyle, FontFamily, PixmapStyle, SeededRng, ShapeType,
@@ -518,6 +519,8 @@ pub(crate) enum PropKind {
     TextStyle,
     /// 图片样式（不透明度 / 灰度整份快照）。
     Pixmap,
+    /// 墨迹样式（plan #10：颜色 / 基准笔宽整份快照）。
+    Freedraw,
 }
 
 /// 属性值的统一载体：让 [`PropEdit`] 不必为每种属性各写一个类型。
@@ -528,6 +531,7 @@ pub(crate) enum PropValue {
     Fill(FillState),
     Text(TextStyle),
     Pixmap(PixmapStyle),
+    Freedraw(FreedrawStyle),
 }
 
 /// 用「变更前快照 + 当前 scene 值」合成一条批量命令。
@@ -678,6 +682,34 @@ fn prop_cmd(pending: PropEdit, scene: &Scene) -> Option<Box<dyn Command>> {
                 .collect();
             (!items.is_empty()).then(|| {
                 Box::new(SetPixmapStyle::new_batch(items).with_preview_applied(true))
+                    as Box<dyn Command>
+            })
+        }
+        PropKind::Freedraw => {
+            let items: Vec<(ItemId, FreedrawStyle, FreedrawStyle)> = pending
+                .items
+                .iter()
+                .filter_map(|(id, old)| match (old, scene.get_item(id)) {
+                    (PropValue::Freedraw(old), Some(item)) => match &item.kind {
+                        ItemKind::Freedraw {
+                            stroke_width,
+                            color,
+                            ..
+                        } => Some((
+                            *id,
+                            *old,
+                            FreedrawStyle {
+                                color: *color,
+                                stroke_width: *stroke_width,
+                            },
+                        )),
+                        _ => None,
+                    },
+                    _ => None,
+                })
+                .collect();
+            (!items.is_empty()).then(|| {
+                Box::new(SetFreedrawStyle::new_batch(items).with_preview_applied(true))
                     as Box<dyn Command>
             })
         }
@@ -1326,17 +1358,14 @@ impl eframe::App for PReferZApp {
             if let DragState::Drawing { raw } = &self.drag {
                 let pts: Vec<(f32, f32)> = raw.iter().map(|p| (p.x, p.y)).collect();
                 if pts.len() >= 2 {
-                    let widths = preferz_core::freedraw::widths_from_spacing(
-                        &pts,
-                        self.default_stroke.width,
-                        self.viewport.zoom,
-                    );
+                    let pressures =
+                        preferz_core::freedraw::pressures_from_spacing(&pts, self.viewport.zoom);
                     let screen_pts: Vec<egui::Pos2> = pts
                         .iter()
                         .map(|&(x, y)| self.viewport.canvas_to_pos2(CanvasPoint::new(x, y)))
                         .collect();
-                    let screen_widths: Vec<f32> =
-                        widths.iter().map(|w| w * self.viewport.zoom).collect();
+                    let sw = self.default_stroke.width * self.viewport.zoom;
+                    let screen_widths: Vec<f32> = pressures.iter().map(|pr| sw * pr).collect();
                     let c = self.default_stroke.color;
                     let color = egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]);
                     ui.painter()
@@ -2446,17 +2475,17 @@ mod tests {
         match &item.kind {
             ItemKind::Freedraw {
                 points,
-                widths,
+                pressures,
+                stroke_width,
                 color: c,
             } => {
                 assert_eq!(points.len(), 6);
                 assert_eq!(points[0], (0.0, 0.0));
-                assert_eq!(widths.len(), points.len());
-                assert!(widths.iter().all(|&w| w > 0.0 && w.is_finite()));
+                assert_eq!(pressures.len(), points.len());
+                // 相对笔宽乘子恒在 (0,1]；基准宽 = 创建时的描边宽。
+                assert!(pressures.iter().all(|&p| p > 0.0 && p <= 1.0 + 1e-6));
+                assert!((*stroke_width - base_width).abs() < 1e-3);
                 assert_eq!(*c, color);
-                // 笔宽恒不超过基准（慢速 = 基准，快速/收笔 ≤ 基准）。
-                let max_w = widths.iter().fold(0.0f32, |a, &b| a.max(b));
-                assert!(max_w <= base_width + 1e-3);
             }
             _ => panic!("徒手产物应为 Freedraw item"),
         }

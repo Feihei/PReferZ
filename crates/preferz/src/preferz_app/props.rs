@@ -46,6 +46,19 @@ impl PReferZApp {
                     ui.separator();
                 }
 
+                let freedraw_ids: Vec<ItemId> = ids
+                    .iter()
+                    .copied()
+                    .filter(|id| {
+                        matches!(self.scene.get_item(id), Some(item) if matches!(item.kind, ItemKind::Freedraw { .. }))
+                    })
+                    .collect();
+                if !freedraw_ids.is_empty() {
+                    ui.label(t(lang, T::PropsSectionFreedraw));
+                    self.render_freedraw_props(ui, lang, dark, &freedraw_ids);
+                    ui.separator();
+                }
+
                 let mut text_ids: Vec<ItemId> = ids
                     .iter()
                     .copied()
@@ -248,6 +261,85 @@ impl PReferZApp {
                     }
                 });
             });
+    }
+
+    /// 墨迹节（plan #10）：颜色 + 基准笔宽。逐点速度锥形形状不可在侧栏编辑（属绘制
+    /// 结果），故只提供这两个通用样式；线型 / 填充 / 圆角等对墨迹无意义，不出现。
+    pub(crate) fn render_freedraw_props(
+        &mut self,
+        ui: &mut egui::Ui,
+        lang: Lang,
+        dark: bool,
+        ids: &[ItemId],
+    ) {
+        // 颜色（与 Shape 描边同调色板）
+        if let Some(p) = prop(&self.scene, ids, |it| match &it.kind {
+            ItemKind::Freedraw { color, .. } => Some(*color),
+            _ => None,
+        }) {
+            let mut col = p.value();
+            if palette::color_palette_button(ui, &mut col, dark) {
+                let new = col;
+                self.apply_continuous(
+                    ids,
+                    PropKind::Freedraw,
+                    |k| match k {
+                        ItemKind::Freedraw {
+                            color,
+                            stroke_width,
+                            ..
+                        } => Some(PropValue::Freedraw(FreedrawStyle {
+                            color: *color,
+                            stroke_width: *stroke_width,
+                        })),
+                        _ => None,
+                    },
+                    |k| {
+                        if let ItemKind::Freedraw { color, .. } = k {
+                            *color = new;
+                        }
+                    },
+                );
+            }
+            if p.is_mixed() {
+                ui.label(t(lang, T::PropsMixedValue));
+            }
+        }
+        // 粗细（基准笔宽；逐点相对乘子保持不变，整条墨迹等比缩放）
+        if let Some(p) = prop(&self.scene, ids, |it| match &it.kind {
+            ItemKind::Freedraw { stroke_width, .. } => Some(*stroke_width),
+            _ => None,
+        }) {
+            let mut w = p.value();
+            if ui
+                .add(egui::Slider::new(&mut w, 0.5..=12.0).logarithmic(true))
+                .changed()
+            {
+                self.apply_continuous(
+                    ids,
+                    PropKind::Freedraw,
+                    |k| match k {
+                        ItemKind::Freedraw {
+                            color,
+                            stroke_width,
+                            ..
+                        } => Some(PropValue::Freedraw(FreedrawStyle {
+                            color: *color,
+                            stroke_width: *stroke_width,
+                        })),
+                        _ => None,
+                    },
+                    |k| {
+                        if let ItemKind::Freedraw { stroke_width, .. } = k {
+                            *stroke_width = w;
+                        }
+                    },
+                );
+            }
+            if p.is_mixed() {
+                ui.label(t(lang, T::PropsMixedValue));
+            }
+        }
     }
 
     /// 形状节：描边 / 填充 / 圆角 / 曲线 / 闭合 / 箭头 / 手绘风（Phase H）。

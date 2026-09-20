@@ -531,7 +531,8 @@ mod tests {
         let mut scene = Scene::new();
         scene.add_item(Item::new_freedraw(
             &[(50.0, 60.0), (90.0, 60.0), (110.0, 100.0)],
-            &[5.0, 3.0, 1.5],
+            &[1.0, 0.6, 0.3],
+            5.0,
             [200, 40, 40, 255],
         ));
         let viewport = ViewportMeta {
@@ -552,11 +553,13 @@ mod tests {
         match &it.kind {
             ItemKind::Freedraw {
                 points,
-                widths,
+                pressures,
+                stroke_width,
                 color,
             } => {
                 assert_eq!(points, &vec![(0.0, 0.0), (40.0, 0.0), (60.0, 40.0)]);
-                assert_eq!(widths, &vec![5.0, 3.0, 1.5]);
+                assert_eq!(pressures, &vec![1.0, 0.6, 0.3]);
+                assert_eq!(*stroke_width, 5.0);
                 assert_eq!(*color, [200, 40, 40, 255]);
             }
             _ => panic!("expected Freedraw kind"),

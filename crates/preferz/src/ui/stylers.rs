@@ -832,25 +832,28 @@ pub fn freedraw_stroke_shapes(
     out
 }
 
-/// 墨迹（plan #10）终稿渲染：局部中心线点 + 逐点笔宽（画布单位）→ 变换到屏幕，
-/// 笔宽按 `to_screen` 的像元长度（含 item scale + 视口 zoom）同步缩放 → 描边。
+/// 墨迹（plan #10）终稿渲染：局部中心线点 + 逐点相对笔宽（pressures）+ 基准笔宽
+/// （画布单位）→ 变换到屏幕，绝对笔宽 = `stroke_width × pressure × scale`（scale 含
+/// item scale + 视口 zoom）→ 逐段描边。
 pub fn build_freedraw_visuals(kind: &ItemKind, to_screen: &LocalToScreen) -> Vec<Shape> {
     let ItemKind::Freedraw {
         points,
-        widths,
+        pressures,
+        stroke_width,
         color,
     } = kind
     else {
         return Vec::new();
     };
-    if points.len() < 2 || widths.len() != points.len() {
+    if points.len() < 2 || pressures.len() != points.len() {
         return Vec::new();
     }
     // 屏幕像素 / 局部单位：取 x 方向像元长度（含缩放，旋转下均匀故取其模长）。
     let v = to_screen.transform_vector(euclid::Vector2D::<f32, ItemLocalSpace>::new(1.0, 0.0));
     let scale = v.length().max(1e-4);
     let screen_pts = to_screen_points(points, to_screen);
-    let screen_widths: Vec<f32> = widths.iter().map(|w| w * scale).collect();
+    let base = stroke_width * scale;
+    let screen_widths: Vec<f32> = pressures.iter().map(|pr| base * pr).collect();
     freedraw_stroke_shapes(&screen_pts, &screen_widths, color_from(*color))
 }
 
@@ -1418,7 +1421,8 @@ mod tests {
         // 弯曲/回环处会自交、被非零环绕三角化填成实心区域。
         let item = Item::new_freedraw(
             &[(0.0, 0.0), (10.0, 2.0), (20.0, 0.0), (30.0, 3.0)],
-            &[4.0, 3.0, 2.0, 1.5],
+            &[1.0, 0.8, 0.6, 0.4],
+            4.0,
             [10, 10, 10, 255],
         );
         let shapes = build_freedraw_visuals(&item.kind, &identity());
@@ -1447,7 +1451,7 @@ mod tests {
         let txt = Item::new_text("x".to_string(), 0.0, 0.0, 16.0, [255; 4]);
         assert!(build_freedraw_visuals(&txt.kind, &identity()).is_empty());
         // 单点墨迹（<2）→ 空。
-        let dot = Item::new_freedraw(&[(5.0, 5.0)], &[3.0], [0, 0, 0, 255]);
+        let dot = Item::new_freedraw(&[(5.0, 5.0)], &[1.0], 3.0, [0, 0, 0, 255]);
         assert!(build_freedraw_visuals(&dot.kind, &identity()).is_empty());
     }
 }

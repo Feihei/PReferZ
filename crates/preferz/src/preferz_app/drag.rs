@@ -1269,12 +1269,13 @@ impl PReferZApp {
             return;
         }
         let pts: Vec<(f32, f32)> = raw.iter().map(|p| (p.x, p.y)).collect();
-        let widths = preferz_core::freedraw::widths_from_spacing(
+        let pressures = preferz_core::freedraw::pressures_from_spacing(&pts, self.viewport.zoom);
+        let item = Item::new_freedraw(
             &pts,
+            &pressures,
             self.default_stroke.width,
-            self.viewport.zoom,
+            self.default_stroke.color,
         );
-        let item = Item::new_freedraw(&pts, &widths, self.default_stroke.color);
         self.push_new_item(AddItem::new(item));
         self.flash(t(self.lang, T::FlashFreedrawCreated));
     }

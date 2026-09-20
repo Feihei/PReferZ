@@ -620,6 +620,81 @@ impl Command for SetStrokeStyle {
     }
 }
 
+// ─────────────────────────── Set freedraw style ───────────────────────────
+
+/// 墨迹可编辑样式（plan #10）：颜色 + 基准笔宽。逐点 `pressures`（速度锥形形状）不随
+/// 属性编辑变化，故快照只需这两个 Copy 字段。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FreedrawStyle {
+    pub color: [u8; 4],
+    pub stroke_width: f32,
+}
+
+/// 批量设置墨迹样式（plan #10，对齐 Shape 的 `SetStrokeStyle`）。每项自带 old/new，
+/// 整批只占一条 undo 记录。points / pressures 不动，仅改 color 与 stroke_width。
+pub struct SetFreedrawStyle {
+    items: Vec<(ItemId, FreedrawStyle, FreedrawStyle)>,
+    preview_already_applied: bool,
+}
+
+impl SetFreedrawStyle {
+    pub fn new(item_id: ItemId, old: FreedrawStyle, new: FreedrawStyle) -> Self {
+        Self {
+            items: vec![(item_id, old, new)],
+            preview_already_applied: false,
+        }
+    }
+
+    /// 批量构造：`(item_id, old, new)` 三元组列表。
+    pub fn new_batch(items: Vec<(ItemId, FreedrawStyle, FreedrawStyle)>) -> Self {
+        Self {
+            items,
+            preview_already_applied: false,
+        }
+    }
+
+    /// 声明是否为预览模式（滑块拖动中 UI 已直接改 item，释放时传 true）。
+    pub fn with_preview_applied(mut self, applied: bool) -> Self {
+        self.preview_already_applied = applied;
+        self
+    }
+
+    fn apply(scene: &mut Scene, items: &[(ItemId, FreedrawStyle, FreedrawStyle)], new: bool) {
+        for (id, old, new_style) in items {
+            let value = if new { *new_style } else { *old };
+            if let Some(item) = scene.get_item_mut(id) {
+                if let ItemKind::Freedraw {
+                    stroke_width,
+                    color,
+                    ..
+                } = &mut item.kind
+                {
+                    *stroke_width = value.stroke_width;
+                    *color = value.color;
+                }
+            }
+        }
+    }
+}
+
+impl Command for SetFreedrawStyle {
+    fn redo(&mut self, scene: &mut Scene) {
+        let items = std::mem::take(&mut self.items);
+        Self::apply(scene, &items, true);
+        self.items = items;
+    }
+
+    fn undo(&mut self, scene: &mut Scene) {
+        let items = std::mem::take(&mut self.items);
+        Self::apply(scene, &items, false);
+        self.items = items;
+    }
+
+    fn skip_first_redo(&self) -> bool {
+        self.preview_already_applied
+    }
+}
+
 // ─────────────────────────── Set shape fill ───────────────────────────
 
 /// 填充状态快照：颜色 + 样式。`color: None` = 无填充（此时 style 无意义，
@@ -2036,6 +2111,52 @@ mod tests {
         cmd.undo(&mut scene);
         assert_eq!(stroke_of(&scene, a), old);
         assert_eq!(stroke_of(&scene, b), old);
+    }
+
+    #[test]
+    fn set_freedraw_style_batch_applies_and_undoes() {
+        let mut scene = Scene::new();
+        let mk = |scene: &mut Scene| {
+            let it =
+                Item::new_freedraw(&[(0.0, 0.0), (10.0, 0.0)], &[1.0, 0.5], 3.0, [0, 0, 0, 255]);
+            let id = it.id;
+            scene.add_item(it);
+            id
+        };
+        let a = mk(&mut scene);
+        let b = mk(&mut scene);
+        let old = FreedrawStyle {
+            color: [0, 0, 0, 255],
+            stroke_width: 3.0,
+        };
+        let new = FreedrawStyle {
+            color: [200, 10, 10, 255],
+            stroke_width: 8.0,
+        };
+        let style_of = |scene: &Scene, id: &ItemId| match &scene.get_item(id).unwrap().kind {
+            ItemKind::Freedraw {
+                color,
+                stroke_width,
+                pressures,
+                ..
+            } => (*color, *stroke_width, pressures.clone()),
+            _ => panic!("expected Freedraw"),
+        };
+        // 记录 pressures 以确证样式命令不触碰形状。
+        let pressures_before = style_of(&scene, &a).2;
+
+        let mut cmd = SetFreedrawStyle::new_batch(vec![(a, old, new), (b, old, new)]);
+        cmd.redo(&mut scene);
+        let (ca, wa, pa) = style_of(&scene, &a);
+        assert_eq!((ca, wa), (new.color, new.stroke_width));
+        assert_eq!(style_of(&scene, &b).1, new.stroke_width);
+        cmd.undo(&mut scene);
+        assert_eq!(style_of(&scene, &a).0, old.color);
+        assert_eq!(style_of(&scene, &a).1, old.stroke_width);
+        assert_eq!(style_of(&scene, &b).1, old.stroke_width);
+        // 逐点相对笔宽（形状）始终不变。
+        assert_eq!(pa, pressures_before);
+        assert_eq!(style_of(&scene, &a).2, pressures_before);
     }
 
     #[test]

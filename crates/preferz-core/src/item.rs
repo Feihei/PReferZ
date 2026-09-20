@@ -166,14 +166,20 @@ pub enum ItemKind {
         #[serde(default)]
         name: Option<String>,
     },
-    /// 徒手绘制墨迹（plan #10）。中心线点（局部坐标，AABB 左上角为原点）+ 逐点笔宽
-    /// （画布单位），渲染成速度锥形的填充 ribbon 轮廓（见 `crate::freedraw`）。
-    /// 与线性对象共用「points 相对 AABB 左上角、整体位置交给 transform.pos」的约定。
+    /// 徒手绘制墨迹（plan #10）。中心线点（局部坐标，AABB 左上角为原点）+ 逐点**相对
+    /// 笔宽**（pressures ∈ (0,1]，速度锥形/收笔形状）+ 一个**基准笔宽** `stroke_width`
+    /// （画布单位）+ 颜色。实际每点笔宽 = `stroke_width × pressures[i]`。把「形状
+    /// (pressures)」与「粗细 (stroke_width)」分离存，改粗细只动一个标量、不改形状，
+    /// 且属性 undo 快照是 Copy（不必携带点级 Vec）。渲染成逐段描边的可变宽墨迹
+    /// （见 `crate::freedraw` 与 binary `stylers`）。与线性对象共用「points 相对 AABB
+    /// 左上角、整体位置交给 transform.pos」的约定。
     Freedraw {
         /// 墨迹中心线点，局部坐标（N ≥ 2）。
         points: Vec<(f32, f32)>,
-        /// 与 `points` 一一对应的笔宽（画布单位）。
-        widths: Vec<f32>,
+        /// 与 `points` 一一对应的相对笔宽乘子，取值 (0,1]（慢/中段 = 1，快/收笔 < 1）。
+        pressures: Vec<f32>,
+        /// 基准笔宽（画布单位，慢速运笔即此宽度）。
+        stroke_width: f32,
         /// 墨迹颜色 RGBA。
         color: [u8; 4],
     },
@@ -579,10 +585,16 @@ impl Item {
         }
     }
 
-    /// 墨迹（Freedraw）构造器：入参为**画布坐标**中心线点 + 逐点笔宽（画布单位），
-    /// 内部归一化成「AABB 左上角为原点」的局部点，整体位置交给 `transform.pos`——
-    /// 与线性对象/多边形创建共用同一约定，后续移动/缩放/命中都走既有点集代码路径。
-    pub fn new_freedraw(canvas_points: &[(f32, f32)], widths: &[f32], color: [u8; 4]) -> Self {
+    /// 墨迹（Freedraw）构造器：入参为**画布坐标**中心线点 + 逐点相对笔宽 `pressures`
+    /// (0,1] + 基准 `stroke_width`（画布单位）+ 颜色。内部把中心线归一化成「AABB 左上角
+    /// 为原点」的局部点，整体位置交给 `transform.pos`——与线性对象/多边形创建共用同一
+    /// 约定，后续移动/缩放/命中都走既有点集代码路径。
+    pub fn new_freedraw(
+        canvas_points: &[(f32, f32)],
+        pressures: &[f32],
+        stroke_width: f32,
+        color: [u8; 4],
+    ) -> Self {
         let (min_x, min_y) = canvas_points
             .iter()
             .fold((f32::MAX, f32::MAX), |(mx, my), &(x, y)| {
@@ -600,7 +612,8 @@ impl Item {
             id: Uuid::new_v4(),
             kind: ItemKind::Freedraw {
                 points,
-                widths: widths.to_vec(),
+                pressures: pressures.to_vec(),
+                stroke_width,
                 color,
             },
             transform: Transform::new(min_x, min_y, 1.0, 1.0),
@@ -833,8 +846,14 @@ impl Item {
         };
         let local = inv.transform_point(canvas_pos);
         // 墨迹：命中 = 到中心线任一段的距离 ≤ 该段半宽 + 少量容差（细笔也点得中）。
-        // 与线类一致，逆变换已消化旋转/缩放/翻转。
-        if let ItemKind::Freedraw { points, widths, .. } = &self.kind {
+        // 半宽 = stroke_width × 相邻两点较大乘子 × 0.5；逆变换已消化旋转/缩放/翻转。
+        if let ItemKind::Freedraw {
+            points,
+            pressures,
+            stroke_width,
+            ..
+        } = &self.kind
+        {
             if points.len() < 2 {
                 // 退化：单点墨迹按点距命中。
                 return points
@@ -842,13 +861,15 @@ impl Item {
                     .map(|&p| dist_point_segment(local, p, p) <= HIT_SLOP)
                     .unwrap_or(false);
             }
-            for i in 0..points.len() - 1 {
-                let half = widths
+            let half_at = |i: usize| -> f32 {
+                pressures
                     .get(i)
                     .copied()
-                    .zip(widths.get(i + 1).copied())
-                    .map(|(a, b)| a.max(b) * 0.5)
-                    .unwrap_or(0.0);
+                    .map(|pr| pr * stroke_width * 0.5)
+                    .unwrap_or(0.0)
+            };
+            for i in 0..points.len() - 1 {
+                let half = half_at(i).max(half_at(i + 1));
                 if dist_point_segment(local, points[i], points[i + 1]) <= half + HIT_SLOP {
                     return true;
                 }
@@ -2145,9 +2166,9 @@ mod tests {
     // ── 墨迹（Freedraw，plan #10）──
 
     fn make_freedraw() -> Item {
-        // 画布点：一条从 (100,50) 向右下走的短斜线，笔宽 4。
+        // 画布点：一条从 (100,50) 向右下走的短斜线，基准宽 4、恒压（等宽）。
         let canvas = vec![(100.0, 50.0), (140.0, 50.0), (160.0, 90.0)];
-        Item::new_freedraw(&canvas, &[4.0, 4.0, 4.0], [10, 20, 30, 255])
+        Item::new_freedraw(&canvas, &[1.0, 1.0, 1.0], 4.0, [10, 20, 30, 255])
     }
 
     #[test]
@@ -2189,17 +2210,20 @@ mod tests {
             (
                 ItemKind::Freedraw {
                     points: pa,
-                    widths: wa,
+                    pressures: wa,
+                    stroke_width: sa,
                     color: ca,
                 },
                 ItemKind::Freedraw {
                     points: pb,
-                    widths: wb,
+                    pressures: wb,
+                    stroke_width: sb,
                     color: cb,
                 },
             ) => {
                 assert_eq!(pa, pb);
                 assert_eq!(wa, wb);
+                assert_eq!(*sa, *sb);
                 assert_eq!(ca, cb);
             }
             _ => panic!("expected Freedraw on both"),
