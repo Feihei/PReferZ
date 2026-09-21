@@ -22,6 +22,7 @@ impl PReferZApp {
                 font_size,
                 color,
                 container_id,
+                font_family,
                 ..
             } => {
                 let canvas_pos = self
@@ -38,6 +39,7 @@ impl PReferZApp {
                     color,
                     first_frame: true,
                     container_id,
+                    font_family,
                 });
             }
             ref k if is_text_container(k) => {
@@ -51,18 +53,19 @@ impl PReferZApp {
                 };
                 let existing = self.scene.texts_bound_to(id).into_iter().next();
                 // 已有绑定文本 → 编辑；否则提交时才写入容器 id 新建一个
-                let (editing_item_id, buffer, font_size, color) =
+                let (editing_item_id, buffer, font_size, color, font_family) =
                     match existing.and_then(|tid| self.scene.get_item(&tid)) {
                         Some(it) => match &it.kind {
                             ItemKind::Text {
                                 content,
                                 font_size,
                                 color,
+                                font_family,
                                 ..
-                            } => (existing, content.clone(), *font_size, *color),
-                            _ => (None, String::new(), 18.0, [255; 4]),
+                            } => (existing, content.clone(), *font_size, *color, *font_family),
+                            _ => (None, String::new(), 18.0, [255; 4], FontFamily::Normal),
                         },
-                        None => (None, String::new(), 18.0, [255; 4]),
+                        None => (None, String::new(), 18.0, [255; 4], FontFamily::Normal),
                     };
                 self.editing_text = Some(EditingText {
                     editing_item_id,
@@ -72,6 +75,7 @@ impl PReferZApp {
                     color,
                     first_frame: true,
                     container_id: Some(id),
+                    font_family,
                 });
             }
             _ => return false,
@@ -100,9 +104,20 @@ impl PReferZApp {
                 font_size,
                 measured_size,
                 container_id,
+                font_family,
                 ..
             } = &item.kind
             {
+                let font_id = |size: f32| {
+                    if *font_family == FontFamily::Handwriting {
+                        egui::FontId::new(
+                            size,
+                            egui::FontFamily::Name(HANDWRITING_FONT_FAMILY.into()),
+                        )
+                    } else {
+                        egui::FontId::proportional(size)
+                    }
+                };
                 if let Some(cid) = container_id {
                     // 绑定文本：换行到容器宽度，随容器 resize 每帧重测。
                     if let Some(container) = self.scene.get_item(cid) {
@@ -113,7 +128,7 @@ impl PReferZApp {
                         let wrap = (cw - 12.0).max(20.0);
                         let job = egui::text::LayoutJob::simple(
                             content.clone(),
-                            egui::FontId::proportional(*font_size * zoom),
+                            font_id(*font_size * zoom),
                             egui::Color32::WHITE,
                             wrap,
                         );
@@ -127,7 +142,7 @@ impl PReferZApp {
                     let gal = ctx.fonts_mut(|fonts| {
                         fonts.layout_no_wrap(
                             content.clone(),
-                            egui::FontId::proportional(*font_size),
+                            font_id(*font_size),
                             egui::Color32::WHITE,
                         )
                     });
@@ -160,6 +175,16 @@ impl PReferZApp {
         let mut commit = false;
         let mut cancel = false;
 
+        // 编辑 overlay 的字体族跟随 item 的 font_family
+        let font_id = if edit.font_family == FontFamily::Handwriting {
+            egui::FontId::new(
+                edit.font_size,
+                egui::FontFamily::Name(HANDWRITING_FONT_FAMILY.into()),
+            )
+        } else {
+            egui::FontId::proportional(edit.font_size)
+        };
+
         let mut area =
             egui::Area::new(egui::Id::new("text_edit_area")).order(egui::Order::Foreground);
         if let Some(r) = container_screen_rect {
@@ -185,7 +210,7 @@ impl PReferZApp {
                         egui::TextEdit::multiline(&mut edit.buffer)
                             .desired_width(w)
                             .hint_text("输入文本...")
-                            .font(egui::FontId::proportional(edit.font_size))
+                            .font(font_id.clone())
                             .text_color(egui::Color32::from_rgba_premultiplied(
                                 edit.color[0],
                                 edit.color[1],
@@ -208,7 +233,7 @@ impl PReferZApp {
                         egui::TextEdit::singleline(&mut edit.buffer)
                             .desired_width(160.0)
                             .hint_text("输入文本...")
-                            .font(egui::FontId::proportional(edit.font_size))
+                            .font(font_id)
                             .text_color(egui::Color32::from_rgba_premultiplied(
                                 edit.color[0],
                                 edit.color[1],

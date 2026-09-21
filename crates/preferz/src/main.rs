@@ -3,7 +3,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 // 二进制入口：业务模块统一由 lib.rs 导出，这里直接复用 lib，避免与 lib 重复编译同一份代码。
-use preferz::PReferZApp;
+use preferz::{PReferZApp, HANDWRITING_FONT_FAMILY};
 use std::io::Read;
 
 fn main() -> eframe::Result<()> {
@@ -19,6 +19,25 @@ fn main() -> eframe::Result<()> {
             families.insert(0, "SourceHanSansCN".to_string());
         }
     }
+
+    // 851远星夜行手写体 — 免费商用（作者 Lakejason0 / 原作者 8:51:22 pm）
+    // 仅注册为 FontFamily::Name，不插入 Proportional/Monospace 族——
+    // 手写体只用于显式选择 Handwriting 的文字，不污染默认排版。
+    // repo 里进的是 GB2312+ASCII 子集版（6.2MB；完整版 28MB 留本地不进 git，
+    // 重新生成方法见 assets/FONT_LICENSES.md）。
+    font_definitions.font_data.insert(
+        HANDWRITING_FONT_FAMILY.to_string(),
+        egui::FontData::from_owned(load_handwriting_font()).into(),
+    );
+    // 手写族字体列表：子集缺字（生僻字/扩展区/颜文字符号）时回落思源黑体，
+    // 避免渲染成豆腐块。egui 按列表顺序查字形。
+    font_definitions.families.insert(
+        egui::FontFamily::Name(HANDWRITING_FONT_FAMILY.into()),
+        vec![
+            HANDWRITING_FONT_FAMILY.to_string(),
+            "SourceHanSansCN".to_string(),
+        ],
+    );
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -64,6 +83,26 @@ fn load_font() -> Vec<u8> {
     buf
 }
 
+/// 加载 851远星夜行手写体。
+///
+/// 编译期由 build.rs 用 deflate 压缩（28MB → 约 18-22MB）后嵌入，运行时
+/// inflate 还原。`HANDWRITING_FONT_RAW_SIZE` 由 build.rs 注入。
+fn load_handwriting_font() -> Vec<u8> {
+    const COMPRESSED: &[u8] = include_bytes!(concat!(
+        env!("OUT_DIR"),
+        "/851LakeusNightWriting-Regular.ttf.zlib"
+    ));
+    let mut buf = Vec::with_capacity(
+        env!("HANDWRITING_FONT_RAW_SIZE")
+            .parse()
+            .expect("HANDWRITING_FONT_RAW_SIZE 应为 usize"),
+    );
+    flate2::read::ZlibDecoder::new(COMPRESSED)
+        .read_to_end(&mut buf)
+        .expect("解压手写字体失败");
+    buf
+}
+
 /// 加载窗口图标（assets/icon.png，256×256 推荐）。
 /// 编译期 include_bytes!，零运行时依赖。SVG 源文件 assets/icon.svg 仅作设计源不编译。
 /// 若文件不存在返回空 IconData（egui 会用默认图标）。
@@ -100,6 +139,15 @@ mod tests {
         // sfnt 魔数 0x00010000 = TrueType outlines
         assert_eq!(&font[..4], &[0x00, 0x01, 0x00, 0x00], "sfnt 魔数不符");
         let expected: usize = env!("FONT_RAW_SIZE").parse().unwrap();
+        assert_eq!(font.len(), expected, "解压后大小应与原始 TTF 一致");
+    }
+
+    /// 手写字体解压一致性检查（同上）。
+    #[test]
+    fn decompressed_handwriting_font_matches_original_ttf() {
+        let font = load_handwriting_font();
+        assert_eq!(&font[..4], &[0x00, 0x01, 0x00, 0x00], "sfnt 魔数不符");
+        let expected: usize = env!("HANDWRITING_FONT_RAW_SIZE").parse().unwrap();
         assert_eq!(font.len(), expected, "解压后大小应与原始 TTF 一致");
     }
 }

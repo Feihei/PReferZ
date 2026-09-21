@@ -37,10 +37,16 @@ impl PReferZApp {
         let text_color =
             egui::Color32::from_rgba_premultiplied(color[0], color[1], color[2], color[3]);
         let zoom = self.viewport.zoom;
-        let hand = *font_family == FontFamily::Handwriting;
+        // 字体族：Handwriting → 内嵌 851远星夜行手写体；Normal → Proportional（思源黑体）
+        let make_font_id = |size: f32| {
+            if *font_family == FontFamily::Handwriting {
+                egui::FontId::new(size, egui::FontFamily::Name(HANDWRITING_FONT_FAMILY.into()))
+            } else {
+                egui::FontId::proportional(size)
+            }
+        };
 
         // 统一产出 (字形 galley, 绝对屏幕位置) 列表 + 文字内容包围矩形。
-        // 伪手写逐字排版返回多片；普通排版单 galley 一片。
         let (pieces, content_rect) =
             match container_id.filter(|cid| self.scene.get_item(cid).is_some()) {
                 // 绑定文本：换行到容器宽度，按对齐枚举定位（plan #1；默认居中 = 历史行为）
@@ -49,60 +55,30 @@ impl PReferZApp {
                     let cr = self.viewport.canvas_rect_to_egui(container.bounding_rect());
                     let wrap = (cr.width() - 12.0).max(20.0);
                     let pad = 6.0 * zoom;
-                    if hand {
-                        let seed = item.id.as_u128() as u64;
-                        let (mut pieces, size) = Self::layout_handwritten(
-                            ui.ctx(),
-                            content,
-                            *font_size * zoom,
+                    let galley = ui.ctx().fonts_mut(|f| {
+                        f.layout_job(egui::text::LayoutJob::simple(
+                            content.clone(),
+                            make_font_id(*font_size * zoom),
                             text_color,
-                            Some(wrap),
-                            seed,
-                        );
-                        // 水平/垂直对齐（仅绑定文字生效）
-                        let dx = match align_h {
-                            TextAlignH::Left => pad,
-                            TextAlignH::Center => (cr.width() - size.x) * 0.5,
-                            TextAlignH::Right => cr.width() - size.x - pad,
-                        };
-                        let dy = match align_v {
-                            TextAlignV::Top => pad,
-                            TextAlignV::Middle => (cr.height() - size.y) * 0.5,
-                            TextAlignV::Bottom => cr.height() - size.y - pad,
-                        };
-                        // layout_handwritten 返回相对原点的位置，先平移到容器矩形
-                        // 左上，再按对齐枚举偏移（修复：此前漏加 cr.min，文字跑容器左上角外）
-                        for (_g, p) in &mut pieces {
-                            *p += cr.min.to_vec2() + egui::vec2(dx, dy);
-                        }
-                        let rect = egui::Rect::from_min_size(cr.min + egui::vec2(dx, dy), size);
-                        (pieces, rect)
-                    } else {
-                        let galley = ui.ctx().fonts_mut(|f| {
-                            f.layout_job(egui::text::LayoutJob::simple(
-                                content.clone(),
-                                egui::FontId::proportional(*font_size * zoom),
-                                text_color,
-                                wrap,
-                            ))
-                        });
-                        let size = galley.size();
-                        let dx = match align_h {
-                            TextAlignH::Left => pad,
-                            TextAlignH::Center => (cr.width() - size.x) * 0.5,
-                            TextAlignH::Right => cr.width() - size.x - pad,
-                        };
-                        let dy = match align_v {
-                            TextAlignV::Top => pad,
-                            TextAlignV::Middle => (cr.height() - size.y) * 0.5,
-                            TextAlignV::Bottom => cr.height() - size.y - pad,
-                        };
-                        let top_left = cr.min + egui::vec2(dx, dy);
-                        (
-                            vec![(galley, top_left)],
-                            egui::Rect::from_min_size(top_left, size),
-                        )
-                    }
+                            wrap,
+                        ))
+                    });
+                    let size = galley.size();
+                    let dx = match align_h {
+                        TextAlignH::Left => pad,
+                        TextAlignH::Center => (cr.width() - size.x) * 0.5,
+                        TextAlignH::Right => cr.width() - size.x - pad,
+                    };
+                    let dy = match align_v {
+                        TextAlignV::Top => pad,
+                        TextAlignV::Middle => (cr.height() - size.y) * 0.5,
+                        TextAlignV::Bottom => cr.height() - size.y - pad,
+                    };
+                    let top_left = cr.min + egui::vec2(dx, dy);
+                    (
+                        vec![(galley, top_left)],
+                        egui::Rect::from_min_size(top_left, size),
+                    )
                 }
                 // 自由文本（或容器已丢失）：按自身 transform 定位，字号叠加 scale；
                 // 对齐枚举不生效（单行无框，恒 top-left）
@@ -110,35 +86,18 @@ impl PReferZApp {
                     let origin = self.viewport.canvas_to_pos2(item.canvas_corners()[0]);
                     // scale.x（等比缩放场景下 scale.y 相同；非等比 egui text 不支持非均匀缩放）
                     let effective_font_size = *font_size * item.transform.scale.x.abs() * zoom;
-                    if hand {
-                        let seed = item.id.as_u128() as u64;
-                        let (mut pieces, size) = Self::layout_handwritten(
-                            ui.ctx(),
-                            content,
-                            effective_font_size,
+                    let galley = ui.ctx().fonts_mut(|f| {
+                        f.layout_no_wrap(
+                            content.clone(),
+                            make_font_id(effective_font_size),
                             text_color,
-                            None,
-                            seed,
-                        );
-                        // layout_handwritten 返回相对原点的位置，平移到 item 起点
-                        for (_g, p) in &mut pieces {
-                            *p += origin.to_vec2();
-                        }
-                        (pieces, egui::Rect::from_min_size(origin, size))
-                    } else {
-                        let galley = ui.ctx().fonts_mut(|f| {
-                            f.layout_no_wrap(
-                                content.clone(),
-                                egui::FontId::proportional(effective_font_size),
-                                text_color,
-                            )
-                        });
-                        let size = galley.size();
-                        (
-                            vec![(galley, origin)],
-                            egui::Rect::from_min_size(origin, size),
                         )
-                    }
+                    });
+                    let size = galley.size();
+                    (
+                        vec![(galley, origin)],
+                        egui::Rect::from_min_size(origin, size),
+                    )
                 }
             };
 
@@ -153,56 +112,6 @@ impl PReferZApp {
         for (galley, pos) in pieces {
             ui.painter().galley(pos, galley, text_color);
         }
-    }
-
-    /// 伪手写排版（plan #1）：逐字符用自身 galley 宽度步进（忽略字距，
-    /// 笔画参差正是手写感的一部分），字号与位置按确定性种子微抖。
-    ///
-    /// `font_px` 为基准字号（屏幕像素）；`wrap` 为换行宽度（仅绑定文字，
-    /// `None` 不换行）。返回 `(字形 galley, 相对原点的位置)` 列表与整体包围盒尺寸。
-    /// 种子由调用方取自 item id，保证重绘 / 存盘重开不跳变。
-    pub(crate) fn layout_handwritten(
-        ctx: &egui::Context,
-        content: &str,
-        font_px: f32,
-        color: egui::Color32,
-        wrap: Option<f32>,
-        seed: u64,
-    ) -> (Vec<(std::sync::Arc<egui::Galley>, egui::Pos2)>, egui::Vec2) {
-        let mut rng = SeededRng::new(seed ^ 0x6D61_6E75_7363_7269); // "manuscri"
-        let mut pieces = Vec::new();
-        // 观感参数：抖动要足够大才能与正常排版拉开差距（用户反馈 0.045/±4%
-        // 几乎不可见）。幅度取字号的 10%，字号与字符间距各抖 ±8%。
-        let amp = font_px * 0.10;
-        let mut pen = egui::pos2(0.0, 0.0);
-        let mut line_h = 0.0_f32;
-        let mut max_x = 0.0_f32;
-        for line in content.split('\n') {
-            pen.x = 0.0;
-            pen.y += line_h;
-            line_h = 0.0;
-            for ch in line.chars() {
-                let s = font_px * (1.0 + rng.signed() * 0.08);
-                let g = ctx.fonts_mut(|f| {
-                    f.layout_no_wrap(ch.to_string(), egui::FontId::proportional(s), color)
-                });
-                let gsize = g.size();
-                // 超出换行宽度则折行（首字符不折，避免窄容器死循环）
-                if let Some(w) = wrap {
-                    if pen.x + gsize.x > w && pen.x > 0.0 {
-                        pen.x = 0.0;
-                        pen.y += line_h;
-                        line_h = 0.0;
-                    }
-                }
-                let p = egui::pos2(pen.x + rng.signed() * amp, pen.y + rng.signed() * amp);
-                pieces.push((g, p));
-                pen.x += gsize.x * (1.0 + rng.signed() * 0.08);
-                line_h = line_h.max(gsize.y);
-                max_x = max_x.max(pen.x);
-            }
-        }
-        (pieces, egui::vec2(max_x, pen.y + line_h))
     }
 
     /// 绘制单个 item 的视觉内容（不含选中手柄 / 多选外框 / 裁剪 overlay）。

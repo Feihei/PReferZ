@@ -10,6 +10,7 @@ use crate::ui::widgets::transform_handles::{
     should_show_flip, should_show_rotate, Handle, TransformHandles,
 };
 use crate::viewport::{ViewportEgui, ViewportState};
+use crate::HANDWRITING_FONT_FAMILY;
 use eframe::egui;
 use image::GenericImageView;
 use preferz_core::arrange::{
@@ -26,7 +27,7 @@ use preferz_core::commands::{
 };
 use preferz_core::mermaid::{layout_flowchart, parse_mermaid_flowchart, MermaidShape};
 use preferz_core::shape::{
-    ArrowHeadStyle, CurveType, DashStyle, FillStyle, FontFamily, PixmapStyle, SeededRng, ShapeType,
+    ArrowHeadStyle, CurveType, DashStyle, FillStyle, FontFamily, PixmapStyle, ShapeType,
     Sloppiness, StrokeStyle, TextAlignH, TextAlignV, TextStyle,
 };
 use preferz_core::snap;
@@ -300,6 +301,8 @@ struct EditingText {
     first_frame: bool,
     /// 绑定文本所属容器 id（None = 自由文本）。新创建绑定时在提交时写入。
     container_id: Option<ItemId>,
+    /// 字体族（决定编辑 overlay 的 FontId）。
+    font_family: FontFamily,
 }
 
 /// 端点吸附阈值（屏幕像素）。画布阈值 = `SNAP_THRESHOLD_PX / zoom`，随缩放保持手感一致。
@@ -1195,9 +1198,11 @@ impl eframe::App for PReferZApp {
             .resizable(false)
             .show(ui, |ui| {
                 ui.add_space(6.0);
+                // 图标字符必须在内嵌 SourceHanSansCN-Regular.ttf 的 cmap 中有字形，
+                // 否则走 fallback 渲染，风格/字重与其他图标不一致（可用字形已用脚本核验）。
                 let tools = [
                     (Tool::Select, "↖", T::ToolSelect),
-                    (Tool::Shape(ShapeType::Rectangle), "▭", T::ToolRectangle),
+                    (Tool::Shape(ShapeType::Rectangle), "□", T::ToolRectangle),
                     (Tool::Shape(ShapeType::Ellipse), "◯", T::ToolEllipse),
                     (Tool::Shape(ShapeType::Diamond), "◇", T::ToolDiamond),
                     (Tool::Linear { end_arrow: None }, "╱", T::ToolLine),
@@ -1205,12 +1210,12 @@ impl eframe::App for PReferZApp {
                         Tool::Linear {
                             end_arrow: Some(ArrowHeadStyle::Arrow),
                         },
-                        "➤",
+                        "➡",
                         T::ToolArrow,
                     ),
-                    (Tool::Polygon, "⬟", T::ToolPolygon),
-                    (Tool::Freehand, "✎", T::ToolFreehand),
-                    (Tool::Frame, "▢", T::ToolFrame),
+                    (Tool::Polygon, "△", T::ToolPolygon),
+                    (Tool::Freehand, "〰", T::ToolFreehand),
+                    (Tool::Frame, "⬚", T::ToolFrame),
                 ];
                 for (tool, icon, key) in tools {
                     let is_active = self.tool == tool;
@@ -1551,6 +1556,7 @@ impl eframe::App for PReferZApp {
                                 color: [255, 255, 255, 255],
                                 first_frame: true,
                                 container_id: None,
+                                font_family: FontFamily::Normal,
                             });
                         }
                     }

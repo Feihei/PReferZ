@@ -12,6 +12,10 @@
 .DS_Store
 Thumbs.db
 
+# 字体源文件：完整版 851 字体（28MB）不进 repo，repo 只进 GB2312 子集版
+# （重新生成方法见 assets/FONT_LICENSES.md）
+assets/851LakeusNightWriting-Full.ttf
+
 # ref
 .ref/
 

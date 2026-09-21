@@ -159,15 +159,15 @@ pub enum TextAlignV {
 
 /// 文字字体族（plan #1）。
 ///
-/// `Handwriting` 为**伪手写渲染**：不嵌入手写 TTF（零体积增量），渲染层按
-/// 确定性种子对每个字符做位置/字号微抖，复现手写笔迹的参差感。
+/// `Handwriting` 使用内嵌 851远星夜行手写体（基于 851手写杂书体改作，
+/// 作者 Lakejason0 / 原作者 8:51:22 pm，免费商用许可——详见 assets/FONT_LICENSES.md）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum FontFamily {
-    /// 黑体（内嵌 simhei，默认）。
+    /// 黑体（内嵌思源黑体，默认）。
     #[default]
     Normal,
-    /// 伪手写（渲染层逐字微抖）。
+    /// 手写（内嵌 851远星夜行手写体）。
     Handwriting,
 }
 
