@@ -235,7 +235,8 @@ fn palette_button_with_picks(
 ) -> bool {
     let shown =
         egui::Color32::from_rgba_unmultiplied(current[0], current[1], current[2], current[3]);
-    let btn = egui::Button::new(egui::RichText::new("⬤").size(11.0))
+    // 内容圆点必须用内嵌字体有字形的字符（⬤ U+2B24 无字形会渲染成豆腐块）
+    let btn = egui::Button::new(egui::RichText::new("●").size(11.0))
         .min_size(egui::vec2(26.0, 20.0))
         .fill(shown)
         .stroke(egui::Stroke::new(
