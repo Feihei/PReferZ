@@ -170,6 +170,11 @@ pub enum ItemKind {
         /// 可选名称。
         #[serde(default)]
         name: Option<String>,
+        /// 是否跟随全局画框比例（设置面板）：跟随中的画框在全局比例变更时
+        /// 联动重算尺寸；侧栏套用预设即解除跟随（覆盖全局）。
+        /// `#[serde(default)]`：旧存档无此字段按 `false`（不联动，行为不变）。
+        #[serde(default)]
+        follow_global_ratio: bool,
     },
     /// 徒手绘制墨迹（plan #10）。中心线点（局部坐标，AABB 左上角为原点）+ 逐点**相对
     /// 笔宽**（pressures ∈ (0,1]，速度锥形/收笔形状）+ 一个**基准笔宽** `stroke_width`
@@ -500,6 +505,7 @@ impl Item {
                 base_size,
                 number,
                 name,
+                follow_global_ratio: true,
             },
             transform: Transform::new(pos_x, pos_y, 1.0, 1.0),
             z: 0,
@@ -562,6 +568,28 @@ impl Item {
     pub fn set_frame_name(&mut self, name: Option<String>) {
         if let ItemKind::Frame { name: nm, .. } = &mut self.kind {
             *nm = name;
+        }
+    }
+
+    /// 画框是否跟随全局比例（非画框返回 `false`）。
+    pub fn frame_follows_global_ratio(&self) -> bool {
+        match &self.kind {
+            ItemKind::Frame {
+                follow_global_ratio,
+                ..
+            } => *follow_global_ratio,
+            _ => false,
+        }
+    }
+
+    /// 修改画框「跟随全局比例」状态（非画框无副作用）。
+    pub fn set_frame_follow_global_ratio(&mut self, follow: bool) {
+        if let ItemKind::Frame {
+            follow_global_ratio,
+            ..
+        } = &mut self.kind
+        {
+            *follow_global_ratio = follow;
         }
     }
 
@@ -1274,6 +1302,47 @@ fn dist_point_segment(
     let t = ((ap.x * ab.x + ap.y * ab.y) / len2).clamp(0.0, 1.0);
     let closest = a + ab * t;
     (p - closest).length()
+}
+
+/// 把画框几何调整为目标宽高比 `ratio = (w, h)`（侧栏比例预设与全局比例联动共用）。
+/// 保持**有效长边**长度不变、另一边按比例缩放；以画框中心为锚点重算左上角，
+/// scale 归一到 1、尺寸写进 base_size，使结果确定且后续手柄缩放从干净状态开始。
+pub fn frame_geom_for_ratio(
+    g: crate::commands::FrameGeom,
+    ratio: (f32, f32),
+) -> crate::commands::FrameGeom {
+    let (ew, eh) = (g.base.0 * g.scale.0, g.base.1 * g.scale.1);
+    let (cx, cy) = (g.pos.0 + ew / 2.0, g.pos.1 + eh / 2.0);
+    let (rw, rh) = ratio;
+    let long = ew.max(eh);
+    let (nw, nh) = if rw >= rh {
+        (long, long * rh / rw)
+    } else {
+        (long * rw / rh, long)
+    };
+    crate::commands::FrameGeom {
+        pos: (cx - nw / 2.0, cy - nh / 2.0),
+        base: (nw, nh),
+        scale: (1.0, 1.0),
+    }
+}
+
+/// 拖拽创建画框时的比例钳制：长边跟拖拽主方向，另一边按 `ratio = (w, h)` 锁定。
+/// 保留拖拽方向（起点到终点可指向任意象限，含反向拖动）。
+pub fn constrain_drag_to_ratio(
+    start: CanvasPoint,
+    current: CanvasPoint,
+    ratio: (f32, f32),
+) -> CanvasPoint {
+    let (rw, rh) = ratio;
+    let dx = current.x - start.x;
+    let dy = current.y - start.y;
+    let (dx, dy) = if dx.abs() >= dy.abs() {
+        (dx, dx * rh / rw)
+    } else {
+        (dy * rw / rh, dy)
+    };
+    CanvasPoint::new(start.x + dx, start.y + dy)
 }
 
 #[cfg(test)]
@@ -2191,10 +2260,13 @@ mod tests {
                 number,
                 name,
                 base_size,
+                follow_global_ratio,
             } => {
                 assert_eq!(*number, 7);
                 assert_eq!(name.as_deref(), Some("封面"));
                 assert_eq!(*base_size, (300.0, 200.0));
+                // new_frame 构造的画框默认跟随全局比例，roundtrip 后保持
+                assert!(*follow_global_ratio);
             }
             _ => panic!("expected Frame kind"),
         }
@@ -2217,6 +2289,89 @@ mod tests {
             }
             _ => panic!("expected Frame kind"),
         }
+    }
+
+    #[test]
+    fn frame_serde_without_follow_global_ratio_loads_as_false() {
+        // 旧存档无 follow_global_ratio 字段 → 按 false 加载（不联动全局，行为不变）。
+        let json = r#"{
+            "Frame": {
+                "base_size": [400.0, 300.0],
+                "number": 3
+            }
+        }"#;
+        let kind: ItemKind = serde_json::from_str(json).unwrap();
+        match &kind {
+            ItemKind::Frame {
+                follow_global_ratio,
+                ..
+            } => assert!(!follow_global_ratio),
+            _ => panic!("expected Frame kind"),
+        }
+    }
+
+    #[test]
+    fn frame_geom_for_ratio_keeps_long_edge_and_center() {
+        use crate::commands::FrameGeom;
+        // 200×100（横长）套 16:9：长边 200 不变，短边 = 200*9/16 = 112.5
+        let g = FrameGeom {
+            pos: (0.0, 0.0),
+            base: (200.0, 100.0),
+            scale: (1.0, 1.0),
+        };
+        let n = frame_geom_for_ratio(g, (16.0, 9.0));
+        assert!((n.base.0 - 200.0).abs() < 1e-4);
+        assert!((n.base.1 - 112.5).abs() < 1e-4);
+        // 中心锚定：原中心 (100, 50) 不动
+        let cx = n.pos.0 + n.base.0 / 2.0;
+        let cy = n.pos.1 + n.base.1 / 2.0;
+        assert!((cx - 100.0).abs() < 1e-4 && (cy - 50.0).abs() < 1e-4);
+        // scale 归一
+        assert_eq!(n.scale, (1.0, 1.0));
+        // scale≠1 的旧几何按有效尺寸（base × scale）参与计算
+        let g2 = FrameGeom {
+            pos: (0.0, 0.0),
+            base: (100.0, 100.0),
+            scale: (2.0, 2.0), // 有效 200×200
+        };
+        let n2 = frame_geom_for_ratio(g2, (1.0, 1.0));
+        assert!((n2.base.0 - 200.0).abs() < 1e-4 && (n2.base.1 - 200.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn constrain_drag_to_ratio_follows_dominant_axis() {
+        // 横向主导：终点 x 保持，y 按比例重算（16:9 → h = w*9/16）
+        let start = CanvasPoint::new(0.0, 0.0);
+        let c = constrain_drag_to_ratio(start, CanvasPoint::new(160.0, 50.0), (16.0, 9.0));
+        assert!((c.x - 160.0).abs() < 1e-4);
+        assert!((c.y - 90.0).abs() < 1e-4);
+        // 纵向主导：终点 y 保持，x 按比例重算
+        let c2 = constrain_drag_to_ratio(start, CanvasPoint::new(30.0, 90.0), (16.0, 9.0));
+        assert!((c2.x - 160.0).abs() < 1e-4);
+        assert!((c2.y - 90.0).abs() < 1e-4);
+        // 反向拖（起点向左上）方向保留
+        let c3 = constrain_drag_to_ratio(start, CanvasPoint::new(-160.0, -20.0), (16.0, 9.0));
+        assert!((c3.x + 160.0).abs() < 1e-4);
+        assert!((c3.y + 90.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn frame_follow_global_ratio_helpers() {
+        let mut f = Item::new_frame(1, (100.0, 100.0), 0.0, 0.0, None);
+        assert!(f.frame_follows_global_ratio());
+        f.set_frame_follow_global_ratio(false);
+        assert!(!f.frame_follows_global_ratio());
+        // 非画框无副作用
+        let mut s = Item::new_shape(
+            crate::shape::ShapeType::Rectangle,
+            (50.0, 50.0),
+            0.0,
+            0.0,
+            crate::shape::StrokeStyle::default(),
+            None,
+        );
+        s.set_frame_follow_global_ratio(true);
+        assert!(!s.frame_follows_global_ratio());
     }
 
     // ── 墨迹（Freedraw，plan #10）──

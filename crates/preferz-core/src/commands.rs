@@ -969,7 +969,7 @@ impl Command for SetFrameNumber {
 
 /// 画框几何快照：位置（左上角）、局部基准尺寸、缩放。三者共同决定画框的有效尺寸
 /// （= base × scale）与在画布上的落点。画框不旋转不翻转，故只需这三项。
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub struct FrameGeom {
     pub pos: (f32, f32),
     pub base: (f32, f32),
@@ -1013,6 +1013,46 @@ impl SetFrameSize {
 }
 
 impl Command for SetFrameSize {
+    fn redo(&mut self, scene: &mut Scene) {
+        let items = std::mem::take(&mut self.items);
+        Self::apply(scene, &items, true);
+        self.items = items;
+    }
+
+    fn undo(&mut self, scene: &mut Scene) {
+        let items = std::mem::take(&mut self.items);
+        Self::apply(scene, &items, false);
+        self.items = items;
+    }
+}
+
+/// 批量设置画框「跟随全局比例」状态（设置面板联动 / 侧栏覆盖）。
+///
+/// - 侧栏套用比例预设 = 解除跟随（覆盖全局），与 [`SetFrameSize`] 打包进
+///   [`MultiCommand`] 一步 undo。
+/// - 侧栏勾回「跟随全局」= 恢复联动，同时按全局比例重算尺寸。
+///   布尔快照成对存 (old, new)，撤销精确还原。
+pub struct SetFrameFollowGlobal {
+    items: Vec<(ItemId, bool, bool)>,
+}
+
+impl SetFrameFollowGlobal {
+    /// 批量构造：`(item_id, old, new)` 三元组列表。
+    pub fn new_batch(items: Vec<(ItemId, bool, bool)>) -> Self {
+        Self { items }
+    }
+
+    fn apply(scene: &mut Scene, items: &[(ItemId, bool, bool)], new: bool) {
+        for (id, old, new_follow) in items {
+            let value = if new { *new_follow } else { *old };
+            if let Some(item) = scene.get_item_mut(id) {
+                item.set_frame_follow_global_ratio(value);
+            }
+        }
+    }
+}
+
+impl Command for SetFrameFollowGlobal {
     fn redo(&mut self, scene: &mut Scene) {
         let items = std::mem::take(&mut self.items);
         Self::apply(scene, &items, true);
@@ -1828,6 +1868,53 @@ mod tests {
         let id = item.id;
         scene.add_item(item);
         id
+    }
+
+    fn frame_in(scene: &mut Scene, w: f32, h: f32) -> ItemId {
+        let item = Item::new_frame(1, (w, h), 0.0, 0.0, None);
+        let id = item.id;
+        scene.add_item(item);
+        id
+    }
+
+    #[test]
+    fn set_frame_follow_global_redo_undo_restores_state() {
+        let mut scene = Scene::new();
+        let f = frame_in(&mut scene, 160.0, 90.0);
+        // new_frame 构造的画框默认跟随全局
+        assert!(scene.get_item(&f).unwrap().frame_follows_global_ratio());
+
+        let mut cmd = SetFrameFollowGlobal::new_batch(vec![(f, true, false)]);
+        cmd.redo(&mut scene);
+        assert!(!scene.get_item(&f).unwrap().frame_follows_global_ratio());
+        cmd.undo(&mut scene);
+        assert!(scene.get_item(&f).unwrap().frame_follows_global_ratio());
+
+        // 非画框 item 不受影响（无副作用、不 panic）
+        let s = shape_in(&mut scene);
+        let mut cmd2 = SetFrameFollowGlobal::new_batch(vec![(s, false, true)]);
+        cmd2.redo(&mut scene);
+        assert!(!scene.get_item(&s).unwrap().frame_follows_global_ratio());
+    }
+
+    #[test]
+    fn set_frame_size_batch_roundtrip_keeps_geometry() {
+        use crate::item::frame_geom_for_ratio;
+        let mut scene = Scene::new();
+        let f = frame_in(&mut scene, 200.0, 100.0);
+        let g = FrameGeom {
+            pos: (0.0, 0.0),
+            base: (200.0, 100.0),
+            scale: (1.0, 1.0),
+        };
+        let new = frame_geom_for_ratio(g, (16.0, 9.0));
+        let mut cmd = SetFrameSize::new_batch(vec![(f, g, new)]);
+        cmd.redo(&mut scene);
+        let it = scene.get_item(&f).unwrap();
+        assert!((it.bounding_rect().height() - new.base.1).abs() < 1e-3);
+        cmd.undo(&mut scene);
+        let it = scene.get_item(&f).unwrap();
+        assert!((it.bounding_rect().height() - 100.0).abs() < 1e-3);
     }
 
     #[test]

@@ -105,7 +105,7 @@ impl PReferZApp {
         }
     }
 
-    /// 把当前配置（语言 + 主题 + 自动保存）落盘到 `~/.preferz/config.json`。
+    /// 把当前配置（语言 + 主题 + 自动保存 + 全局画框比例）落盘到 `~/.preferz/config.json`。
     /// keymap 不再持久化（改绑入口已随 D6 移除，见 `PReferZApp::new`）。
     pub(crate) fn persist_config(&self) {
         save_config(&UserConfig {
@@ -114,7 +114,48 @@ impl PReferZApp {
             theme: self.theme,
             autosave_enabled: self.autosave_enabled,
             autosave_interval: self.autosave_interval,
+            frame_ratio: self.frame_ratio,
         });
+    }
+
+    /// 应用全局画框比例（设置面板变更入口）：持久化到 config.json，并把所有
+    /// 「跟随全局」的画框按新比例重算尺寸（保持有效长边、中心锚定，一条 undo）。
+    /// `None`（自由）只解除新建锁定，不动已有画框——没有目标比例可联动。
+    pub(crate) fn apply_global_frame_ratio(&mut self, ratio: Option<(u32, u32)>) {
+        self.frame_ratio = ratio;
+        self.persist_config();
+        let Some(r) = ratio else {
+            return;
+        };
+        let rf = (r.0 as f32, r.1 as f32);
+        let mut items: Vec<(ItemId, FrameGeom, FrameGeom)> = Vec::new();
+        for it in self.scene.items_by_z_order() {
+            if !it.frame_follows_global_ratio() {
+                continue;
+            }
+            let g = match &it.kind {
+                ItemKind::Frame { base_size, .. } => FrameGeom {
+                    pos: (it.transform.pos.x, it.transform.pos.y),
+                    base: *base_size,
+                    scale: (it.transform.scale.x, it.transform.scale.y),
+                },
+                _ => continue,
+            };
+            let new = frame_geom_for_ratio(g, rf);
+            if new == g {
+                continue; // 已是目标比例：跳过，避免产生空 undo
+            }
+            items.push((it.id, g, new));
+        }
+        let count = items.len();
+        if count == 0 {
+            return;
+        }
+        self.push_cmd(Box::new(SetFrameSize::new_batch(items)));
+        self.flash(fill(
+            t(self.lang, T::FlashGlobalRatioApplied),
+            &[count.to_string()],
+        ));
     }
 
     /// 渲染设置面板（spec §2.3 简化版：排列间距 + 窗口形态 + 语言 + 主题 + 快捷键）。
@@ -127,6 +168,8 @@ impl PReferZApp {
         let mut theme = self.theme;
         let mut autosave_enabled = self.autosave_enabled;
         let mut autosave_interval = self.autosave_interval;
+        let mut new_frame_ratio = self.frame_ratio;
+        let mut frame_ratio_changed = false;
         let mut top_changed = false;
         let mut frame_changed = false;
         let mut lang_changed = false;
@@ -192,6 +235,61 @@ impl PReferZApp {
                 }
                 ui.separator();
 
+                // 全局画框比例：新建画框拖拽时锁定比例（Shift 临时自由）；
+                // 「跟随全局」的画框在比例变更时联动重算尺寸（一条 undo）。
+                ui.label(t(self.lang, T::SettingsFrameRatio));
+                let is_custom = new_frame_ratio.is_some_and(|r| !FRAME_RATIO_PRESETS.contains(&r));
+                let selected_text = match new_frame_ratio {
+                    None => t(self.lang, T::SettingsFrameRatioFree).to_string(),
+                    Some(r) if !is_custom => format!("{}:{}", r.0, r.1),
+                    Some(_) => t(self.lang, T::SettingsFrameRatioCustom).to_string(),
+                };
+                egui::ComboBox::from_id_salt("settings_frame_ratio")
+                    .selected_text(selected_text)
+                    .show_ui(ui, |ui| {
+                        if ui
+                            .selectable_label(
+                                new_frame_ratio.is_none(),
+                                t(self.lang, T::SettingsFrameRatioFree),
+                            )
+                            .clicked()
+                        {
+                            new_frame_ratio = None;
+                            frame_ratio_changed = true;
+                        }
+                        for (w, h) in FRAME_RATIO_PRESETS {
+                            let r = Some((w, h));
+                            if ui
+                                .selectable_label(new_frame_ratio == r, format!("{w}:{h}"))
+                                .clicked()
+                            {
+                                new_frame_ratio = r;
+                                frame_ratio_changed = true;
+                            }
+                        }
+                        if ui
+                            .selectable_label(is_custom, t(self.lang, T::SettingsFrameRatioCustom))
+                            .clicked()
+                        {
+                            // 从自由进入自定义：16:9 起步，随后可用下方 W/H 微调
+                            new_frame_ratio = new_frame_ratio.or(Some((16, 9)));
+                            frame_ratio_changed = true;
+                        }
+                    });
+                if let Some((w, h)) = &mut new_frame_ratio {
+                    ui.horizontal(|ui| {
+                        ui.label("W");
+                        if ui.add(egui::DragValue::new(w).range(1..=10_000)).changed() {
+                            frame_ratio_changed = true;
+                        }
+                        ui.label("H");
+                        if ui.add(egui::DragValue::new(h).range(1..=10_000)).changed() {
+                            frame_ratio_changed = true;
+                        }
+                    });
+                }
+                ui.separator();
+
                 // 语言切换
                 ui.label(t(self.lang, T::SettingsLanguage));
                 egui::ComboBox::from_id_salt("settings_language")
@@ -254,6 +352,10 @@ impl PReferZApp {
             // 切换主题时把新建元素默认色翻到该主题（D2）；用户仍可手动改色。
             self.default_stroke.color = theme.default_stroke_color(ctx);
             self.persist_config();
+        }
+        if frame_ratio_changed {
+            // 全局比例变更：持久化 + 联动更新「跟随全局」的画框（一条 undo）。
+            self.apply_global_frame_ratio(new_frame_ratio);
         }
     }
 

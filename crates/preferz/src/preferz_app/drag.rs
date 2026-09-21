@@ -111,6 +111,7 @@ impl PReferZApp {
                 self.drag = DragState::CreatingFrame {
                     start: start_canvas,
                     current: start_canvas,
+                    shift: additive,
                 };
                 return;
             }
@@ -755,8 +756,21 @@ impl PReferZApp {
             // 拖动中实时更新 Ctrl 状态（椭圆正圆/自由宽高比切换）
             *ctrl = free_scale;
         }
-        if let DragState::CreatingFrame { current, .. } = &mut self.drag {
+        if let DragState::CreatingFrame {
+            start,
+            current,
+            shift,
+        } = &mut self.drag
+        {
             *current = self.viewport.pos2_to_canvas(screen_pos);
+            // 全局比例锁定（所见即所得）：拖拽全程把 current 钳到比例上（长边跟
+            // 主方向），Shift 临时解除。全局为「自由」时保持自由矩形。
+            *shift = axis_lock;
+            if let Some(r) = self.frame_ratio {
+                if !axis_lock {
+                    *current = constrain_drag_to_ratio(*start, *current, (r.0 as f32, r.1 as f32));
+                }
+            }
         }
         if let DragState::CreatingPolygon { current, .. } = &mut self.drag {
             *current = self.viewport.pos2_to_canvas(screen_pos);
@@ -973,7 +987,7 @@ impl PReferZApp {
             DragState::Drawing { raw } => {
                 self.finish_create_freedraw(raw);
             }
-            DragState::CreatingFrame { start, current } => {
+            DragState::CreatingFrame { start, current, .. } => {
                 self.finish_create_frame(start, current);
             }
             DragState::LineEndpoint {

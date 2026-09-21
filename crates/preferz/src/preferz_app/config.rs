@@ -44,6 +44,10 @@ pub(crate) struct UserConfig {
     /// 自动保存 debounce 间隔秒数（plan #5），默认 30，最小 10。
     #[serde(default = "default_autosave_interval")]
     pub(crate) autosave_interval: u32,
+    /// 全局画框比例（w:h 整数比）。`None` = 自由（不锁定）。
+    /// 新建画框拖拽时按此锁定比例；「跟随全局」的画框随全局变更联动。
+    #[serde(default)]
+    pub(crate) frame_ratio: Option<(u32, u32)>,
 }
 
 impl Default for UserConfig {
@@ -54,6 +58,7 @@ impl Default for UserConfig {
             theme: ThemeMode::default(),
             autosave_enabled: default_autosave_enabled(),
             autosave_interval: default_autosave_interval(),
+            frame_ratio: None,
         }
     }
 }

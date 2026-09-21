@@ -348,6 +348,19 @@ pub enum T {
     PresetA4Landscape,
     /// 套用预设后的提示。
     FlashFramePresetApplied,
+    // ── 全局画框比例（设置面板）──
+    /// 设置面板：全局画框比例节标题。
+    SettingsFrameRatio,
+    /// 全局比例下拉：自由（不锁定，行为同旧版）。
+    SettingsFrameRatioFree,
+    /// 全局比例下拉：自定义 w:h。
+    SettingsFrameRatioCustom,
+    /// 属性栏：「跟随全局比例」勾选框。
+    PropsFollowGlobal,
+    /// 属性栏：全局为「自由」时勾选框下的提示。
+    PropsFollowGlobalHint,
+    /// 全局比例变更联动到画框后的提示（{0} = 画框数）。
+    FlashGlobalRatioApplied,
 }
 
 /// 查表翻译。未命中的 key 返回 debug 字符串（开发期易发现遗漏）。
@@ -380,9 +393,9 @@ fn translate_en(key: T) -> &'static str {
         T::NormalizeByWidth => "By Width",
         T::NormalizeByHeight => "By Height",
         T::NormalizeByArea => "By Area",
-        T::ArrangeLinear => "Linear (R)",
-        T::ArrangeGrid => "Grid (G)",
-        T::ArrangeOptimal => "Optimal Packing (O)",
+        T::ArrangeLinear => "Linear",
+        T::ArrangeGrid => "Grid",
+        T::ArrangeOptimal => "Optimal Packing",
         T::Settings => "Settings...",
         T::FitToCanvas => "Fit to Canvas",
         T::ResetZoom => "Reset Zoom",
@@ -614,6 +627,12 @@ fn translate_en(key: T) -> &'static str {
         T::PresetA4Portrait => "A4 portrait",
         T::PresetA4Landscape => "A4 landscape",
         T::FlashFramePresetApplied => "Applied preset: {0}",
+        T::SettingsFrameRatio => "Frame aspect ratio (global)",
+        T::SettingsFrameRatioFree => "Free",
+        T::SettingsFrameRatioCustom => "Custom...",
+        T::PropsFollowGlobal => "Follow global ratio",
+        T::PropsFollowGlobalHint => "No global ratio set — configure it in Settings",
+        T::FlashGlobalRatioApplied => "Global ratio applied to {0} frame(s)",
     }
 }
 
@@ -639,9 +658,9 @@ fn translate_zh(key: T) -> &'static str {
         T::NormalizeByWidth => "按宽度",
         T::NormalizeByHeight => "按高度",
         T::NormalizeByArea => "按面积",
-        T::ArrangeLinear => "线形 (R)",
-        T::ArrangeGrid => "网格 (G)",
-        T::ArrangeOptimal => "最优装箱 (O)",
+        T::ArrangeLinear => "线形",
+        T::ArrangeGrid => "网格",
+        T::ArrangeOptimal => "最优装箱",
         T::Settings => "设置...",
         T::FitToCanvas => "适应画布",
         T::ResetZoom => "重置缩放",
@@ -873,6 +892,12 @@ fn translate_zh(key: T) -> &'static str {
         T::PresetA4Portrait => "A4 竖版",
         T::PresetA4Landscape => "A4 横版",
         T::FlashFramePresetApplied => "已套用预设：{0}",
+        T::SettingsFrameRatio => "画框比例（全局）",
+        T::SettingsFrameRatioFree => "自由",
+        T::SettingsFrameRatioCustom => "自定义…",
+        T::PropsFollowGlobal => "跟随全局比例",
+        T::PropsFollowGlobalHint => "未设置全局比例——可在设置面板中配置",
+        T::FlashGlobalRatioApplied => "全局比例已应用到 {0} 个画框",
     }
 }
 

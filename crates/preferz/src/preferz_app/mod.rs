@@ -21,9 +21,9 @@ use preferz_core::commands::{
     AddItem, AddItems, ArrangeItems, ArrowHeads, CropItems, DeleteItems, EditShapePoints,
     EditTextContent, FillChange, FillState, FlipItems, FrameGeom, FreedrawStyle, MoveItems,
     MultiCommand, NormalizeItems, RenumberFrame, ReorderItems, SetArrowHeads, SetClosed,
-    SetCurveType, SetFrameNumber, SetFrameSize, SetFreedrawStyle, SetGroup, SetPixmapProps,
-    SetPixmapStyle, SetRoundness, SetShapeFill, SetSloppiness, SetStrokeStyle, SetTextStyle,
-    TransformItem,
+    SetCurveType, SetFrameFollowGlobal, SetFrameNumber, SetFrameSize, SetFreedrawStyle, SetGroup,
+    SetPixmapProps, SetPixmapStyle, SetRoundness, SetShapeFill, SetSloppiness, SetStrokeStyle,
+    SetTextStyle, TransformItem,
 };
 use preferz_core::mermaid::{layout_flowchart, parse_mermaid_flowchart, MermaidShape};
 use preferz_core::shape::{
@@ -37,7 +37,9 @@ use preferz_core::{
     Scene,
 };
 // draw_chart_item 的局部坐标变换与图表默认尺寸常量（core 仅在 item 模块导出）。
-use preferz_core::item::{ItemLocalSpace, CHART_DEFAULT_SIZE};
+use preferz_core::item::{
+    constrain_drag_to_ratio, frame_geom_for_ratio, ItemLocalSpace, CHART_DEFAULT_SIZE,
+};
 use preferz_fileio::ViewportMeta;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -185,6 +187,10 @@ const FRAME_PRESETS: [FramePreset; 7] = [
     },
 ];
 
+/// 全局画框比例预设（w:h 整数比，设置面板下拉用）。
+/// 不含纸张预设——A4 是绝对像素尺寸，无法作为拖拽创建时的比例约束。
+const FRAME_RATIO_PRESETS: [(u32, u32); 5] = [(16, 9), (16, 10), (4, 3), (3, 2), (1, 1)];
+
 /// 应用运行模式。Present 为全屏幻灯片演示（Phase E）。
 enum AppMode {
     Edit,
@@ -266,6 +272,8 @@ enum DragState {
     CreatingFrame {
         start: CanvasPoint,
         current: CanvasPoint,
+        /// Shift 临时解除全局比例锁定（拖拽中实时采样）。
+        shift: bool,
     },
     /// 用多边形工具逐点点击创建（Phase I）。
     ///
@@ -400,6 +408,10 @@ pub struct PReferZApp {
     settings_open: bool,
     /// 排列间距（设置面板可调）
     arrange_spacing: f32,
+    /// 全局画框比例（w:h 整数比，设置面板可调，config.json 持久化）。
+    /// `None` = 自由（不锁定，行为同旧版）。新建画框拖拽时按此锁定比例；
+    /// 「跟随全局」的画框在全局比例变更时联动重算尺寸（一条 undo）。
+    frame_ratio: Option<(u32, u32)>,
     /// 画布是否有未保存修改（用于关闭/新建时提示保存）。
     dirty: bool,
     /// 待处理的关闭/新建请求（弹保存确认对话框）。
@@ -830,6 +842,7 @@ impl PReferZApp {
             crop_mode: None,
             settings_open: false,
             arrange_spacing: 16.0,
+            frame_ratio: cfg.frame_ratio,
             dirty: false,
             pending_save_prompt: None,
             always_on_top: false,
@@ -1393,8 +1406,8 @@ impl eframe::App for PReferZApp {
                 }
             }
 
-            // Frame 工具拖拽预览：虚线矩形框
-            if let DragState::CreatingFrame { start, current } = &self.drag {
+            // Frame 工具拖拽预览：虚线矩形框（current 已按全局比例钳制，见 update_drag_preview）
+            if let DragState::CreatingFrame { start, current, .. } = &self.drag {
                 let min_x = start.x.min(current.x);
                 let min_y = start.y.min(current.y);
                 let w = (current.x - start.x).abs();

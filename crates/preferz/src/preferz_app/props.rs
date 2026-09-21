@@ -1077,8 +1077,73 @@ impl PReferZApp {
             }
         }
 
+        // 跟随全局比例（设置面板）：勾选 = 联动全局，改全局比例会重算本框尺寸
+        // （保持长边、中心锚定）；全局为「自由」时无可跟随，禁用勾选并提示。
+        ui.add_space(6.0);
+        if let Some(p) = prop(&self.scene, ids, |it| match &it.kind {
+            ItemKind::Frame {
+                follow_global_ratio,
+                ..
+            } => Some(*follow_global_ratio),
+            _ => None,
+        }) {
+            let mut follow = p.value();
+            let global_set = self.frame_ratio.is_some();
+            let resp = ui.add_enabled(
+                global_set,
+                egui::Checkbox::new(&mut follow, t(lang, T::PropsFollowGlobal)),
+            );
+            if !global_set {
+                ui.label(egui::RichText::new(t(lang, T::PropsFollowGlobalHint)).small());
+            } else if resp.changed() {
+                let mut follows: Vec<(ItemId, bool, bool)> = Vec::new();
+                let mut sizes: Vec<(ItemId, FrameGeom, FrameGeom)> = Vec::new();
+                let rf = self.frame_ratio.map(|(w, h)| (w as f32, h as f32));
+                for id in ids {
+                    let Some(it) = self.scene.get_item(id) else {
+                        continue;
+                    };
+                    if !it.is_frame() {
+                        continue;
+                    }
+                    let old_follow = it.frame_follows_global_ratio();
+                    if old_follow != follow {
+                        follows.push((*id, old_follow, follow));
+                    }
+                    // 恢复跟随时立即按全局比例重算尺寸；解除跟随时不动几何
+                    if follow {
+                        if let Some(rf) = rf {
+                            let g = match &it.kind {
+                                ItemKind::Frame { base_size, .. } => FrameGeom {
+                                    pos: (it.transform.pos.x, it.transform.pos.y),
+                                    base: *base_size,
+                                    scale: (it.transform.scale.x, it.transform.scale.y),
+                                },
+                                _ => continue,
+                            };
+                            let new = frame_geom_for_ratio(g, rf);
+                            if new != g {
+                                sizes.push((*id, g, new));
+                            }
+                        }
+                    }
+                }
+                let mut cmds: Vec<Box<dyn Command>> = Vec::new();
+                if !sizes.is_empty() {
+                    cmds.push(Box::new(SetFrameSize::new_batch(sizes)));
+                }
+                if !follows.is_empty() {
+                    cmds.push(Box::new(SetFrameFollowGlobal::new_batch(follows)));
+                }
+                if !cmds.is_empty() {
+                    self.push_cmd(Box::new(MultiCommand::new(cmds)));
+                }
+            }
+        }
+
         // 比例 / 纸张预设（plan #3）：把选中的画框调整为常见演示比例或 A4 纸张尺寸，
         // 中心锚定、一步 undo。下拉为一次性动作（不记忆当前值），故占位项恒显示。
+        // 套用即解除「跟随全局」（覆盖全局比例）。
         ui.add_space(6.0);
         ui.label(t(lang, T::FramePresetLabel));
         egui::ComboBox::from_id_salt("frame_preset")
@@ -1102,6 +1167,7 @@ impl PReferZApp {
     /// 使结果确定且后续手柄缩放从干净状态开始。套用前 `scale≠1` 的旧几何由命令快照精确还原。
     pub(crate) fn apply_frame_preset(&mut self, preset: FramePreset, ids: &[ItemId]) {
         let mut items: Vec<(ItemId, FrameGeom, FrameGeom)> = Vec::new();
+        let mut follows: Vec<(ItemId, bool, bool)> = Vec::new();
         for id in ids {
             let Some(it) = self.scene.get_item(id) else {
                 continue;
@@ -1114,34 +1180,33 @@ impl PReferZApp {
             let (px, py) = (it.transform.pos.x, it.transform.pos.y);
             let (ew, eh) = (bw * sx, bh * sy);
             let (cx, cy) = (px + ew / 2.0, py + eh / 2.0);
-            let (nw, nh) = match preset {
-                FramePreset::Ratio { w, h, .. } => {
-                    let long = ew.max(eh);
-                    if w >= h {
-                        (long, long * h / w)
-                    } else {
-                        (long * w / h, long)
-                    }
-                }
-                FramePreset::Paper { w, h, .. } => (w, h),
-            };
             let old = FrameGeom {
                 pos: (px, py),
                 base: (bw, bh),
                 scale: (sx, sy),
             };
-            let new = FrameGeom {
-                pos: (cx - nw / 2.0, cy - nh / 2.0),
-                base: (nw, nh),
-                scale: (1.0, 1.0),
+            let new = match preset {
+                // 比例预设：保持有效长边、按目标比例重算，几何规划走 core 纯函数
+                FramePreset::Ratio { w, h, .. } => frame_geom_for_ratio(old, (w, h)),
+                // 纸张预设：固定像素绝对尺寸（A4 按 96 DPI 换算）
+                FramePreset::Paper { w, h, .. } => FrameGeom {
+                    pos: (cx - w / 2.0, cy - h / 2.0),
+                    base: (w, h),
+                    scale: (1.0, 1.0),
+                },
             };
             items.push((*id, old, new));
+            // 套用预设 = 覆盖全局：解除「跟随全局比例」（快照旧值保证 undo 精确）
+            follows.push((*id, it.frame_follows_global_ratio(), false));
         }
         if items.is_empty() {
             return;
         }
         let label = t(self.lang, preset.label()).to_string();
-        self.push_cmd(Box::new(SetFrameSize::new_batch(items)));
+        self.push_cmd(Box::new(MultiCommand::new(vec![
+            Box::new(SetFrameSize::new_batch(items)),
+            Box::new(SetFrameFollowGlobal::new_batch(follows)),
+        ])));
         self.flash(fill(t(self.lang, T::FlashFramePresetApplied), &[label]));
     }
 
