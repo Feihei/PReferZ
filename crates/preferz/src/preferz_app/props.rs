@@ -6,117 +6,132 @@ impl PReferZApp {
     ///
     /// D3 语义（见 [`prop`]）：多选时显示交集值；值不一致仍显示代表值，但改动
     /// 批量应用到所有选中项。连续控件（滑块 / 取色器）经 [`PropEdit`] 合并成一条 undo 命令。
-    pub(crate) fn render_props_panel(&mut self, ui: &mut egui::Ui) {
-        let ctx = &ui.ctx().clone();
+    pub(crate) fn render_props_panel(&mut self, ctx: &egui::Context) {
         if self.scene.selection.is_empty() {
             // 无选中且绘制工具激活：右侧栏显示「新建元素默认样式」
             // （原底部样式面板移入侧栏；Frame 无样式可调，不显示）。
             if self.tool != Tool::Select && self.tool != Tool::Frame {
-                self.render_defaults_panel(ui);
+                self.render_defaults_panel(ctx);
             }
             return;
         }
         let ids: Vec<ItemId> = self.scene.selection.iter().copied().collect();
         let lang = self.lang;
         let dark = self.theme.is_dark(ctx);
-        egui::Panel::right("props_panel")
-            .default_size(230.0)
-            .resizable(true)
-            .show(ui, |ui| {
-                ui.label(fill(t(lang, T::PropsSelectedCount), &[ids.len().to_string()]));
-                ui.separator();
+        let max_h = ctx.content_rect().height() - 2.0 * chrome::BAR_MARGIN;
+        egui::Area::new(egui::Id::new("props_panel"))
+            .anchor(
+                egui::Align2::RIGHT_TOP,
+                egui::vec2(-chrome::BAR_MARGIN, chrome::BAR_MARGIN),
+            )
+            .order(egui::Order::Foreground)
+            .interactable(true)
+            .show(ctx, |ui| {
+                chrome::floating_bar_frame(ui.style()).show(ui, |ui| {
+                    ui.set_min_width(chrome::PROPS_BAR_WIDTH);
+                    egui::ScrollArea::vertical()
+                        .max_height(max_h)
+                        .show(ui, |ui| {
+                            ui.set_min_width(chrome::PROPS_BAR_WIDTH);
+                            ui.label(fill(
+                                t(lang, T::PropsSelectedCount),
+                                &[ids.len().to_string()],
+                            ));
+                            ui.separator();
 
-                // 对齐 / 分布（plan #6）：≥2 项才有意义，放在各类型节之前（对所有类型通用）
-                if ids.len() >= 2 {
-                    ui.label(t(lang, T::PropsSectionAlign));
-                    self.render_align_section(ui, lang, &ids);
-                    ui.separator();
-                }
+                            // 对齐 / 分布（plan #6）：≥2 项才有意义，放在各类型节之前（对所有类型通用）
+                            if ids.len() >= 2 {
+                                ui.label(t(lang, T::PropsSectionAlign));
+                                self.render_align_section(ui, lang, &ids);
+                                ui.separator();
+                            }
 
-                let shape_ids: Vec<ItemId> = ids
-                    .iter()
-                    .copied()
-                    .filter(|id| {
-                        matches!(self.scene.get_item(id), Some(item) if matches!(item.kind, ItemKind::Shape { .. }))
-                    })
-                    .collect();
-                if !shape_ids.is_empty() {
-                    ui.label(t(lang, T::PropsSectionShape));
-                    self.render_shape_props(ui, lang, dark, &shape_ids);
-                    ui.separator();
-                }
+                            let shape_ids: Vec<ItemId> = ids
+                                .iter()
+                                .copied()
+                                .filter(|id| {
+                                    matches!(self.scene.get_item(id), Some(item) if matches!(item.kind, ItemKind::Shape { .. }))
+                                })
+                                .collect();
+                            if !shape_ids.is_empty() {
+                                ui.label(t(lang, T::PropsSectionShape));
+                                self.render_shape_props(ui, lang, dark, &shape_ids);
+                                ui.separator();
+                            }
 
-                let freedraw_ids: Vec<ItemId> = ids
-                    .iter()
-                    .copied()
-                    .filter(|id| {
-                        matches!(self.scene.get_item(id), Some(item) if matches!(item.kind, ItemKind::Freedraw { .. }))
-                    })
-                    .collect();
-                if !freedraw_ids.is_empty() {
-                    ui.label(t(lang, T::PropsSectionFreedraw));
-                    self.render_freedraw_props(ui, lang, dark, &freedraw_ids);
-                    ui.separator();
-                }
+                            let freedraw_ids: Vec<ItemId> = ids
+                                .iter()
+                                .copied()
+                                .filter(|id| {
+                                    matches!(self.scene.get_item(id), Some(item) if matches!(item.kind, ItemKind::Freedraw { .. }))
+                                })
+                                .collect();
+                            if !freedraw_ids.is_empty() {
+                                ui.label(t(lang, T::PropsSectionFreedraw));
+                                self.render_freedraw_props(ui, lang, dark, &freedraw_ids);
+                                ui.separator();
+                            }
 
-                let mut text_ids: Vec<ItemId> = ids
-                    .iter()
-                    .copied()
-                    .filter(|id| {
-                        matches!(self.scene.get_item(id), Some(item) if matches!(item.kind, ItemKind::Text { .. }))
-                    })
-                    .collect();
-                // 选中图形时把其绑定文字纳入文字节（Excalidraw 同款入口）：
-                // 绑定文字不可独立选中，此前选中图形时侧栏无任何文字样式控件
-                //（用户反馈"看不到文字对齐选项 / 文字样式不随主体改"）。
-                for id in &ids {
-                    if matches!(
-                        self.scene.get_item(id),
-                        Some(item) if matches!(item.kind, ItemKind::Shape { .. })
-                    ) {
-                        for item in &self.scene.items {
-                            if let ItemKind::Text {
-                                container_id: Some(cid),
-                                ..
-                            } = &item.kind
-                            {
-                                if cid == id && !text_ids.contains(&item.id) {
-                                    text_ids.push(item.id);
+                            let mut text_ids: Vec<ItemId> = ids
+                                .iter()
+                                .copied()
+                                .filter(|id| {
+                                    matches!(self.scene.get_item(id), Some(item) if matches!(item.kind, ItemKind::Text { .. }))
+                                })
+                                .collect();
+                            // 选中图形时把其绑定文字纳入文字节（Excalidraw 同款入口）：
+                            // 绑定文字不可独立选中，此前选中图形时侧栏无任何文字样式控件
+                            //（用户反馈"看不到文字对齐选项 / 文字样式不随主体改"）。
+                            for id in &ids {
+                                if matches!(
+                                    self.scene.get_item(id),
+                                    Some(item) if matches!(item.kind, ItemKind::Shape { .. })
+                                ) {
+                                    for item in &self.scene.items {
+                                        if let ItemKind::Text {
+                                            container_id: Some(cid),
+                                            ..
+                                        } = &item.kind
+                                        {
+                                            if cid == id && !text_ids.contains(&item.id) {
+                                                text_ids.push(item.id);
+                                            }
+                                        }
+                                    }
                                 }
                             }
-                        }
-                    }
-                }
-                if !text_ids.is_empty() {
-                    ui.label(t(lang, T::PropsSectionText));
-                    self.render_text_props(ui, lang, &text_ids);
-                    ui.separator();
-                }
+                            if !text_ids.is_empty() {
+                                ui.label(t(lang, T::PropsSectionText));
+                                self.render_text_props(ui, lang, &text_ids);
+                                ui.separator();
+                            }
 
-                let pixmap_ids: Vec<ItemId> = ids
-                    .iter()
-                    .copied()
-                    .filter(|id| {
-                        matches!(self.scene.get_item(id), Some(item) if matches!(item.kind, ItemKind::Pixmap { .. }))
-                    })
-                    .collect();
-                if !pixmap_ids.is_empty() {
-                    ui.label(t(lang, T::PropsSectionPixmap));
-                    self.render_pixmap_props(ui, lang, &pixmap_ids);
-                    ui.separator();
-                }
+                            let pixmap_ids: Vec<ItemId> = ids
+                                .iter()
+                                .copied()
+                                .filter(|id| {
+                                    matches!(self.scene.get_item(id), Some(item) if matches!(item.kind, ItemKind::Pixmap { .. }))
+                                })
+                                .collect();
+                            if !pixmap_ids.is_empty() {
+                                ui.label(t(lang, T::PropsSectionPixmap));
+                                self.render_pixmap_props(ui, lang, &pixmap_ids);
+                                ui.separator();
+                            }
 
-                let frame_ids: Vec<ItemId> = ids
-                    .iter()
-                    .copied()
-                    .filter(|id| {
-                        matches!(self.scene.get_item(id), Some(item) if matches!(item.kind, ItemKind::Frame { .. }))
-                    })
-                    .collect();
-                if !frame_ids.is_empty() {
-                    ui.label(t(lang, T::PropsSectionFrame));
-                    self.render_frame_props(ui, lang, &frame_ids);
-                }
+                            let frame_ids: Vec<ItemId> = ids
+                                .iter()
+                                .copied()
+                                .filter(|id| {
+                                    matches!(self.scene.get_item(id), Some(item) if matches!(item.kind, ItemKind::Frame { .. }))
+                                })
+                                .collect();
+                            if !frame_ids.is_empty() {
+                                ui.label(t(lang, T::PropsSectionFrame));
+                                self.render_frame_props(ui, lang, &frame_ids);
+                            }
+                        });
+                });
             });
     }
 
@@ -189,76 +204,94 @@ impl PReferZApp {
     ///
     /// 控件直接改 `default_*` 字段（非 item 属性，不走 undo 栈）；
     /// 填充节仅对能产生封闭图形的工具显示（线 / 箭头无填充）。
-    pub(crate) fn render_defaults_panel(&mut self, ui: &mut egui::Ui) {
-        let ctx = &ui.ctx().clone();
+    pub(crate) fn render_defaults_panel(&mut self, ctx: &egui::Context) {
         let lang = self.lang;
         let dark = self.theme.is_dark(ctx);
         let show_fill = matches!(self.tool, Tool::Shape(_) | Tool::Polygon);
-        egui::Panel::right("defaults_panel")
-            .default_size(230.0)
-            .resizable(true)
-            .show(ui, |ui| {
-                ui.label(t(lang, T::PropsDefaultsTitle));
-                ui.separator();
-                // 描边颜色（Excalidraw 式调色板）
-                let mut stroke = self.default_stroke.color;
-                if palette::color_palette_button(ui, &mut stroke, dark) {
-                    self.default_stroke.color = stroke;
-                }
-                ui.add_space(4.0);
-                // 描边宽度
-                ui.label(t(lang, T::StyleStrokeWidth));
-                ui.add(
-                    egui::Slider::new(&mut self.default_stroke.width, 0.5..=12.0).logarithmic(true),
-                );
-                // 线型
-                ui.horizontal(|ui| {
-                    for (dash, label) in [
-                        (DashStyle::Solid, T::StyleDashSolid),
-                        (DashStyle::Dashed, T::StyleDashDashed),
-                        (DashStyle::Dotted, T::StyleDashDotted),
-                    ] {
-                        let active = self.default_stroke.dash == dash;
-                        if ui.selectable_label(active, t(lang, label)).clicked() {
-                            self.default_stroke.dash = dash;
-                        }
-                    }
-                });
-                // 填充（闭合图形类工具）
-                if show_fill {
-                    ui.add_space(4.0);
-                    ui.label(t(lang, T::StyleFillLabel));
-                    ui.horizontal(|ui| {
-                        if let Some(new_style) =
-                            palette::fill_style_picker(ui, lang, self.default_fill_style)
-                        {
-                            self.default_fill_style = new_style;
-                        }
-                    });
-                    if self.default_fill_style.is_some() {
-                        // 未显式选过填充色时按钮显示描边色（实际创建时同样跟随描边色）
-                        let mut fill = self.default_fill.unwrap_or(self.default_stroke.color);
-                        if palette::fill_color_palette_button(ui, &mut fill, dark) {
-                            self.default_fill = Some(fill);
-                        }
-                    }
-                }
-                // 手绘风：新建形状的默认档位（plan #3，对齐 Excalidraw sloppiness）
-                ui.add_space(4.0);
-                ui.label(t(lang, T::StyleRough));
-                ui.horizontal(|ui| {
-                    let opts = [
-                        (Sloppiness::Off, T::SloppinessOff),
-                        (Sloppiness::Architect, T::SloppinessArchitect),
-                        (Sloppiness::Artist, T::SloppinessArtist),
-                        (Sloppiness::Cartoonist, T::SloppinessCartoonist),
-                    ];
-                    for (val, label) in opts {
-                        let selected = self.default_sloppiness == val;
-                        if ui.selectable_label(selected, t(lang, label)).clicked() && !selected {
-                            self.default_sloppiness = val;
-                        }
-                    }
+        let max_h = ctx.content_rect().height() - 2.0 * chrome::BAR_MARGIN;
+        egui::Area::new(egui::Id::new("defaults_panel"))
+            .anchor(
+                egui::Align2::RIGHT_TOP,
+                egui::vec2(-chrome::BAR_MARGIN, chrome::BAR_MARGIN),
+            )
+            .order(egui::Order::Foreground)
+            .interactable(true)
+            .show(ctx, |ui| {
+                chrome::floating_bar_frame(ui.style()).show(ui, |ui| {
+                    ui.set_min_width(chrome::PROPS_BAR_WIDTH);
+                    egui::ScrollArea::vertical()
+                        .max_height(max_h)
+                        .show(ui, |ui| {
+                            ui.set_min_width(chrome::PROPS_BAR_WIDTH);
+                            ui.label(t(lang, T::PropsDefaultsTitle));
+                            ui.separator();
+                            // 描边颜色（Excalidraw 式调色板）
+                            let mut stroke = self.default_stroke.color;
+                            if palette::color_palette_button(ui, &mut stroke, dark) {
+                                self.default_stroke.color = stroke;
+                            }
+                            ui.add_space(4.0);
+                            // 描边宽度
+                            ui.label(t(lang, T::StyleStrokeWidth));
+                            ui.add(
+                                egui::Slider::new(&mut self.default_stroke.width, 0.5..=12.0)
+                                    .logarithmic(true),
+                            );
+                            // 线型
+                            ui.horizontal(|ui| {
+                                for (dash, label) in [
+                                    (DashStyle::Solid, T::StyleDashSolid),
+                                    (DashStyle::Dashed, T::StyleDashDashed),
+                                    (DashStyle::Dotted, T::StyleDashDotted),
+                                ] {
+                                    let active = self.default_stroke.dash == dash;
+                                    if ui.selectable_label(active, t(lang, label)).clicked() {
+                                        self.default_stroke.dash = dash;
+                                    }
+                                }
+                            });
+                            // 填充（闭合图形类工具）
+                            if show_fill {
+                                ui.add_space(4.0);
+                                ui.label(t(lang, T::StyleFillLabel));
+                                ui.horizontal(|ui| {
+                                    if let Some(new_style) = palette::fill_style_picker(
+                                        ui,
+                                        lang,
+                                        self.default_fill_style,
+                                    ) {
+                                        self.default_fill_style = new_style;
+                                    }
+                                });
+                                if self.default_fill_style.is_some() {
+                                    // 未显式选过填充色时按钮显示描边色（实际创建时同样跟随描边色）
+                                    let mut fill =
+                                        self.default_fill.unwrap_or(self.default_stroke.color);
+                                    if palette::fill_color_palette_button(ui, &mut fill, dark) {
+                                        self.default_fill = Some(fill);
+                                    }
+                                }
+                            }
+                            // 手绘风：新建形状的默认档位（plan #3，对齐 Excalidraw sloppiness）
+                            ui.add_space(4.0);
+                            ui.label(t(lang, T::StyleRough));
+                            ui.horizontal(|ui| {
+                                let opts = [
+                                    (Sloppiness::Off, T::SloppinessOff),
+                                    (Sloppiness::Architect, T::SloppinessArchitect),
+                                    (Sloppiness::Artist, T::SloppinessArtist),
+                                    (Sloppiness::Cartoonist, T::SloppinessCartoonist),
+                                ];
+                                for (val, label) in opts {
+                                    let selected = self.default_sloppiness == val;
+                                    if ui.selectable_label(selected, t(lang, label)).clicked()
+                                        && !selected
+                                    {
+                                        self.default_sloppiness = val;
+                                    }
+                                }
+                            });
+                        });
                 });
             });
     }

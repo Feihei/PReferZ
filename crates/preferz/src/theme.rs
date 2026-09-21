@@ -6,7 +6,7 @@
 //! - egui chrome（Visuals）随主题切换；`bg_alpha` 透明度仍施加在 panel/window/faint
 //!   上，保证无边框 + 置顶的悬浮看图效果在明暗两套主题下都不受影响。
 
-use egui::{Color32, Context, Visuals};
+use egui::{Color32, Context, CornerRadius, Visuals};
 use serde::{Deserialize, Serialize};
 
 /// 主题模式。
@@ -128,5 +128,13 @@ pub fn build_visuals(mode: ThemeMode, bg_alpha: f32, ctx: &Context) -> Visuals {
     visuals.panel_fill = Color32::from_rgba_unmultiplied(panel[0], panel[1], panel[2], alpha);
     visuals.window_fill = Color32::from_rgba_unmultiplied(window[0], window[1], window[2], alpha);
     visuals.faint_bg_color = Color32::from_rgba_unmultiplied(faint[0], faint[1], faint[2], alpha);
+    // 全局 widget 圆角倒角（按钮 / slider / checkbox 等统一 8px，比悬浮 bar 的 10px
+    // 略小，形成层次）。集中在此设置避免各调用点逐个调 corner_radius。
+    let widget_radius = CornerRadius::same(8);
+    visuals.widgets.noninteractive.corner_radius = widget_radius;
+    visuals.widgets.inactive.corner_radius = widget_radius;
+    visuals.widgets.hovered.corner_radius = widget_radius;
+    visuals.widgets.active.corner_radius = widget_radius;
+    visuals.widgets.open.corner_radius = widget_radius;
     visuals
 }

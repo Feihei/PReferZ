@@ -2,6 +2,7 @@ use crate::i18n::{t, Lang, T};
 use crate::interaction;
 use crate::keymap::{Action, BindKey, KeyBind, Keymap, KeymapMap};
 use crate::theme::{self, ThemeMode};
+use crate::ui::chrome;
 use crate::ui::stylers::{
     build_freedraw_visuals, build_shape_visuals, freedraw_stroke_shapes, item_local_to_screen,
 };
@@ -1205,52 +1206,8 @@ impl eframe::App for PReferZApp {
             return;
         }
 
-        // 左侧工具条（spec §5.1：绘制工具切换）
-        egui::Panel::left("tool_panel")
-            .exact_size(44.0)
-            .resizable(false)
-            .show(ui, |ui| {
-                ui.add_space(6.0);
-                // 图标字符必须在内嵌 SourceHanSansCN-Regular.ttf 的 cmap 中有字形，
-                // 否则走 fallback 渲染，风格/字重与其他图标不一致（可用字形已用脚本核验）。
-                let tools = [
-                    (Tool::Select, "↖", T::ToolSelect),
-                    (Tool::Shape(ShapeType::Rectangle), "□", T::ToolRectangle),
-                    (Tool::Shape(ShapeType::Ellipse), "◯", T::ToolEllipse),
-                    (Tool::Shape(ShapeType::Diamond), "◇", T::ToolDiamond),
-                    (Tool::Linear { end_arrow: None }, "╱", T::ToolLine),
-                    (
-                        Tool::Linear {
-                            end_arrow: Some(ArrowHeadStyle::Arrow),
-                        },
-                        "➡",
-                        T::ToolArrow,
-                    ),
-                    (Tool::Polygon, "△", T::ToolPolygon),
-                    (Tool::Freehand, "〰", T::ToolFreehand),
-                    (Tool::Frame, "⬚", T::ToolFrame),
-                ];
-                for (tool, icon, key) in tools {
-                    let is_active = self.tool == tool;
-                    let btn = egui::Button::new(icon)
-                        .min_size(egui::vec2(30.0, 30.0))
-                        .fill(if is_active {
-                            ui.visuals().selection.bg_fill
-                        } else {
-                            ui.visuals().widgets.inactive.bg_fill
-                        });
-                    if ui.add(btn).on_hover_text(t(self.lang, key)).clicked() {
-                        self.tool = tool;
-                        self.drag = DragState::Idle;
-                    }
-                    ui.add_space(4.0);
-                }
-            });
-
-        // 「新建元素默认样式」不再占用底部面板：绘制工具激活且无选中时，
-        // 由 render_props_panel 在右侧栏渲染（与选中属性侧栏同一位置，避免两套控件）。
-        // 右侧属性侧栏（Phase H）：选中项 per-item 编辑，按 ItemKind 分节。
-        self.render_props_panel(ui);
+        // 工具栏 / 属性栏已改为悬浮 Area（Excalidraw 风格固定位置浮层 + 圆角倒角），
+        // 在 CentralPanel 之后绘制以盖在画布之上（见 render_toolbar / render_props_panel）。
 
         // 注：底部状态栏已移除，缩放百分数 / 语言切换 / flash 提示改由画布之上的
         // 悬浮 HUD 承载（`render_hud`），在 CentralPanel 之后调用。
@@ -1667,6 +1624,13 @@ impl eframe::App for PReferZApp {
             }
         });
 
+        // 悬浮工具栏（左上，Excalidraw 风格固定位置浮层 + 圆角倒角）：
+        // Area + Order::Foreground 悬浮在画布之上，不占位、不推挤画布。
+        self.render_toolbar(ctx);
+
+        // 悬浮属性栏（右侧，无选中时自动隐藏或显示默认样式栏）。
+        self.render_props_panel(ctx);
+
         // 悬浮 HUD（缩放百分数 + 语言切换 + flash toast）：
         // 必须在 CentralPanel 之后绘制，才能盖在画布之上，并让画布的
         // `response.hovered()` 自动排除 HUD 占用的区域（避免穿透触发画布拖拽）。
@@ -1877,6 +1841,84 @@ impl PReferZApp {
 
     /// 悬浮 HUD：右下角胶囊（缩放百分数 + 语言切换）+ 底部居中 flash toast。
     ///
+    /// 悬浮工具栏（左上角固定位置浮层）：9 个绘图工具垂直排列，圆角倒角 + 柔和阴影。
+    ///
+    /// Excalidraw 风格：`Area` + `Order::Foreground` 悬浮在画布之上，不占位、不推挤
+    /// 画布；`interactable(true)` 让按钮可点，画布 `pointer_on_canvas` 守卫自动排除
+    /// 被工具栏遮挡的区域（与 HUD 同模式）。未选中工具按钮透明填充（让 bar 底色透出，
+    /// hover 时 egui 自动高亮），选中态实心填充 `selection.bg_fill`。
+    fn render_toolbar(&mut self, ctx: &egui::Context) {
+        egui::Area::new(egui::Id::new("toolbar"))
+            .anchor(
+                egui::Align2::LEFT_TOP,
+                egui::vec2(chrome::BAR_MARGIN, chrome::BAR_MARGIN),
+            )
+            .order(egui::Order::Foreground)
+            .interactable(true)
+            .show(ctx, |ui| {
+                chrome::floating_bar_frame(ui.style()).show(ui, |ui| {
+                    // 图标字符必须在内嵌 SourceHanSansCN-Regular.ttf 的 cmap 中有字形，
+                    // 否则走 fallback 渲染，风格/字重与其他图标不一致（可用字形已用脚本核验）。
+                    // 第四项为快捷键角标（数字键优先，无数字键的工具显示主字母键），
+                    // 对应 keymap.rs 绑定：1=Select 2=Rect 3=Diamond 4=Ellipse
+                    // 5=Arrow 6=Line 7=Freehand；Polygon=Shift+P、Frame=F 无数字键。
+                    let tools: [(Tool, &str, T, &str); 9] = [
+                        (Tool::Select, "↖", T::ToolSelect, "1"),
+                        (
+                            Tool::Shape(ShapeType::Rectangle),
+                            "□",
+                            T::ToolRectangle,
+                            "2",
+                        ),
+                        (Tool::Shape(ShapeType::Ellipse), "◯", T::ToolEllipse, "4"),
+                        (Tool::Shape(ShapeType::Diamond), "◇", T::ToolDiamond, "3"),
+                        (Tool::Linear { end_arrow: None }, "╱", T::ToolLine, "6"),
+                        (
+                            Tool::Linear {
+                                end_arrow: Some(ArrowHeadStyle::Arrow),
+                            },
+                            "➡",
+                            T::ToolArrow,
+                            "5",
+                        ),
+                        (Tool::Polygon, "△", T::ToolPolygon, "P"),
+                        (Tool::Freehand, "〰", T::ToolFreehand, "7"),
+                        (Tool::Frame, "⬚", T::ToolFrame, "F"),
+                    ];
+                    for (tool, icon, key, badge) in tools {
+                        let is_active = self.tool == tool;
+                        let btn = egui::Button::new(icon)
+                            .min_size(egui::vec2(chrome::TOOL_BTN_SIZE, chrome::TOOL_BTN_SIZE))
+                            .fill(if is_active {
+                                ui.visuals().selection.bg_fill
+                            } else {
+                                egui::Color32::TRANSPARENT
+                            });
+                        let resp = ui.add(btn);
+                        // 右下角快捷键角标（Excalidraw 风格）：小号淡色数字/字母，
+                        // 选中态用 strong text color 保证在实心填充上可读。
+                        let badge_color = if is_active {
+                            ui.visuals().strong_text_color()
+                        } else {
+                            ui.visuals().weak_text_color()
+                        };
+                        ui.painter().text(
+                            resp.rect.right_bottom() - egui::vec2(3.0, 2.0),
+                            egui::Align2::RIGHT_BOTTOM,
+                            badge,
+                            egui::FontId::proportional(9.0),
+                            badge_color,
+                        );
+                        if resp.on_hover_text(t(self.lang, key)).clicked() {
+                            self.tool = tool;
+                            self.drag = DragState::Idle;
+                        }
+                        ui.add_space(chrome::TOOL_BTN_GAP);
+                    }
+                });
+            });
+    }
+
     /// 替代原底部 `TopBottomPanel` 状态栏，让画布吃满窗口高度。
     /// 用 `egui::Area` 而非 `Window`：无标题栏、不可拖动、不抢焦点，纯浮层。
     /// `interactable(true)` 让语言按钮可点；HUD 未覆盖的区域仍透传给画布，
