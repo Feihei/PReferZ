@@ -3,11 +3,12 @@
 ## Stack
 
 - **Rust** (stable, >= 1.88), edition 2021 — 1.88 起才稳定的 `slice::as_chunks` / `as_chunks_mut` 已在代码中使用
-- **GUI**: `egui` + `eframe` (glow backend)
+- **GUI**: `egui` + `eframe` 0.36 (glow backend，显式关默认 features 绕开 wgpu)
 - **2D geometry**: `euclid` (parameterized `CanvasSpace` / `ScreenSpace`)
-- **Undo**: 全手写——`preferz-core::commands::Command` trait + binary 层 `UndoStack`（`preferz_app.rs`）；不依赖任何第三方 undo crate
-- **File I/O**: `rusqlite` (`.prz` SQLite + sqlar), `image`, `rayon`
+- **Undo**: 全手写——`preferz-core::commands::Command` trait + binary 层 `UndoStack`（`preferz_app/mod.rs`）；不依赖任何第三方 undo crate
+- **File I/O**: `rusqlite` (`.prz` SQLite + sqlar), `image`
 - **File dialog**: `rfd`; **clipboard**: `arboard`; **config**: 手写 JSON（`~/.preferz/config.json` + `recent.json`，serde_json + `std::env` 取 home，**无 confy / dirs 依赖**）
+- **字体**: 思源黑体（OFL）+ 851 远星夜行手写体（GB2312+ASCII 子集入库，原始 ttf 不进 git），经 `crates/preferz/build.rs` deflate 压缩嵌入、运行时解压（`flate2`）；重新生成子集的方法见 `assets/FONT_LICENSES.md`
 - **Workspace**: `crates/preferz` (binary), `crates/preferz-core`, `crates/preferz-fileio`
 
 ## Commands
@@ -39,8 +40,8 @@ cargo clippy --workspace --all-targets -- -D warnings   # 把警告当错误，�
 
 ```
 preferz (binary, eframe::App)
-  ├── preferz-core        Item, Transform, Scene, Selection, Commands, Arrange, ViewportState, snap
-  └── preferz-fileio      BeeFile, ImageLoader, Export, Assets
+  ├── preferz-core        Item, Transform, Scene, Commands, Arrange, ViewportState, snap, freedraw, chart, mermaid
+  └── preferz-fileio      PrzFile, ImageLoader, Exporter, schema
 ```
 
 `PReferZApp` holds `Scene`, `UndoStack`, `ViewportState`. `update()` dispatches each frame. `PReferZApp` is defined in `crates/preferz/src/preferz_app/` — `mod.rs` keeps the struct + shared types/constants + `ui()` dispatch, with per-cluster method groups split into sibling submodules (`export`/`config`/`background_ops`/`render`/`present`/`text_edit`/`context_menu`/`file_io`/`actions`/`settings`/`drag`/`props`); each does `use super::*;` to reach the parent's private vocabulary.
@@ -56,7 +57,10 @@ preferz (binary, eframe::App)
 - **Texture ownership**: `egui::TextureHandle` lives on `egui::Context`. Create/release textures inside `update()`. Do not hold bare `TextureId` across frames without registration.
 - **Undo "preview" mode**: interactive drag/scale rotates items directly, then `push(cmd)` on release with `skip_first_redo: true`. `skip_first_redo` 是全手写 `Command` impl 上的字段（本项目不依赖任何第三方 undo crate），语义：预览已改过状态，首次 redo 跳过以免二次应用。
 - **`.prz` is the only format**（`.bee` 兼容层已移除，commit `62692a8`）：`.prz` 为 SQLite，含 `items`（5 列，主键为 UUID 字符串，transform 存单列 JSON）、`sqlar`（`name` / `sz` 未压缩大小 / `data` 压缩 blob）、`metadata`（`format` 恒为 `prz`、视口状态、`next_z`）。与 BeeRef `.bee` **不兼容**：后者 items 为 9 列、INTEGER 主键、transform 分列存储，且会写 `PRAGMA user_version`；详见 spec §5.4。`BeeFile::open()` 校验 `metadata.format == 'prz'`，不符直接报错。
-- **Image decode runs on background threads** (`std::thread::spawn` or `rayon`), post result via channel, call `egui_ctx.request_repaint()`.
+- **All shortcuts dispatch through `keymap.rs` (`Action` 查表).** 新增动作用 `Action` 变体 + `default_binds()` + 进 `Action::ALL`，不直接 `ctx.input` 查键。硬约束：`Ctrl+C/X/V` 必须用 `on_release` 释放沿（egui-winit 拦截 `is_copy/is_paste_command` 按下沿）；修饰键严格匹配；`Esc` 有硬兜底；egui 0.36 的 `Event::Key.key` 是逻辑键，`Shift+数字` 类绑定靠 `physical_key` 回退命中。设置面板**不做**键鼠改绑 UI（ADR-0007 / D6），派发架构保留。
+- **All user-visible strings go through i18n**：`t(self.lang, T::X)` / `fill(...)`，不硬编码中英文文案（历史上曾因此出过 EN 界面弹中文的 bug）；英文表禁 CJK，`i18n::tests::english_table_contains_no_cjk` 回归把关。
+- **`.prz` 向后兼容（I4 决策）**：`ItemKind` 新增字段一律 `#[serde(default)]`，不动 `USER_VERSION`（kind 整体存 JSON blob，通常零迁移）；items 表加列用 `pragma_table_info` 检测 + `ALTER TABLE` 就地迁移（先例：`group_id`）。
+- **Image decode runs on background threads** (`std::thread::spawn`), post result via channel, call `egui_ctx.request_repaint()`.
 - **Canvas rendering**: egui is immediate-mode — viewport culling is mandatory. LOD (thumbnail textures at small zoom) is Phase 5+.
 
 ## Gotchas
@@ -122,7 +126,7 @@ Documentation follows the llaia layout, all under `.agents/`:
 
 | Entry | Content |
 |---|---|
-| `.agents/plan.md` | Forward-looking roadmap: pending acceptance items + next phases (Excalidraw alignment G/I/H) + decision points. **Read first when picking up work.** |
+| `.agents/plan.md` | Forward-looking roadmap: pending acceptance items + next steps (Excalidraw alignment打磨批次) + decision points. **Read first when picking up work.** |
 | `.agents/CHANGELOG.md` | Delivery archive of completed phases. Completed plan docs are distilled here, then removed. |
 | `.agents/specs/` | Design specs: `preferz-spec.md` (full design spec with phases, data models, API details), `shapes-and-frame-slides-design.md`, `linear-object-design.md` |
 | `.agents/adr/` | Architecture decision records (NNNN-title, one decision each) |
