@@ -1,6 +1,7 @@
 pub mod arrange;
 pub mod chart;
 pub mod commands;
+pub mod flowchart;
 pub mod freedraw;
 pub mod item;
 pub mod mermaid;

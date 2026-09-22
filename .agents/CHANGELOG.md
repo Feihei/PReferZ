@@ -469,6 +469,29 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 - 测试：bin 5（路径后缀、备份检测新/旧/无、tick 触发写盘且保持 dirty/计时清零、未命名与
   未到时不触发、分流谓词）。
 
+## 流程图同向创建改分叉避让（plan #7 二次更正，2026-09-22，待提交）
+
+> 反馈：选中已有下一节点的图形再按 `Ctrl+同向`，新节点全叠进"邻居远边"同一格 → 重叠，
+> 未形成分叉。原 2026-09-14 `8ba4ac5` 的"邻居旁外推"（主轴=邻居远边 + GAP）根治不了
+> （`find_connected_neighbor` 恒返回同一最近邻居，反复同向创建必然叠位）。
+
+- **落位算法移植**：新增 core 纯函数模块 `preferz_core::flowchart::place_node`（egui-free、
+  L1、可无头单测）——移植 Excalidraw `flowchart.ts::placeCluster` 的单节点退化：`mergeIntervals`
+  + `intervalIsFree` + `findNearestFreeSlot`（两侧搜索、平票偏正方向）。
+- **语义**：**主轴**恒固定在**源**边界外 `FLOWCHART_GAP=100`（不随邻居外推）；**交叉轴**把新节点
+  在该列带内滑到离源中心**最近空位**。同向已有下一节点 → 自动上下**分叉**；无邻居 → 退化为原
+  "源旁 100px、交叉轴居中"单链（回归零变化）。
+- **障碍集**：binary `connected_flowchart_rects` 沿双端绑定 Polyline 双向 BFS，取与源同**连通子图**
+  的节点包围盒（对齐 Excalidraw `getConnectedFlowchartNodes` #8518，无关散落图形不干扰）。
+- **仍不做** pending 簇预览/簇增长/抬起提交（保持"按下即提交 + 选区跳新节点"）；仍用直箭头（无
+  elbow），分叉时箭头=源边中点→新节点对边斜线。
+- **代码面**：`actions.rs::add_connected_shape` 落位块换成 `flowchart::place_node`；binary 的 `FlowDir`
+  在调用点映射到 core `flowchart::FlowDir`；`find_connected_neighbor`（仅供 `Alt+方向` 导航）不变。
+- **测试**：core `flowchart.rs` 6 项（居中/占用滑下方/第三个取最近上方空位/带外障碍忽略/向上方向…）；
+  原 binary `add_connected_shape_places_sibling_next_to_existing_neighbor` 改写为
+  `add_connected_shape_forks_around_existing_neighbor`（C=(230,190) 上下分叉，替代旧 (450,10) 外推）。
+  质量门全绿（fmt / `clippy -D warnings` / `cargo test --workspace`：core 171 + lib 75 + main 2 + fileio 9）。
+
 ---
 
 ## 决策点归档（D1–D6 / I1–I4）

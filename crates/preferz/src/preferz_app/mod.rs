@@ -27,6 +27,7 @@ use preferz_core::commands::{
     SetGroup, SetPixmapProps, SetPixmapStyle, SetRoundness, SetShapeFill, SetSloppiness,
     SetStrokeStyle, SetTextStyle, TransformItem,
 };
+use preferz_core::flowchart;
 use preferz_core::mermaid::{layout_flowchart, parse_mermaid_flowchart, MermaidShape};
 use preferz_core::shape::{
     ArrowHeadStyle, CurveType, DashStyle, FillStyle, FontFamily, PixmapStyle, ShapeType,
@@ -3398,9 +3399,11 @@ mod tests {
     }
 
     #[test]
-    fn add_connected_shape_places_sibling_next_to_existing_neighbor() {
-        // 验收反馈 #7-2：A→B 已连，选中 A 再按 Ctrl+→ —— 新节点 C 放到 B 旁
-        // （主轴 = B 远边 + GAP），不与 B 重合；箭头仍是 A→C。
+    fn add_connected_shape_forks_around_existing_neighbor() {
+        // 落位修（对齐 Excalidraw placeCluster）：A→B 已连，选中 A 再按 Ctrl+→ ——
+        // 新节点 C 主轴恒相对 A（与 B 同列 x=230），交叉轴在带内滑到最近空位、错到
+        // B 的**下方**成上下分叉，不再外推到 B 远边、也不与 B 或其后续节点重叠；
+        // 箭头仍是 A→C。
         let (mut app, a_id) = app_with_rect((10.0, 10.0), (120.0, 80.0));
         app.add_connected_shape(FlowDir::Right); // A→B，选区在 B
         let b_id = *app.scene.selection.iter().next().unwrap();
@@ -3425,8 +3428,9 @@ mod tests {
                     )
             })
             .expect("第三个节点");
-        // B 位于 (230,10)，B.max.x = 350 → C = (450, 10)
-        assert_eq!((c.transform.pos.x, c.transform.pos.y), (450.0, 10.0));
+        // B 位于 (230,10)、占据 y 10..90；A 右列带内交叉轴理想位 10 被占 →
+        // 平票取正方向滑到 B 下方，C = (230, 190)（与 B 同 x，上下分叉）。
+        assert_eq!((c.transform.pos.x, c.transform.pos.y), (230.0, 190.0));
         // 第二条箭头：A→C
         let arrow = app
             .scene

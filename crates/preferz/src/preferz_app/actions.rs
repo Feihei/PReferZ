@@ -257,12 +257,15 @@ impl PReferZApp {
     }
 
     /// plan #7：流程图节点创建（`Ctrl+方向`，单选矩形/椭圆/菱形时）。沿该向
-    /// 克隆一个**同源同风格**节点（主轴 = 源边界 + [`FLOWCHART_GAP`]，交叉轴
-    /// 中心对齐——同尺寸克隆时偏移天然实现；不复制绑定文字），并连一条两端
-    /// 绑定的**直箭头**（本仓库无 elbow）：anchor=各自朝向对方的边中点、初始
-    /// 端点即该锚点画布位置，与 `resolve_bindings` 重算结果一致，后续移动形状
-    /// 箭头自动跟随。按下即提交：新节点+箭头 `AddItems` 一条 undo，选区跳新
-    /// 节点（同方向连按自然接链）。前提不满足静默（对齐 Excalidraw）。
+    /// 克隆一个**同源同风格**节点（不复制绑定文字），并连一条两端绑定的**直箭头**
+    /// （本仓库无 elbow）：anchor=各自朝向对方的边中点、初始端点即该锚点画布位置，
+    /// 与 `resolve_bindings` 重算结果一致，后续移动形状箭头自动跟随。按下即提交：
+    /// 新节点+箭头 `AddItems` 一条 undo，选区跳新节点。前提不满足静默（对齐 Excalidraw）。
+    ///
+    /// 落位（对齐 Excalidraw `placeCluster`，见 [`flowchart::place_node`]）：**主轴**
+    /// 永远固定在源边界外 [`FLOWCHART_GAP`]（不随邻居外推），**交叉轴**在该列带内把
+    /// 新节点滑到离源中心最近的空位——同向已有下一节点时自动错开成**分叉**，不再与
+    /// 邻居或其后续节点重叠。障碍集取与源同连通子图的节点（[`Self::connected_flowchart_rects`]）。
     pub(crate) fn add_connected_shape(&mut self, dir: FlowDir) {
         let Some(src_id) = self.single_selected_id() else {
             return;
@@ -281,34 +284,20 @@ impl PReferZApp {
             },
             None => return,
         };
-        // 验收反馈 #7-2：该方向已有直连同级邻居时，新节点放到**邻居旁边**
-        // （主轴=邻居远边 + GAP、交叉轴对齐邻居中心），而不是与原选中的源节点
-        // 完全重合；无邻居则以源为基准（原行为）。箭头仍 源→新节点。
         let src_rect = match self.scene.get_item(&src_id) {
             Some(item) => item.bounding_rect(),
             None => return,
         };
-        let (sw, sh) = (src_rect.width(), src_rect.height());
-        let base = self
-            .find_connected_neighbor(src_id, dir)
-            .map(|(_, rect)| rect)
-            .unwrap_or(src_rect);
-        let target = match dir {
-            FlowDir::Right => {
-                CanvasPoint::new(base.max().x + FLOWCHART_GAP, base.center().y - sh / 2.0)
-            }
-            FlowDir::Left => CanvasPoint::new(
-                base.min().x - FLOWCHART_GAP - sw,
-                base.center().y - sh / 2.0,
-            ),
-            FlowDir::Down => {
-                CanvasPoint::new(base.center().x - sw / 2.0, base.max().y + FLOWCHART_GAP)
-            }
-            FlowDir::Up => CanvasPoint::new(
-                base.center().x - sw / 2.0,
-                base.min().y - FLOWCHART_GAP - sh,
-            ),
+        // 障碍 = 与源同连通子图的其它节点包围盒；主轴恒相对源、交叉轴滑到最近空位。
+        let obstacles = self.connected_flowchart_rects(src_id);
+        let cdir = match dir {
+            FlowDir::Right => flowchart::FlowDir::Right,
+            FlowDir::Left => flowchart::FlowDir::Left,
+            FlowDir::Up => flowchart::FlowDir::Up,
+            FlowDir::Down => flowchart::FlowDir::Down,
         };
+        let target =
+            flowchart::place_node(src_rect, cdir, FLOWCHART_GAP, FLOWCHART_GAP, &obstacles);
         let offset = target - src_rect.min();
         // duplicate_items：新 uuid（手绘抖动由 id 派生自动不同）、未编组化、
         // 不含绑定文字（只复制传入的 id）——正合克隆节点语义。
@@ -399,6 +388,42 @@ impl PReferZApp {
             }
         }
         best.map(|(nb, _, rect)| (nb, rect))
+    }
+
+    /// plan #7：与 `id` 处于同一**连通流程图**的所有节点包围盒（不含 `id` 自身），
+    /// 沿两端绑定的 Polyline 双向 BFS（对齐 Excalidraw `getConnectedFlowchartNodes`，
+    /// #8518）。供 [`add_connected_shape`] 作交叉轴避让的障碍集。
+    fn connected_flowchart_rects(&self, id: ItemId) -> Vec<CanvasRect> {
+        use std::collections::HashSet;
+        let mut visited: HashSet<ItemId> = HashSet::from([id]);
+        let mut queue: Vec<ItemId> = vec![id];
+        let mut out: Vec<CanvasRect> = Vec::new();
+        while let Some(cur) = queue.pop() {
+            for item in &self.scene.items {
+                let ItemKind::Shape {
+                    shape_type: ShapeType::Polyline,
+                    start_binding,
+                    end_binding,
+                    ..
+                } = &item.kind
+                else {
+                    continue;
+                };
+                // 两端都有绑定的完整连接才算一条边；自环跳过。
+                let nb = match (start_binding, end_binding) {
+                    (Some(b0), Some(b1)) if b0.target == cur && b1.target != cur => b1.target,
+                    (Some(b0), Some(b1)) if b1.target == cur && b0.target != cur => b0.target,
+                    _ => continue,
+                };
+                if visited.insert(nb) {
+                    if let Some(rect) = self.scene.get_item(&nb).map(|i| i.bounding_rect()) {
+                        out.push(rect);
+                    }
+                    queue.push(nb);
+                }
+            }
+        }
+        out
     }
 
     /// plan #7：沿连接箭头导航（`Alt+方向`）。跳选区到 `dir` 方向的直连邻居

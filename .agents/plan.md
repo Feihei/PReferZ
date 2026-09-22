@@ -70,10 +70,13 @@
    开放曲线端点吸回起点闭合后，**曲线风格=圆滑**下接缝应平滑无回钩；填充、绑文字、端点联动照常。
    且把重合端点中**任一个**拖开（屏幕 >8px）松开 → 应**自动恢复开放**（flash「已恢复开放」），
    无需去侧栏勾掉闭合；`Ctrl+Z` 一步还原闭合态。拖普通（非重合）闭合多边形的顶点仍只移点、**不**解闭合。
-2. **#7 更正：同向已有邻居时在邻居旁创建**。选中 A 已连 B（B 在 A 右），再按 `Ctrl+→` →
-   新节点 C 应出现在 **B 右侧 100px**（交叉轴对齐 B 中心）而非与 B 重合；箭头为 **A→C**（与 Excalidraw
-   同款接龙语义）；四向同理。无邻居时行为不变（源旁 100px）。`Alt+→/←` 导航逻辑共用新提取的
-   `find_connected_neighbor`，应不受影响。
+2. **#7 更正：同向已有邻居时分叉避让（2026-09-22 二次更正，取代原"邻居旁外推"）**。选中 A 已连
+   B（B 在 A 右），再按 `Ctrl+→` → 新节点 C 主轴恒相对 A（与 B **同列 x**），交叉轴在该列带内滑到
+   离 A 中心**最近空位**、错到 B 的**上方/下方**成上下**分叉**（原"放到 B 右侧 100px 外推"在反复
+   同向创建时新节点全叠进 B 的后续格子→重叠，故弃用）；箭头仍 **A→C**。落位收进 core
+   `flowchart::place_node`（移植 Excalidraw `placeCluster`，含 `mergeIntervals`/`findNearestFreeSlot`）。
+   无邻居时行为不变（源旁 100px、交叉轴居中）。`Alt+→/←` 导航仍共用 `find_connected_neighbor`，不受影响；
+   新增障碍收集 `connected_flowchart_rects`（同连通子图 BFS）。
 3. **新增：左下 HUD 主题切换按钮**（语言按钮右侧，20px 图标，手绘形状——字体无月牙字形）。
    light 下显黑色月牙、dark 下显白色太阳（☀），hover 有底色高亮；Auto 主题按**当前生效外观**显示，
    点击转为显式 Light/Dark 并即时翻色（默认描边色随主题、写 config 持久化，与设置面板一致）。
@@ -137,7 +140,7 @@
 | 4 | ✅ 多边形节点增删 + 首尾重合自动闭合（2026-09-11 `43576da` 代码交付；2026-09-14 反馈更正 `8ba4ac5`：闭合首尾重合点渲染**合并视作一个点**、拖开 >8px **自动恢复开放**，见验收节） | 顶点删除（**Alt+单击顶点即删**）+ 端点追加（**Alt+拖真实端点**，越阈值在外侧追加顶点后拖新点）；端点拖拽释放首尾距 ≤ 屏 8px 自动 `closed` | ✅ 已拍板（2026-09-11，调研更正见细节 §4）：守卫=开放 ≥2 / 闭合 ≥3 顶点；删首尾顶点连该端解绑；命令层**复用 `EditShapePoints`**（加可选 closed 变更字段），不新增 DeleteVertex/AppendVertex |
 | 5 | ✅ 直线/箭头端点吸附图形边缘（2026-09-07 `a803bbe` + `8d2465e` 修复） | 拖端点邻近 Shape 轮廓吸附 + 绑定模型（端点随形状移动） | 已拍板并交付（2026-09-08 复验通过）：阈值屏 10px；绑定=两端 `Option<ItemId>` 不存绝对坐标，`resolve_bindings` 动态重算；直线/箭头均可绑，与 #7 共用 |
 | 6 | ✅ 多元素对齐、分布（2026-09-05 `cad908b`） | `arrange.rs` 增 `plan_align`（6 向）+ `plan_distribute`（等距/等心 × 横/纵）；属性栏「对齐」节 + 右键菜单 | 已拍板并交付：两种分布都做；参考系=选区包围盒；UI=属性栏+右键菜单 |
-| 7 | ✅ Ctrl+箭头 添加连接符 + Alt+箭头 沿连接导航（流程图）（2026-09-11 `56dd3d4` 代码交付；2026-09-14 反馈更正 `8ba4ac5`：同向已有邻居时新节点放**邻居旁**（主轴=邻居远边+GAP）而非与邻居重合，见验收节） | 单选矩形/椭圆/菱形按 Ctrl+方向 = **按下即提交**一对：同源同风格克隆节点 + 两端绑定直箭头（一条 undo，选区跳新节点）；Alt+方向沿绑定邻居跳转选区 | ✅ 已拍板（2026-09-11，调研更正见细节 §7）：克隆非"默认矩形+文字占位"；不做 pending 簇预览/避障；主轴间距 100px、交叉轴对齐；箭头风格跟源、端头默认 Arrow；导航用 Alt+方向（现行 Excalidraw 同款分键） |
+| 7 | ✅ Ctrl+箭头 添加连接符 + Alt+箭头 沿连接导航（流程图）（2026-09-11 `56dd3d4` 代码交付；2026-09-14 `8ba4ac5` 一次更正"邻居旁外推"；2026-09-22 **二次更正**：改分叉避让——移植 Excalidraw `placeCluster` 到 core `flowchart::place_node`，主轴恒相对源、交叉轴滑到最近空位，同向已有邻居时上下分叉不再重叠，见验收节） | 单选矩形/椭圆/菱形按 Ctrl+方向 = **按下即提交**一对：同源同风格克隆节点 + 两端绑定直箭头（一条 undo，选区跳新节点）；Alt+方向沿绑定邻居跳转选区 | ✅ 已拍板（2026-09-11，调研更正见细节 §7）：克隆非"默认矩形+文字占位"；不做 pending 簇预览/簇增长，**但移植交叉轴避障分叉**（2026-09-22，见细节 §7「落位」）；主轴间距 100px；箭头风格跟源、端头默认 Arrow；导航用 Alt+方向（现行 Excalidraw 同款分键） |
 | 8 | 🔶 两列数据粘贴成柱状/折线图（2026-09-20 代码交付 `fafd262`，待人工验收） | 剪贴板 2 列 TSV/CSV → 生成 Chart item（柱状/折线） | ✅ 已拍板（2026-09-20）：**新 `ItemKind::Chart` + 矢量渲染**（逐段 painter，同 freedraw 路线，非 Pixmap）；**单系列**（2 列 = label+value）；**粘贴触发**——先检文本（Excel 复制同时带位图+文本，图片优先会截错）→ 非 2 列数值回退图片路径；弹「柱状/折线/取消」选择浮层；手绘风渲染/多系列/数据编辑留后续。交付见 [CHANGELOG §两列数据粘贴成柱状/折线图](CHANGELOG.md) |
 | 9 | 🔶 mermaid 代码转流程图（2026-09-20 代码交付 `edb6a6a`，待人工验收） | mermaid 子集 → nodes+edges（复用 #5/#6/#7） | ✅ 已拍板（2026-09-20）：解析器选 **(b) 受限自研 Rust**（零依赖，支持 `flowchart`/`graph` TD/LR 的 node/edge/label 子集）；节点形状 `[]` 矩形 / `()` 椭圆 / `{}` 菱形；分层布局生成 Shape + 两端绑定 Arrow（复用 #5/#14 `EndpointBinding` + #7 `edge_anchor_local`）；入口=弹窗输入 mermaid 文本（生成按钮），错误 flash。交付见 [CHANGELOG §mermaid 代码转流程图](CHANGELOG.md) |
 | 10 | ✅ 徒手绘制（freedraw）速度锥形墨迹（2026-09-18 拍板 B 档，交付 `1a8cda6`→`f869b86`→`b70c2a3`→`e1f46d8`；2026-09-20 Feihei 复验通过 ✅） | 新增 `Tool::Freehand`（绑裸 P + Num7）+ `ItemKind::Freedraw{points,pressures,stroke_width,color}`；按运笔速度（点间距/zoom）给每点算相对宽度乘子，落笔时 Catmull-Rom 重采样平滑，**逐段描边**渲染（line_segment + 圆帽，非 ribbon 填充）；选中可改颜色/粗细。详见 [CHANGELOG §徒手绘制](CHANGELOG.md) | 已拍板：D1=速度锥形（非等宽复用，egui 无压感→点间距模拟）；D2=P+Num7 双绑；D3=最小距离阈值采点、宽度平滑+锥形+Catmull-Rom 重采样、一条 AddItem undo；属性面维持颜色+粗细（对齐 Excalidraw freedraw，不吃 roughness） |
@@ -207,9 +210,10 @@
 - **调研更正（2026-09-11，.ref/excalidraw）**：现行版 Ctrl+方向（单选一个矩形/椭圆/菱形时）= 流程图创建，新节点是**同源同风格的克隆**（同类型/尺寸/颜色/风格，`flowchart.ts:228-247`），**不是** plan 原方案的"默认矩形+绑定文字占位"；连一条两端自动绑定的箭头（elbow、风格跟源、端头跟当前设置，`createBindingArrow:356-369`）；主轴间距固定 100px（`flowchart.ts:53-54`）。按住 Ctrl 连按=**pending 簇预览**（同方向簇增长+避障、松 Ctrl 一次提交、Esc 取消，`App.flowchart.ts:103-165`）。**"选中下一个元素"不在 Ctrl+方向**——现行版是独立的 **Alt+方向**沿箭头绑定导航（`App.flowchart.ts:133-147` + `FlowChartNavigator`）。
 - **决策点已拍板（2026-09-11）**：
   - **新元素形态**：✅ 同源同风格克隆（源集合对齐 Excalidraw `isFlowchartNodeElement` = 矩形/椭圆/菱形，Polyline 不作源；不克隆绑定文字、不加占位）。
-  - **提交方式**：✅ **按下即提交**——每按一次 = 一条 undo（`AddItems`[新形状+绑定箭头]），选区跳新节点，同方向连按自然接链。**不移植** pending 簇预览/避障/簇增长（需新预览渲染态，成本不对等）。
+  - **提交方式**：✅ **按下即提交**——每按一次 = 一条 undo（`AddItems`[新形状+绑定箭头]），选区跳新节点，同方向连按自然接链。**不移植** pending 簇预览/簇增长（需新预览渲染态，成本不对等）。**但移植交叉轴避障**（2026-09-22 更正，见下）。
   - **导航**：✅ 另做 **Alt+方向**：从单选元素出发，找该方向**直接绑定邻居**（两终端 `binding.target` 恰一端=当前、另一端几何在该方向、取最近）→ 跳选区；不产生命令（与 Excalidraw 一致不进 undo）。Ctrl+方向恒创建，不做"有邻居则跳"复合。
-  - **几何/样式**：间距=主轴 100px 画布（新节点边到源边）、交叉轴中心对齐、同尺寸；连接=**直箭头 Polyline**（本仓库无 elbow），`end_arrow=Arrow`、`start_arrow=None`，stroke/手绘风参数跟源形状；两端 anchor=各自朝向对方的**边中点**（目标局部坐标），初始点位置即边中点（不加 Excalidraw 的 6px elbow padding，与 `resolve_bindings` 重算结果一致）；z 序=新节点在源之上、箭头最上（`add_item` 递增 z 天然满足）。
+  - **落位（2026-09-22 更正，取代原"邻居旁外推"）**：移植 Excalidraw `placeCluster`（`flowchart.ts:157-226`）的单节点退化，收进 core 纯函数 `preferz_core::flowchart::place_node`（egui-free、可无头单测）。**主轴**恒固定在**源**边界外 `FLOWCHART_GAP`（不再随邻居外推）；**交叉轴**把新节点在该列带内滑到离源中心**最近的空位**，障碍集=与源同连通子图（沿双端绑定 Polyline 双向 BFS，binary `connected_flowchart_rects`，对齐 Excalidraw `getConnectedFlowchartNodes` #8518）的其它节点包围盒。效果：同向已有下一节点时自动**上下分叉**而非重叠；无邻居（或带内无占用）时退化为原始"源旁 100px、交叉轴居中"单链行为。仍用直箭头（无 elbow），分叉时箭头为源边中点→新节点对边的**斜线**。
+  - **几何/样式**：间距=主轴 100px 画布（新节点边到源边）、同尺寸；连接=**直箭头 Polyline**（本仓库无 elbow），`end_arrow=Arrow`、`start_arrow=None`，stroke/手绘风参数跟源形状；两端 anchor=各自朝向对方的**边中点**（目标局部坐标），初始点位置即边中点（不加 Excalidraw 的 6px elbow padding，与 `resolve_bindings` 重算结果一致）；z 序=新节点在源之上、箭头最上（`add_item` 递增 z 天然满足）。
 - 交付（2026-09-11 `56dd3d4`）：keymap 新增 `Action::AddConnectedShape`（Ctrl+方向×4）/`Action::NavigateConnected`（Alt+方向×4，`KeyBind::alt()` 构造器）+ `pressed_bind` API（方向取实际命中绑定键，改绑仍可用；`pressed` 变薄封装）；app `add_connected_shape`（复用 `duplicate_items` 得新 uuid/未编组/不带绑定文字的克隆 + `Item::new_polyline` 双端 `EndpointBinding`，`AddItems` preview 一条 undo，选区跳新节点）、`navigate_connected`（两端绑定箭头 + 主轴投影 `prim>0 && prim>=|orth|` 取最近，`expand_to_groups` 展开，不入 undo）；模块级 `FlowDir`/`FLOWCHART_GAP`/`edge_anchor_local`；i18n action_label×2；测试 5 项（锚点矩阵、克隆几何/绑定/z 序/undo-redo、非节点源静默、导航双向+无邻居保持）。
 
 8. **✅ 两列数据粘贴成柱状/折线图（2026-09-20 代码交付 `fafd262`，待人工验收）**
