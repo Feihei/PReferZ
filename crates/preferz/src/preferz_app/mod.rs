@@ -1640,16 +1640,20 @@ impl eframe::App for PReferZApp {
             }
         });
 
-        // 面板滑入滑出动画（Blender T/N 切换）：每帧向 visible 目标指数缓动，
-        // 渲染时用 smoothstep 算偏移。动画进行中 request_repaint 持续刷新。
-        let dt = ctx.input(|i| i.stable_dt).min(0.1);
-        const ANIM_SPEED: f32 = 10.0;
+        // 面板滑入滑出动画（Blender T/N 切换）：固定步长推进（不依赖 stable_dt，
+        // 避免空闲后首帧 dt 偏大导致 anim 一步跳过大部分进度→"突然出现"）；
+        // 到阈值 snap 到目标（避免指数缓动渐近线尾部 anim→0 永不到 0→边缘卡顿）。
+        const ANIM_RATE: f32 = 0.25;
         let toolbar_target = self.toolbar_visible as i32 as f32;
         let props_target = self.props_visible as i32 as f32;
-        self.toolbar_anim += (toolbar_target - self.toolbar_anim) * dt * ANIM_SPEED;
-        self.props_anim += (props_target - self.props_anim) * dt * ANIM_SPEED;
-        self.toolbar_anim = self.toolbar_anim.clamp(0.0, 1.0);
-        self.props_anim = self.props_anim.clamp(0.0, 1.0);
+        self.toolbar_anim += (toolbar_target - self.toolbar_anim) * ANIM_RATE;
+        self.props_anim += (props_target - self.props_anim) * ANIM_RATE;
+        if (self.toolbar_anim - toolbar_target).abs() < 0.01 {
+            self.toolbar_anim = toolbar_target;
+        }
+        if (self.props_anim - props_target).abs() < 0.01 {
+            self.props_anim = props_target;
+        }
         if (self.toolbar_anim - toolbar_target).abs() > 1e-3
             || (self.props_anim - props_target).abs() > 1e-3
         {
@@ -1880,13 +1884,9 @@ impl PReferZApp {
     /// 被工具栏遮挡的区域（与 HUD 同模式）。未选中工具按钮透明填充（让 bar 底色透出，
     /// hover 时 egui 自动高亮），选中态实心填充 `selection.bg_fill`。
     fn render_toolbar(&mut self, ctx: &egui::Context) {
-        // 完全隐藏时不渲染 Area（避免拦截事件）；动画期间带偏移渲染。
-        if self.toolbar_anim <= 1e-3 {
-            return;
-        }
-        // 指数缓动 anim 直接映射偏移：anim=1 正常位置，anim=0 滑出屏幕左外。
-        // 不再套 smoothstep——指数缓动本身已平滑，smoothstep 在端点导数≈0 会导致
-        // 隐藏开头面板几乎不动（"贴边卡顿"），中段才突然滑出。
+        // 始终渲染 Area（避免首次 show 时 egui 布局首帧在默认位置闪现）；
+        // anim=0 时偏移到屏幕左外完全不可见，屏外 Area 不拦截鼠标事件。
+        // anim 直接映射偏移：anim=1 正常位置，anim=0 滑出屏幕左外。
         let width = chrome::TOOL_BTN_SIZE + 2.0 * chrome::BAR_INNER_MARGIN as f32;
         let offset_x =
             chrome::BAR_MARGIN - (1.0 - self.toolbar_anim) * (width + chrome::BAR_MARGIN);

@@ -7,10 +7,7 @@ impl PReferZApp {
     /// D3 语义（见 [`prop`]）：多选时显示交集值；值不一致仍显示代表值，但改动
     /// 批量应用到所有选中项。连续控件（滑块 / 取色器）经 [`PropEdit`] 合并成一条 undo 命令。
     pub(crate) fn render_props_panel(&mut self, ctx: &egui::Context) {
-        // 完全隐藏时不渲染（避免拦截事件）；动画期间带偏移渲染。
-        if self.props_anim <= 1e-3 {
-            return;
-        }
+        // 始终渲染（anim=0 时偏移到屏外不可见，不拦截事件）；避免 Area 首帧闪现。
         if self.scene.selection.is_empty() {
             // 无选中且绘制工具激活：右侧栏显示「新建元素默认样式」
             // （原底部样式面板移入侧栏；Frame 无样式可调，不显示）。
