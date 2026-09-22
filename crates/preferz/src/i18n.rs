@@ -989,6 +989,8 @@ pub fn action_label(lang: Lang, action: Action) -> &'static str {
             SendToBack => "Send to back",
             MoveForward => "Move forward one layer",
             MoveBackward => "Move backward one layer",
+            ToggleToolbar => "Toggle toolbar",
+            TogglePropsPanel => "Toggle properties panel",
         },
         Lang::Zh => match action {
             NewCanvas => "新建画布",
@@ -1034,6 +1036,8 @@ pub fn action_label(lang: Lang, action: Action) -> &'static str {
             SendToBack => "置于底层",
             MoveForward => "上移一层",
             MoveBackward => "下移一层",
+            ToggleToolbar => "切换工具栏显隐",
+            TogglePropsPanel => "切换属性栏显隐",
         },
     }
 }

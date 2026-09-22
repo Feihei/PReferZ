@@ -443,6 +443,10 @@ pub enum Action {
     MoveForward,
     /// z-order：下移一层（`Ctrl+[`）。
     MoveBackward,
+    /// 切换左侧工具栏显隐（Blender 同款 `T`）。
+    ToggleToolbar,
+    /// 切换右侧属性栏显隐（Blender 同款 `N`）。
+    TogglePropsPanel,
 }
 
 impl Action {
@@ -491,6 +495,8 @@ impl Action {
         Action::SendToBack,
         Action::MoveForward,
         Action::MoveBackward,
+        Action::ToggleToolbar,
+        Action::TogglePropsPanel,
     ];
 
     /// 出厂默认绑定。一个动作可有多个绑定（如翻页的三组键）。
@@ -577,6 +583,9 @@ impl Action {
             SendToBack => vec![KeyBind::new(OpenBracket).ctrl().shift()],
             MoveForward => vec![KeyBind::new(CloseBracket).ctrl()],
             MoveBackward => vec![KeyBind::new(OpenBracket).ctrl()],
+            // 面板显隐（Blender 同款）：T = 工具栏，N = 属性栏。裸键，无修饰。
+            ToggleToolbar => vec![KeyBind::new(T)],
+            TogglePropsPanel => vec![KeyBind::new(N)],
         }
     }
 }

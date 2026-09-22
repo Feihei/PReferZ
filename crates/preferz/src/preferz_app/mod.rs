@@ -408,6 +408,15 @@ pub struct PReferZApp {
     crop_mode: Option<CropMode>,
     /// 设置面板是否打开（Phase 6 §2.3，简化版：仅排列间距 + 主题切换）
     settings_open: bool,
+    /// 左侧工具栏是否可见（Blender 同款 `T` 切换）。
+    toolbar_visible: bool,
+    /// 右侧属性栏是否可见（Blender 同款 `N` 切换）。
+    props_visible: bool,
+    /// 工具栏滑入滑出动画进度（0=完全隐藏，1=完全显示）。每帧向
+    /// `toolbar_visible` 缓动，渲染时用 smoothstep 缓动偏移量。
+    toolbar_anim: f32,
+    /// 属性栏滑入滑出动画进度（同 `toolbar_anim`）。
+    props_anim: f32,
     /// 排列间距（设置面板可调）
     arrange_spacing: f32,
     /// 全局画框比例（w:h 整数比，设置面板可调，config.json 持久化）。
@@ -843,6 +852,10 @@ impl PReferZApp {
             color_sample: None,
             crop_mode: None,
             settings_open: false,
+            toolbar_visible: true,
+            props_visible: true,
+            toolbar_anim: 1.0,
+            props_anim: 1.0,
             arrange_spacing: 16.0,
             frame_ratio: cfg.frame_ratio,
             dirty: false,
@@ -1627,6 +1640,22 @@ impl eframe::App for PReferZApp {
             }
         });
 
+        // 面板滑入滑出动画（Blender T/N 切换）：每帧向 visible 目标指数缓动，
+        // 渲染时用 smoothstep 算偏移。动画进行中 request_repaint 持续刷新。
+        let dt = ctx.input(|i| i.stable_dt).min(0.1);
+        const ANIM_SPEED: f32 = 10.0;
+        let toolbar_target = self.toolbar_visible as i32 as f32;
+        let props_target = self.props_visible as i32 as f32;
+        self.toolbar_anim += (toolbar_target - self.toolbar_anim) * dt * ANIM_SPEED;
+        self.props_anim += (props_target - self.props_anim) * dt * ANIM_SPEED;
+        self.toolbar_anim = self.toolbar_anim.clamp(0.0, 1.0);
+        self.props_anim = self.props_anim.clamp(0.0, 1.0);
+        if (self.toolbar_anim - toolbar_target).abs() > 1e-3
+            || (self.props_anim - props_target).abs() > 1e-3
+        {
+            ctx.request_repaint();
+        }
+
         // 悬浮工具栏（左上，Excalidraw 风格固定位置浮层 + 圆角倒角）：
         // Area + Order::Foreground 悬浮在画布之上，不占位、不推挤画布。
         self.render_toolbar(ctx);
@@ -1851,10 +1880,18 @@ impl PReferZApp {
     /// 被工具栏遮挡的区域（与 HUD 同模式）。未选中工具按钮透明填充（让 bar 底色透出，
     /// hover 时 egui 自动高亮），选中态实心填充 `selection.bg_fill`。
     fn render_toolbar(&mut self, ctx: &egui::Context) {
+        // 完全隐藏时不渲染 Area（避免拦截事件）；动画期间带偏移渲染。
+        if self.toolbar_anim <= 1e-3 {
+            return;
+        }
+        // smoothstep 缓动偏移：anim=1 时正常位置，anim=0 时滑出屏幕左外。
+        let ease = self.toolbar_anim * self.toolbar_anim * (3.0 - 2.0 * self.toolbar_anim);
+        let width = chrome::TOOL_BTN_SIZE + 2.0 * chrome::BAR_INNER_MARGIN as f32;
+        let offset_x = chrome::BAR_MARGIN - (1.0 - ease) * (width + chrome::BAR_MARGIN);
         egui::Area::new(egui::Id::new("toolbar"))
             .anchor(
                 egui::Align2::LEFT_TOP,
-                egui::vec2(chrome::BAR_MARGIN, chrome::BAR_MARGIN),
+                egui::vec2(offset_x, chrome::BAR_MARGIN),
             )
             .order(egui::Order::Foreground)
             .interactable(true)
@@ -2448,6 +2485,14 @@ impl PReferZApp {
         }
         if self.keymap.pressed(Action::SendToBack, ctx) {
             self.send_to_back();
+        }
+
+        // 面板显隐（Blender 同款）：T = 工具栏，N = 属性栏
+        if self.keymap.pressed(Action::ToggleToolbar, ctx) {
+            self.toolbar_visible = !self.toolbar_visible;
+        }
+        if self.keymap.pressed(Action::TogglePropsPanel, ctx) {
+            self.props_visible = !self.props_visible;
         }
 
         // 流程图（plan #7，Excalidraw 同款）：Ctrl+方向=沿该向克隆连接节点+

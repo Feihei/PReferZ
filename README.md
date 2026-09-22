@@ -81,6 +81,7 @@ cargo build --release -p preferz # release binary
 | `Shift+P` / `F` | Polygon tool / frame tool |
 | `Shift+1` / `Shift+2` / `Shift+3` | Zoom to fit / zoom to selection / zoom to 100% |
 | `I` | Toggle color picker |
+| `T` / `N` | Toggle left toolbar / right properties panel visibility (slide animation) |
 | `C` | Enter crop mode (single image selected) — `Enter` apply, `Esc` cancel |
 | `Enter` | Edit text of selection / confirm crop |
 | `F5` | Toggle slide presentation (`→` `Space` `PgDn` next, `←` `PgUp` prev, `Home` / `End` first / last) |
@@ -184,6 +185,7 @@ cargo build --release -p preferz # 构建发布版本
 | `Shift+P` / `F` | 多边形工具 / 画框工具 |
 | `Shift+1` / `Shift+2` / `Shift+3` | 缩放适应画布 / 缩放到选中 / 缩放回 100% |
 | `I` | 切换取色器 |
+| `T` / `N` | 切换左侧工具栏 / 右侧属性栏显隐（带滑入滑出动画） |
 | `C` | 进入裁剪模式（仅单张图片可触发）——`Enter` 应用，`Esc` 取消 |
 | `Enter` | 编辑选中项文字 / 确认裁剪 |
 | `F5` | 切换幻灯片演示（`→` `Space` `PgDn` 下一页，`←` `PgUp` 上一页，`Home` / `End` 首末页） |

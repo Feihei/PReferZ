@@ -7,6 +7,10 @@ impl PReferZApp {
     /// D3 语义（见 [`prop`]）：多选时显示交集值；值不一致仍显示代表值，但改动
     /// 批量应用到所有选中项。连续控件（滑块 / 取色器）经 [`PropEdit`] 合并成一条 undo 命令。
     pub(crate) fn render_props_panel(&mut self, ctx: &egui::Context) {
+        // 完全隐藏时不渲染（避免拦截事件）；动画期间带偏移渲染。
+        if self.props_anim <= 1e-3 {
+            return;
+        }
         if self.scene.selection.is_empty() {
             // 无选中且绘制工具激活：右侧栏显示「新建元素默认样式」
             // （原底部样式面板移入侧栏；Frame 无样式可调，不显示）。
@@ -18,10 +22,14 @@ impl PReferZApp {
         let ids: Vec<ItemId> = self.scene.selection.iter().copied().collect();
         let lang = self.lang;
         let dark = self.theme.is_dark(ctx);
+        // smoothstep 缓动偏移：anim=1 时正常位置，anim=0 时滑出屏幕右外。
+        let ease = self.props_anim * self.props_anim * (3.0 - 2.0 * self.props_anim);
+        let offset_x =
+            -chrome::BAR_MARGIN + (1.0 - ease) * (chrome::PROPS_BAR_WIDTH + chrome::BAR_MARGIN);
         egui::Area::new(egui::Id::new("props_panel"))
             .anchor(
                 egui::Align2::RIGHT_TOP,
-                egui::vec2(-chrome::BAR_MARGIN, chrome::BAR_MARGIN),
+                egui::vec2(offset_x, chrome::BAR_MARGIN),
             )
             .order(egui::Order::Foreground)
             .interactable(true)
@@ -240,10 +248,14 @@ impl PReferZApp {
         let lang = self.lang;
         let dark = self.theme.is_dark(ctx);
         let show_fill = matches!(self.tool, Tool::Shape(_) | Tool::Polygon);
+        // 与 render_props_panel 共用 props_anim 滑入滑出。
+        let ease = self.props_anim * self.props_anim * (3.0 - 2.0 * self.props_anim);
+        let offset_x =
+            -chrome::BAR_MARGIN + (1.0 - ease) * (chrome::PROPS_BAR_WIDTH + chrome::BAR_MARGIN);
         egui::Area::new(egui::Id::new("defaults_panel"))
             .anchor(
                 egui::Align2::RIGHT_TOP,
-                egui::vec2(-chrome::BAR_MARGIN, chrome::BAR_MARGIN),
+                egui::vec2(offset_x, chrome::BAR_MARGIN),
             )
             .order(egui::Order::Foreground)
             .interactable(true)
