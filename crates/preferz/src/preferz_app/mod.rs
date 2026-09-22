@@ -1469,9 +1469,12 @@ impl eframe::App for PReferZApp {
 
             // 滚轮缩放（以鼠标位置为锚点）。SCROLL_ZOOM_SENSITIVITY：换 glow 后端后
             // smooth_scroll_delta 每格增量比原后端大，乘系数放慢，手感对齐旧后端。
+            // pointer_on_canvas 守卫：指针在悬浮工具栏/侧栏上时滚轮不透传到视口
+            //（response.hovered() 经 egui hit_test 自动排除被上层 Area 覆盖的区域）。
             const SCROLL_ZOOM_SENSITIVITY: f32 = 0.5;
+            let pointer_on_canvas = response.hovered();
             let scroll = ctx.input(|i| i.smooth_scroll_delta);
-            if scroll.y != 0.0 {
+            if scroll.y != 0.0 && pointer_on_canvas {
                 if let Some(pos) = ctx.input(|i| i.pointer.latest_pos()) {
                     self.viewport
                         .zoom_at_egui(scroll.y * SCROLL_ZOOM_SENSITIVITY, pos);
@@ -1538,10 +1541,9 @@ impl eframe::App for PReferZApp {
             let primary_pressed = ctx.input(|i| i.pointer.primary_pressed());
             let primary_down = ctx.input(|i| i.pointer.primary_down());
             let primary_released = ctx.input(|i| i.pointer.primary_released());
-            // pointer 是否在画布上且未被上层 Window/Area 遮挡。
+            // pointer_on_canvas 已在上方滚轮缩放处计算（滚轮守卫与点击守卫共用）：
             // response.hovered() 经 egui hit_test 自动排除被上层 layer 覆盖的区域，
             // 用于守卫 primary_pressed 等全局 PointerState 信号，避免穿透到画布。
-            let pointer_on_canvas = response.hovered();
 
             // 更新 hover + 光标
             if pointer_on_canvas {

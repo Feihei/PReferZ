@@ -18,7 +18,6 @@ impl PReferZApp {
         let ids: Vec<ItemId> = self.scene.selection.iter().copied().collect();
         let lang = self.lang;
         let dark = self.theme.is_dark(ctx);
-        let max_h = ctx.content_rect().height() - 2.0 * chrome::BAR_MARGIN;
         egui::Area::new(egui::Id::new("props_panel"))
             .anchor(
                 egui::Align2::RIGHT_TOP,
@@ -29,15 +28,12 @@ impl PReferZApp {
             .show(ctx, |ui| {
                 chrome::floating_bar_frame(ui.style()).show(ui, |ui| {
                     ui.set_min_width(chrome::PROPS_BAR_WIDTH);
-                    egui::ScrollArea::vertical()
-                        .max_height(max_h)
-                        .show(ui, |ui| {
-                            ui.set_min_width(chrome::PROPS_BAR_WIDTH);
-                            ui.label(fill(
-                                t(lang, T::PropsSelectedCount),
-                                &[ids.len().to_string()],
-                            ));
-                            ui.separator();
+                    // 无滚动：bar 高度自适应内容，完整显示所有选项（用户要求 2026-09-22）。
+                    ui.label(fill(
+                        t(lang, T::PropsSelectedCount),
+                        &[ids.len().to_string()],
+                    ));
+                    ui.separator();
 
                             // 叠放顺序：Frame 不参与，选区含非 Frame item 时显示
                             let has_reorderable = ids.iter().any(|id| {
@@ -140,7 +136,7 @@ impl PReferZApp {
                                 ui.label(t(lang, T::PropsSectionFrame));
                                 self.render_frame_props(ui, lang, &frame_ids);
                             }
-                        });
+
                 });
             });
     }
@@ -244,7 +240,6 @@ impl PReferZApp {
         let lang = self.lang;
         let dark = self.theme.is_dark(ctx);
         let show_fill = matches!(self.tool, Tool::Shape(_) | Tool::Polygon);
-        let max_h = ctx.content_rect().height() - 2.0 * chrome::BAR_MARGIN;
         egui::Area::new(egui::Id::new("defaults_panel"))
             .anchor(
                 egui::Align2::RIGHT_TOP,
@@ -255,83 +250,76 @@ impl PReferZApp {
             .show(ctx, |ui| {
                 chrome::floating_bar_frame(ui.style()).show(ui, |ui| {
                     ui.set_min_width(chrome::PROPS_BAR_WIDTH);
-                    egui::ScrollArea::vertical()
-                        .max_height(max_h)
-                        .show(ui, |ui| {
-                            ui.set_min_width(chrome::PROPS_BAR_WIDTH);
-                            ui.label(t(lang, T::PropsDefaultsTitle));
-                            ui.separator();
-                            // 描边颜色（Excalidraw 式调色板）
-                            let mut stroke = self.default_stroke.color;
-                            if palette::color_palette_button(ui, &mut stroke, dark) {
-                                self.default_stroke.color = stroke;
+                    // 无滚动：bar 高度自适应内容，完整显示所有选项（用户要求 2026-09-22）。
+                    ui.label(t(lang, T::PropsDefaultsTitle));
+                    ui.separator();
+                    // 描边颜色（Excalidraw 式调色板）
+                    let mut stroke = self.default_stroke.color;
+                    if palette::color_palette_button(ui, &mut stroke, dark) {
+                        self.default_stroke.color = stroke;
+                    }
+                    ui.add_space(4.0);
+                    // 描边宽度
+                    ui.label(t(lang, T::StyleStrokeWidth));
+                    stepper(
+                        ui,
+                        &mut self.default_stroke.width,
+                        &[2.0, 4.0, 8.0, 16.0, 32.0],
+                        &["XS", "S", "M", "L", "XL"],
+                        1.0..=64.0,
+                        None,
+                    );
+                    // 线型
+                    ui.label(t(lang, T::StyleDashLabel));
+                    ui.horizontal(|ui| {
+                        for (dash, label) in [
+                            (DashStyle::Solid, T::StyleDashSolid),
+                            (DashStyle::Dashed, T::StyleDashDashed),
+                            (DashStyle::Dotted, T::StyleDashDotted),
+                        ] {
+                            let active = self.default_stroke.dash == dash;
+                            if ui.selectable_label(active, t(lang, label)).clicked() {
+                                self.default_stroke.dash = dash;
                             }
-                            ui.add_space(4.0);
-                            // 描边宽度
-                            ui.label(t(lang, T::StyleStrokeWidth));
-                            stepper(
-                                ui,
-                                &mut self.default_stroke.width,
-                                &[2.0, 4.0, 8.0, 16.0, 32.0],
-                                &["XS", "S", "M", "L", "XL"],
-                                1.0..=64.0,
-                                None,
-                            );
-                            // 线型
-                            ui.horizontal(|ui| {
-                                for (dash, label) in [
-                                    (DashStyle::Solid, T::StyleDashSolid),
-                                    (DashStyle::Dashed, T::StyleDashDashed),
-                                    (DashStyle::Dotted, T::StyleDashDotted),
-                                ] {
-                                    let active = self.default_stroke.dash == dash;
-                                    if ui.selectable_label(active, t(lang, label)).clicked() {
-                                        self.default_stroke.dash = dash;
-                                    }
-                                }
-                            });
-                            // 填充（闭合图形类工具）
-                            if show_fill {
-                                ui.add_space(4.0);
-                                ui.label(t(lang, T::StyleFillLabel));
-                                ui.horizontal(|ui| {
-                                    if let Some(new_style) = palette::fill_style_picker(
-                                        ui,
-                                        lang,
-                                        self.default_fill_style,
-                                    ) {
-                                        self.default_fill_style = new_style;
-                                    }
-                                });
-                                if self.default_fill_style.is_some() {
-                                    // 未显式选过填充色时按钮显示描边色（实际创建时同样跟随描边色）
-                                    let mut fill =
-                                        self.default_fill.unwrap_or(self.default_stroke.color);
-                                    if palette::fill_color_palette_button(ui, &mut fill, dark) {
-                                        self.default_fill = Some(fill);
-                                    }
-                                }
+                        }
+                    });
+                    // 填充（闭合图形类工具）
+                    if show_fill {
+                        ui.add_space(4.0);
+                        ui.label(t(lang, T::StyleFillLabel));
+                        ui.horizontal(|ui| {
+                            if let Some(new_style) =
+                                palette::fill_style_picker(ui, lang, self.default_fill_style)
+                            {
+                                self.default_fill_style = new_style;
                             }
-                            // 手绘风：新建形状的默认档位（plan #3，对齐 Excalidraw sloppiness）
-                            ui.add_space(4.0);
-                            ui.label(t(lang, T::StyleRough));
-                            ui.horizontal(|ui| {
-                                let opts = [
-                                    (Sloppiness::Off, T::SloppinessOff),
-                                    (Sloppiness::Architect, T::SloppinessArchitect),
-                                    (Sloppiness::Artist, T::SloppinessArtist),
-                                    (Sloppiness::Cartoonist, T::SloppinessCartoonist),
-                                ];
-                                for (val, label) in opts {
-                                    let selected = self.default_sloppiness == val;
-                                    if ui.selectable_label(selected, t(lang, label)).clicked()
-                                        && !selected
-                                    {
-                                        self.default_sloppiness = val;
-                                    }
-                                }
-                            });
                         });
+                        if self.default_fill_style.is_some() {
+                            // 未显式选过填充色时按钮显示描边色（实际创建时同样跟随描边色）
+                            let mut fill = self.default_fill.unwrap_or(self.default_stroke.color);
+                            if palette::fill_color_palette_button(ui, &mut fill, dark) {
+                                self.default_fill = Some(fill);
+                            }
+                        }
+                    }
+                    // 手绘风：新建形状的默认档位（plan #3，对齐 Excalidraw sloppiness）
+                    ui.add_space(4.0);
+                    ui.label(t(lang, T::StyleRough));
+                    ui.horizontal(|ui| {
+                        let opts = [
+                            (Sloppiness::Off, T::SloppinessOff),
+                            (Sloppiness::Architect, T::SloppinessArchitect),
+                            (Sloppiness::Artist, T::SloppinessArtist),
+                            (Sloppiness::Cartoonist, T::SloppinessCartoonist),
+                        ];
+                        for (val, label) in opts {
+                            let selected = self.default_sloppiness == val;
+                            if ui.selectable_label(selected, t(lang, label)).clicked() && !selected
+                            {
+                                self.default_sloppiness = val;
+                            }
+                        }
+                    });
                 });
             });
     }
@@ -495,6 +483,7 @@ impl PReferZApp {
             ItemKind::Shape { stroke, .. } => Some(stroke.dash),
             _ => None,
         }) {
+            ui.label(t(lang, T::StyleDashLabel));
             ui.horizontal(|ui| {
                 for (dash, label) in [
                     (DashStyle::Solid, T::StyleDashSolid),
@@ -549,54 +538,48 @@ impl PReferZApp {
             } else {
                 None
             };
-            ui.horizontal(|ui| {
-                ui.label(t(lang, T::StyleFillLabel));
-                if let Some(new_style) = palette::fill_style_picker(ui, lang, current_style) {
-                    self.apply_continuous(
-                        &fill_ids,
-                        PropKind::Fill,
-                        |k| match k {
-                            ItemKind::Shape {
-                                fill, fill_style, ..
-                            } => Some(PropValue::Fill(FillState {
-                                color: *fill,
-                                style: *fill_style,
-                            })),
-                            _ => None,
-                        },
-                        |k| {
-                            if let ItemKind::Shape {
-                                fill,
-                                fill_style,
-                                stroke,
-                                ..
-                            } = k
-                            {
-                                match new_style {
-                                    Some(s) => {
-                                        *fill_style = s;
-                                        // 无填充 → 有填充：默认跟随描边色（Excalidraw 语义），
-                                        // 套默认 50% 不透明度（plan #2）
-                                        if fill.is_none() {
-                                            let c = stroke.color;
-                                            *fill = Some([
-                                                c[0],
-                                                c[1],
-                                                c[2],
-                                                palette::FILL_DEFAULT_ALPHA,
-                                            ]);
-                                        }
-                                    }
-                                    None => {
-                                        *fill = None;
-                                        *fill_style = FillStyle::Solid;
+            ui.label(t(lang, T::StyleFillLabel));
+            if let Some(new_style) = palette::fill_style_picker(ui, lang, current_style) {
+                self.apply_continuous(
+                    &fill_ids,
+                    PropKind::Fill,
+                    |k| match k {
+                        ItemKind::Shape {
+                            fill, fill_style, ..
+                        } => Some(PropValue::Fill(FillState {
+                            color: *fill,
+                            style: *fill_style,
+                        })),
+                        _ => None,
+                    },
+                    |k| {
+                        if let ItemKind::Shape {
+                            fill,
+                            fill_style,
+                            stroke,
+                            ..
+                        } = k
+                        {
+                            match new_style {
+                                Some(s) => {
+                                    *fill_style = s;
+                                    // 无填充 → 有填充：默认跟随描边色（Excalidraw 语义），
+                                    // 套默认 50% 不透明度（plan #2）
+                                    if fill.is_none() {
+                                        let c = stroke.color;
+                                        *fill =
+                                            Some([c[0], c[1], c[2], palette::FILL_DEFAULT_ALPHA]);
                                     }
                                 }
+                                None => {
+                                    *fill = None;
+                                    *fill_style = FillStyle::Solid;
+                                }
                             }
-                        },
-                    );
-                }
-            });
+                        }
+                    },
+                );
+            }
             // 填充颜色（仅有填充时显示；Excalidraw 同款调色板，plan #2：与描边共用 5 色）
             if let Some(c) = state.color {
                 let mut col = c;
@@ -715,8 +698,8 @@ impl PReferZApp {
                 (Sloppiness::Artist, T::SloppinessArtist),
                 (Sloppiness::Cartoonist, T::SloppinessCartoonist),
             ];
+            ui.label(t(lang, T::StyleRough));
             ui.horizontal(|ui| {
-                ui.label(t(lang, T::StyleRough));
                 for (val, label) in opts {
                     let selected = current == val;
                     if ui.selectable_label(selected, t(lang, label)).clicked() && !selected {
@@ -752,6 +735,7 @@ impl PReferZApp {
                 _ => None,
             }) {
                 let straight = p.value() == CurveType::Straight;
+                ui.label(t(lang, T::StyleCurve));
                 ui.horizontal(|ui| {
                     if ui
                         .selectable_label(straight, t(lang, T::StyleCurveStraight))
@@ -988,8 +972,8 @@ impl PReferZApp {
             _ => None,
         }) {
             let current = p.value();
+            ui.label(t(lang, T::StyleFontLabel));
             ui.horizontal(|ui| {
-                ui.label(t(lang, T::StyleFontLabel));
                 for (val, label) in [
                     (FontFamily::Normal, T::FontNormal),
                     (FontFamily::Handwriting, T::FontHandwriting),
@@ -1032,8 +1016,8 @@ impl PReferZApp {
                 _ => None,
             }) {
                 let current = p.value();
+                ui.label(t(lang, T::StyleAlignH));
                 ui.horizontal(|ui| {
-                    ui.label(t(lang, T::StyleAlignH));
                     for (val, label) in [
                         (TextAlignH::Left, T::TextAlignLeft),
                         (TextAlignH::Center, T::TextAlignCenter),
@@ -1063,8 +1047,8 @@ impl PReferZApp {
                 _ => None,
             }) {
                 let current = p.value();
+                ui.label(t(lang, T::StyleAlignV));
                 ui.horizontal(|ui| {
-                    ui.label(t(lang, T::StyleAlignV));
                     for (val, label) in [
                         (TextAlignV::Top, T::TextAlignTop),
                         (TextAlignV::Middle, T::TextAlignMiddle),
