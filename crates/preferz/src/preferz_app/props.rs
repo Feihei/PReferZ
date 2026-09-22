@@ -884,7 +884,11 @@ impl PReferZApp {
         }
     }
 
-    /// 文字节：字号 / 颜色 / 背景（Phase H）。
+    /// 文字节：字号 / 颜色（Phase H）。
+    ///
+    /// 文字背景色（`background` 字段）已从面板移除：Excalidraw 的文字属性面板不暴露
+    /// 背景选择器（绑定文字的背景由容器填充承担），用户亦不使用。字段与渲染路径保留，
+    /// 旧存档带背景仍能正常显示，只是不再提供编辑入口。
     pub(crate) fn render_text_props(
         &mut self,
         ui: &mut egui::Ui,
@@ -967,53 +971,6 @@ impl PReferZApp {
             }
             if p.is_mixed() {
                 ui.label(t(lang, T::PropsMixedValue));
-            }
-        }
-        if let Some(p) = prop(&self.scene, ids, |it| match &it.kind {
-            ItemKind::Text { background, .. } => Some(*background),
-            _ => None,
-        }) {
-            let mut checked = p.value().is_some();
-            if ui
-                .checkbox(&mut checked, t(lang, T::StyleTextBackground))
-                .changed()
-            {
-                let new: Option<[u8; 4]> = if checked {
-                    Some([255, 255, 255, 220])
-                } else {
-                    None
-                };
-                self.apply_continuous(
-                    ids,
-                    PropKind::TextStyle,
-                    |k| k.text_style().map(PropValue::Text),
-                    |k| {
-                        if let ItemKind::Text { background, .. } = k {
-                            *background = new;
-                        }
-                    },
-                );
-            }
-            if let Some(existing) = p.value() {
-                let mut col = egui::Color32::from_rgba_unmultiplied(
-                    existing[0],
-                    existing[1],
-                    existing[2],
-                    existing[3],
-                );
-                if ui.color_edit_button_srgba(&mut col).changed() {
-                    let new = [col.r(), col.g(), col.b(), col.a()];
-                    self.apply_continuous(
-                        ids,
-                        PropKind::TextStyle,
-                        |k| k.text_style().map(PropValue::Text),
-                        |k| {
-                            if let ItemKind::Text { background, .. } = k {
-                                *background = Some(new);
-                            }
-                        },
-                    );
-                }
             }
         }
         // 字体族（plan #1）：黑体 / 伪手写（逐字微抖，零体积增量）

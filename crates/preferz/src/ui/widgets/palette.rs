@@ -204,21 +204,42 @@ fn parse_hex(s: &str) -> Option<[u8; 3]> {
     }
 }
 
-/// 当前色属于哪个色系：逐色系比对 5 档（主题化后）的 RGB，命中返回行下标。
-/// 自定义 hex（不在色板内）返回 `None`，此时弹层不展示「Shades」段。
+/// RGB 平方距离（忽略 alpha），用于「最近色系」归属。
+fn dist2(a: egui::Color32, b: egui::Color32) -> u32 {
+    let d = |x: u8, y: u8| (x as i32 - y as i32).pow(2) as u32;
+    d(a.r(), b.r()) + d(a.g(), b.g()) + d(a.b(), b.b())
+}
+
+/// 当前色属于哪个色系：先精确命中色板 5 档；不在色板内（近黑 `#1e1e1e`、自定义 hex 等）
+/// 则取 RGB 最近的一档所属色系——使「Shades」段恒显示（对齐 Excalidraw 按最近色系给
+/// 明暗档的行为）。`PALETTE_ROWS` 非空，故恒返回 `Some`。
 fn family_of_current(current: egui::Color32, dark: bool) -> Option<usize> {
+    // 精确命中优先。
+    if let Some(i) = PALETTE_ROWS.iter().enumerate().find_map(|(i, (_n, row))| {
+        row.iter()
+            .any(|hex| rgb_eq(themed_color(hex, dark), current))
+            .then_some(i)
+    }) {
+        return Some(i);
+    }
+    // 否则取最近色系（该色系 5 档中距 current 最近者决定归属）。
     PALETTE_ROWS
         .iter()
         .enumerate()
-        .find_map(|(i, (_name, row))| {
-            row.iter()
-                .any(|hex| rgb_eq(themed_color(hex, dark), current))
-                .then_some(i)
+        .map(|(i, (_n, row))| {
+            let d = row
+                .iter()
+                .map(|hex| dist2(themed_color(hex, dark), current))
+                .min()
+                .unwrap_or(u32::MAX);
+            (i, d)
         })
+        .min_by_key(|&(_i, d)| d)
+        .map(|(i, _d)| i)
 }
 
-/// 调色板弹层（Excalidraw 同款三段）：**Colors**（每色系代表色）+ **Shades**（当前
-/// 色系的五档明暗，仅当 current 命中色系时显示）+ **Hex**（十六进制输入，等价旧取色器）。
+/// 调色板弹层（Excalidraw 同款三段）：**Colors**（每色系代表色）+ **Shades**（当前色
+/// 所属色系的五档明暗，恒显示，非色板色取最近色系）+ **Hex**（十六进制输入，等价旧取色器）。
 /// 返回 `(颜色, 是否来自色板格子)`；色板格子返回 `true`（填充套默认 alpha），
 /// hex 输入返回 `false`（保留 current 的 alpha）。
 fn palette_popup(
