@@ -3518,4 +3518,48 @@ mod tests {
         app.finish_create_frame(CanvasPoint::new(0.0, 0.0), CanvasPoint::new(200.0, 200.0));
         expect_ascii_flash(&mut app, "创建画框");
     }
+
+    /// 属性栏比例下拉的「跟随全局」项（原「跟随全局比例」勾选框并进下拉而来）：
+    /// 选它 = 状态翻回跟随 + 按全局比例立即重算尺寸，整步只用一条 undo。
+    #[test]
+    fn set_frames_follow_global_switches_state_and_geometry_in_one_undo() {
+        let mut app = PReferZApp::new();
+        app.frame_ratio = Some((16, 9));
+        // 400×400 正方形画框（`new_frame` 默认跟随全局）
+        app.finish_create_frame(CanvasPoint::new(0.0, 0.0), CanvasPoint::new(400.0, 400.0));
+        let id = app.scene.items[0].id;
+        let size = |app: &PReferZApp| match &app.scene.get_item(&id).unwrap().kind {
+            ItemKind::Frame { base_size, .. } => *base_size,
+            _ => panic!("选中项应为画框"),
+        };
+        let follows = |app: &PReferZApp| {
+            app.scene
+                .get_item(&id)
+                .unwrap()
+                .frame_follows_global_ratio()
+        };
+        assert!(follows(&app));
+
+        // 套用具体比例 / 纸张 = 覆盖全局 → 解除跟随，且不动既有几何
+        let square = size(&app);
+        app.set_frames_follow_global(&[id], false);
+        assert!(!follows(&app));
+        assert_eq!(size(&app), square, "解除跟随不该动几何");
+
+        // 重新选「跟随全局」→ 按 16:9 重算（保持有效长边 400、中心锚定）
+        let cmds = app.undo_stack.undo.len();
+        app.set_frames_follow_global(&[id], true);
+        assert!(follows(&app));
+        assert_eq!(size(&app), (400.0, 225.0), "16:9 应压短边");
+        assert_eq!(app.undo_stack.undo.len(), cmds + 1, "状态 + 尺寸合并成一条");
+
+        // 已跟随时再选同项：幂等，不产生空命令
+        app.set_frames_follow_global(&[id], true);
+        assert_eq!(app.undo_stack.undo.len(), cmds + 1);
+
+        // 一条 undo 同时回滚状态与尺寸
+        assert!(app.perform_undo());
+        assert!(!follows(&app));
+        assert_eq!(size(&app), square);
+    }
 }

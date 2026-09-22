@@ -1266,7 +1266,7 @@ impl PReferZApp {
         }
     }
 
-    /// 画框节：编号（Phase H）。
+    /// 画框节：编号（Phase H）+ 比例下拉（plan #3，「跟随全局比例」为其中一项）。
     pub(crate) fn render_frame_props(&mut self, ui: &mut egui::Ui, lang: Lang, ids: &[ItemId]) {
         ui.label(t(lang, T::PropsFrameNumber));
         if let Some(p) = prop(&self.scene, ids, |it| match &it.kind {
@@ -1296,85 +1296,116 @@ impl PReferZApp {
             }
         }
 
-        // 跟随全局比例（设置面板）：勾选 = 联动全局，改全局比例会重算本框尺寸
-        // （保持长边、中心锚定）；全局为「自由」时无可跟随，禁用勾选并提示。
+        // 比例下拉（plan #3 + 跟随全局合并，2026-09-22）：原「跟随全局比例」勾选框并进同一
+        // 菜单，不再单独占一个 bool——选「跟随全局」= 联动全局（改全局比例时按新比例重算本框
+        // 尺寸，保持有效长边、中心锚定）；选任一具体比例 / 纸张 = 套用该尺寸并解除「跟随全局」
+        // （覆盖全局）。预设仍是一次性动作，故非跟随时占位项恒显示。全局为「自由」时无可跟随，
+        // 该项禁用并在下拉下方提示。
         ui.add_space(6.0);
-        if let Some(p) = prop(&self.scene, ids, |it| match &it.kind {
+        ui.label(t(lang, T::FramePresetLabel));
+        let follows_prop = prop(&self.scene, ids, |it| match &it.kind {
             ItemKind::Frame {
                 follow_global_ratio,
                 ..
             } => Some(*follow_global_ratio),
             _ => None,
-        }) {
-            let mut follow = p.value();
-            let global_set = self.frame_ratio.is_some();
-            let resp = ui.add_enabled(
-                global_set,
-                egui::Checkbox::new(&mut follow, t(lang, T::PropsFollowGlobal)),
-            );
-            if !global_set {
-                ui.label(egui::RichText::new(t(lang, T::PropsFollowGlobalHint)).small());
-            } else if resp.changed() {
-                let mut follows: Vec<(ItemId, bool, bool)> = Vec::new();
-                let mut sizes: Vec<(ItemId, FrameGeom, FrameGeom)> = Vec::new();
-                let rf = self.frame_ratio.map(|(w, h)| (w as f32, h as f32));
-                for id in ids {
-                    let Some(it) = self.scene.get_item(id) else {
-                        continue;
-                    };
-                    if !it.is_frame() {
-                        continue;
-                    }
-                    let old_follow = it.frame_follows_global_ratio();
-                    if old_follow != follow {
-                        follows.push((*id, old_follow, follow));
-                    }
-                    // 恢复跟随时立即按全局比例重算尺寸；解除跟随时不动几何
-                    if follow {
-                        if let Some(rf) = rf {
-                            let g = match &it.kind {
-                                ItemKind::Frame { base_size, .. } => FrameGeom {
-                                    pos: (it.transform.pos.x, it.transform.pos.y),
-                                    base: *base_size,
-                                    scale: (it.transform.scale.x, it.transform.scale.y),
-                                },
-                                _ => continue,
-                            };
-                            let new = frame_geom_for_ratio(g, rf);
-                            if new != g {
-                                sizes.push((*id, g, new));
-                            }
-                        }
-                    }
-                }
-                let mut cmds: Vec<Box<dyn Command>> = Vec::new();
-                if !sizes.is_empty() {
-                    cmds.push(Box::new(SetFrameSize::new_batch(sizes)));
-                }
-                if !follows.is_empty() {
-                    cmds.push(Box::new(SetFrameFollowGlobal::new_batch(follows)));
-                }
-                if !cmds.is_empty() {
-                    self.push_cmd(Box::new(MultiCommand::new(cmds)));
-                }
-            }
-        }
-
-        // 比例 / 纸张预设（plan #3）：把选中的画框调整为常见演示比例或 A4 纸张尺寸，
-        // 中心锚定、一步 undo。下拉为一次性动作（不记忆当前值），故占位项恒显示。
-        // 套用即解除「跟随全局」（覆盖全局比例）。
-        ui.add_space(6.0);
-        ui.label(t(lang, T::FramePresetLabel));
+        });
+        let global_ratio = self.frame_ratio.map(|(w, h)| format!("{w}:{h}"));
+        let mixed = follows_prop.is_some_and(Prop::is_mixed);
+        let follows = !mixed && follows_prop.is_some_and(|p| p.value());
+        let follow_item = match &global_ratio {
+            Some(r) => fill(t(lang, T::PropsFollowGlobalRatio), std::slice::from_ref(r)),
+            None => t(lang, T::PropsFollowGlobal).to_string(),
+        };
+        let selected_text = if mixed {
+            t(lang, T::PropsMixedValue).to_string()
+        } else if follows {
+            follow_item.clone()
+        } else {
+            t(lang, T::FramePresetPick).to_string()
+        };
+        let mut follow_clicked = false;
+        let mut preset_clicked: Option<FramePreset> = None;
         egui::ComboBox::from_id_salt("frame_preset")
-            .selected_text(t(lang, T::FramePresetPick))
+            .selected_text(selected_text)
             .show_ui(ui, |ui| {
+                if ui
+                    .add_enabled_ui(global_ratio.is_some(), |ui| {
+                        ui.selectable_label(follows, follow_item.as_str())
+                    })
+                    .inner
+                    .clicked()
+                {
+                    follow_clicked = true;
+                    ui.close();
+                }
+                ui.separator();
                 for preset in FRAME_PRESETS {
                     if ui.button(t(lang, preset.label())).clicked() {
-                        self.apply_frame_preset(preset, ids);
+                        preset_clicked = Some(preset);
                         ui.close();
                     }
                 }
             });
+        // 已跟随时再点该项是幂等 no-op（不产生空 undo）。
+        if follow_clicked && !follows {
+            self.set_frames_follow_global(ids, true);
+        }
+        if let Some(preset) = preset_clicked {
+            self.apply_frame_preset(preset, ids);
+        }
+        if global_ratio.is_none() {
+            ui.label(egui::RichText::new(t(lang, T::PropsFollowGlobalHint)).small());
+        }
+    }
+
+    /// 批量把选中画框切到「跟随全局比例」（属性栏比例下拉的「跟随全局」项）。
+    ///
+    /// 跟随中的画框按全局比例**立即重算尺寸**（保持有效长边、中心锚定）；
+    /// 尺寸重算与状态翻转打包成一条 undo。全局为「自由」时调用方不应进来（无可跟随）。
+    pub(crate) fn set_frames_follow_global(&mut self, ids: &[ItemId], follow: bool) {
+        let mut follows: Vec<(ItemId, bool, bool)> = Vec::new();
+        let mut sizes: Vec<(ItemId, FrameGeom, FrameGeom)> = Vec::new();
+        let rf = self.frame_ratio.map(|(w, h)| (w as f32, h as f32));
+        for id in ids {
+            let Some(it) = self.scene.get_item(id) else {
+                continue;
+            };
+            if !it.is_frame() {
+                continue;
+            }
+            let old_follow = it.frame_follows_global_ratio();
+            if old_follow != follow {
+                follows.push((*id, old_follow, follow));
+            }
+            // 恢复跟随时立即按全局比例重算尺寸；解除跟随时不动几何
+            if follow {
+                if let Some(rf) = rf {
+                    let g = match &it.kind {
+                        ItemKind::Frame { base_size, .. } => FrameGeom {
+                            pos: (it.transform.pos.x, it.transform.pos.y),
+                            base: *base_size,
+                            scale: (it.transform.scale.x, it.transform.scale.y),
+                        },
+                        _ => continue,
+                    };
+                    let new = frame_geom_for_ratio(g, rf);
+                    if new != g {
+                        sizes.push((*id, g, new));
+                    }
+                }
+            }
+        }
+        let mut cmds: Vec<Box<dyn Command>> = Vec::new();
+        if !sizes.is_empty() {
+            cmds.push(Box::new(SetFrameSize::new_batch(sizes)));
+        }
+        if !follows.is_empty() {
+            cmds.push(Box::new(SetFrameFollowGlobal::new_batch(follows)));
+        }
+        if !cmds.is_empty() {
+            self.push_cmd(Box::new(MultiCommand::new(cmds)));
+        }
     }
 
     /// 把某个比例/纸张预设套用到选中的画框（plan #3），打包成一条 [`SetFrameSize`]。

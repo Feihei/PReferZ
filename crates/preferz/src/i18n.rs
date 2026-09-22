@@ -389,9 +389,11 @@ pub enum T {
     SettingsFrameRatioFree,
     /// 全局比例下拉：自定义 w:h。
     SettingsFrameRatioCustom,
-    /// 属性栏：「跟随全局比例」勾选框。
+    /// 属性栏：比例下拉里的「跟随全局比例」项（未设全局比例时的裸文案）。
     PropsFollowGlobal,
-    /// 属性栏：全局为「自由」时勾选框下的提示。
+    /// 属性栏：比例下拉里的「跟随全局比例」项 + 全局比例标注（{0} = "16:9"）。
+    PropsFollowGlobalRatio,
+    /// 属性栏：全局为「自由」时下拉下方的提示。
     PropsFollowGlobalHint,
     /// 全局比例变更联动到画框后的提示（{0} = 画框数）。
     FlashGlobalRatioApplied,
@@ -674,7 +676,7 @@ fn translate_en(key: T) -> &'static str {
         T::TextAlignTop => "Top",
         T::TextAlignMiddle => "Middle",
         T::TextAlignBottom => "Bottom",
-        T::FramePresetLabel => "Aspect / paper preset",
+        T::FramePresetLabel => "Aspect / paper",
         T::FramePresetPick => "Choose preset...",
         T::Preset16x9 => "16:9",
         T::Preset16x10 => "16:10",
@@ -688,6 +690,7 @@ fn translate_en(key: T) -> &'static str {
         T::SettingsFrameRatioFree => "Free",
         T::SettingsFrameRatioCustom => "Custom...",
         T::PropsFollowGlobal => "Follow global ratio",
+        T::PropsFollowGlobalRatio => "Follow global ratio ({0})",
         T::PropsFollowGlobalHint => "No global ratio set — configure it in Settings",
         T::FlashGlobalRatioApplied => "Global ratio applied to {0} frame(s)",
     }
@@ -962,7 +965,7 @@ fn translate_zh(key: T) -> &'static str {
         T::TextAlignTop => "上",
         T::TextAlignMiddle => "中",
         T::TextAlignBottom => "下",
-        T::FramePresetLabel => "比例 / 纸张预设",
+        T::FramePresetLabel => "比例 / 纸张",
         T::FramePresetPick => "选择预设…",
         T::Preset16x9 => "16:9",
         T::Preset16x10 => "16:10",
@@ -976,6 +979,7 @@ fn translate_zh(key: T) -> &'static str {
         T::SettingsFrameRatioFree => "自由",
         T::SettingsFrameRatioCustom => "自定义…",
         T::PropsFollowGlobal => "跟随全局比例",
+        T::PropsFollowGlobalRatio => "跟随全局比例（{0}）",
         T::PropsFollowGlobalHint => "未设置全局比例——可在设置面板中配置",
         T::FlashGlobalRatioApplied => "全局比例已应用到 {0} 个画框",
     }
