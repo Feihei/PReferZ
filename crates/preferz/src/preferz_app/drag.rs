@@ -947,7 +947,7 @@ impl PReferZApp {
                 current_canvas,
                 additive,
             } => {
-                // 选中框内所item（bounding_rect 相交即选中
+                // CAD 语义：左→右=窗口（完全包含才选中），右→左=交叉（相交即选中）
                 let min_x = start_canvas.x.min(current_canvas.x);
                 let max_x = start_canvas.x.max(current_canvas.x);
                 let min_y = start_canvas.y.min(current_canvas.y);
@@ -956,6 +956,7 @@ impl PReferZApp {
                     CanvasPoint::new(min_x, min_y),
                     CanvasSize::new(max_x - min_x, max_y - min_y),
                 );
+                let mode = BoxSelectMode::from_drag(start_canvas, current_canvas);
                 if !additive {
                     self.scene.deselect_all();
                 }
@@ -966,7 +967,7 @@ impl PReferZApp {
                     .scene
                     .items
                     .iter()
-                    .filter(|item| item.bounding_rect().intersects(&sel_rect))
+                    .filter(|item| mode.hits(&sel_rect, &item.bounding_rect()))
                     .filter(|item| !self.scene.is_bound_text(item))
                     .map(|item| item.id)
                     .collect();

@@ -35,8 +35,8 @@ use preferz_core::shape::{
 use preferz_core::snap;
 use preferz_core::spaces::{CanvasPoint, CanvasRect, CanvasSize, CanvasVector};
 use preferz_core::{
-    parse_two_column_data, ChartType, Command, CropRect, EndpointBinding, Item, ItemId, ItemKind,
-    Scene,
+    parse_two_column_data, BoxSelectMode, ChartType, Command, CropRect, EndpointBinding, Item,
+    ItemId, ItemKind, Scene,
 };
 // draw_chart_item 的局部坐标变换与图表默认尺寸常量（core 仅在 item 模块导出）。
 use preferz_core::item::{
@@ -1270,24 +1270,50 @@ impl eframe::App for PReferZApp {
             // 渲染场景（含视口剔除 + Z + 复用 self.transform_handles
             self.render_scene(ui);
 
-            // 框选矩形（spec L240
+            // 框选矩形（spec L240；CAD 语义：左→右窗口蓝实线，右→左交叉绿虚线）
             if let DragState::BoxSelect {
                 start_canvas,
                 current_canvas,
                 ..
             } = &self.drag
             {
-                let min = self.viewport.canvas_to_pos2(*start_canvas);
-                let max = self.viewport.canvas_to_pos2(*current_canvas);
-                let rect = egui::Rect::from_min_max(min, max);
+                let a = self.viewport.canvas_to_pos2(*start_canvas);
+                let b = self.viewport.canvas_to_pos2(*current_canvas);
+                let rect = egui::Rect::from_two_pos(a, b);
+                let mode = BoxSelectMode::from_drag(*start_canvas, *current_canvas);
+                let (fill_rgb, stroke_rgb) = match mode {
+                    BoxSelectMode::Window => ((100, 200, 255), (100, 200, 255)),
+                    BoxSelectMode::Crossing => ((110, 220, 130), (110, 220, 130)),
+                };
                 ui.painter().rect_filled(
                     rect,
                     0.0,
-                    egui::Color32::from_rgba_unmultiplied(100, 200, 255, 30),
+                    egui::Color32::from_rgba_unmultiplied(fill_rgb.0, fill_rgb.1, fill_rgb.2, 30),
                 );
-                let stroke = egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(100, 200, 255));
-                ui.painter()
-                    .rect_stroke(rect, 0.0, stroke, egui::StrokeKind::Middle);
+                let stroke = egui::Stroke::new(
+                    1.0_f32,
+                    egui::Color32::from_rgb(stroke_rgb.0, stroke_rgb.1, stroke_rgb.2),
+                );
+                match mode {
+                    BoxSelectMode::Window => {
+                        ui.painter()
+                            .rect_stroke(rect, 0.0, stroke, egui::StrokeKind::Middle);
+                    }
+                    BoxSelectMode::Crossing => {
+                        // 虚线：闭合四边的点列喂给 Shape::dashed_line（egui 0.36
+                        // PathStroke 不直接支持 dash，只能拆成线段）。
+                        let pts = [
+                            rect.left_top(),
+                            rect.right_top(),
+                            rect.right_bottom(),
+                            rect.left_bottom(),
+                            rect.left_top(),
+                        ];
+                        for shape in egui::Shape::dashed_line(&pts, stroke, 6.0, 4.0) {
+                            ui.painter().add(shape);
+                        }
+                    }
+                }
             }
 
             // 绘制工具拖拽预览（两点式：start → current）

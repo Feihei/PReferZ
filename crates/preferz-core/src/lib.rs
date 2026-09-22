@@ -5,6 +5,7 @@ pub mod freedraw;
 pub mod item;
 pub mod mermaid;
 pub mod scene;
+pub mod selection;
 pub mod shape;
 pub mod snap;
 pub mod spaces;
@@ -15,6 +16,7 @@ pub use chart::parse_two_column_data;
 pub use commands::Command;
 pub use item::{ChartType, CropRect, EndpointBinding, Item, ItemId, ItemKind};
 pub use scene::Scene;
+pub use selection::BoxSelectMode;
 pub use shape::{
     ArrowHeadStyle, CurveType, DashStyle, FillStyle, PixmapStyle, SeededRng, ShapeType,
     StrokeStyle, TextStyle,
