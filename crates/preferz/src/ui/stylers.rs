@@ -1,6 +1,7 @@
 use eframe::egui::{self, Color32, Pos2, Shape};
 use preferz_core::item::{
-    catmull_rom_polyline, ItemKind, ItemLocalSpace, CURVE_SAMPLES, ROUNDED_CORNER_SEGMENTS,
+    catmull_rom_polyline, elbow_polyline, ItemKind, ItemLocalSpace, CURVE_SAMPLES,
+    ROUNDED_CORNER_SEGMENTS,
 };
 use preferz_core::shape::{
     ArrowHeadStyle, CurveType, DashStyle, FillStyle, SeededRng, ShapeType, Sloppiness, StrokeStyle,
@@ -137,10 +138,13 @@ fn outline_points(shape: &ShapeData, ellipse_segments: usize) -> Vec<(f32, f32)>
         ShapeType::Polyline => {
             // Phase I：`Curved` 经 Catmull-Rom 插值成折线（与命中测试同源，
             // 故"看着在曲线上"的点一定点得中）。两点曲线无中间控制点，插值无意义。
-            if matches!(shape.curve_type, CurveType::Curved) {
-                catmull_rom_polyline(&shape.points, shape.closed, CURVE_SAMPLES)
-            } else {
-                shape.points.clone()
+            // `Elbow` 经 `elbow_polyline` 把两端点展开成正交折线（同样与命中测试同源）。
+            match shape.curve_type {
+                CurveType::Curved => {
+                    catmull_rom_polyline(&shape.points, shape.closed, CURVE_SAMPLES)
+                }
+                CurveType::Elbow => elbow_polyline(&shape.points),
+                CurveType::Straight => shape.points.clone(),
             }
         }
     }

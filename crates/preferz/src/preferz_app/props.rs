@@ -792,22 +792,17 @@ impl PReferZApp {
                 ItemKind::Shape { curve_type, .. } => Some(*curve_type),
                 _ => None,
             }) {
-                let straight = p.value() == CurveType::Straight;
+                let cur = p.value();
                 ui.label(t(lang, T::StyleCurve));
                 ui.horizontal(|ui| {
-                    if ui
-                        .selectable_label(straight, t(lang, T::StyleCurveStraight))
-                        .clicked()
-                        && !straight
-                    {
-                        self.push_poly_curve(&poly_ids, CurveType::Straight);
-                    }
-                    if ui
-                        .selectable_label(!straight, t(lang, T::StyleCurveCurved))
-                        .clicked()
-                        && straight
-                    {
-                        self.push_poly_curve(&poly_ids, CurveType::Curved);
+                    for (variant, label) in [
+                        (CurveType::Straight, t(lang, T::StyleCurveStraight)),
+                        (CurveType::Curved, t(lang, T::StyleCurveCurved)),
+                        (CurveType::Elbow, t(lang, T::StyleCurveElbow)),
+                    ] {
+                        if ui.selectable_label(cur == variant, label).clicked() && cur != variant {
+                            self.push_poly_curve(&poly_ids, variant);
+                        }
                     }
                 });
             }

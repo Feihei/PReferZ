@@ -21,6 +21,10 @@ pub enum CurveType {
     Straight,
     /// 平滑曲线。
     Curved,
+    /// 直角折线（elbow）：两端点间自动走水平/垂直正交路径，正对方向先走一段
+    /// 「沿较小 Δ 轴」的短腿再垂直转折（对齐 Excalidraw elbow arrow 的观感）。
+    /// 仅对两点线性对象有意义；多点或退化时按原折线渲染。
+    Elbow,
 }
 
 /// 端点箭头样式。`Option<ArrowHeadStyle>` 表示"该端无箭头"。
@@ -324,7 +328,7 @@ mod tests {
 
     #[test]
     fn curve_type_serde_roundtrip_and_default() {
-        for c in [CurveType::Straight, CurveType::Curved] {
+        for c in [CurveType::Straight, CurveType::Curved, CurveType::Elbow] {
             let json = serde_json::to_string(&c).unwrap();
             let back: CurveType = serde_json::from_str(&json).unwrap();
             assert_eq!(c, back);

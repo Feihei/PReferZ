@@ -1000,10 +1000,10 @@ impl Item {
                 // 旋转/缩放由逆变换处理；曲线先经 Catmull-Rom 采样成折线再测距。
                 let threshold = stroke.width.max(6.0);
                 if points.len() >= 2 {
-                    let pts = if matches!(curve_type, CurveType::Curved) {
-                        catmull_rom_polyline(points, *closed, CURVE_SAMPLES)
-                    } else {
-                        points.clone()
+                    let pts = match curve_type {
+                        CurveType::Curved => catmull_rom_polyline(points, *closed, CURVE_SAMPLES),
+                        CurveType::Elbow => elbow_polyline(points),
+                        CurveType::Straight => points.clone(),
                     };
                     let seg_hit = pts
                         .windows(2)
@@ -1289,6 +1289,38 @@ pub fn catmull_rom_polyline(pts: &[(f32, f32)], closed: bool, samples: usize) ->
     }
     out.push(pts[if closed { 0 } else { n - 1 }]);
     out
+}
+
+/// 两端点 → 正交（直角折线 / elbow）路径点列。命中测试与渲染共用（与
+/// [`catmull_rom_polyline`] 同策——两边必须算出同一条路径，否则"看着在线上"却点不中）。
+///
+/// 启发式：**先沿较小 Δ 的那条轴走一段"短腿"，再垂直转折，末段与首段平行进入另一端**。
+/// 对流程图绑定连线恒正确：主轴间距固定为 gap、交叉叉距总是 ≥ 一节点宽 + gap（更大），
+/// 故"较小 Δ 轴"= 主轴 = 两端朝向彼此的那条边界法线，首末段正好沿法线离开/进入
+/// （右/左连线→水平先走、上/下连线→垂直先走）。对任意手动画也是一条干净的对称 Z。
+///
+/// 仅两点线性对象有意义（其余长度原样返回）；首/末点保持与输入一致，退化（近水平/
+/// 垂直）时直接返回直线，避免零长段干扰箭头方向与命中。
+pub fn elbow_polyline(pts: &[(f32, f32)]) -> Vec<(f32, f32)> {
+    if pts.len() != 2 {
+        return pts.to_vec();
+    }
+    let (a, b) = (pts[0], pts[1]);
+    let dx = b.0 - a.0;
+    let dy = b.1 - a.1;
+    const EPS: f32 = 1e-3;
+    if dx.abs() < EPS || dy.abs() < EPS {
+        return vec![a, b];
+    }
+    if dx.abs() <= dy.abs() {
+        // 水平先走：中点 x 处做垂直段。
+        let mx = (a.0 + b.0) / 2.0;
+        vec![a, (mx, a.1), (mx, b.1), b]
+    } else {
+        // 垂直先走：中点 y 处做水平段。
+        let my = (a.1 + b.1) / 2.0;
+        vec![a, (a.0, my), (b.0, my), b]
+    }
 }
 
 /// 射线法判断点是否在多边形内（局部坐标）。
@@ -1598,6 +1630,47 @@ mod tests {
         assert!((out[0].0 - 0.0).abs() < 1e-3 && (out[0].1 - 0.0).abs() < 1e-3);
         let last = out[out.len() - 1];
         assert!((last.0 - 20.0).abs() < 1e-3 && (last.1 - 0.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn elbow_steps_orthogonally_choosing_smaller_delta_axis() {
+        // dx<dy → 水平先走（首末段水平）；拐点在 x 中点。
+        let out = elbow_polyline(&[(0.0, 0.0), (40.0, 100.0)]);
+        assert_eq!(
+            out,
+            vec![(0.0, 0.0), (20.0, 0.0), (20.0, 100.0), (40.0, 100.0)]
+        );
+        // dx>dy → 垂直先走（首末段垂直）；拐点在 y 中点。
+        let out = elbow_polyline(&[(0.0, 0.0), (100.0, 40.0)]);
+        assert_eq!(
+            out,
+            vec![(0.0, 0.0), (0.0, 20.0), (100.0, 20.0), (100.0, 40.0)]
+        );
+    }
+
+    #[test]
+    fn elbow_is_axis_aligned_and_endpoint_preserving() {
+        let pts = [(130.0, 50.0), (230.0, 230.0)]; // 流程图右向分叉的实际两端
+        let out = elbow_polyline(&pts);
+        assert_eq!(out.first().unwrap(), &pts[0]);
+        assert_eq!(out.last().unwrap(), &pts[1]);
+        // 每一段都必须是水平或垂直（正交折线）。
+        for w in out.windows(2) {
+            let axis_aligned = (w[0].0 - w[1].0).abs() < 1e-3 || (w[0].1 - w[1].1).abs() < 1e-3;
+            assert!(axis_aligned, "段 {:?}→{:?} 非正交", w[0], w[1]);
+        }
+    }
+
+    #[test]
+    fn elbow_aligned_or_non_two_point_falls_back() {
+        // 近水平/近垂直 → 直接直线两点。
+        assert_eq!(
+            elbow_polyline(&[(0.0, 0.0), (100.0, 0.0)]),
+            vec![(0.0, 0.0), (100.0, 0.0)]
+        );
+        // 非两点（多点/退化）→ 原样返回（不做正交化）。
+        let tri = vec![(0.0, 0.0), (10.0, 5.0), (20.0, 0.0)];
+        assert_eq!(elbow_polyline(&tri), tri);
     }
 
     #[test]

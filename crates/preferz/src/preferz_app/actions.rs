@@ -326,9 +326,13 @@ impl PReferZApp {
         if let ItemKind::Shape {
             start_binding,
             end_binding,
+            curve_type,
             ..
         } = &mut arrow.kind
         {
+            // 流程图连接箭头默认走直角折线（elbow）：分叉时自动正交路由，比斜线更
+            // 接近 Excalidraw elbow arrow 观感；两端共线时退化为直线，视觉与旧行为一致。
+            *curve_type = CurveType::Elbow;
             *start_binding = Some(EndpointBinding {
                 target: src_id,
                 anchor: Some(src_anchor),

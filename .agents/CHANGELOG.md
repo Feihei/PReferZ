@@ -492,6 +492,32 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
   `add_connected_shape_forks_around_existing_neighbor`（C=(230,190) 上下分叉，替代旧 (450,10) 外推）。
   质量门全绿（fmt / `clippy -D warnings` / `cargo test --workspace`：core 171 + lib 75 + main 2 + fileio 9）。
 
+## 折线新增直角折线 elbow 曲线模式（plan #7 配套，2026-09-22，待提交）
+
+> 承接上一节：分叉的斜向箭头不够好看。Excalidraw 的 elbow **不是新元素类型**，而是线性
+> 元素上的一条路径模式（`type:"arrow"` + `elbowed:bool`，`types.ts:357`；子类型由
+> `getLinearElementSubType` 从 `elbowed`/`roundness`/端点 派生，`typeChecks.ts:359-372`）。
+> 本仓库线性对象统一在 `ShapeType::Polyline`，路径模式走 `CurveType`（`Straight`/`Curved`）——
+> elbow 就是给它加第三态。
+
+- **零 schema**：`CurveType` 加 `Elbow`（serde `"elbow"`，`#[serde(default)]` 旧档回落 `Straight`）；
+  `ItemKind::Shape` 不加字段——elbow 是**渲染期即时展开**（与 `Curved` 的 Catmull-Rom 同策），
+  `points` 仍只存两端点。
+- **core `item::elbow_polyline`**（L1、命中与渲染共用、可无头单测）：两点 → 正交折线；启发式
+  **沿较小 Δ 的轴先走短腿再垂直转折**。对流程图连线恒正确（主轴间距固定 = gap、叉距总更大
+  → 首末段沿两端朝向边界的法线离开/进入：右/左连线水平先走、上/下连线垂直先走）；近共轴 → 直线。
+  无需存 lead-axis。
+- **接缝（三处一致）**：渲染 `ui::stylers::outline_points` 的 `Elbow` 分支、命中
+  `item::contains_canvas_point` 的 `Elbow` 分支——二者调同一 `elbow_polyline`；**逐像素导出**走
+  命中测试，自动跟随。`RoughStyler::is_smooth` 对 Elbow 返回 false（当直边逐段抖动，可接受）。
+- **UI**：属性栏线性对象「边角」选择器 2 态 → 3 态（尖角/圆滑/直角），i18n `StyleCurveElbow`
+  （EN `Elbow` / ZH `直角`）。`SetCurveType` 命令与 `push_poly_curve` 天然支持第三态，零改。
+- **默认**：`add_connected_shape` 新建的流程图箭头 `curve_type = Elbow`（分叉自动正交；两端共线的
+  首链仍是直线）。
+- **本轮仍不做**：绕节点障碍的 elbow 路由（Excalidraw 完整版 A*）——列为后续；见 plan.md 决策 D4。
+- **测试**：core 新增 3 项（较小 Δ 轴选向 / 正交+端点保持 / 共轴与非两点回退）；
+  质量门全绿（fmt / `clippy -D warnings` / `cargo test --workspace`：core 174 + lib 75 + main 2 + fileio 9）+ 无头冒烟。
+
 ---
 
 ## 决策点归档（D1–D6 / I1–I4）
@@ -505,7 +531,7 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 | D1 | 主题三态 | 仅 Light/Dark vs 增 `Auto`（跟随系统） | 字段预留 `Auto`，第一版只做手动切换 | ✅ 按倾向 |
 | D2 | 画布底色 | 跟主题走 vs 独立可设 | 跟主题走 | ✅ 按倾向 |
 | D3 | 多选属性面板 | 显示交集 vs 禁用面板 | 显示交集可批量改（Excalidraw 同款） | ✅ 按倾向 |
-| D4 | elbow 折线 | 本轮做 vs 排后 | 排后 | ✅ 排后 |
+| D4 | elbow 折线 | 本轮做 vs 排后 | 排后 | 最小版 2026-09-22 落地（`CurveType::Elbow`，见 §折线新增直角折线 elbow）；绕障碍的完整 elbow 路由仍排后 |
 | D5 | hachure 填充 | 本轮做 vs 排后 | 排后，纯色先统一数据模型 | ✅ 排后 |
 | D6 | keymap 设置面板去留 | 保留（已交付可用）vs Phase K 顺手移除入口 | 移除入口，`Action`/`Keymap` 派发架构保留 | ✅ 移除入口（已实施） |
 

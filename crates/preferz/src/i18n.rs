@@ -265,6 +265,7 @@ pub enum T {
     StyleCurve,
     StyleCurveStraight,
     StyleCurveCurved,
+    StyleCurveElbow,
     StyleRoundness,
     // ── 属性侧栏（Phase H）──
     /// 面板标题里的选中数量：`已选 {0} 项`。
@@ -611,6 +612,7 @@ fn translate_en(key: T) -> &'static str {
         T::StyleCurve => "Edges",
         T::StyleCurveStraight => "Sharp",
         T::StyleCurveCurved => "Round",
+        T::StyleCurveElbow => "Elbow",
         T::StyleRoundness => "Roundness",
         T::PropsSelectedCount => "{0} selected",
         T::PropsMixedSelection => "Mixed types — no shared properties to edit.",
@@ -898,6 +900,7 @@ fn translate_zh(key: T) -> &'static str {
         T::StyleCurve => "边角",
         T::StyleCurveStraight => "尖角",
         T::StyleCurveCurved => "圆滑",
+        T::StyleCurveElbow => "直角",
         T::StyleRoundness => "圆角",
         T::PropsSelectedCount => "已选 {0} 项",
         T::PropsMixedSelection => "选中了不同类型的元素，没有可批量编辑的共有属性",
