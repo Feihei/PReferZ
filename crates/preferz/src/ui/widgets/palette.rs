@@ -288,30 +288,33 @@ pub fn fill_style_picker(
         (Some(FillStyle::Hachure), T::StyleFillHachure),
         (Some(FillStyle::CrossHatch), T::StyleFillCrossHatch),
     ];
-    let mut result: Option<Option<FillStyle>> = None;
-    for (style, tip) in options {
-        let selected = current == style;
-        let (rect, resp) = ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::click());
-        let fg = if selected {
-            ui.visuals().selection.stroke.color
-        } else {
-            ui.visuals().text_color()
-        };
-        if resp.clicked() && current != style {
-            result = Some(style);
+    ui.horizontal(|ui| {
+        let mut result: Option<Option<FillStyle>> = None;
+        for (style, tip) in options {
+            let selected = current == style;
+            let (rect, resp) = ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::click());
+            let fg = if selected {
+                ui.visuals().selection.stroke.color
+            } else {
+                ui.visuals().text_color()
+            };
+            if resp.clicked() && current != style {
+                result = Some(style);
+            }
+            resp.on_hover_text(t(lang, tip));
+            let painter = ui.painter();
+            if selected {
+                painter.rect_filled(
+                    rect,
+                    3.0,
+                    ui.visuals().selection.bg_fill.gamma_multiply(0.4),
+                );
+            }
+            draw_fill_icon(painter, rect, style, fg);
         }
-        resp.on_hover_text(t(lang, tip));
-        let painter = ui.painter();
-        if selected {
-            painter.rect_filled(
-                rect,
-                3.0,
-                ui.visuals().selection.bg_fill.gamma_multiply(0.4),
-            );
-        }
-        draw_fill_icon(painter, rect, style, fg);
-    }
-    result
+        result
+    })
+    .inner
 }
 
 /// 在 `rect` 内绘制填充样式图标。

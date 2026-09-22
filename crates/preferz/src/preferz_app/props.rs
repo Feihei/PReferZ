@@ -20,14 +20,20 @@ impl PReferZApp {
         let lang = self.lang;
         let dark = self.theme.is_dark(ctx);
         // 指数缓动 anim 直接映射偏移（不套 smoothstep，避免端点导数≈0 导致贴边卡顿）。
-        let offset_x = -chrome::BAR_MARGIN
-            + (1.0 - self.props_anim) * (chrome::PROPS_BAR_WIDTH + chrome::BAR_MARGIN);
+        // 滑出距离需覆盖 Area 实际宽度（content + 两侧 inner_margin + stroke + 余量），
+        // 否则 anim=0 时面板边缘残留在屏内。
+        let slide_dist = chrome::PROPS_BAR_WIDTH
+            + 2.0 * chrome::BAR_INNER_MARGIN as f32
+            + chrome::BAR_MARGIN
+            + 32.0;
+        let offset_x = -chrome::BAR_MARGIN + (1.0 - self.props_anim) * slide_dist;
         egui::Area::new(egui::Id::new("props_panel"))
             .anchor(
                 egui::Align2::RIGHT_TOP,
                 egui::vec2(offset_x, chrome::BAR_MARGIN),
             )
             .order(egui::Order::Foreground)
+            .constrain(false)
             .interactable(true)
             .show(ctx, |ui| {
                 chrome::floating_bar_frame(ui.style()).show(ui, |ui| {
@@ -245,14 +251,18 @@ impl PReferZApp {
         let dark = self.theme.is_dark(ctx);
         let show_fill = matches!(self.tool, Tool::Shape(_) | Tool::Polygon);
         // 与 render_props_panel 共用 props_anim 滑入滑出（直接线性映射，不套 smoothstep）。
-        let offset_x = -chrome::BAR_MARGIN
-            + (1.0 - self.props_anim) * (chrome::PROPS_BAR_WIDTH + chrome::BAR_MARGIN);
+        let slide_dist = chrome::PROPS_BAR_WIDTH
+            + 2.0 * chrome::BAR_INNER_MARGIN as f32
+            + chrome::BAR_MARGIN
+            + 32.0;
+        let offset_x = -chrome::BAR_MARGIN + (1.0 - self.props_anim) * slide_dist;
         egui::Area::new(egui::Id::new("defaults_panel"))
             .anchor(
                 egui::Align2::RIGHT_TOP,
                 egui::vec2(offset_x, chrome::BAR_MARGIN),
             )
             .order(egui::Order::Foreground)
+            .constrain(false)
             .interactable(true)
             .show(ctx, |ui| {
                 chrome::floating_bar_frame(ui.style()).show(ui, |ui| {

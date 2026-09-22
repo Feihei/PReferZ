@@ -1887,15 +1887,18 @@ impl PReferZApp {
         // 始终渲染 Area（避免首次 show 时 egui 布局首帧在默认位置闪现）；
         // anim=0 时偏移到屏幕左外完全不可见，屏外 Area 不拦截鼠标事件。
         // anim 直接映射偏移：anim=1 正常位置，anim=0 滑出屏幕左外。
+        // 滑出距离需覆盖 Area 实际宽度（内容 + 两侧 inner_margin + stroke + 余量），
+        // 否则 anim=0 时面板边缘残留在屏内。
         let width = chrome::TOOL_BTN_SIZE + 2.0 * chrome::BAR_INNER_MARGIN as f32;
-        let offset_x =
-            chrome::BAR_MARGIN - (1.0 - self.toolbar_anim) * (width + chrome::BAR_MARGIN);
+        let slide_dist = width + chrome::BAR_MARGIN + 16.0;
+        let offset_x = chrome::BAR_MARGIN - (1.0 - self.toolbar_anim) * slide_dist;
         egui::Area::new(egui::Id::new("toolbar"))
             .anchor(
                 egui::Align2::LEFT_TOP,
                 egui::vec2(offset_x, chrome::BAR_MARGIN),
             )
             .order(egui::Order::Foreground)
+            .constrain(false)
             .interactable(true)
             .show(ctx, |ui| {
                 chrome::floating_bar_frame(ui.style()).show(ui, |ui| {
