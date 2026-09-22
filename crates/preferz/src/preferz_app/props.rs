@@ -182,14 +182,16 @@ impl PReferZApp {
     /// 参考系为**选区包围盒**（见 `plan_align` / `plan_distribute`）：对齐贴向该框的
     /// 对应边/中线，分布保持首尾元素不动、只调整中间项。分布要求 ≥3 项，不足时禁用。
     pub(crate) fn render_align_section(&mut self, ui: &mut egui::Ui, lang: Lang, ids: &[ItemId]) {
-        // 6 向对齐：两行（水平 3 个 + 垂直 3 个），图标按钮 + tooltip 说明
+        // 6 向对齐：两行（水平 3 个 + 垂直 3 个），图标按钮 + tooltip 说明。
+        // 图标必须是内嵌思源黑体**已有字形**的字符：⇤⇥⇡⇣（U+21E1/21E3/21E4/21E5）
+        // 不在字体字符集里且无 emoji 回落，会渲染成豆腐块（2026-09-22 修复）。
         const ALIGNS: [(AlignMode, &str, T); 6] = [
-            (AlignMode::Left, "\u{21E4}", T::AlignLeft),       // ⇤
+            (AlignMode::Left, "\u{2190}", T::AlignLeft),       // ←
             (AlignMode::HCenter, "\u{2194}", T::AlignHCenter), // ↔
-            (AlignMode::Right, "\u{21E5}", T::AlignRight),     // ⇥
-            (AlignMode::Top, "\u{21E1}", T::AlignTop),         // ⇡
+            (AlignMode::Right, "\u{2192}", T::AlignRight),     // →
+            (AlignMode::Top, "\u{2191}", T::AlignTop),         // ↑
             (AlignMode::VCenter, "\u{2195}", T::AlignVCenter), // ↕
-            (AlignMode::Bottom, "\u{21E3}", T::AlignBottom),   // ⇣
+            (AlignMode::Bottom, "\u{2193}", T::AlignBottom),   // ↓
         ];
         for row in ALIGNS.chunks(3) {
             ui.horizontal(|ui| {
