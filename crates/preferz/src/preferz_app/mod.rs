@@ -644,7 +644,10 @@ fn prop_cmd(pending: PropEdit, scene: &Scene) -> Option<Box<dyn Command>> {
                     (
                         PropValue::Fill(old),
                         ItemKind::Shape {
-                            fill, fill_style, ..
+                            fill,
+                            fill_style,
+                            fill_follow_stroke,
+                            ..
                         },
                     ) => {
                         fills.push((
@@ -653,6 +656,7 @@ fn prop_cmd(pending: PropEdit, scene: &Scene) -> Option<Box<dyn Command>> {
                             FillState {
                                 color: *fill,
                                 style: *fill_style,
+                                follow_stroke: *fill_follow_stroke,
                             },
                         ));
                     }
@@ -688,13 +692,17 @@ fn prop_cmd(pending: PropEdit, scene: &Scene) -> Option<Box<dyn Command>> {
                 .filter_map(|(id, old)| match (old, scene.get_item(id)) {
                     (PropValue::Fill(old), Some(item)) => match &item.kind {
                         ItemKind::Shape {
-                            fill, fill_style, ..
+                            fill,
+                            fill_style,
+                            fill_follow_stroke,
+                            ..
                         } => Some((
                             *id,
                             *old,
                             FillState {
                                 color: *fill,
                                 style: *fill_style,
+                                follow_stroke: *fill_follow_stroke,
                             },
                         )),
                         _ => None,

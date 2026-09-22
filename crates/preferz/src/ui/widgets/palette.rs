@@ -356,36 +356,113 @@ fn expand_button(ui: &mut egui::Ui) -> egui::Response {
     resp
 }
 
-/// 调色板控件（共用实现）：**内联 5 个 top picks + 一个展开箭头**。点内联格子直接选色；
-/// 点箭头弹出 [`palette_popup`]（Colors / Shades / Hex 三段）。
-/// `picks` 决定内联那一行的 5 色。返回 `true` 表示用户选了新颜色。
-/// `swatch_alpha`：`Some(a)` 时，从色板格子（含内联 picks）选中的颜色强制写 alpha = `a`
-///（hex 输入不受影响）；描边/文字传 `None`，填充传 `Some(FILL_DEFAULT_ALPHA)`。
-fn palette_button_with_picks(
+/// 「跟随形状」格子的上下文：`on` = 当前是否跟随，`border` = 形状描边色（格子底色，
+/// 也是开启跟随时颜色吸附的目标）。仅文字/填充控件传入；描边/墨迹为 `None`（不显示该格）。
+#[derive(Debug, Clone, Copy)]
+pub struct FollowCtx {
+    pub on: bool,
+    pub border: egui::Color32,
+}
+
+/// 调色板控件一次交互的结果。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ColorPick {
+    /// 无操作。
+    None,
+    /// 选了一个颜色（来自内联格子 / 弹层格子 / hex）。调用方应据此把"跟随"置为关闭。
+    Color([u8; 4]),
+    /// 点了「跟随形状」格子，参数为切换后的新状态（true=开启，颜色应吸附到边框；
+    /// false=关闭，保持当前颜色）。
+    Follow(bool),
+}
+
+/// 手绘「链环」图标（两个交叠圆环），叠在跟随格上以区别于普通色格。
+fn draw_link_icon(painter: &egui::Painter, rect: egui::Rect, fg: egui::Color32) {
+    let c = rect.center();
+    let r = 3.0;
+    let s = egui::Stroke::new(1.1_f32, fg);
+    painter.circle_stroke(c + egui::vec2(-2.4, 2.4), r, s);
+    painter.circle_stroke(c + egui::vec2(2.4, -2.4), r, s);
+}
+
+/// 「跟随形状」格子：底色=形状边框色，叠一个链环图标，跟随时描选中环。返回是否被点击。
+fn follow_swatch(ui: &mut egui::Ui, border: egui::Color32, active: bool, lang: Lang) -> bool {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::click());
+    let clicked = resp.clicked();
+    let painter = ui.painter();
+    painter.rect_filled(rect.expand(1.0), 3.0, border);
+    // 图标前景按底色亮度取黑/白，保证任意边框色下都看得见
+    let lum = (border.r() as u32 * 299 + border.g() as u32 * 587 + border.b() as u32 * 114) / 1000;
+    let fg = if lum > 140 {
+        egui::Color32::BLACK
+    } else {
+        egui::Color32::WHITE
+    };
+    draw_link_icon(painter, rect, fg);
+    if active {
+        painter.rect_stroke(
+            rect.expand(1.0),
+            3.0,
+            egui::Stroke::new(2.0_f32, egui::Color32::WHITE),
+            egui::StrokeKind::Middle,
+        );
+        painter.rect_stroke(
+            rect.expand(1.0),
+            3.0,
+            egui::Stroke::new(1.0_f32, egui::Color32::BLACK),
+            egui::StrokeKind::Middle,
+        );
+    } else {
+        painter.rect_stroke(
+            rect.expand(1.0),
+            3.0,
+            egui::Stroke::new(0.5_f32, ui.visuals().widgets.noninteractive.bg_stroke.color),
+            egui::StrokeKind::Middle,
+        );
+    }
+    resp.on_hover_text(t(lang, T::PaletteFollowShape));
+    clicked
+}
+
+/// 调色板控件（共用实现）：**〔可选「跟随形状」格〕 + 内联 5 个 top picks + 展开箭头**。
+/// 点内联格子直接选色（若带跟随格则自动脱离跟随）；点箭头弹 [`palette_popup`]
+/// （Colors / Shades / Hex 三段）。`follow` 为 `Some` 时最前面渲染「跟随形状」格。
+/// `swatch_alpha`：`Some(a)` 时，从色板格子选中的颜色强制写 alpha = `a`（hex 输入不受影响）。
+fn palette_button_inner(
     ui: &mut egui::Ui,
-    current: &mut [u8; 4],
+    current: &[u8; 4],
     dark: bool,
     lang: Lang,
     picks: &[&'static str],
     swatch_alpha: Option<u8>,
-) -> bool {
+    follow: Option<FollowCtx>,
+) -> ColorPick {
     let shown =
         egui::Color32::from_rgba_unmultiplied(current[0], current[1], current[2], current[3]);
-    let mut changed = false;
+    let mut out = ColorPick::None;
     ui.horizontal(|ui| {
-        // 内联 top picks：点一下即选色（Excalidraw 左侧那一行）。
+        // 跟随形状格（最前）：点它切换跟随。
+        let mut click_follow: Option<bool> = None;
+        if let Some(fc) = follow {
+            if follow_swatch(ui, fc.border, fc.on, lang) {
+                click_follow = Some(!fc.on);
+            }
+        }
+        // 内联 top picks：跟随时不高亮（当前色=边框，避免与某个 pick 混淆）。
+        let pick_sel_active = follow.map(|f| !f.on).unwrap_or(true);
+        let mut click_color: Option<[u8; 4]> = None;
         for hex in picks {
             let c = themed_color(hex, dark);
-            if swatch(ui, c, rgb_eq(c, shown), 22.0) {
+            if swatch(ui, c, pick_sel_active && rgb_eq(c, shown), 22.0) {
                 let mut rgba = [c.r(), c.g(), c.b(), c.a()];
                 if let Some(a) = swatch_alpha {
                     rgba[3] = a;
                 }
-                *current = rgba;
-                changed = true;
+                click_color = Some(rgba);
             }
         }
         // 展开箭头：弹完整调色板。
+        let mut popup_color: Option<[u8; 4]> = None;
         let resp = expand_button(ui).on_hover_text(t(lang, T::PaletteMore));
         egui::Popup::from_toggle_button_response(&resp)
             .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
@@ -397,39 +474,87 @@ fn palette_button_with_picks(
                             rgba[3] = a;
                         }
                     }
-                    *current = rgba;
-                    changed = true;
+                    popup_color = Some(rgba);
                 }
             });
+        // 合并（同一帧只会有一个动作）：选色优先于切跟随。
+        if let Some(c) = click_color.or(popup_color) {
+            out = ColorPick::Color(c);
+        } else if let Some(on) = click_follow {
+            out = ColorPick::Follow(on);
+        }
     });
-    changed
+    out
 }
 
-/// 描边 / 墨迹 / 文字调色板按钮：内联 picks 为 `STROKE_PICKS`（Excalidraw 描边默认行）。
+/// 描边 / 墨迹调色板按钮（无跟随格）：内联 picks 为 `STROKE_PICKS`。
+/// 返回 `true` 表示选了新颜色（就地写回 `current`）。
 pub fn color_palette_button(
     ui: &mut egui::Ui,
     current: &mut [u8; 4],
     dark: bool,
     lang: Lang,
 ) -> bool {
-    palette_button_with_picks(ui, current, dark, lang, &STROKE_PICKS, None)
+    match palette_button_inner(ui, current, dark, lang, &STROKE_PICKS, None, None) {
+        ColorPick::Color(c) => {
+            *current = c;
+            true
+        }
+        _ => false,
+    }
 }
 
-/// 填充色调色板按钮：内联 picks 与描边共用同组 5 色（plan #2），
-/// 色板格子选中时套默认 50% 不透明度（`FILL_DEFAULT_ALPHA`）。
+/// 填充样式未启用时的填充色按钮（默认样式面板用，无跟随格）。
 pub fn fill_color_palette_button(
     ui: &mut egui::Ui,
     current: &mut [u8; 4],
     dark: bool,
     lang: Lang,
 ) -> bool {
-    palette_button_with_picks(
+    match palette_button_inner(
         ui,
         current,
         dark,
         lang,
         &FILL_PICKS,
         Some(FILL_DEFAULT_ALPHA),
+        None,
+    ) {
+        ColorPick::Color(c) => {
+            *current = c;
+            true
+        }
+        _ => false,
+    }
+}
+
+/// 文字色调色板按钮（带「跟随形状」格）。返回事件，调用方负责写回颜色与跟随态。
+pub fn color_palette_button_follow(
+    ui: &mut egui::Ui,
+    current: &[u8; 4],
+    dark: bool,
+    lang: Lang,
+    follow: FollowCtx,
+) -> ColorPick {
+    palette_button_inner(ui, current, dark, lang, &STROKE_PICKS, None, Some(follow))
+}
+
+/// 填充色调色板按钮（带「跟随形状」格）。色板格子选中套默认 50% alpha。
+pub fn fill_color_palette_button_follow(
+    ui: &mut egui::Ui,
+    current: &[u8; 4],
+    dark: bool,
+    lang: Lang,
+    follow: FollowCtx,
+) -> ColorPick {
+    palette_button_inner(
+        ui,
+        current,
+        dark,
+        lang,
+        &FILL_PICKS,
+        Some(FILL_DEFAULT_ALPHA),
+        Some(follow),
     )
 }
 

@@ -132,6 +132,11 @@ pub enum ItemKind {
         /// `#[serde(default)]`：旧存档缺该字段按 Solid 加载（历史 fill=Some 即纯色）。
         #[serde(default)]
         fill_style: FillStyle,
+        /// 填充色是否跟随本形状描边色（"背景跟随形状"）。
+        /// `#[serde(default = "default_follow_stroke")]` 默认 `true`：改描边色时填充 RGB
+        /// 跟随（保留 alpha，与历史行为一致）；用户在填充调色板手选色后置 `false`（独立）。
+        #[serde(default = "default_follow_stroke")]
+        fill_follow_stroke: bool,
         /// 起点箭头样式（仅 Polyline 使用；矩形族忽略）。
         start_arrow: Option<ArrowHeadStyle>,
         /// 终点箭头样式（仅 Polyline 使用；矩形族忽略）。
@@ -629,6 +634,7 @@ impl Item {
                 stroke,
                 fill,
                 fill_style: FillStyle::Solid,
+                fill_follow_stroke: true,
                 start_arrow: None,
                 end_arrow: None,
                 closed: false,
@@ -669,6 +675,7 @@ impl Item {
                 stroke,
                 fill: None,
                 fill_style: FillStyle::Solid,
+                fill_follow_stroke: true,
                 start_arrow,
                 end_arrow,
                 closed,
@@ -1822,6 +1829,42 @@ mod tests {
                 assert!(*follow_stroke, "旧存档绑定文字默认跟随")
             }
             _ => panic!("expected Text kind"),
+        }
+    }
+
+    #[test]
+    fn shape_fill_follow_stroke_defaults_true_for_legacy() {
+        // 新建形状：填充默认跟随描边。
+        let it = Item::new_shape(
+            ShapeType::Rectangle,
+            (10.0, 10.0),
+            0.0,
+            0.0,
+            StrokeStyle::default(),
+            Some([1, 2, 3, 4]),
+        );
+        assert!(
+            matches!(
+                it.kind,
+                ItemKind::Shape {
+                    fill_follow_stroke: true,
+                    ..
+                }
+            ),
+            "新建形状填充默认跟随"
+        );
+        // 旧存档 Shape JSON 无 fill_follow_stroke 字段 → 默认 true（保持历史"改边框覆盖填充"语义）。
+        let mut v = serde_json::to_value(&it.kind).unwrap();
+        v["Shape"]
+            .as_object_mut()
+            .unwrap()
+            .remove("fill_follow_stroke");
+        let kind: ItemKind = serde_json::from_value(v).unwrap();
+        match kind {
+            ItemKind::Shape {
+                fill_follow_stroke, ..
+            } => assert!(fill_follow_stroke, "旧存档填充默认跟随"),
+            _ => panic!("expected Shape kind"),
         }
     }
 

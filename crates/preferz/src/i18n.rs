@@ -343,6 +343,8 @@ pub enum T {
     PaletteHex,
     /// 展开箭头按钮的 tooltip（打开完整调色板）。
     PaletteMore,
+    /// 「跟随形状」格子的 tooltip（文字色/填充色随容器/自身描边变色）。
+    PaletteFollowShape,
     /// 文字节的颜色控件标签。
     StyleTextColor,
     /// 绑定文字色正跟随容器描边时的提示。
@@ -649,6 +651,7 @@ fn translate_en(key: T) -> &'static str {
         T::PaletteShades => "Shades",
         T::PaletteHex => "Hex code",
         T::PaletteMore => "More colors",
+        T::PaletteFollowShape => "Follow shape",
         T::StyleTextColor => "Text color",
         T::TextColorFollowingStroke => "Following stroke color",
         T::StyleFontLabel => "Font",
@@ -932,6 +935,7 @@ fn translate_zh(key: T) -> &'static str {
         T::PaletteShades => "色阶",
         T::PaletteHex => "十六进制",
         T::PaletteMore => "更多颜色",
+        T::PaletteFollowShape => "跟随形状",
         T::StyleTextColor => "文字颜色",
         T::TextColorFollowingStroke => "跟随边框色",
         T::StyleFontLabel => "字体",

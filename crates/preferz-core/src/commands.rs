@@ -697,12 +697,14 @@ impl Command for SetFreedrawStyle {
 
 // ─────────────────────────── Set shape fill ───────────────────────────
 
-/// 填充状态快照：颜色 + 样式。`color: None` = 无填充（此时 style 无意义，
+/// 填充状态快照：颜色 + 样式 + 是否跟随描边。`color: None` = 无填充（此时 style 无意义，
 /// 与 Excalidraw "transparent" 同语义）。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FillState {
     pub color: Option<[u8; 4]>,
     pub style: FillStyle,
+    /// 填充色是否跟随形状描边色（对应 `ItemKind::Shape::fill_follow_stroke`）。
+    pub follow_stroke: bool,
 }
 
 /// 一次填充变更的批量条目：`(item_id, old, new)`。
@@ -743,11 +745,15 @@ impl SetShapeFill {
             let value = if new { *new_fill } else { *old };
             if let Some(item) = scene.get_item_mut(id) {
                 if let ItemKind::Shape {
-                    fill, fill_style, ..
+                    fill,
+                    fill_style,
+                    fill_follow_stroke,
+                    ..
                 } = &mut item.kind
                 {
                     *fill = value.color;
                     *fill_style = value.style;
+                    *fill_follow_stroke = value.follow_stroke;
                 }
             }
         }
@@ -2335,6 +2341,7 @@ mod tests {
         let solid = |c: Option<[u8; 4]>| FillState {
             color: c,
             style: FillStyle::Solid,
+            follow_stroke: false,
         };
         let old = solid(Some([1, 2, 3, 4]));
         let mut cmd = SetShapeFill::new_batch(vec![
@@ -2357,10 +2364,12 @@ mod tests {
         let old = FillState {
             color: None,
             style: FillStyle::Solid,
+            follow_stroke: false,
         };
         let new = FillState {
             color: Some([200, 30, 30, 255]),
             style: FillStyle::Hachure,
+            follow_stroke: false,
         };
         let mut cmd = SetShapeFill::new(a, old, new);
         cmd.redo(&mut scene);

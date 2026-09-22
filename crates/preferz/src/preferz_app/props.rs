@@ -1,6 +1,24 @@
 //! props — 从 preferz_app 拆出的方法段（架构整固 Step 3c-ii）。逐字搬迁，`use super::*;` 够到 mod.rs 词汇/私有项。
 use super::*;
 
+/// 从 Shape 的 `ItemKind` 抽填充快照（颜色 + 样式 + 是否跟随描边），供 `apply_continuous`
+/// 的 snap 端复用（fn item 可多次传入，闭包则会被 move）。
+fn fill_snap(k: &ItemKind) -> Option<PropValue> {
+    match k {
+        ItemKind::Shape {
+            fill,
+            fill_style,
+            fill_follow_stroke,
+            ..
+        } => Some(PropValue::Fill(FillState {
+            color: *fill,
+            style: *fill_style,
+            follow_stroke: *fill_follow_stroke,
+        })),
+        _ => None,
+    }
+}
+
 impl PReferZApp {
     /// 右侧属性侧栏（Phase H）：选中项的 per-item 编辑，按 ItemKind 分节。
     ///
@@ -544,10 +562,14 @@ impl PReferZApp {
             .collect();
         if let Some(p) = prop(&self.scene, &fill_ids, |it| match &it.kind {
             ItemKind::Shape {
-                fill, fill_style, ..
+                fill,
+                fill_style,
+                fill_follow_stroke,
+                ..
             } => Some(FillState {
                 color: *fill,
                 style: *fill_style,
+                follow_stroke: *fill_follow_stroke,
             }),
             _ => None,
         }) {
@@ -559,69 +581,99 @@ impl PReferZApp {
             };
             ui.label(t(lang, T::StyleFillLabel));
             if let Some(new_style) = palette::fill_style_picker(ui, lang, current_style) {
-                self.apply_continuous(
-                    &fill_ids,
-                    PropKind::Fill,
-                    |k| match k {
-                        ItemKind::Shape {
-                            fill, fill_style, ..
-                        } => Some(PropValue::Fill(FillState {
-                            color: *fill,
-                            style: *fill_style,
-                        })),
-                        _ => None,
-                    },
-                    |k| {
-                        if let ItemKind::Shape {
-                            fill,
-                            fill_style,
-                            stroke,
-                            ..
-                        } = k
-                        {
-                            match new_style {
-                                Some(s) => {
-                                    *fill_style = s;
-                                    // 无填充 → 有填充：默认跟随描边色（Excalidraw 语义），
-                                    // 套默认 50% 不透明度（plan #2）
-                                    if fill.is_none() {
-                                        let c = stroke.color;
-                                        *fill =
-                                            Some([c[0], c[1], c[2], palette::FILL_DEFAULT_ALPHA]);
-                                    }
+                self.apply_continuous(&fill_ids, PropKind::Fill, fill_snap, |k| {
+                    if let ItemKind::Shape {
+                        fill,
+                        fill_style,
+                        fill_follow_stroke,
+                        stroke,
+                        ..
+                    } = k
+                    {
+                        match new_style {
+                            Some(s) => {
+                                *fill_style = s;
+                                // 无填充 → 有填充：默认跟随描边色（Excalidraw 语义），
+                                // 套默认 50% 不透明度（plan #2）
+                                if fill.is_none() {
+                                    let c = stroke.color;
+                                    *fill = Some([c[0], c[1], c[2], palette::FILL_DEFAULT_ALPHA]);
+                                    *fill_follow_stroke = true;
                                 }
-                                None => {
-                                    *fill = None;
-                                    *fill_style = FillStyle::Solid;
-                                }
+                            }
+                            None => {
+                                *fill = None;
+                                *fill_style = FillStyle::Solid;
                             }
                         }
-                    },
-                );
+                    }
+                });
             }
-            // 填充颜色（仅有填充时显示；Excalidraw 同款调色板，plan #2：与描边共用 5 色）
+            // 填充颜色（仅有填充时显示；带「跟随形状」格，plan #2 与描边共用 5 色）
             if let Some(c) = state.color {
-                let mut col = c;
-                if palette::fill_color_palette_button(ui, &mut col, dark, lang) {
-                    let new = col;
-                    self.apply_continuous(
-                        &fill_ids,
-                        PropKind::Fill,
-                        |k| match k {
-                            ItemKind::Shape {
-                                fill, fill_style, ..
-                            } => Some(PropValue::Fill(FillState {
-                                color: *fill,
-                                style: *fill_style,
-                            })),
-                            _ => None,
-                        },
-                        |k| {
-                            if let ItemKind::Shape { fill, .. } = k {
+                // 边框色：跟随格底色 + 开启跟随时吸附目标（取代表描边色）
+                let border = prop(&self.scene, &fill_ids, |it| match &it.kind {
+                    ItemKind::Shape { stroke, .. } => Some(stroke.color),
+                    _ => None,
+                })
+                .map(|pp| pp.value())
+                .unwrap_or([0, 0, 0, 255]);
+                let border_c = egui::Color32::from_rgba_unmultiplied(
+                    border[0], border[1], border[2], border[3],
+                );
+                match palette::fill_color_palette_button_follow(
+                    ui,
+                    &c,
+                    dark,
+                    lang,
+                    palette::FollowCtx {
+                        on: state.follow_stroke,
+                        border: border_c,
+                    },
+                ) {
+                    palette::ColorPick::Color(new) => {
+                        self.apply_continuous(&fill_ids, PropKind::Fill, fill_snap, |k| {
+                            if let ItemKind::Shape {
+                                fill,
+                                fill_follow_stroke,
+                                ..
+                            } = k
+                            {
                                 *fill = Some(new);
+                                *fill_follow_stroke = false;
                             }
-                        },
-                    );
+                        });
+                    }
+                    palette::ColorPick::Follow(true) => {
+                        // 开启跟随：填充 RGB 吸附到各自描边色（保留 alpha）
+                        self.apply_continuous(&fill_ids, PropKind::Fill, fill_snap, |k| {
+                            if let ItemKind::Shape {
+                                fill,
+                                stroke,
+                                fill_follow_stroke,
+                                ..
+                            } = k
+                            {
+                                *fill_follow_stroke = true;
+                                if let Some(f) = fill {
+                                    let a = f[3];
+                                    let s = stroke.color;
+                                    *f = [s[0], s[1], s[2], a];
+                                }
+                            }
+                        });
+                    }
+                    palette::ColorPick::Follow(false) => {
+                        self.apply_continuous(&fill_ids, PropKind::Fill, fill_snap, |k| {
+                            if let ItemKind::Shape {
+                                fill_follow_stroke, ..
+                            } = k
+                            {
+                                *fill_follow_stroke = false;
+                            }
+                        });
+                    }
+                    palette::ColorPick::None => {}
                 }
                 // 不透明度（plan #2）：5 档 + 输入框，仅改 alpha 保 RGB
                 let mut pct = (c[3] as f32 / 255.0 * 100.0).round();
@@ -642,24 +694,11 @@ impl PReferZApp {
                     Some("%"),
                 ) {
                     let a = (pct / 100.0 * 255.0).round() as u8;
-                    self.apply_continuous(
-                        &fill_ids,
-                        PropKind::Fill,
-                        |k| match k {
-                            ItemKind::Shape {
-                                fill, fill_style, ..
-                            } => Some(PropValue::Fill(FillState {
-                                color: *fill,
-                                style: *fill_style,
-                            })),
-                            _ => None,
-                        },
-                        |k| {
-                            if let ItemKind::Shape { fill: Some(f), .. } = k {
-                                f[3] = a;
-                            }
-                        },
-                    );
+                    self.apply_continuous(&fill_ids, PropKind::Fill, fill_snap, |k| {
+                        if let ItemKind::Shape { fill: Some(f), .. } = k {
+                            f[3] = a;
+                        }
+                    });
                 }
             }
         }
@@ -930,26 +969,93 @@ impl PReferZApp {
             _ => None,
         }) {
             ui.label(t(lang, T::StyleTextColor));
-            let mut col = p.value();
-            if palette::color_palette_button(ui, &mut col, dark, lang) {
-                let new = col;
-                self.apply_continuous(
-                    ids,
-                    PropKind::TextStyle,
-                    |k| k.text_style().map(PropValue::Text),
-                    |k| {
-                        if let ItemKind::Text {
-                            color,
-                            follow_stroke,
+            let cur = p.value();
+            // 选中里的绑定文字（有容器才能"跟随形状"）
+            let bound_ids: Vec<ItemId> = ids
+                .iter()
+                .copied()
+                .filter(|id| {
+                    matches!(
+                        self.scene.get_item(id).map(|it| &it.kind),
+                        Some(ItemKind::Text {
+                            container_id: Some(_),
                             ..
-                        } = k
-                        {
-                            *color = new;
-                            // 手选文字色即脱离"跟随边框"，此后改容器描边不再影响本文字
-                            *follow_stroke = false;
-                        }
-                    },
+                        })
+                    )
+                })
+                .collect();
+            if bound_ids.is_empty() {
+                // 纯自由文字：无容器可跟随，不显示跟随格
+                let mut col = cur;
+                if palette::color_palette_button(ui, &mut col, dark, lang) {
+                    self.apply_text_color(ids, col);
+                }
+            } else {
+                let follow_on = prop(&self.scene, &bound_ids, |it| match &it.kind {
+                    ItemKind::Text { follow_stroke, .. } => Some(*follow_stroke),
+                    _ => None,
+                })
+                .is_some_and(|pp| pp.value());
+                let border = bound_ids
+                    .iter()
+                    .find_map(|id| self.container_stroke_of(id))
+                    .unwrap_or(cur);
+                let border_c = egui::Color32::from_rgba_unmultiplied(
+                    border[0], border[1], border[2], border[3],
                 );
+                match palette::color_palette_button_follow(
+                    ui,
+                    &cur,
+                    dark,
+                    lang,
+                    palette::FollowCtx {
+                        on: follow_on,
+                        border: border_c,
+                    },
+                ) {
+                    palette::ColorPick::Color(new) => self.apply_text_color(ids, new),
+                    palette::ColorPick::Follow(true) => {
+                        // 开启跟随：绑定文字色吸附到各自容器边框色，follow=true
+                        let mut changes: Vec<(ItemId, TextStyle, TextStyle)> = Vec::new();
+                        for id in &bound_ids {
+                            if let Some(old) =
+                                self.scene.get_item(id).and_then(|it| it.kind.text_style())
+                            {
+                                let b = self.container_stroke_of(id).unwrap_or(old.color);
+                                if old.follow_stroke && old.color == b {
+                                    continue;
+                                }
+                                let mut new = old;
+                                new.follow_stroke = true;
+                                new.color = b;
+                                changes.push((*id, old, new));
+                            }
+                        }
+                        if !changes.is_empty() {
+                            self.push_cmd(Box::new(SetTextStyle::new_batch(changes)));
+                        }
+                    }
+                    palette::ColorPick::Follow(false) => {
+                        // 关闭跟随：保持当前颜色，转为独立
+                        let mut changes: Vec<(ItemId, TextStyle, TextStyle)> = Vec::new();
+                        for id in ids {
+                            if let Some(old) =
+                                self.scene.get_item(id).and_then(|it| it.kind.text_style())
+                            {
+                                if !old.follow_stroke {
+                                    continue;
+                                }
+                                let mut new = old;
+                                new.follow_stroke = false;
+                                changes.push((*id, old, new));
+                            }
+                        }
+                        if !changes.is_empty() {
+                            self.push_cmd(Box::new(SetTextStyle::new_batch(changes)));
+                        }
+                    }
+                    palette::ColorPick::None => {}
+                }
             }
             // 绑定文字且仍跟随：给出提示（一旦手选即消失）
             let any_following = ids.iter().any(|id| {
@@ -1344,6 +1450,41 @@ impl PReferZApp {
         }
     }
 
+    /// 应用文字颜色（调色板选色）：写色并脱离"跟随形状"。走连续编辑合并路径（一条 undo）。
+    fn apply_text_color(&mut self, ids: &[ItemId], new: [u8; 4]) {
+        self.apply_continuous(
+            ids,
+            PropKind::TextStyle,
+            |k| k.text_style().map(PropValue::Text),
+            |k| {
+                if let ItemKind::Text {
+                    color,
+                    follow_stroke,
+                    ..
+                } = k
+                {
+                    *color = new;
+                    *follow_stroke = false;
+                }
+            },
+        );
+    }
+
+    /// 绑定文字所属容器的描边色（"跟随形状"的边框色）；非绑定文字或容器已删则 `None`。
+    fn container_stroke_of(&self, text_id: &ItemId) -> Option<[u8; 4]> {
+        let cid = match self.scene.get_item(text_id).map(|it| &it.kind) {
+            Some(ItemKind::Text {
+                container_id: Some(c),
+                ..
+            }) => *c,
+            _ => return None,
+        };
+        match self.scene.get_item(&cid).map(|it| &it.kind) {
+            Some(ItemKind::Shape { stroke, .. }) => Some(stroke.color),
+            _ => None,
+        }
+    }
+
     /// 连续编辑的「开帧」入口：记录变更前快照并标记本帧有变更（Phase H）。
     ///
     /// 若已有不同种类的待合并编辑，先结算它，再开启本次编辑；同种类则保留首次快照
@@ -1406,8 +1547,11 @@ impl PReferZApp {
             // 一次性提取不可变数据后立即释放借用（后续预览阶段要可变借 scene）
             let (is_shape, fill_target) = match self.scene.get_item(id).map(|it| &it.kind) {
                 Some(ItemKind::Shape {
-                    fill, fill_style, ..
-                }) => (true, fill.map(|f| (f, *fill_style))),
+                    fill,
+                    fill_style,
+                    fill_follow_stroke,
+                    ..
+                }) => (true, fill.map(|f| (f, *fill_style, *fill_follow_stroke))),
                 Some(_) => (false, None),
                 None => continue,
             };
@@ -1449,22 +1593,26 @@ impl PReferZApp {
                 }
             }
             // 填充：old = 当前 FillState，new = 换 color 保 alpha；无填充不联动
-            if let Some((fill, fill_style)) = fill_target {
-                if fill[0] != color[0] || fill[1] != color[1] || fill[2] != color[2] {
-                    extra.push((
-                        *id,
-                        PropValue::Fill(FillState {
-                            color: Some(fill),
-                            style: fill_style,
-                        }),
-                    ));
-                }
-                // 预览：直接改填充颜色（保留 alpha）
-                if let Some(it) = self.scene.get_item_mut(id) {
-                    if let ItemKind::Shape { fill: Some(f), .. } = &mut it.kind {
-                        f[0] = color[0];
-                        f[1] = color[1];
-                        f[2] = color[2];
+            if let Some((fill, fill_style, fill_follow)) = fill_target {
+                // 仅"跟随形状"的填充随描边变色；已独立设色的填充保持不动。
+                if fill_follow {
+                    if fill[0] != color[0] || fill[1] != color[1] || fill[2] != color[2] {
+                        extra.push((
+                            *id,
+                            PropValue::Fill(FillState {
+                                color: Some(fill),
+                                style: fill_style,
+                                follow_stroke: fill_follow,
+                            }),
+                        ));
+                    }
+                    // 预览：直接改填充颜色（保留 alpha）
+                    if let Some(it) = self.scene.get_item_mut(id) {
+                        if let ItemKind::Shape { fill: Some(f), .. } = &mut it.kind {
+                            f[0] = color[0];
+                            f[1] = color[1];
+                            f[2] = color[2];
+                        }
                     }
                 }
             }
