@@ -157,6 +157,28 @@ impl ViewportState {
         self.zoom = new_zoom;
     }
 
+    /// HUD「+ / −」按钮：以视口中心为锚点，把缩放整体乘以 `factor`（>1 放大，
+    /// <1 缩小）。复用 [`zoom_at`] 的越界守卫，因此从 fit 视图的越界值点击会
+    /// 渐进回归交互范围，而不是一步跳回边界。`factor` 非法则忽略。
+    pub fn zoom_center_by(&mut self, factor: f32) {
+        if !factor.is_finite() || factor <= 0.0 || (factor - 1.0).abs() < 1e-6 {
+            return;
+        }
+        // zoom_at 以 1.05^delta 计算缩放因子，反解 delta 以复用其钳制逻辑。
+        let delta = factor.ln() / 1.05_f32.ln();
+        let center = self.screen_center();
+        self.zoom_at(delta, center);
+    }
+
+    /// HUD 数字输入：设定绝对缩放，视口中心保持不变（`pan` 不动）。钳制到
+    /// `[min_zoom, max_zoom]`；`target` 非法（非有限 / ≤0）则忽略。
+    pub fn set_zoom_centered(&mut self, target: f32) {
+        if !target.is_finite() || target <= 0.0 {
+            return;
+        }
+        self.zoom = target.clamp(self.min_zoom, self.max_zoom);
+    }
+
     /// 按屏幕像素 delta 平移视口（delta 是屏幕空间，需除 zoom 转 canvas 空间）。
     pub fn pan_by_screen(&mut self, screen_delta: ScreenVector) {
         self.pan.x -= screen_delta.x / self.zoom;
@@ -230,6 +252,59 @@ mod tests {
         assert_eq!(vp.zoom, 1.0);
         assert_eq!(vp.min_zoom, 0.1);
         assert_eq!(vp.max_zoom, 10.0);
+    }
+
+    /// HUD +/− 按钮以视口中心为锚点：中心画布点屏幕坐标不变，zoom 按 factor 变。
+    #[test]
+    fn zoom_center_by_keeps_center_and_scales() {
+        let mut vp = ViewportState::default();
+        vp.set_screen_rect(ScreenRect::new(
+            ScreenPoint::new(0.0, 0.0),
+            euclid::Size2D::new(1000.0, 800.0),
+        ));
+        let center = vp.screen_rect.center();
+        let w_before = vp.screen_to_canvas(center);
+        let z_before = vp.zoom;
+
+        vp.zoom_center_by(1.2);
+        assert!(vp.zoom > z_before, "放大后 zoom 应增大: {}", vp.zoom);
+        // 中心仍映射到同一画布点（视口不跳）
+        let w_after = vp.screen_to_canvas(center);
+        assert!((w_after.x - w_before.x).abs() < 1e-3);
+        assert!((w_after.y - w_before.y).abs() < 1e-3);
+
+        // factor 非法（0 / NaN / 1.0 空操作）被忽略，zoom 不变
+        let z = vp.zoom;
+        vp.zoom_center_by(0.0);
+        vp.zoom_center_by(f32::NAN);
+        vp.zoom_center_by(1.0);
+        assert!((vp.zoom - z).abs() < 1e-6);
+    }
+
+    /// HUD 数字输入：设定绝对缩放、钳制到交互范围，视口中心不动；非法值忽略。
+    #[test]
+    fn set_zoom_centered_clamps_and_keeps_center() {
+        let mut vp = ViewportState::default();
+        vp.set_screen_rect(ScreenRect::new(
+            ScreenPoint::new(0.0, 0.0),
+            euclid::Size2D::new(1000.0, 800.0),
+        ));
+        let center = vp.screen_rect.center();
+        let w_before = vp.screen_to_canvas(center);
+
+        vp.set_zoom_centered(2.5);
+        assert!((vp.zoom - 2.5).abs() < 1e-6);
+        assert!((vp.screen_to_canvas(center).x - w_before.x).abs() < 1e-3);
+
+        vp.set_zoom_centered(99.0);
+        assert!((vp.zoom - vp.max_zoom).abs() < 1e-6, "钳制到 max");
+        vp.set_zoom_centered(0.001);
+        assert!((vp.zoom - vp.min_zoom).abs() < 1e-6, "钳制到 min");
+
+        let z = vp.zoom;
+        vp.set_zoom_centered(f32::NAN);
+        vp.set_zoom_centered(-3.0);
+        assert!((vp.zoom - z).abs() < 1e-6, "非法值忽略");
     }
 
     /// 连续滚轮缩放不应越界：缩到底停在 10%，放到顶停在 1000%。
