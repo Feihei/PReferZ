@@ -22,10 +22,9 @@ impl PReferZApp {
         let ids: Vec<ItemId> = self.scene.selection.iter().copied().collect();
         let lang = self.lang;
         let dark = self.theme.is_dark(ctx);
-        // smoothstep 缓动偏移：anim=1 时正常位置，anim=0 时滑出屏幕右外。
-        let ease = self.props_anim * self.props_anim * (3.0 - 2.0 * self.props_anim);
-        let offset_x =
-            -chrome::BAR_MARGIN + (1.0 - ease) * (chrome::PROPS_BAR_WIDTH + chrome::BAR_MARGIN);
+        // 指数缓动 anim 直接映射偏移（不套 smoothstep，避免端点导数≈0 导致贴边卡顿）。
+        let offset_x = -chrome::BAR_MARGIN
+            + (1.0 - self.props_anim) * (chrome::PROPS_BAR_WIDTH + chrome::BAR_MARGIN);
         egui::Area::new(egui::Id::new("props_panel"))
             .anchor(
                 egui::Align2::RIGHT_TOP,
@@ -248,10 +247,9 @@ impl PReferZApp {
         let lang = self.lang;
         let dark = self.theme.is_dark(ctx);
         let show_fill = matches!(self.tool, Tool::Shape(_) | Tool::Polygon);
-        // 与 render_props_panel 共用 props_anim 滑入滑出。
-        let ease = self.props_anim * self.props_anim * (3.0 - 2.0 * self.props_anim);
-        let offset_x =
-            -chrome::BAR_MARGIN + (1.0 - ease) * (chrome::PROPS_BAR_WIDTH + chrome::BAR_MARGIN);
+        // 与 render_props_panel 共用 props_anim 滑入滑出（直接线性映射，不套 smoothstep）。
+        let offset_x = -chrome::BAR_MARGIN
+            + (1.0 - self.props_anim) * (chrome::PROPS_BAR_WIDTH + chrome::BAR_MARGIN);
         egui::Area::new(egui::Id::new("defaults_panel"))
             .anchor(
                 egui::Align2::RIGHT_TOP,

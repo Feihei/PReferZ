@@ -1884,10 +1884,12 @@ impl PReferZApp {
         if self.toolbar_anim <= 1e-3 {
             return;
         }
-        // smoothstep 缓动偏移：anim=1 时正常位置，anim=0 时滑出屏幕左外。
-        let ease = self.toolbar_anim * self.toolbar_anim * (3.0 - 2.0 * self.toolbar_anim);
+        // 指数缓动 anim 直接映射偏移：anim=1 正常位置，anim=0 滑出屏幕左外。
+        // 不再套 smoothstep——指数缓动本身已平滑，smoothstep 在端点导数≈0 会导致
+        // 隐藏开头面板几乎不动（"贴边卡顿"），中段才突然滑出。
         let width = chrome::TOOL_BTN_SIZE + 2.0 * chrome::BAR_INNER_MARGIN as f32;
-        let offset_x = chrome::BAR_MARGIN - (1.0 - ease) * (width + chrome::BAR_MARGIN);
+        let offset_x =
+            chrome::BAR_MARGIN - (1.0 - self.toolbar_anim) * (width + chrome::BAR_MARGIN);
         egui::Area::new(egui::Id::new("toolbar"))
             .anchor(
                 egui::Align2::LEFT_TOP,
