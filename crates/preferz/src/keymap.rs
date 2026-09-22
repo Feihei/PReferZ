@@ -83,6 +83,8 @@ pub enum BindKey {
     ArrowDown,
     ArrowLeft,
     ArrowRight,
+    OpenBracket,
+    CloseBracket,
 }
 
 impl BindKey {
@@ -152,6 +154,8 @@ impl BindKey {
             ArrowDown => egui::Key::ArrowDown,
             ArrowLeft => egui::Key::ArrowLeft,
             ArrowRight => egui::Key::ArrowRight,
+            OpenBracket => egui::Key::OpenBracket,
+            CloseBracket => egui::Key::CloseBracket,
         }
     }
 
@@ -222,6 +226,8 @@ impl BindKey {
             egui::Key::ArrowDown => ArrowDown,
             egui::Key::ArrowLeft => ArrowLeft,
             egui::Key::ArrowRight => ArrowRight,
+            egui::Key::OpenBracket => OpenBracket,
+            egui::Key::CloseBracket => CloseBracket,
             _ => return None,
         })
     }
@@ -293,6 +299,8 @@ impl BindKey {
             ArrowDown => "↓",
             ArrowLeft => "←",
             ArrowRight => "→",
+            OpenBracket => "[",
+            CloseBracket => "]",
         }
     }
 }
@@ -427,6 +435,14 @@ pub enum Action {
     /// 流程图：沿连接箭头把选区跳到该方向的直接绑定邻居（plan #7，
     /// Excalidraw 同款 `Alt+方向`）。不产生命令。
     NavigateConnected,
+    /// z-order：置于顶层（`Ctrl+Shift+]`）。
+    BringToFront,
+    /// z-order：置于底层（`Ctrl+Shift+[`）。
+    SendToBack,
+    /// z-order：上移一层（`Ctrl+]`）。
+    MoveForward,
+    /// z-order：下移一层（`Ctrl+[`）。
+    MoveBackward,
 }
 
 impl Action {
@@ -471,6 +487,10 @@ impl Action {
         Action::Ungroup,
         Action::AddConnectedShape,
         Action::NavigateConnected,
+        Action::BringToFront,
+        Action::SendToBack,
+        Action::MoveForward,
+        Action::MoveBackward,
     ];
 
     /// 出厂默认绑定。一个动作可有多个绑定（如翻页的三组键）。
@@ -551,6 +571,12 @@ impl Action {
                 KeyBind::new(ArrowLeft).alt(),
                 KeyBind::new(ArrowRight).alt(),
             ],
+            // z-order（Figma/Sketch 风格）：Ctrl+[/]] 上下移一层，
+            // 加 Shift 置顶/置底。
+            BringToFront => vec![KeyBind::new(CloseBracket).ctrl().shift()],
+            SendToBack => vec![KeyBind::new(OpenBracket).ctrl().shift()],
+            MoveForward => vec![KeyBind::new(CloseBracket).ctrl()],
+            MoveBackward => vec![KeyBind::new(OpenBracket).ctrl()],
         }
     }
 }

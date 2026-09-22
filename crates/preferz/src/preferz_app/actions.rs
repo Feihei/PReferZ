@@ -416,24 +416,57 @@ impl PReferZApp {
     }
 
     pub(crate) fn bring_to_front(&mut self) {
-        let ids: Vec<ItemId> = self.scene.selection.iter().cloned().collect();
+        let ids = self.reorderable_selected_ids();
         if ids.is_empty() {
             return;
         }
-        // ReorderItems 命令（修 S3/W8），不再直接z
         let cmd = ReorderItems::new(ids, true);
         self.push_cmd(Box::new(cmd));
         self.flash(t(self.lang, T::FlashBroughtToFront).to_string());
     }
 
     pub(crate) fn send_to_back(&mut self) {
-        let ids: Vec<ItemId> = self.scene.selection.iter().cloned().collect();
+        let ids = self.reorderable_selected_ids();
         if ids.is_empty() {
             return;
         }
         let cmd = ReorderItems::new(ids, false);
         self.push_cmd(Box::new(cmd));
         self.flash(t(self.lang, T::FlashSentToBack).to_string());
+    }
+
+    pub(crate) fn move_forward(&mut self) {
+        let ids = self.reorderable_selected_ids();
+        if ids.is_empty() {
+            return;
+        }
+        let cmd = ReorderRelative::new(ids, true);
+        self.push_cmd(Box::new(cmd));
+        self.flash(t(self.lang, T::FlashMovedForward).to_string());
+    }
+
+    pub(crate) fn move_backward(&mut self) {
+        let ids = self.reorderable_selected_ids();
+        if ids.is_empty() {
+            return;
+        }
+        let cmd = ReorderRelative::new(ids, false);
+        self.push_cmd(Box::new(cmd));
+        self.flash(t(self.lang, T::FlashMovedBackward).to_string());
+    }
+
+    /// 选区中可调整 z-order 的 item ids（排除 Frame，保持恒在最底），按 z 升序
+    /// 排列以保持选区内相对顺序（修复 HashSet 迭代顺序不确定导致多选置顶顺序随机化）。
+    fn reorderable_selected_ids(&self) -> Vec<ItemId> {
+        let mut ids: Vec<ItemId> = self
+            .scene
+            .selection
+            .iter()
+            .copied()
+            .filter(|id| !self.scene.get_item(id).is_some_and(|i| i.is_frame()))
+            .collect();
+        ids.sort_by_key(|id| self.scene.get_item(id).map_or(0, |i| i.z));
+        ids
     }
 
     /// 计算把 `content_rect` 适配到当前视口（90% 填充）的目标 (zoom, pan)，

@@ -7,6 +7,7 @@ use crate::ui::stylers::{
     build_freedraw_visuals, build_shape_visuals, freedraw_stroke_shapes, item_local_to_screen,
 };
 use crate::ui::widgets::palette;
+use crate::ui::widgets::stepper::stepper;
 use crate::ui::widgets::transform_handles::{
     should_show_flip, should_show_rotate, Handle, TransformHandles,
 };
@@ -21,10 +22,10 @@ use preferz_core::arrange::{
 use preferz_core::commands::{
     AddItem, AddItems, ArrangeItems, ArrowHeads, CropItems, DeleteItems, EditShapePoints,
     EditTextContent, FillChange, FillState, FlipItems, FrameGeom, FreedrawStyle, MoveItems,
-    MultiCommand, NormalizeItems, RenumberFrame, ReorderItems, SetArrowHeads, SetClosed,
-    SetCurveType, SetFrameFollowGlobal, SetFrameNumber, SetFrameSize, SetFreedrawStyle, SetGroup,
-    SetPixmapProps, SetPixmapStyle, SetRoundness, SetShapeFill, SetSloppiness, SetStrokeStyle,
-    SetTextStyle, TransformItem,
+    MultiCommand, NormalizeItems, RenumberFrame, ReorderItems, ReorderRelative, SetArrowHeads,
+    SetClosed, SetCurveType, SetFrameFollowGlobal, SetFrameNumber, SetFrameSize, SetFreedrawStyle,
+    SetGroup, SetPixmapProps, SetPixmapStyle, SetRoundness, SetShapeFill, SetSloppiness,
+    SetStrokeStyle, SetTextStyle, TransformItem,
 };
 use preferz_core::mermaid::{layout_flowchart, parse_mermaid_flowchart, MermaidShape};
 use preferz_core::shape::{
@@ -2431,6 +2432,20 @@ impl PReferZApp {
         }
         if self.keymap.pressed(Action::Ungroup, ctx) {
             self.ungroup_selected();
+        }
+
+        // z-order（叠放顺序）：Ctrl+[/]] 上下移一层，Ctrl+Shift+[/]] 置顶/置底
+        if self.keymap.pressed(Action::MoveForward, ctx) {
+            self.move_forward();
+        }
+        if self.keymap.pressed(Action::MoveBackward, ctx) {
+            self.move_backward();
+        }
+        if self.keymap.pressed(Action::BringToFront, ctx) {
+            self.bring_to_front();
+        }
+        if self.keymap.pressed(Action::SendToBack, ctx) {
+            self.send_to_back();
         }
 
         // 流程图（plan #7，Excalidraw 同款）：Ctrl+方向=沿该向克隆连接节点+

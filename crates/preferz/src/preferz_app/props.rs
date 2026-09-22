@@ -39,6 +39,16 @@ impl PReferZApp {
                             ));
                             ui.separator();
 
+                            // 叠放顺序：Frame 不参与，选区含非 Frame item 时显示
+                            let has_reorderable = ids.iter().any(|id| {
+                                !self.scene.get_item(id).is_some_and(|i| i.is_frame())
+                            });
+                            if has_reorderable {
+                                ui.label(t(lang, T::PropsSectionZOrder));
+                                self.render_zorder_section(ui, lang);
+                                ui.separator();
+                            }
+
                             // 对齐 / 分布（plan #6）：≥2 项才有意义，放在各类型节之前（对所有类型通用）
                             if ids.len() >= 2 {
                                 ui.label(t(lang, T::PropsSectionAlign));
@@ -133,6 +143,32 @@ impl PReferZApp {
                         });
                 });
             });
+    }
+
+    /// 叠放顺序按钮组：上移一层 / 置于顶层 / 下移一层 / 置于底层。
+    ///
+    /// Frame 不参与（调用前已过滤）。不显示 z 数值（z 是实现细节，对用户无意义）。
+    fn render_zorder_section(&mut self, ui: &mut egui::Ui, lang: Lang) {
+        ui.horizontal(|ui| {
+            const BUTTONS: [(&str, T); 4] = [
+                ("\u{2191}", T::MoveForward),
+                ("\u{23EB}", T::BringToFront),
+                ("\u{2193}", T::MoveBackward),
+                ("\u{23EC}", T::SendToBack),
+            ];
+            for (icon, key) in BUTTONS {
+                let btn = egui::Button::new(icon).min_size(egui::vec2(34.0, 24.0));
+                if ui.add(btn).on_hover_text(t(lang, key)).clicked() {
+                    match key {
+                        T::MoveForward => self.move_forward(),
+                        T::BringToFront => self.bring_to_front(),
+                        T::MoveBackward => self.move_backward(),
+                        T::SendToBack => self.send_to_back(),
+                        _ => {}
+                    }
+                }
+            }
+        });
     }
 
     /// 对齐 / 分布按钮组（plan #6）：属性栏顶部，选中 ≥2 项时显示。
@@ -233,9 +269,13 @@ impl PReferZApp {
                             ui.add_space(4.0);
                             // 描边宽度
                             ui.label(t(lang, T::StyleStrokeWidth));
-                            ui.add(
-                                egui::Slider::new(&mut self.default_stroke.width, 0.5..=12.0)
-                                    .logarithmic(true),
+                            stepper(
+                                ui,
+                                &mut self.default_stroke.width,
+                                &[2.0, 4.0, 8.0, 16.0, 32.0],
+                                &["XS", "S", "M", "L", "XL"],
+                                1.0..=64.0,
+                                None,
                             );
                             // 线型
                             ui.horizontal(|ui| {
@@ -343,11 +383,16 @@ impl PReferZApp {
             ItemKind::Freedraw { stroke_width, .. } => Some(*stroke_width),
             _ => None,
         }) {
+            ui.label(t(lang, T::StyleStrokeWidth));
             let mut w = p.value();
-            if ui
-                .add(egui::Slider::new(&mut w, 0.5..=12.0).logarithmic(true))
-                .changed()
-            {
+            if stepper(
+                ui,
+                &mut w,
+                &[2.0, 4.0, 8.0, 16.0, 32.0],
+                &["XS", "S", "M", "L", "XL"],
+                1.0..=64.0,
+                None,
+            ) {
                 self.apply_continuous(
                     ids,
                     PropKind::Freedraw,
@@ -417,11 +462,16 @@ impl PReferZApp {
             ItemKind::Shape { stroke, .. } => Some(stroke.width),
             _ => None,
         }) {
+            ui.label(t(lang, T::StyleStrokeWidth));
             let mut w = p.value();
-            if ui
-                .add(egui::Slider::new(&mut w, 0.5..=12.0).logarithmic(true))
-                .changed()
-            {
+            if stepper(
+                ui,
+                &mut w,
+                &[2.0, 4.0, 8.0, 16.0, 32.0],
+                &["XS", "S", "M", "L", "XL"],
+                1.0..=64.0,
+                None,
+            ) {
                 self.apply_continuous(
                     ids,
                     PropKind::Stroke,
@@ -571,14 +621,24 @@ impl PReferZApp {
                         },
                     );
                 }
-                // 不透明度滑块（plan #2）：0–100%，仅改 alpha 保 RGB
+                // 不透明度（plan #2）：5 档 + 输入框，仅改 alpha 保 RGB
                 let mut pct = (c[3] as f32 / 255.0 * 100.0).round();
-                if ui
-                    .add(
-                        egui::Slider::new(&mut pct, 0.0..=100.0).text(t(lang, T::StyleFillOpacity)),
-                    )
-                    .changed()
-                {
+                ui.label(t(lang, T::StyleFillOpacity));
+                let op_labels = [
+                    t(lang, T::OpMin),
+                    t(lang, T::OpLow),
+                    t(lang, T::OpMed),
+                    t(lang, T::OpHigh),
+                    t(lang, T::OpMax),
+                ];
+                if stepper(
+                    ui,
+                    &mut pct,
+                    &[15.0, 30.0, 50.0, 75.0, 100.0],
+                    &op_labels,
+                    0.0..=100.0,
+                    Some("%"),
+                ) {
                     let a = (pct / 100.0 * 255.0).round() as u8;
                     self.apply_continuous(
                         &fill_ids,
@@ -614,8 +674,16 @@ impl PReferZApp {
                 ItemKind::Shape { roundness, .. } => Some(*roundness),
                 _ => None,
             }) {
+                ui.label(t(lang, T::StyleRoundness));
                 let mut r = p.value();
-                if ui.add(egui::Slider::new(&mut r, 0.0..=1.0)).changed() {
+                if stepper(
+                    ui,
+                    &mut r,
+                    &[0.0, 0.25, 0.5, 0.75, 1.0],
+                    &["None", "S", "M", "L", "XL"],
+                    0.0..=1.0,
+                    None,
+                ) {
                     self.apply_continuous(
                         &rect_ids,
                         PropKind::Roundness,
@@ -819,8 +887,16 @@ impl PReferZApp {
             ItemKind::Text { font_size, .. } => Some(*font_size),
             _ => None,
         }) {
+            ui.label(t(lang, T::StyleFontSize));
             let mut fs = p.value();
-            if ui.add(egui::Slider::new(&mut fs, 6.0..=200.0)).changed() {
+            if stepper(
+                ui,
+                &mut fs,
+                &[16.0, 24.0, 32.0, 48.0, 72.0],
+                &["XS", "S", "M", "L", "XL"],
+                6.0..=200.0,
+                None,
+            ) {
                 self.apply_continuous(
                     ids,
                     PropKind::TextStyle,
@@ -1022,9 +1098,27 @@ impl PReferZApp {
             ItemKind::Pixmap { opacity, .. } => Some(*opacity),
             _ => None,
         }) {
-            let mut o = p.value();
-            // 下限 0.15（与背景透明度滑块一致）：避免拖太低导致图片几乎不可见。
-            if ui.add(egui::Slider::new(&mut o, 0.15..=1.0)).changed() {
+            let o0 = p.value();
+            // 下限 0.15（与背景透明度一致）：避免太低导致图片几乎不可见。
+            // 用百分比中间变量（0–100），档位 [15,30,50,75,100]，与填充不透明度统一。
+            ui.label(t(lang, T::StyleFillOpacity));
+            let op_labels = [
+                t(lang, T::OpMin),
+                t(lang, T::OpLow),
+                t(lang, T::OpMed),
+                t(lang, T::OpHigh),
+                t(lang, T::OpMax),
+            ];
+            let mut pct = (o0 * 100.0).round();
+            if stepper(
+                ui,
+                &mut pct,
+                &[15.0, 30.0, 50.0, 75.0, 100.0],
+                &op_labels,
+                15.0..=100.0,
+                Some("%"),
+            ) {
+                let o = pct / 100.0;
                 self.apply_continuous(
                     ids,
                     PropKind::Pixmap,

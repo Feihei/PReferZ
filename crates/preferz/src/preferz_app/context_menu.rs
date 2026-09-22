@@ -148,15 +148,59 @@ impl PReferZApp {
                             self.delete_selected();
                             self.context_menu_open = false;
                         }
+                        // z-order：Frame 恒在最底，选区全为 Frame 时禁用
+                        let reorderable = self
+                            .scene
+                            .selection
+                            .iter()
+                            .any(|id| !self.scene.get_item(id).is_some_and(|i| i.is_frame()));
                         if ui
-                            .button(format!("\u{2191} {}", t(self.lang, T::BringToFront)))
+                            .add_enabled(
+                                reorderable,
+                                egui::Button::new(format!(
+                                    "\u{2191} {}",
+                                    t(self.lang, T::MoveForward)
+                                )),
+                            )
+                            .clicked()
+                        {
+                            self.move_forward();
+                            self.context_menu_open = false;
+                        }
+                        if ui
+                            .add_enabled(
+                                reorderable,
+                                egui::Button::new(format!(
+                                    "\u{23EB} {}",
+                                    t(self.lang, T::BringToFront)
+                                )),
+                            )
                             .clicked()
                         {
                             self.bring_to_front();
                             self.context_menu_open = false;
                         }
                         if ui
-                            .button(format!("\u{2193} {}", t(self.lang, T::SendToBack)))
+                            .add_enabled(
+                                reorderable,
+                                egui::Button::new(format!(
+                                    "\u{2193} {}",
+                                    t(self.lang, T::MoveBackward)
+                                )),
+                            )
+                            .clicked()
+                        {
+                            self.move_backward();
+                            self.context_menu_open = false;
+                        }
+                        if ui
+                            .add_enabled(
+                                reorderable,
+                                egui::Button::new(format!(
+                                    "\u{23EC} {}",
+                                    t(self.lang, T::SendToBack)
+                                )),
+                            )
                             .clicked()
                         {
                             self.send_to_back();

@@ -1359,6 +1359,8 @@ pub struct ReorderItems {
     old_z: Vec<(ItemId, i32)>,
     /// 新 z 值（redo 时填入）。
     new_z: Vec<(ItemId, i32)>,
+    /// redo 前的 next_z，undo 时恢复（避免 z 空洞单调增长）。
+    old_next_z: i32,
 }
 
 impl ReorderItems {
@@ -1368,6 +1370,7 @@ impl ReorderItems {
             to_front,
             old_z: Vec::new(),
             new_z: Vec::new(),
+            old_next_z: 0,
         }
     }
 }
@@ -1376,6 +1379,7 @@ impl Command for ReorderItems {
     fn redo(&mut self, scene: &mut Scene) {
         // 第一次 redo：记录 old_z，计算 new_z
         if self.old_z.is_empty() {
+            self.old_next_z = scene.next_z;
             for id in &self.item_ids {
                 if let Some(item) = scene.get_item(id) {
                     self.old_z.push((*id, item.z));
@@ -1403,6 +1407,84 @@ impl Command for ReorderItems {
             // next_z 推进
             if let Some((_, z)) = self.new_z.last() {
                 scene.next_z = scene.next_z.max(*z + 1);
+            }
+        }
+    }
+
+    fn undo(&mut self, scene: &mut Scene) {
+        for (id, z) in &self.old_z {
+            if let Some(item) = scene.get_item_mut(id) {
+                item.z = *z;
+            }
+        }
+        scene.next_z = self.old_next_z;
+    }
+}
+
+/// 上移/下移一层：每个选中 item 与 z 序中紧邻的**非选中** item 交换 z。
+///
+/// 连续选中块只有块边界与外部交换（需多次调用逐层上移整体块）；
+/// 选区内相对顺序在单次操作中保持不变。undo 恢复所有被改 item（含交换邻居）。
+pub struct ReorderRelative {
+    item_ids: Vec<ItemId>,
+    forward: bool,
+    /// 所有被改 item（选中 + 交换邻居）的旧 z。
+    old_z: Vec<(ItemId, i32)>,
+    /// 所有被改 item 的新 z。
+    new_z: Vec<(ItemId, i32)>,
+}
+
+impl ReorderRelative {
+    pub fn new(item_ids: Vec<ItemId>, forward: bool) -> Self {
+        Self {
+            item_ids,
+            forward,
+            old_z: Vec::new(),
+            new_z: Vec::new(),
+        }
+    }
+}
+
+impl Command for ReorderRelative {
+    fn redo(&mut self, scene: &mut Scene) {
+        if self.old_z.is_empty() {
+            let mut z_sorted: Vec<(ItemId, i32)> =
+                scene.items.iter().map(|i| (i.id, i.z)).collect();
+            z_sorted.sort_by_key(|(_, z)| *z);
+            let selected: std::collections::HashSet<ItemId> =
+                self.item_ids.iter().copied().collect();
+            let pos: std::collections::HashMap<ItemId, usize> = z_sorted
+                .iter()
+                .enumerate()
+                .map(|(i, (id, _))| (*id, i))
+                .collect();
+            for id in &self.item_ids {
+                let Some(&p) = pos.get(id) else {
+                    continue;
+                };
+                let neighbor = if self.forward {
+                    (p + 1 < z_sorted.len()).then(|| p + 1)
+                } else {
+                    (p > 0).then(|| p - 1)
+                };
+                if let Some(np) = neighbor {
+                    let (nid, nz) = z_sorted[np];
+                    if !selected.contains(&nid) {
+                        let my_z = z_sorted[p].1;
+                        self.new_z.push((*id, nz));
+                        self.new_z.push((nid, my_z));
+                    }
+                }
+            }
+            for (id, _) in &self.new_z {
+                if let Some(item) = scene.get_item(id) {
+                    self.old_z.push((*id, item.z));
+                }
+            }
+        }
+        for (id, z) in &self.new_z {
+            if let Some(item) = scene.get_item_mut(id) {
+                item.z = *z;
             }
         }
     }
@@ -2436,5 +2518,134 @@ mod tests {
         }
         assert_eq!(it.transform.pos, CanvasVector::new(50.0, 40.0));
         assert_eq!(it.transform.scale, CanvasVector::new(1.5, 1.5));
+    }
+
+    // ─── z-order（ReorderRelative / ReorderItems）───
+
+    #[test]
+    fn reorder_relative_forward_swaps_with_above_neighbor() {
+        let mut scene = Scene::new();
+        let a = shape_in(&mut scene);
+        let b = shape_in(&mut scene);
+        let c = shape_in(&mut scene);
+        assert_eq!(
+            (
+                scene.get_item(&a).unwrap().z,
+                scene.get_item(&b).unwrap().z,
+                scene.get_item(&c).unwrap().z
+            ),
+            (0, 1, 2)
+        );
+        let mut cmd = ReorderRelative::new(vec![b], true);
+        cmd.redo(&mut scene);
+        assert_eq!(scene.get_item(&b).unwrap().z, 2);
+        assert_eq!(scene.get_item(&c).unwrap().z, 1);
+        assert_eq!(scene.get_item(&a).unwrap().z, 0);
+        cmd.undo(&mut scene);
+        assert_eq!(scene.get_item(&b).unwrap().z, 1);
+        assert_eq!(scene.get_item(&c).unwrap().z, 2);
+    }
+
+    #[test]
+    fn reorder_relative_backward_swaps_with_below_neighbor() {
+        let mut scene = Scene::new();
+        let a = shape_in(&mut scene);
+        let b = shape_in(&mut scene);
+        let c = shape_in(&mut scene);
+        let mut cmd = ReorderRelative::new(vec![b], false);
+        cmd.redo(&mut scene);
+        assert_eq!(scene.get_item(&b).unwrap().z, 0);
+        assert_eq!(scene.get_item(&a).unwrap().z, 1);
+        assert_eq!(scene.get_item(&c).unwrap().z, 2);
+        cmd.undo(&mut scene);
+        assert_eq!(scene.get_item(&b).unwrap().z, 1);
+        assert_eq!(scene.get_item(&a).unwrap().z, 0);
+    }
+
+    #[test]
+    fn reorder_relative_skips_selected_neighbor() {
+        let mut scene = Scene::new();
+        let a = shape_in(&mut scene);
+        let b = shape_in(&mut scene);
+        let c = shape_in(&mut scene);
+        let d = shape_in(&mut scene);
+        let mut cmd = ReorderRelative::new(vec![b, c], true);
+        cmd.redo(&mut scene);
+        assert_eq!(scene.get_item(&b).unwrap().z, 1);
+        assert_eq!(scene.get_item(&c).unwrap().z, 3);
+        assert_eq!(scene.get_item(&d).unwrap().z, 2);
+        assert_eq!(scene.get_item(&a).unwrap().z, 0);
+        cmd.undo(&mut scene);
+        assert_eq!(
+            (
+                scene.get_item(&a).unwrap().z,
+                scene.get_item(&b).unwrap().z,
+                scene.get_item(&c).unwrap().z,
+                scene.get_item(&d).unwrap().z
+            ),
+            (0, 1, 2, 3)
+        );
+    }
+
+    #[test]
+    fn reorder_relative_at_boundary_is_no_op() {
+        let mut scene = Scene::new();
+        let a = shape_in(&mut scene);
+        let b = shape_in(&mut scene);
+        let mut cmd = ReorderRelative::new(vec![b], true);
+        cmd.redo(&mut scene);
+        assert_eq!(scene.get_item(&b).unwrap().z, 1);
+        assert_eq!(scene.get_item(&a).unwrap().z, 0);
+        let mut cmd2 = ReorderRelative::new(vec![a], false);
+        cmd2.redo(&mut scene);
+        assert_eq!(scene.get_item(&a).unwrap().z, 0);
+    }
+
+    #[test]
+    fn reorder_relative_undo_restores_neighbor_z() {
+        let mut scene = Scene::new();
+        let a = shape_in(&mut scene);
+        let b = shape_in(&mut scene);
+        let c = shape_in(&mut scene);
+        let mut cmd = ReorderRelative::new(vec![b], true);
+        cmd.redo(&mut scene);
+        assert_eq!(
+            (scene.get_item(&b).unwrap().z, scene.get_item(&c).unwrap().z),
+            (2, 1)
+        );
+        cmd.undo(&mut scene);
+        assert_eq!(
+            (
+                scene.get_item(&a).unwrap().z,
+                scene.get_item(&b).unwrap().z,
+                scene.get_item(&c).unwrap().z
+            ),
+            (0, 1, 2)
+        );
+    }
+
+    #[test]
+    fn reorder_items_undo_restores_next_z() {
+        let mut scene = Scene::new();
+        let a = shape_in(&mut scene);
+        let _b = shape_in(&mut scene);
+        let next_z_before = scene.next_z;
+        let mut cmd = ReorderItems::new(vec![a], true);
+        cmd.redo(&mut scene);
+        assert!(scene.next_z > next_z_before);
+        cmd.undo(&mut scene);
+        assert_eq!(scene.next_z, next_z_before);
+    }
+
+    #[test]
+    fn reorder_items_to_back_undo_restores_next_z() {
+        let mut scene = Scene::new();
+        let a = shape_in(&mut scene);
+        let _b = shape_in(&mut scene);
+        let next_z_before = scene.next_z;
+        let mut cmd = ReorderItems::new(vec![a], false);
+        cmd.redo(&mut scene);
+        cmd.undo(&mut scene);
+        assert_eq!(scene.next_z, next_z_before);
     }
 }

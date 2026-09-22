@@ -199,15 +199,28 @@ impl PReferZApp {
                 {
                     frame_changed = true;
                 }
-                // 背景透明度：0.15~1.0，配无边框+置顶可作悬浮看图板。
-                // 限制最小 0.15 避免空场景下窗口过于不可见（spec §2.3 透明背景注意事项）；
+                // 背景不透明度：5 档 + 输入框（下限 0.15，避免窗口过于不可见）。
                 // egui 0.36 换成 glow 后端后为单层线性 alpha 合成，同值比旧 wgpu 更透，故下限由
-                // 0.1 抬到 0.15。
-                ui.add(
-                    egui::Slider::new(&mut self.bg_alpha, 0.15..=1.0)
-                        .text(t(self.lang, T::SettingsBgAlpha))
-                        .fixed_decimals(2),
-                );
+                // 0.1 抬到 0.15。用百分比中间变量，档位 [15,30,50,75,100]%。
+                ui.label(t(self.lang, T::SettingsBgAlpha));
+                let op_labels = [
+                    t(self.lang, T::OpMin),
+                    t(self.lang, T::OpLow),
+                    t(self.lang, T::OpMed),
+                    t(self.lang, T::OpHigh),
+                    t(self.lang, T::OpMax),
+                ];
+                let mut bg_pct = (self.bg_alpha * 100.0).round();
+                if stepper(
+                    ui,
+                    &mut bg_pct,
+                    &[15.0, 30.0, 50.0, 75.0, 100.0],
+                    &op_labels,
+                    15.0..=100.0,
+                    Some("%"),
+                ) {
+                    self.bg_alpha = bg_pct / 100.0;
+                }
                 ui.separator();
 
                 // 自动保存（plan #5）：开关 + debounce 间隔（最小 10s）

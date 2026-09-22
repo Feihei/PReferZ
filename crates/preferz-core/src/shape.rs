@@ -130,7 +130,8 @@ impl Default for StrokeStyle {
     fn default() -> Self {
         Self {
             color: [255, 255, 255, 255],
-            width: 2.0,
+            // 4.0 = 画笔粗细 5 档 [2,4,8,16,32] 的默认档（第 2 档）。
+            width: 4.0,
             dash: DashStyle::Solid,
         }
     }

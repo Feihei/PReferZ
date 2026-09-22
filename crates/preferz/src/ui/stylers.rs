@@ -1325,14 +1325,13 @@ mod tests {
         let mut d = open_line();
         d.start_arrow = Some(ArrowHeadStyle::Dot);
         d.end_arrow = Some(ArrowHeadStyle::Dot);
-        let shapes = CleanStyler.build_shapes(
-            &d,
-            &StrokeStyle::default(),
-            None,
-            FillStyle::Solid,
-            &identity(),
-            1.0,
-        );
+        // 用固定 width=2 而非 Default，避免默认档调整破坏几何断言。
+        let stroke = StrokeStyle {
+            width: 2.0,
+            ..StrokeStyle::default()
+        };
+        let shapes =
+            CleanStyler.build_shapes(&d, &stroke, None, FillStyle::Solid, &identity(), 1.0);
         let centers: Vec<Pos2> = shapes
             .iter()
             .filter_map(|s| match s {

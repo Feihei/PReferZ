@@ -37,7 +37,7 @@ cargo build --release -p preferz # release binary
 - Text notes — standalone or bound to shapes; sans + handwriting fonts, H/V alignment
 - Flowcharts: `Ctrl+Arrows` clones a connected node, `Alt+Arrows` navigates along connections; import mermaid flowcharts (right-click menu)
 - Charts: paste two-column spreadsheet data → bar / line chart
-- Align (6-way) / distribute (gap / centers) / arrange (linear, grid, optimal packing); group & ungroup
+- Align (6-way) / distribute (gap / centers) / arrange (linear, grid, optimal packing); group & ungroup; z-order (move forward/backward, bring to front/send to back)
 - Frame slides presentation (`F5`) with aspect-ratio / paper presets
 - Autosave (`.prz.autosave`) with restore prompt; every edit goes through undo/redo
 - Dark / Light / Auto themes, English / 中文 UI
@@ -75,6 +75,8 @@ cargo build --release -p preferz # release binary
 | `Ctrl+D` | Duplicate selection in place |
 | `Delete` | Delete selected items |
 | `Ctrl+G` / `Ctrl+Shift+G` | Group / ungroup |
+| `Ctrl+]` / `Ctrl+[` | Move forward / backward one layer |
+| `Ctrl+Shift+]` / `Ctrl+Shift+[` | Bring to front / send to back |
 | `V` `R` `D` `O` `A` `L` `P` | Tools: select / rectangle / diamond / ellipse / arrow / line / freehand (same tools also on number keys `1`–`7`) |
 | `Shift+P` / `F` | Polygon tool / frame tool |
 | `Shift+1` / `Shift+2` / `Shift+3` | Zoom to fit / zoom to selection / zoom to 100% |
@@ -138,7 +140,7 @@ cargo build --release -p preferz # 构建发布版本
 - 文本便签：独立或绑定图形；黑体 + 手写体，水平/垂直对齐
 - 流程图：`Ctrl+方向` 克隆连接节点、`Alt+方向` 沿连接导航；右键菜单导入 mermaid 流程图
 - 图表：粘贴两列表格数据 → 柱状 / 折线图
-- 对齐（6 向）/ 分布（等距 / 等心）/ 排列（线形、网格、最优装箱）；编组与解组
+- 对齐（6 向）/ 分布（等距 / 等心）/ 排列（线形、网格、最优装箱）；编组与解组；叠放顺序（上移/下移一层、置顶/置底）
 - 画框幻灯片演示（`F5`），比例 / 纸张预设
 - 自动保存（`.prz.autosave`）与恢复提示；所有编辑均可撤销/重做
 - 深色 / 浅色 / 跟随系统主题，中英双语界面
@@ -176,6 +178,8 @@ cargo build --release -p preferz # 构建发布版本
 | `Ctrl+D` | 原位复制选中项 |
 | `Delete` | 删除选中项 |
 | `Ctrl+G` / `Ctrl+Shift+G` | 编组 / 解组 |
+| `Ctrl+]` / `Ctrl+[` | 上移 / 下移一层 |
+| `Ctrl+Shift+]` / `Ctrl+Shift+[` | 置于顶层 / 置于底层 |
 | `V` `R` `D` `O` `A` `L` `P` | 工具：选择 / 矩形 / 菱形 / 椭圆 / 箭头 / 直线 / 徒手（数字键 `1`–`7` 等效） |
 | `Shift+P` / `F` | 多边形工具 / 画框工具 |
 | `Shift+1` / `Shift+2` / `Shift+3` | 缩放适应画布 / 缩放到选中 / 缩放回 100% |
