@@ -1,5 +1,5 @@
 use eframe::egui;
-use preferz_core::shape::ShapeType;
+use preferz_core::shape::{CurveType, ShapeType};
 use preferz_core::{Item, ItemKind};
 
 use crate::ui::stylers::item_local_to_screen;
@@ -42,6 +42,21 @@ fn is_line(item: &Item) -> bool {
         item.kind,
         ItemKind::Shape {
             shape_type: ShapeType::Polyline,
+            ..
+        }
+    )
+}
+
+/// 是否为直角折线（elbow）线性对象。elbow 是渲染期把两端点即时展开成正交折线，
+/// 段中点手柄按**存储点**（对角弦）取位、并非可见拐角，拖它会塞进真顶点使
+/// `points.len()!=2` → elbow 失效退化成多段线且切不回。故 elbow 线**不暴露段中点
+/// 加点手柄**（只留两端点拖拽 + 属性栏切换曲线模式）。多拐点重路由见 plan（另排期）。
+fn is_elbow_line(item: &Item) -> bool {
+    matches!(
+        item.kind,
+        ItemKind::Shape {
+            shape_type: ShapeType::Polyline,
+            curve_type: CurveType::Elbow,
             ..
         }
     )
@@ -179,9 +194,10 @@ impl TransformHandles {
                     return Handle::Endpoint(i);
                 }
             }
-            // 段中点：开放折线 n-1 段，闭合多边形含收尾段
+            // 段中点：开放折线 n-1 段，闭合多边形含收尾段。elbow 线不给加点手柄
+            // （见 `is_elbow_line`：对角弦中点会破坏两点不变量）。
             let n = eps.len();
-            if n >= 2 {
+            if n >= 2 && !is_elbow_line(item) {
                 let closed = matches!(item.kind, ItemKind::Shape { closed: true, .. });
                 let seg_count = if closed { n } else { n - 1 };
                 let mid_size = Self::handle_size() * 1.4;
@@ -261,7 +277,7 @@ impl TransformHandles {
                 painter.rect_filled(r, egui::CornerRadius::same(1), fill);
             }
             let n = eps.len();
-            if n >= 2 {
+            if n >= 2 && !is_elbow_line(item) {
                 let closed = matches!(item.kind, ItemKind::Shape { closed: true, .. });
                 let seg_count = if closed { n } else { n - 1 };
                 let mid_fill = egui::Color32::from_rgb(255, 225, 130);
@@ -331,6 +347,45 @@ impl TransformHandles {
                     egui::Color32::BLACK,
                 );
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use preferz_core::shape::{ArrowHeadStyle, StrokeStyle};
+
+    fn line(curve: CurveType, n: usize) -> Item {
+        let pts: Vec<(f32, f32)> = (0..n).map(|i| (i as f32 * 10.0, 0.0)).collect();
+        let bs = (((n.saturating_sub(1)) as f32 * 10.0).max(1.0), 1.0);
+        let mut it = Item::new_polyline(
+            pts,
+            bs,
+            None,
+            Some(ArrowHeadStyle::Arrow),
+            false,
+            0.0,
+            0.0,
+            StrokeStyle::default(),
+        );
+        if let ItemKind::Shape { curve_type, .. } = &mut it.kind {
+            *curve_type = curve;
+        }
+        it
+    }
+
+    #[test]
+    fn only_elbow_polylines_suppress_segment_mid_handle() {
+        // elbow 线：仍属线性对象（端点可拖），但 is_elbow_line=true → 命中/绘制据此跳过段中点。
+        let elbow = line(CurveType::Elbow, 2);
+        assert!(is_line(&elbow));
+        assert!(is_elbow_line(&elbow));
+        // 尖角 / 圆滑折线：仍保留段中点加点手柄。
+        for c in [CurveType::Straight, CurveType::Curved] {
+            let l = line(c, 3);
+            assert!(is_line(&l));
+            assert!(!is_elbow_line(&l));
         }
     }
 }

@@ -517,6 +517,12 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 - **本轮仍不做**：绕节点障碍的 elbow 路由（Excalidraw 完整版 A*）——列为后续；见 plan.md 决策 D4。
 - **测试**：core 新增 3 项（较小 Δ 轴选向 / 正交+端点保持 / 共轴与非两点回退）；
   质量门全绿（fmt / `clippy -D warnings` / `cargo test --workspace`：core 174 + lib 75 + main 2 + fileio 9）+ 无头冒烟。
+- **编辑护栏（同批修复）**：elbow 线**不暴露段中点加点手柄**——`transform_handles` 的命中
+  与绘制两处按 `is_elbow_line` 跳过 `SegmentMid`。原因：段中点手柄按**存储两点（对角弦）**取位，
+  拖它会 `points.insert` 一个真顶点使 `points.len()!=2` → `elbow_polyline` 判非两点、直接返回原始
+  折线 → 退化成多段线且属性栏切回“直角”也不重路由（改不回）。护栏后 elbow 恒两点、只拖端点 +
+  面板可自由来回切。**多拐点自由重路由**需真正的直角路由器（naive「每段各自正交化」会在抓拐点瞬间
+  把另一根 bar 顶偏、形状跳变），登记为 plan 前瞻项、暂不做。新增谓词回归测试 1 项（lib 76）。
 
 ---
 
