@@ -118,7 +118,7 @@ impl PReferZApp {
                             }
                             if !text_ids.is_empty() {
                                 ui.label(t(lang, T::PropsSectionText));
-                                self.render_text_props(ui, lang, &text_ids);
+                                self.render_text_props(ui, lang, dark, &text_ids);
                                 ui.separator();
                             }
 
@@ -274,7 +274,7 @@ impl PReferZApp {
                     ui.separator();
                     // 描边颜色（Excalidraw 式调色板）
                     let mut stroke = self.default_stroke.color;
-                    if palette::color_palette_button(ui, &mut stroke, dark) {
+                    if palette::color_palette_button(ui, &mut stroke, dark, lang) {
                         self.default_stroke.color = stroke;
                     }
                     ui.add_space(4.0);
@@ -316,7 +316,7 @@ impl PReferZApp {
                         if self.default_fill_style.is_some() {
                             // 未显式选过填充色时按钮显示描边色（实际创建时同样跟随描边色）
                             let mut fill = self.default_fill.unwrap_or(self.default_stroke.color);
-                            if palette::fill_color_palette_button(ui, &mut fill, dark) {
+                            if palette::fill_color_palette_button(ui, &mut fill, dark, lang) {
                                 self.default_fill = Some(fill);
                             }
                         }
@@ -358,7 +358,7 @@ impl PReferZApp {
             _ => None,
         }) {
             let mut col = p.value();
-            if palette::color_palette_button(ui, &mut col, dark) {
+            if palette::color_palette_button(ui, &mut col, dark, lang) {
                 let new = col;
                 self.apply_continuous(
                     ids,
@@ -441,7 +441,7 @@ impl PReferZApp {
             _ => None,
         }) {
             let mut col = p.value();
-            if palette::color_palette_button(ui, &mut col, dark) {
+            if palette::color_palette_button(ui, &mut col, dark, lang) {
                 let new = col;
                 self.apply_continuous(
                     ids,
@@ -602,7 +602,7 @@ impl PReferZApp {
             // 填充颜色（仅有填充时显示；Excalidraw 同款调色板，plan #2：与描边共用 5 色）
             if let Some(c) = state.color {
                 let mut col = c;
-                if palette::fill_color_palette_button(ui, &mut col, dark) {
+                if palette::fill_color_palette_button(ui, &mut col, dark, lang) {
                     let new = col;
                     self.apply_continuous(
                         &fill_ids,
@@ -885,7 +885,13 @@ impl PReferZApp {
     }
 
     /// 文字节：字号 / 颜色 / 背景（Phase H）。
-    pub(crate) fn render_text_props(&mut self, ui: &mut egui::Ui, lang: Lang, ids: &[ItemId]) {
+    pub(crate) fn render_text_props(
+        &mut self,
+        ui: &mut egui::Ui,
+        lang: Lang,
+        dark: bool,
+        ids: &[ItemId],
+    ) {
         if let Some(p) = prop(&self.scene, ids, |it| match &it.kind {
             ItemKind::Text { font_size, .. } => Some(*font_size),
             _ => None,
@@ -919,19 +925,44 @@ impl PReferZApp {
             ItemKind::Text { color, .. } => Some(*color),
             _ => None,
         }) {
-            let c = p.value();
-            let mut col = egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]);
-            if ui.color_edit_button_srgba(&mut col).changed() {
-                let new = [col.r(), col.g(), col.b(), col.a()];
+            ui.label(t(lang, T::StyleTextColor));
+            let mut col = p.value();
+            if palette::color_palette_button(ui, &mut col, dark, lang) {
+                let new = col;
                 self.apply_continuous(
                     ids,
                     PropKind::TextStyle,
                     |k| k.text_style().map(PropValue::Text),
                     |k| {
-                        if let ItemKind::Text { color, .. } = k {
+                        if let ItemKind::Text {
+                            color,
+                            follow_stroke,
+                            ..
+                        } = k
+                        {
                             *color = new;
+                            // 手选文字色即脱离"跟随边框"，此后改容器描边不再影响本文字
+                            *follow_stroke = false;
                         }
                     },
+                );
+            }
+            // 绑定文字且仍跟随：给出提示（一旦手选即消失）
+            let any_following = ids.iter().any(|id| {
+                matches!(
+                    self.scene.get_item(id).map(|it| &it.kind),
+                    Some(ItemKind::Text {
+                        container_id: Some(_),
+                        follow_stroke: true,
+                        ..
+                    })
+                )
+            });
+            if any_following {
+                ui.label(
+                    egui::RichText::new(t(lang, T::TextColorFollowingStroke))
+                        .weak()
+                        .small(),
                 );
             }
             if p.is_mixed() {
@@ -1446,6 +1477,10 @@ impl PReferZApp {
                 let Some(old_style) = t.kind.text_style() else {
                     continue;
                 };
+                // 仅"跟随边框"中的文字随描边变色；用户手选过独立色的文字保持不动。
+                if !old_style.follow_stroke {
+                    continue;
+                }
                 if old_style.color != color {
                     extra.push((tid, PropValue::Text(old_style)));
                 }

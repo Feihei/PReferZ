@@ -2396,6 +2396,7 @@ mod tests {
             align_h: TextAlignH::Center,
             align_v: TextAlignV::Middle,
             font_family: FontFamily::Normal,
+            follow_stroke: true,
         };
         let new = TextStyle {
             font_size: 32.0,
@@ -2404,6 +2405,7 @@ mod tests {
             align_h: TextAlignH::Left,
             align_v: TextAlignV::Top,
             font_family: FontFamily::Handwriting,
+            follow_stroke: false,
         };
         let mut cmd = SetTextStyle::new_batch(vec![(id, old, new)]);
         cmd.redo(&mut scene);
@@ -2450,6 +2452,7 @@ mod tests {
             align_h: TextAlignH::Center,
             align_v: TextAlignV::Middle,
             font_family: FontFamily::Normal,
+            follow_stroke: true,
         };
         let mut new = old;
         new.font_size = 48.0;

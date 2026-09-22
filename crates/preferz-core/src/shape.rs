@@ -191,6 +191,9 @@ pub struct TextStyle {
     pub align_v: TextAlignV,
     /// 字体族（黑体 / 伪手写）。
     pub font_family: FontFamily,
+    /// 文字色是否跟随容器描边色（仅绑定文字有意义）。
+    /// `true` = 容器改描边色时文字随之变色；用户在调色板手选文字色后置 `false`（独立）。
+    pub follow_stroke: bool,
 }
 
 /// Pixmap item 的可编辑样式快照（Phase H）。

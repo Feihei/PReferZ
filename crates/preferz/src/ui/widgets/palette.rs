@@ -169,108 +169,247 @@ fn swatch(ui: &mut egui::Ui, color: egui::Color32, selected: bool, size: f32) ->
     false
 }
 
-/// 调色板弹层：top picks 行 + 全色板网格 + 自定义取色。
-/// 返回 `(颜色, 是否来自色板格子)`；自定义取色器返回 `false`（保留用户 alpha）。
+/// 色系代表色在 5 档中的下标（第 5 档 = 最饱和的 open-color 600/800 权重档）。
+/// 「Colors」段每色系只展示这一档作为代表，明暗微调交给「Shades」段。
+const FAMILY_REPRESENTATIVE: usize = 4;
+
+/// 忽略 alpha 的 RGB 相等判断（色板格子是否"当前选中"用颜色本身，不比对 alpha）。
+fn rgb_eq(a: egui::Color32, b: egui::Color32) -> bool {
+    a.r() == b.r() && a.g() == b.g() && a.b() == b.b()
+}
+
+/// `Color32` → 小写 `#rrggbb`（hex 输入框初值）。
+fn color_to_hex(c: egui::Color32) -> String {
+    format!("#{:02x}{:02x}{:02x}", c.r(), c.g(), c.b())
+}
+
+/// 解析用户输入的 hex（接受 `rgb` / `rrggbb`，可选前导 `#`）。非法返回 `None`。
+fn parse_hex(s: &str) -> Option<[u8; 3]> {
+    let h = s.trim().trim_start_matches('#');
+    let expand = |digits: &[u8]| -> Option<[u8; 3]> {
+        let nib = |b: u8| u8::from_str_radix((b as char).to_string().as_str(), 16).ok();
+        Some([nib(digits[0])?, nib(digits[1])?, nib(digits[2])?])
+    };
+    match h.len() {
+        3 => {
+            let v = expand(h.as_bytes())?;
+            // #abc → #aabbcc
+            Some([v[0] << 4 | v[0], v[1] << 4 | v[1], v[2] << 4 | v[2]])
+        }
+        6 => {
+            let pair = |i: usize| u8::from_str_radix(&h[i..i + 2], 16).ok();
+            Some([pair(0)?, pair(2)?, pair(4)?])
+        }
+        _ => None,
+    }
+}
+
+/// 当前色属于哪个色系：逐色系比对 5 档（主题化后）的 RGB，命中返回行下标。
+/// 自定义 hex（不在色板内）返回 `None`，此时弹层不展示「Shades」段。
+fn family_of_current(current: egui::Color32, dark: bool) -> Option<usize> {
+    PALETTE_ROWS
+        .iter()
+        .enumerate()
+        .find_map(|(i, (_name, row))| {
+            row.iter()
+                .any(|hex| rgb_eq(themed_color(hex, dark), current))
+                .then_some(i)
+        })
+}
+
+/// 调色板弹层（Excalidraw 同款三段）：**Colors**（每色系代表色）+ **Shades**（当前
+/// 色系的五档明暗，仅当 current 命中色系时显示）+ **Hex**（十六进制输入，等价旧取色器）。
+/// 返回 `(颜色, 是否来自色板格子)`；色板格子返回 `true`（填充套默认 alpha），
+/// hex 输入返回 `false`（保留 current 的 alpha）。
 fn palette_popup(
     ui: &mut egui::Ui,
     current: egui::Color32,
     dark: bool,
-    picks: &[&'static str],
+    lang: Lang,
 ) -> Option<(egui::Color32, bool)> {
     let mut picked = None;
     let sw = 20.0;
+    let section = |ui: &mut egui::Ui, text: &str| {
+        ui.label(egui::RichText::new(text).weak().small());
+    };
 
-    // top picks
-    ui.horizontal(|ui| {
-        for hex in picks {
-            let c = themed_color(hex, dark);
-            if swatch(ui, c, approx_eq(c, current), sw) {
-                picked = Some((c, true));
-            }
-        }
-    });
-
-    ui.separator();
-
-    // 全色板：每行一个色系五档
-    for (_name, row) in PALETTE_ROWS {
+    // ── Colors：11 色系代表色（每色系第 5 档），每行 6 格自动换行 ──
+    section(ui, t(lang, T::PaletteColors));
+    let reps: Vec<egui::Color32> = PALETTE_ROWS
+        .iter()
+        .map(|(_n, row)| themed_color(row[FAMILY_REPRESENTATIVE], dark))
+        .collect();
+    for chunk in reps.chunks(6) {
         ui.horizontal(|ui| {
-            for hex in row {
-                let c = themed_color(hex, dark);
-                if swatch(ui, c, approx_eq(c, current), sw) {
-                    picked = Some((c, true));
+            for c in chunk {
+                if swatch(ui, *c, rgb_eq(*c, current), sw) {
+                    picked = Some((*c, true));
                 }
             }
         });
     }
-
     ui.separator();
 
-    // 自定义色：保留系统取色器入口（Excalidraw 的 hex 输入框的等价物）
-    ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("…").weak());
-        let mut custom = current;
-        if ui.color_edit_button_srgba(&mut custom).changed() {
-            picked = Some((custom, false));
-        }
+    // ── Shades：当前色系的五档明暗（仅当 current 命中某色系时）──
+    if let Some(fi) = family_of_current(current, dark) {
+        section(ui, t(lang, T::PaletteShades));
+        ui.horizontal(|ui| {
+            for hex in PALETTE_ROWS[fi].1 {
+                let c = themed_color(hex, dark);
+                if swatch(ui, c, rgb_eq(c, current), sw) {
+                    picked = Some((c, true));
+                }
+            }
+        });
+        ui.separator();
+    }
+
+    // ── Hex：十六进制输入（Excalidraw 底部同款，取代旧 egui HSV 取色器）──
+    section(ui, t(lang, T::PaletteHex));
+    // 用 temp 数据按 popup id 缓存输入串：未聚焦时以 current 回填，聚焦（正在打字）
+    // 时保留用户输入，避免每帧重置光标。popup 关闭后 temp 自然失效，重开时再回填。
+    let id = ui.id().with("palette_hex");
+    let focused_key = id.with("focus");
+    let was_focused = ui
+        .ctx()
+        .data(|d| d.get_temp::<bool>(focused_key))
+        .unwrap_or(false);
+    let mut buf = if was_focused {
+        ui.ctx()
+            .data(|d| d.get_temp::<String>(id))
+            .unwrap_or_default()
+    } else {
+        color_to_hex(current)
+    };
+    let resp = ui.add(
+        egui::TextEdit::singleline(&mut buf)
+            .desired_width(90.0)
+            .char_limit(7)
+            .margin(egui::vec2(4.0, 2.0)),
+    );
+    let has_focus = resp.has_focus();
+    ui.ctx().data_mut(|d| {
+        d.insert_temp(id, buf.clone());
+        d.insert_temp(focused_key, has_focus);
     });
+    if resp.changed() || resp.lost_focus() {
+        if let Some([r, g, b]) = parse_hex(&buf) {
+            // 保留 current 的 alpha（填充半透明不被 hex 编辑破坏）
+            picked = Some((
+                egui::Color32::from_rgba_unmultiplied(r, g, b, current.a()),
+                false,
+            ));
+        }
+    }
 
     picked
 }
 
-fn approx_eq(a: egui::Color32, b: egui::Color32) -> bool {
-    a.r() == b.r() && a.g() == b.g() && a.b() == b.b() && a.a() == b.a()
+/// 展开箭头按钮：手绘一个「›」chevron（不依赖字体字形，避免豆腐块），点击弹完整调色板。
+fn expand_button(ui: &mut egui::Ui) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::click());
+    let visuals = ui.visuals();
+    let bg = if resp.hovered() {
+        visuals.widgets.hovered.bg_fill
+    } else if resp.clicked() {
+        visuals.widgets.active.bg_fill
+    } else {
+        visuals.widgets.inactive.bg_fill
+    };
+    let stroke = visuals.widgets.inactive.bg_stroke;
+    let fg = visuals.text_color();
+    let painter = ui.painter();
+    painter.rect_filled(rect, 3.0, bg);
+    painter.rect_stroke(rect, 3.0, stroke, egui::StrokeKind::Middle);
+    // 「›」：两条线段构成的右尖括号
+    let c = rect.center();
+    let chevron = egui::Stroke::new(1.4_f32, fg);
+    painter.line_segment(
+        [egui::pos2(c.x - 2.0, c.y - 4.0), egui::pos2(c.x + 2.5, c.y)],
+        chevron,
+    );
+    painter.line_segment(
+        [egui::pos2(c.x + 2.5, c.y), egui::pos2(c.x - 2.0, c.y + 4.0)],
+        chevron,
+    );
+    resp
 }
 
-/// 调色板按钮（共用实现）：按钮本体显示当前颜色，点击弹出色板。
-/// `picks` 决定弹层顶部的 top picks 行。返回 `true` 表示用户选了新颜色。
-/// `swatch_alpha`：`Some(a)` 时，从色板格子选中的颜色强制写 alpha = `a`
-///（自定义取色不受影响）；描边传 `None`，填充传 `Some(FILL_DEFAULT_ALPHA)`。
+/// 调色板控件（共用实现）：**内联 5 个 top picks + 一个展开箭头**。点内联格子直接选色；
+/// 点箭头弹出 [`palette_popup`]（Colors / Shades / Hex 三段）。
+/// `picks` 决定内联那一行的 5 色。返回 `true` 表示用户选了新颜色。
+/// `swatch_alpha`：`Some(a)` 时，从色板格子（含内联 picks）选中的颜色强制写 alpha = `a`
+///（hex 输入不受影响）；描边/文字传 `None`，填充传 `Some(FILL_DEFAULT_ALPHA)`。
 fn palette_button_with_picks(
     ui: &mut egui::Ui,
     current: &mut [u8; 4],
     dark: bool,
+    lang: Lang,
     picks: &[&'static str],
     swatch_alpha: Option<u8>,
 ) -> bool {
     let shown =
         egui::Color32::from_rgba_unmultiplied(current[0], current[1], current[2], current[3]);
-    // 内容圆点必须用内嵌字体有字形的字符（⬤ U+2B24 无字形会渲染成豆腐块）
-    let btn = egui::Button::new(egui::RichText::new("●").size(11.0))
-        .min_size(egui::vec2(26.0, 20.0))
-        .fill(shown)
-        .stroke(egui::Stroke::new(
-            1.0_f32,
-            ui.visuals().widgets.inactive.bg_stroke.color,
-        ));
-    let resp = ui.add(btn);
     let mut changed = false;
-    egui::Popup::from_toggle_button_response(&resp)
-        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-        .show(|ui| {
-            if let Some((c, from_swatch)) = palette_popup(ui, shown, dark, picks) {
+    ui.horizontal(|ui| {
+        // 内联 top picks：点一下即选色（Excalidraw 左侧那一行）。
+        for hex in picks {
+            let c = themed_color(hex, dark);
+            if swatch(ui, c, rgb_eq(c, shown), 22.0) {
                 let mut rgba = [c.r(), c.g(), c.b(), c.a()];
-                if from_swatch {
-                    if let Some(a) = swatch_alpha {
-                        rgba[3] = a;
-                    }
+                if let Some(a) = swatch_alpha {
+                    rgba[3] = a;
                 }
                 *current = rgba;
                 changed = true;
             }
-        });
+        }
+        // 展开箭头：弹完整调色板。
+        let resp = expand_button(ui).on_hover_text(t(lang, T::PaletteMore));
+        egui::Popup::from_toggle_button_response(&resp)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .show(|ui| {
+                if let Some((c, from_swatch)) = palette_popup(ui, shown, dark, lang) {
+                    let mut rgba = [c.r(), c.g(), c.b(), c.a()];
+                    if from_swatch {
+                        if let Some(a) = swatch_alpha {
+                            rgba[3] = a;
+                        }
+                    }
+                    *current = rgba;
+                    changed = true;
+                }
+            });
+    });
     changed
 }
 
-/// 描边色调色板按钮：top picks 为 `STROKE_PICKS`（Excalidraw 描边默认行）。
-pub fn color_palette_button(ui: &mut egui::Ui, current: &mut [u8; 4], dark: bool) -> bool {
-    palette_button_with_picks(ui, current, dark, &STROKE_PICKS, None)
+/// 描边 / 墨迹 / 文字调色板按钮：内联 picks 为 `STROKE_PICKS`（Excalidraw 描边默认行）。
+pub fn color_palette_button(
+    ui: &mut egui::Ui,
+    current: &mut [u8; 4],
+    dark: bool,
+    lang: Lang,
+) -> bool {
+    palette_button_with_picks(ui, current, dark, lang, &STROKE_PICKS, None)
 }
 
-/// 填充色调色板按钮：top picks 与描边共用同组 5 色（plan #2），
+/// 填充色调色板按钮：内联 picks 与描边共用同组 5 色（plan #2），
 /// 色板格子选中时套默认 50% 不透明度（`FILL_DEFAULT_ALPHA`）。
-pub fn fill_color_palette_button(ui: &mut egui::Ui, current: &mut [u8; 4], dark: bool) -> bool {
-    palette_button_with_picks(ui, current, dark, &FILL_PICKS, Some(FILL_DEFAULT_ALPHA))
+pub fn fill_color_palette_button(
+    ui: &mut egui::Ui,
+    current: &mut [u8; 4],
+    dark: bool,
+    lang: Lang,
+) -> bool {
+    palette_button_with_picks(
+        ui,
+        current,
+        dark,
+        lang,
+        &FILL_PICKS,
+        Some(FILL_DEFAULT_ALPHA),
+    )
 }
 
 /// 填充样式四态选择器（无 / 纯色 / 斜线 / 交叉线），Excalidraw 同款图标。

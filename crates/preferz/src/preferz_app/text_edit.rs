@@ -52,6 +52,15 @@ impl PReferZApp {
                     return false;
                 };
                 let existing = self.scene.texts_bound_to(id).into_iter().next();
+                // 新建绑定文字时初值取容器描边色（默认"跟随边框"，创建即观感正确）。
+                let container_stroke = self
+                    .scene
+                    .get_item(&id)
+                    .and_then(|it| match &it.kind {
+                        ItemKind::Shape { stroke, .. } => Some(stroke.color),
+                        _ => None,
+                    })
+                    .unwrap_or([255; 4]);
                 // 已有绑定文本 → 编辑；否则提交时才写入容器 id 新建一个
                 let (editing_item_id, buffer, font_size, color, font_family) =
                     match existing.and_then(|tid| self.scene.get_item(&tid)) {
@@ -63,9 +72,21 @@ impl PReferZApp {
                                 font_family,
                                 ..
                             } => (existing, content.clone(), *font_size, *color, *font_family),
-                            _ => (None, String::new(), 18.0, [255; 4], FontFamily::Normal),
+                            _ => (
+                                None,
+                                String::new(),
+                                18.0,
+                                container_stroke,
+                                FontFamily::Normal,
+                            ),
                         },
-                        None => (None, String::new(), 18.0, [255; 4], FontFamily::Normal),
+                        None => (
+                            None,
+                            String::new(),
+                            18.0,
+                            container_stroke,
+                            FontFamily::Normal,
+                        ),
                     };
                 self.editing_text = Some(EditingText {
                     editing_item_id,

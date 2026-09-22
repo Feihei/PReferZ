@@ -334,6 +334,19 @@ pub enum T {
     // ── 属性侧栏文字/图片节（Phase H）──
     StyleTextBackground,
     StyleGrayscale,
+    // ── 调色板弹层（Excalidraw 式：内联 picks + Colors/Shades/Hex 三段）──
+    /// 弹层「Colors」段标签。
+    PaletteColors,
+    /// 弹层「Shades」段标签（当前色系的五档明暗）。
+    PaletteShades,
+    /// 弹层底部 hex 输入段标签。
+    PaletteHex,
+    /// 展开箭头按钮的 tooltip（打开完整调色板）。
+    PaletteMore,
+    /// 文字节的颜色控件标签。
+    StyleTextColor,
+    /// 绑定文字色正跟随容器描边时的提示。
+    TextColorFollowingStroke,
     // ── 文字样式（plan #1：对齐 + 伪手写字体）──
     StyleFontLabel,
     StyleFontSize,
@@ -632,6 +645,12 @@ fn translate_en(key: T) -> &'static str {
         T::SloppinessCartoonist => "Cartoonist",
         T::StyleTextBackground => "Background",
         T::StyleGrayscale => "Grayscale",
+        T::PaletteColors => "Colors",
+        T::PaletteShades => "Shades",
+        T::PaletteHex => "Hex code",
+        T::PaletteMore => "More colors",
+        T::StyleTextColor => "Text color",
+        T::TextColorFollowingStroke => "Following stroke color",
         T::StyleFontLabel => "Font",
         T::StyleFontSize => "Font size",
         T::FontNormal => "Normal",
@@ -909,6 +928,12 @@ fn translate_zh(key: T) -> &'static str {
         T::SloppinessCartoonist => "卡通",
         T::StyleTextBackground => "背景",
         T::StyleGrayscale => "灰度",
+        T::PaletteColors => "颜色",
+        T::PaletteShades => "色阶",
+        T::PaletteHex => "十六进制",
+        T::PaletteMore => "更多颜色",
+        T::StyleTextColor => "文字颜色",
+        T::TextColorFollowingStroke => "跟随边框色",
         T::StyleFontLabel => "字体",
         T::StyleFontSize => "字号",
         T::FontNormal => "黑体",

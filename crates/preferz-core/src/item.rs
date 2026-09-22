@@ -61,13 +61,18 @@ where
 /// Item 局部坐标空间。原点为 item 的 `transform.pos`，未旋转/缩放前的左上角。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ItemLocalSpace;
-
 /// Item 局部 → 画布 变换矩阵。
 pub type ItemLocalToCanvas = euclid::Transform2D<f32, ItemLocalSpace, crate::spaces::CanvasSpace>;
 /// 画布 → Item 局部 变换矩阵（用于 hit-test）。
 pub type CanvasToItemLocal = euclid::Transform2D<f32, crate::spaces::CanvasSpace, ItemLocalSpace>;
 /// Item 局部 → 屏幕 变换矩阵（画布 → 屏幕 再叠加 ItemLocal → Canvas）。
 pub type ItemLocalToScreen = euclid::Transform2D<f32, ItemLocalSpace, crate::spaces::ScreenSpace>;
+
+/// `ItemKind::Text::follow_stroke` 的 serde 默认值：`true`。
+/// 旧存档无此字段时，绑定文字默认跟随容器描边色（保持历史行为）。
+fn default_follow_stroke() -> bool {
+    true
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ItemKind {
@@ -108,6 +113,12 @@ pub enum ItemKind {
         /// 字体族（plan #1）：黑体 / 伪手写。默认黑体。
         #[serde(default)]
         font_family: FontFamily,
+        /// 文字色是否跟随容器描边色（仅绑定文字有意义）。
+        /// `#[serde(default = "default_follow_stroke")]` 默认 `true`：旧存档的绑定
+        /// 文字保持"跟随边框"语义（与历史"改描边即覆盖文字色"行为一致）；用户在
+        /// 调色板手选文字色后置 `false`，此后改边框不再影响该文字。
+        #[serde(default = "default_follow_stroke")]
+        follow_stroke: bool,
     },
     Shape {
         shape_type: ShapeType,
@@ -270,6 +281,7 @@ impl ItemKind {
                 align_h,
                 align_v,
                 font_family,
+                follow_stroke,
                 ..
             } => Some(TextStyle {
                 font_size: *font_size,
@@ -278,6 +290,7 @@ impl ItemKind {
                 align_h: *align_h,
                 align_v: *align_v,
                 font_family: *font_family,
+                follow_stroke: *follow_stroke,
             }),
             _ => None,
         }
@@ -293,6 +306,7 @@ impl ItemKind {
             align_h,
             align_v,
             font_family,
+            follow_stroke,
             measured_size,
             ..
         } = self
@@ -303,6 +317,7 @@ impl ItemKind {
             *align_h = style.align_h;
             *align_v = style.align_v;
             *font_family = style.font_family;
+            *follow_stroke = style.follow_stroke;
             *measured_size = None;
         }
     }
@@ -402,6 +417,8 @@ impl Item {
                 align_h: TextAlignH::Center,
                 align_v: TextAlignV::Middle,
                 font_family: FontFamily::Normal,
+                // 自由文本无容器可跟随，恒为独立色。
+                follow_stroke: false,
             },
             transform: Transform::new(pos_x, pos_y, 1.0, 1.0),
             z: 0,
@@ -457,6 +474,8 @@ impl Item {
                 align_h: TextAlignH::Center,
                 align_v: TextAlignV::Middle,
                 font_family: FontFamily::Normal,
+                // 绑定文字默认跟随容器描边色（用户手选文字色后脱离）。
+                follow_stroke: true,
             },
             transform: Transform::new(pos_x, pos_y, 1.0, 1.0),
             z: 0,
@@ -1759,6 +1778,49 @@ mod tests {
         let kind: ItemKind = serde_json::from_str(json).unwrap();
         match &kind {
             ItemKind::Text { background, .. } => assert_eq!(*background, None),
+            _ => panic!("expected Text kind"),
+        }
+    }
+
+    #[test]
+    fn text_follow_stroke_defaults_by_binding() {
+        // 绑定文字默认跟随边框；自由文字恒独立。
+        let bound = Item::new_text_in("x".to_string(), 0.0, 0.0, 16.0, [255; 4], Uuid::new_v4());
+        assert!(
+            bound.kind.text_style().unwrap().follow_stroke,
+            "绑定文字默认跟随"
+        );
+        let free = Item::new_text("x".to_string(), 0.0, 0.0, 16.0, [255; 4]);
+        assert!(
+            !free.kind.text_style().unwrap().follow_stroke,
+            "自由文字不跟随"
+        );
+        // set_text_style 应把 follow_stroke 写回（undo 依赖整份快照还原）
+        let mut it = bound;
+        let mut st = it.kind.text_style().unwrap();
+        st.follow_stroke = false;
+        it.set_text_style(st);
+        assert!(!it.kind.text_style().unwrap().follow_stroke);
+    }
+
+    #[test]
+    fn text_serde_backward_compat_follow_stroke_true() {
+        // 旧存档 Text JSON 无 follow_stroke 字段 → 默认 true（保持历史"改边框覆盖文字色"语义）。
+        let json = r#"{
+            "Text": {
+                "content": "abc",
+                "font_size": 16.0,
+                "color": [255,255,255,255],
+                "editing": false,
+                "measured_size": null,
+                "container_id": "6b1f0c2e-0000-0000-0000-000000000000"
+            }
+        }"#;
+        let kind: ItemKind = serde_json::from_str(json).unwrap();
+        match &kind {
+            ItemKind::Text { follow_stroke, .. } => {
+                assert!(*follow_stroke, "旧存档绑定文字默认跟随")
+            }
             _ => panic!("expected Text kind"),
         }
     }
