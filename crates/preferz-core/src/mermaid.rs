@@ -1,14 +1,18 @@
-//! mermaid 流程图子集解析 + 分层布局（plan #9）。纯函数、无副作用（core L1）。
+//! mermaid 流程图子集解析 + 分层布局（plan #9；plan #17 语法完整化）。
+//! 纯函数、无副作用（core L1、零依赖）。
 //!
-//! 拍板范围（2026-09-20）：受限自研解析器（零依赖）——首行 `flowchart|graph
-//! TD|TB|LR|RL|BT`；节点 `id[标签]`（矩形）/ `id(标签)`（椭圆）/ `id{标签}`
-//! （菱形）/ 裸 `id`（矩形，标签=id）；边仅支持 `-->`（可链式 `a --> b --> c`）。
-//! 边标签 `|text|`、无向线 `---`、虚线/粗线箭头、subgraph 均不支持（报错并
-//! 指出行号）。布局=分层（层级=最长路径深度），层间距/同层间距 100px
-//! （对齐 plan #7 `FLOWCHART_GAP` 语义）。
+//! 支持首行 `flowchart|graph TD|TB|LR|RL|BT`；节点 `id[标签]` 及其括号外形
+//! 变体（详见 [`parse_node_token`]，冷门形按 DP1 近似映射到矩形/椭圆/菱形三类）；
+//! 边支持箭头族 `-->` / `---` / `-.->` / `-.-` / `==>` / `===` / `<-->`，
+//! 两种边标签写法 `-->|文本|`（pipe）与 `-- 文本 -->`（inline，仅实线），
+//! 一行多分支 `&`（`a --> b & c`、`a & b --> c & d` 交叉积），以及引号标签
+//! `["含 空格"]`。`subgraph` / `direction` / `style` / `classDef` 等分组与
+//! 样式语句、以及 sequence/class/state 等**非 flowchart 图种均不支持**（报错
+//! 并指出行号，DP 见 `.agents/plan.md` §17）。布局 = 分层（层级 = 最长路径深度），
+//! 层间距 / 同层间距 100px（对齐 plan #7 `FLOWCHART_GAP` 语义）。
 
-/// 节点形状（映射到 `ShapeType` 的矩形/椭圆/菱形三类，对齐 Excalidraw
-/// isFlowchartNodeElement）。
+/// 节点形状。DP1「全部近似映射」：mermaid 的多种括号外形在解析期即收敛到这三类
+/// （映射 `ShapeType` 的矩形/椭圆/菱形，对齐 Excalidraw isFlowchartNodeElement）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MermaidShape {
     Rectangle,
@@ -24,11 +28,33 @@ pub struct MermaidNode {
     pub shape: MermaidShape,
 }
 
-/// 有向边（from/to 为 `nodes` 下标）。
+/// 箭头族（边线型），映射到二进制层的 (start/end `ArrowHeadStyle`, `DashStyle`, width)。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MermaidArrow {
+    /// `-->` 实线箭头。
+    Arrow,
+    /// `---` 实线无箭头（open link）。
+    Open,
+    /// `-.->` 虚线箭头。
+    Dotted,
+    /// `-.-` 虚线无箭头。
+    DottedOpen,
+    /// `==>` 粗线箭头。
+    Thick,
+    /// `===` 粗线无箭头。
+    ThickOpen,
+    /// `<-->` 双向实线箭头。
+    Double,
+}
+
+/// 有向边（from/to 为 `nodes` 下标）。
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MermaidEdge {
     pub from: usize,
     pub to: usize,
+    pub kind: MermaidArrow,
+    /// 边标签（`-->|文本|` / `-- 文本 -->`），无则 `None`。
+    pub label: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -39,18 +65,76 @@ pub struct MermaidFlowchart {
     pub edges: Vec<MermaidEdge>,
 }
 
+/// 解析结果累加器，避免函数签名携带三四个 `&mut`。
+struct ParseCtx {
+    nodes: Vec<MermaidNode>,
+    index_of: std::collections::HashMap<String, usize>,
+    edges: Vec<MermaidEdge>,
+}
+
+impl ParseCtx {
+    fn new() -> Self {
+        Self {
+            nodes: Vec::new(),
+            index_of: std::collections::HashMap::new(),
+            edges: Vec::new(),
+        }
+    }
+
+    /// 取已注册节点下标，不存在则新建（矩形、标签=id）；`label`/`shape` 为 `Some`
+    /// 时覆盖（定义处优先于裸引用的默认值）。
+    fn intern(&mut self, id: String, label: Option<String>, shape: Option<MermaidShape>) -> usize {
+        let i = match self.index_of.get(&id) {
+            Some(&i) => i,
+            None => {
+                let i = self.nodes.len();
+                self.nodes.push(MermaidNode {
+                    id: id.clone(),
+                    label: id.clone(),
+                    shape: MermaidShape::Rectangle,
+                });
+                self.index_of.insert(id, i);
+                i
+            }
+        };
+        if let Some(l) = label {
+            self.nodes[i].label = l;
+        }
+        if let Some(s) = shape {
+            self.nodes[i].shape = s;
+        }
+        i
+    }
+}
+
+/// 不支持的图种 / 语句关键字（首词命中即报错，指路后续）。
+const UNSUPPORTED_KEYWORDS: &[&str] = &[
+    "subgraph",
+    "end",
+    "direction",
+    "style",
+    "classDef",
+    "class",
+    "click",
+    "callback",
+    "linkStyle",
+];
+
 /// 解析 mermaid 流程图子集。`Err(消息)` 自带行号（第 n 行）。
+///
+/// 图种分派点：此处仅处理 `flowchart`/`graph`；将来加 sequence/class/state 等新
+/// 图种 = 在首行分派处新增分支 + 独立布局模块，不改本函数（架构预留，见 plan §17）。
 pub fn parse_mermaid_flowchart(src: &str) -> Result<MermaidFlowchart, String> {
     let mut horizontal = false;
     let mut seen_header = false;
-    let mut nodes: Vec<MermaidNode> = Vec::new();
-    let mut index_of: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-    let mut edges: Vec<MermaidEdge> = Vec::new();
+    let mut ctx = ParseCtx::new();
 
     for (lineno, raw) in src.lines().enumerate() {
         let n = lineno + 1;
-        let line = raw.trim();
-        if line.is_empty() || line.starts_with("%%") {
+        // 行内 `%%` 注释截断 + 去行尾 `;` + trim。
+        let line = raw.split_once("%%").map_or(raw, |(s, _)| s);
+        let line = line.trim().trim_end_matches(';').trim();
+        if line.is_empty() {
             continue;
         }
         if !seen_header {
@@ -81,126 +165,250 @@ pub fn parse_mermaid_flowchart(src: &str) -> Result<MermaidFlowchart, String> {
             continue;
         }
 
-        // 边语句（可链式）：按 `-->` 拆段
-        if line.contains("-->") {
-            let mut prev: Option<usize> = None;
-            for seg in line.split("-->") {
-                let tok = seg.trim();
-                // 边标签 `|text|` 暂不支持
-                if tok.contains('|') {
-                    return Err(format!("第 {n} 行: 暂不支持边标签 `|…|`"));
-                }
-                let (id, label, shape) = parse_node_token(tok)
-                    .ok_or_else(|| format!("第 {n} 行: 无法解析节点 `{tok}`"))?;
-                let i = intern_node(id, label, shape, &mut nodes, &mut index_of);
-                if let Some(p) = prev {
-                    edges.push(MermaidEdge { from: p, to: i });
-                }
-                prev = Some(i);
+        if let Some(word) = line.split_whitespace().next() {
+            if UNSUPPORTED_KEYWORDS.contains(&word) {
+                return Err(format!("第 {n} 行: 暂不支持 `{word}` 语句"));
             }
-            continue;
         }
-
-        // 其它边语法（---、-.->、==> 等）不支持
-        if line.contains("---") || line.contains("-.") || line.contains("==") {
-            return Err(format!("第 {n} 行: 暂不支持该边语法（仅支持 `-->`）"));
-        }
-
-        // 单行节点定义（不支持一行多个定义）
-        let (id, label, shape) =
-            parse_node_token(line).ok_or_else(|| format!("第 {n} 行: 无法解析节点 `{line}`"))?;
-        intern_node(id, label, shape, &mut nodes, &mut index_of);
+        parse_statement(line, n, &mut ctx)?;
     }
 
     if !seen_header {
         return Err("缺少首行 `flowchart TD` 或 `graph LR`".to_string());
     }
-    if nodes.is_empty() {
+    if ctx.nodes.is_empty() {
         return Err("流程图为空（没有节点）".to_string());
     }
     Ok(MermaidFlowchart {
         horizontal,
-        nodes,
-        edges,
+        nodes: ctx.nodes,
+        edges: ctx.edges,
     })
 }
 
-/// 取已注册节点下标，不存在则新建（矩形、标签=id）；随后用本次解析到的
-/// label/shape 覆盖（定义处优先于裸引用的默认值）。
-fn intern_node(
-    id: String,
-    label: Option<String>,
-    shape: Option<MermaidShape>,
-    nodes: &mut Vec<MermaidNode>,
-    index_of: &mut std::collections::HashMap<String, usize>,
-) -> usize {
-    let i = match index_of.get(&id) {
-        Some(&i) => i,
-        None => {
-            let i = nodes.len();
-            nodes.push(MermaidNode {
-                id: id.clone(),
-                label: id.clone(),
-                shape: MermaidShape::Rectangle,
-            });
-            index_of.insert(id, i);
-            i
+/// 解析一条语句（已 trim、去注释、非空）。文法：
+/// `GROUP (LINK GROUP)*`，`GROUP = NODE (& NODE)*`，相邻组对每条 LINK 做交叉积。
+fn parse_statement(line: &str, n: usize, ctx: &mut ParseCtx) -> Result<(), String> {
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    let mut links: Vec<(MermaidArrow, Option<String>)> = Vec::new();
+    let mut current: Vec<usize> = Vec::new();
+    let mut i = 0usize;
+    let mut expect_node = true;
+
+    loop {
+        skip_ws(line, &mut i);
+        if i >= line.len() {
+            break;
         }
-    };
-    if let Some(l) = label {
-        nodes[i].label = l;
+        if starts_with(line, i, "&") {
+            // `&` 只在「刚解析完一个节点」后合法（同组内并列），其后需再接一个节点。
+            if expect_node {
+                return Err(format!("第 {n} 行: `&` 两侧需为节点"));
+            }
+            i += 1;
+            expect_node = true;
+            continue;
+        }
+        if let Some((kind, label, ni)) = scan_link(line, i) {
+            if expect_node {
+                return Err(format!("第 {n} 行: 箭头缺少源节点"));
+            }
+            links.push((kind, label));
+            groups.push(std::mem::take(&mut current));
+            i = ni;
+            expect_node = true;
+            continue;
+        }
+        if let Some((id, label, shape, ni)) = scan_node(line, i) {
+            if !expect_node {
+                return Err(format!("第 {n} 行: 语句结构异常（相邻两段节点缺分隔）"));
+            }
+            let gi = ctx.intern(id, label, shape);
+            current.push(gi);
+            i = ni;
+            expect_node = false;
+            continue;
+        }
+        return Err(format!(
+            "第 {n} 行: 无法解析（自第 {} 字符起 `{}`）",
+            i + 1,
+            &line[i..]
+        ));
     }
-    if let Some(s) = shape {
-        nodes[i].shape = s;
+
+    if expect_node && groups.is_empty() {
+        return Err(format!("第 {n} 行: 无法解析该语句"));
     }
-    i
+    if !expect_node && !current.is_empty() {
+        groups.push(current);
+    }
+    if links.is_empty() {
+        // 纯节点定义行（无箭头）：已在 intern 时注册，无副作用。
+        return Ok(());
+    }
+    for (li, (kind, label)) in links.iter().enumerate() {
+        let srcs = &groups[li];
+        let dsts = &groups[li + 1];
+        for &s in srcs {
+            for &d in dsts {
+                ctx.edges.push(MermaidEdge {
+                    from: s,
+                    to: d,
+                    kind: *kind,
+                    label: label.clone(),
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
-/// 解析节点 token：`id[标签]`（矩形）/ `id(标签)`（椭圆）/ `id{标签}`（菱形）/
-/// 裸 `id`（矩形）。id 取括号前的裸名；无括号时整个 token 即 id。
-fn parse_node_token(tok: &str) -> Option<(String, Option<String>, Option<MermaidShape>)> {
-    let tok = tok.trim();
-    if tok.is_empty() {
-        return None;
+fn starts_with(s: &str, i: usize, pat: &str) -> bool {
+    s[i..].starts_with(pat)
+}
+
+fn skip_ws(s: &str, i: &mut usize) {
+    let b = s.as_bytes();
+    while *i < b.len() && matches!(b[*i], b' ' | b'\t') {
+        *i += 1;
     }
-    // 找第一个括号字符（id 与包裹体的分界）
-    let open_pos = tok.find(['[', '(', '{']);
-    let (id_part, shape, inner) = match open_pos {
-        Some(p) => {
-            let close = match tok.as_bytes()[p] {
-                b'[' => ']',
-                b'(' => ')',
-                _ => '}',
-            };
-            let shape = match tok.as_bytes()[p] {
-                b'[' => MermaidShape::Rectangle,
-                b'(' => MermaidShape::Ellipse,
-                _ => MermaidShape::Diamond,
-            };
-            if !tok.ends_with(close) {
-                return None; // 括号不闭合
-            }
-            let inner = &tok[p + 1..tok.len() - 1];
-            (tok[..p].trim(), Some(shape), Some(inner.trim().to_string()))
-        }
-        None => (tok, None, None),
-    };
-    // id：裸名（字母数字下划线连字符）；括号写法省略 id 时用标签清洗兜底
-    let id = if id_part.is_empty() {
-        sanitize_id(inner.as_ref()?)
+}
+
+/// 在 `s[i]` 起扫描一条链（箭头）。成功返回 (kind, 可选标签, 下一个字节偏移)。
+/// 覆盖：完整箭头算子（+ 可选 `|标签|`）、`<-->` 双向、`-- 文本 -->` inline（仅实线）。
+fn scan_link(s: &str, i: usize) -> Option<(MermaidArrow, Option<String>, usize)> {
+    // 双向 `<-->`（DP：仅实线双向）。
+    if starts_with(s, i, "<-->") {
+        let j = i + 4;
+        let (label, j) = scan_pipe_label(s, j);
+        return Some((MermaidArrow::Double, label, j));
+    }
+    // 具体算子，长/特殊在前。
+    let (kind, j) = if starts_with(s, i, "-->") {
+        (MermaidArrow::Arrow, i + 3)
+    } else if starts_with(s, i, "-.->") {
+        (MermaidArrow::Dotted, i + 4)
+    } else if starts_with(s, i, "==>") {
+        (MermaidArrow::Thick, i + 3)
+    } else if starts_with(s, i, "-.-") {
+        (MermaidArrow::DottedOpen, i + 3)
+    } else if starts_with(s, i, "===") {
+        (MermaidArrow::ThickOpen, i + 3)
+    } else if starts_with(s, i, "---") {
+        (MermaidArrow::Open, i + 3)
     } else {
-        if !id_part
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-        {
+        // inline 实线 `-- 文本 -->`：以 `--` 起且非上述算子。
+        if starts_with(s, i, "--") {
+            let after = i + 2;
+            let b = s.as_bytes();
+            // 紧跟 `>` 会被前面 `-->` 吃掉；紧跟 `-` 会被 `---` 吃掉；故此处为 inline 起始。
+            if after < b.len() && b[after] == b'>' {
+                return None;
+            }
+            let rest = &s[after..];
+            let k = rest.find("-->")?;
+            let text = &rest[..k];
+            if text.trim().is_empty() {
+                return None;
+            }
+            let j = after + k + 3;
+            return Some((MermaidArrow::Arrow, Some(text.trim().to_string()), j));
+        }
+        return None;
+    };
+    let (label, j) = scan_pipe_label(s, j);
+    Some((kind, label, j))
+}
+
+/// 可选的 `|标签|` pipe 写法；命中则返回 (Some(标签), 新偏移)，否则原样。
+fn scan_pipe_label(s: &str, i: usize) -> (Option<String>, usize) {
+    let b = s.as_bytes();
+    if i < b.len() && b[i] == b'|' {
+        if let Some(rel) = s[i + 1..].find('|') {
+            let text = s[i + 1..i + 1 + rel].trim();
+            return (Some(text.to_string()), i + 1 + rel + 1);
+        }
+    }
+    (None, i)
+}
+
+fn is_id_char(c: u8) -> bool {
+    c.is_ascii_alphanumeric() || c == b'_' || c == b'-'
+}
+
+/// 在 `s[i]` 起扫描一个节点。返回 (id, 可选标签, 可选形状, 下一个字节偏移)。
+fn scan_node(s: &str, i: usize) -> Option<(String, Option<String>, Option<MermaidShape>, usize)> {
+    let b = s.as_bytes();
+    let id_start = i;
+    let mut k = i;
+    while k < b.len() && is_id_char(b[k]) {
+        k += 1;
+    }
+    // 尾部 `-` 归链（`a-->b` 里 `a-` 会误吞 `-`）：回退连续尾 `-`。
+    while k > id_start && b[k - 1] == b'-' {
+        k -= 1;
+    }
+    let id = s[id_start..k].trim().to_string();
+    let after_id = k;
+    // 从 after_id 起找括号体（id 与体之间可能有空格）。
+    let mut p = after_id;
+    skip_ws(s, &mut p);
+    if p < b.len() && matches!(b[p], b'[' | b'(' | b'{' | b'>') {
+        let (inner, shape, end) = parse_shape_body(s, p)?;
+        let label = Some(inner);
+        let id = if id.is_empty() {
+            sanitize_id(label.as_deref()?)
+        } else {
+            id
+        };
+        Some((id, label, Some(shape), end))
+    } else {
+        if id.is_empty() {
             return None;
         }
-        id_part.to_string()
-    };
-    if id.is_empty() {
-        return None;
+        Some((id, None, None, after_id))
     }
-    Some((id, inner, shape))
+}
+
+/// 解析括号外形体（DP1 近似映射 + DP3 语义校正）。返回 (标签, 形状, 结束偏移)。
+fn parse_shape_body(s: &str, i: usize) -> Option<(String, MermaidShape, usize)> {
+    let close_after =
+        |open: &str, close: &str, shape: MermaidShape| -> Option<(String, MermaidShape, usize)> {
+            if !starts_with(s, i, open) {
+                return None;
+            }
+            let inner_start = i + open.len();
+            let rel = s[inner_start..].find(close)?;
+            let inner = s[inner_start..inner_start + rel].trim();
+            Some((unquote(inner), shape, inner_start + rel + close.len()))
+        };
+    // 双括号 / 特殊形在前（DP1：冷门形近似收敛）。
+    close_after("((", "))", MermaidShape::Ellipse) // 圆
+        .or_else(|| close_after("([", "])", MermaidShape::Ellipse)) // 体育场 → 近似圆
+        .or_else(|| close_after("[[", "]]", MermaidShape::Rectangle)) // 子程序 → 矩形
+        .or_else(|| close_after("[(", ")]", MermaidShape::Rectangle)) // 柱/数据库 → 矩形
+        .or_else(|| close_after("{{", "}}", MermaidShape::Rectangle)) // 六边 → 矩形
+        .or_else(|| close_after("[/", "/]", MermaidShape::Rectangle)) // 平行四边形
+        .or_else(|| close_after("[\\", "\\]", MermaidShape::Rectangle)) // 反平行四边形
+        .or_else(|| close_after("[/", "\\]", MermaidShape::Rectangle)) // 梯形
+        .or_else(|| close_after("[\\", "/]", MermaidShape::Rectangle)) // 反梯形
+        .or_else(|| close_after(">", "]", MermaidShape::Rectangle)) // 旗形
+        // 单括号（DP3：`()` 圆角矩形近似为 Rectangle；`{}` 菱形）。
+        .or_else(|| close_after("[", "]", MermaidShape::Rectangle))
+        .or_else(|| close_after("(", ")", MermaidShape::Rectangle))
+        .or_else(|| close_after("{", "}", MermaidShape::Diamond))
+}
+
+/// 引号标签：首尾同为 `"` 或 `'` 且长度 ≥ 2 → 去引号（保留内部空格/符号）；否则 trim。
+fn unquote(inner: &str) -> String {
+    let b = inner.as_bytes();
+    if b.len() >= 2 {
+        let (f, l) = (b[0], b[b.len() - 1]);
+        if (f == b'"' && l == b'"') || (f == b'\'' && l == b'\'') {
+            return inner[1..inner.len() - 1].to_string();
+        }
+    }
+    inner.to_string()
 }
 
 /// id 清洗：非法字符替换为 `_`，空则兜底 `node`。
@@ -346,18 +554,113 @@ mod tests {
         assert_eq!(fc.nodes.len(), 2);
         assert_eq!(fc.nodes[0].label, "开始");
         assert_eq!(fc.nodes[0].shape, MermaidShape::Rectangle);
-        assert_eq!(fc.edges, vec![MermaidEdge { from: 0, to: 1 }]);
+        assert_eq!(
+            fc.edges,
+            vec![MermaidEdge {
+                from: 0,
+                to: 1,
+                kind: MermaidArrow::Arrow,
+                label: None
+            }]
+        );
     }
 
     #[test]
     fn parses_chained_edges_and_shapes() {
+        // DP3：`()→圆角矩形近似为 Rectangle`；`{}`=菱形；`((..))`=圆→Ellipse。
         let fc = parse_mermaid_flowchart("graph LR\n s(起点) --> m{判断} --> e\n e --> s").unwrap();
         assert!(fc.horizontal);
         assert_eq!(fc.nodes.len(), 3);
-        assert_eq!(fc.nodes[0].shape, MermaidShape::Ellipse);
+        assert_eq!(fc.nodes[0].shape, MermaidShape::Rectangle);
         assert_eq!(fc.nodes[1].shape, MermaidShape::Diamond);
         assert_eq!(fc.edges.len(), 3);
-        assert_eq!(fc.edges[2], MermaidEdge { from: 2, to: 0 });
+        assert_eq!(
+            fc.edges[2],
+            MermaidEdge {
+                from: 2,
+                to: 0,
+                kind: MermaidArrow::Arrow,
+                label: None
+            }
+        );
+    }
+
+    #[test]
+    fn parses_circle_and_stadium_as_ellipse() {
+        let fc = parse_mermaid_flowchart("flowchart TD\n a((圆)) --> b([体育场])").unwrap();
+        assert_eq!(fc.nodes[0].shape, MermaidShape::Ellipse);
+        assert_eq!(fc.nodes[0].label, "圆");
+        assert_eq!(fc.nodes[1].shape, MermaidShape::Ellipse);
+        assert_eq!(fc.nodes[1].label, "体育场");
+    }
+
+    #[test]
+    fn parses_cold_shapes_approximated_as_rectangle() {
+        let fc = parse_mermaid_flowchart("flowchart TD\n a{{六边}} --> b[(柱)] --> c[[子程序]]")
+            .unwrap();
+        assert_eq!(fc.nodes[0].shape, MermaidShape::Rectangle);
+        assert_eq!(fc.nodes[0].label, "六边");
+        assert_eq!(fc.nodes[1].label, "柱");
+        assert_eq!(fc.nodes[2].label, "子程序");
+    }
+
+    #[test]
+    fn parses_pipe_edge_label() {
+        let fc = parse_mermaid_flowchart("flowchart TD\n a{判} -->|是| b\n a -->|否| c").unwrap();
+        assert_eq!(fc.edges[0].label.as_deref(), Some("是"));
+        assert_eq!(fc.edges[1].label.as_deref(), Some("否"));
+        assert_eq!(fc.edges[0].kind, MermaidArrow::Arrow);
+    }
+
+    #[test]
+    fn parses_inline_edge_label() {
+        let fc = parse_mermaid_flowchart("flowchart TD\n a -- 是 --> b").unwrap();
+        assert_eq!(fc.edges[0].label.as_deref(), Some("是"));
+        assert_eq!(fc.edges[0].kind, MermaidArrow::Arrow);
+        // 虚线仅支持 pipe 标签，inline `-. 虚 .->` 不支持 → 报错。
+        assert!(parse_mermaid_flowchart("flowchart TD\n c -. 虚 .-> d").is_err());
+    }
+
+    #[test]
+    fn parses_arrow_families() {
+        let fc = parse_mermaid_flowchart(
+            "flowchart TD\n a --- b\n a -.-> c\n a ==> d\n a <--> e\n a -.- f",
+        )
+        .unwrap();
+        let kinds: Vec<_> = fc.edges.iter().map(|e| e.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                MermaidArrow::Open,
+                MermaidArrow::Dotted,
+                MermaidArrow::Thick,
+                MermaidArrow::Double,
+                MermaidArrow::DottedOpen,
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_amp_branch_and_cross_product() {
+        let fc = parse_mermaid_flowchart("flowchart TD\n a --> b & c").unwrap();
+        assert_eq!(fc.edges.len(), 2);
+        assert!(fc.edges.iter().all(|e| e.from == 0));
+        let mut tos: Vec<_> = fc.edges.iter().map(|e| e.to).collect();
+        tos.sort_unstable();
+        assert_eq!(tos, vec![1, 2]);
+
+        // 交叉积：a & b --> c & d = a→c, a→d, b→c, b→d
+        let fc2 = parse_mermaid_flowchart("flowchart TD\n a & b --> c & d").unwrap();
+        assert_eq!(fc2.edges.len(), 4);
+        assert!(fc2.edges.iter().all(|e| e.kind == MermaidArrow::Arrow));
+    }
+
+    #[test]
+    fn parses_quoted_label_with_spaces() {
+        let fc =
+            parse_mermaid_flowchart("flowchart TD\n a[\"含 空格 标题\"] --> b['单引号']").unwrap();
+        assert_eq!(fc.nodes[0].label, "含 空格 标题");
+        assert_eq!(fc.nodes[1].label, "单引号");
     }
 
     #[test]
@@ -369,19 +672,20 @@ mod tests {
     }
 
     #[test]
-    fn skips_comments_and_blank_lines() {
-        let fc = parse_mermaid_flowchart("%% 注释\n\nflowchart TD\n%% 另一行\n a --> b\n").unwrap();
-        assert_eq!(fc.nodes.len(), 2);
+    fn skips_comments_and_trailing_semicolon() {
+        let fc =
+            parse_mermaid_flowchart("%% 注释\n\nflowchart TD\n a --> b %% 行内注释\n c --> d; \n")
+                .unwrap();
+        assert_eq!(fc.nodes.len(), 4);
     }
 
     #[test]
     fn rejects_missing_header_and_bad_syntax() {
         assert!(parse_mermaid_flowchart("a --> b").is_err());
-        assert!(parse_mermaid_flowchart("flowchart TD\n a --- b").is_err());
-        assert!(parse_mermaid_flowchart("flowchart TD\n a -->|是| b").is_err());
         assert!(parse_mermaid_flowchart("flowchart TD\n subgraph X\n a --> b\n end").is_err());
+        assert!(parse_mermaid_flowchart("flowchart TD\n @@@").is_err());
         // 错误消息带行号
-        let err = parse_mermaid_flowchart("flowchart TD\n a --- b").unwrap_err();
+        let err = parse_mermaid_flowchart("flowchart TD\n subgraph X\n a --> b\n end").unwrap_err();
         assert!(err.contains("第 2 行"), "{err}");
     }
 

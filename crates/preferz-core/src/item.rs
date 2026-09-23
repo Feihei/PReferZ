@@ -175,6 +175,11 @@ pub enum ItemKind {
         /// 见 `start_binding`（终点）。
         #[serde(default, deserialize_with = "deserialize_endpoint_binding_opt")]
         end_binding: Option<EndpointBinding>,
+        /// 边标签（仅线性对象 Polyline 使用；矩形族忽略）。mermaid `-->|文本|` /
+        /// `-- 文本 -->` 生成的连线文字，渲染期每帧画在当前曲线中点，随端点重路由
+        /// 自动跟随（plan #17 DP2）。`#[serde(default)]`：旧存档无此字段按 `None` 加载。
+        #[serde(default)]
+        label: Option<String>,
     },
     /// 幻灯片画框（Phase D）。不旋转/不翻转；仅边框点选命中，内容区域点击穿透。
     /// 渲染恒在其它 item 之下（创建时 z 置为最小）。
@@ -644,6 +649,7 @@ impl Item {
                 sloppiness: Sloppiness::Off,
                 start_binding: None,
                 end_binding: None,
+                label: None,
             },
             transform: Transform::new(pos_x, pos_y, 1.0, 1.0),
             z: 0,
@@ -685,10 +691,27 @@ impl Item {
                 sloppiness: Sloppiness::Off,
                 start_binding: None,
                 end_binding: None,
+                label: None,
             },
             transform: Transform::new(pos_x, pos_y, 1.0, 1.0),
             z: 0,
             group_id: None,
+        }
+    }
+
+    /// builder：设置线性对象的边标签（plan #17 DP2）。非 Shape 无副作用。
+    pub fn with_label(mut self, label: Option<String>) -> Self {
+        if let ItemKind::Shape { label: l, .. } = &mut self.kind {
+            *l = label.filter(|s| !s.is_empty());
+        }
+        self
+    }
+
+    /// 线性对象的边标签（非 Shape / 无标签返回 `None`）。
+    pub fn label(&self) -> Option<&str> {
+        match &self.kind {
+            ItemKind::Shape { label, .. } => label.as_deref(),
+            _ => None,
         }
     }
 

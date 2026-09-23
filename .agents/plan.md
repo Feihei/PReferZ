@@ -149,7 +149,9 @@
 | 13 | ✅ 元素编组 / 解组（2026-09-08 `4033726`，待人工验收） | `Item.group_id: Option<Uuid>`（单组，持久化）；点击组成员全选、移动整体；`Ctrl+G` 编组 / `Ctrl+Shift+G` 解组 | 已拍板（G1–G4 全按倾向列）：单组；点击整组；删/拖出成员其余保持编组；组粒度复制/对齐/分布 |
 | 14 | ✅ 移动整条线贴合图形时建立端点绑定（2026-09-10 `38de45b`/`aa928e1`，已验收 ✅） | **锚点绑定模型**：`Option<ItemId>` → `EndpointBinding{target, anchor}`（锚点=贴合点在目标局部系坐标）；`resolve_bindings` 按锚点重算，端点钉同一表面点（修复矩形移动时端点沿边滑动、直线被拉平）；旧存档纯 uuid serde untagged 自动迁移（回退最近轮廓点）。**整线绑定**：MoveItems 预览对组内每条 Polyline 两端做 snap 查询（排除移动组自身），命中→贴边+绑定直改，未命中→端点随线自由+解绑；释放用 `MultiCommand` 打包 MoveItems + EditShapePoints，一条 undo 记录。另修复 skip_first_redo 回归（绑定字段释放直改） | 已按倾向拍板：① 整线贴合默认绑定（Excalidraw=是）✅；② 预览吸附视觉与端点编辑模式一致（同阈值/同高亮）✅；③ 端点同时贴近多目标取最近（find_snap_target 语义）✅ |
 | 15 | ✅ 视口缩放套件（View all / 缩放到选中 / 100%）（2026-09-10 本批，待人工验收） | Excalidraw 同款三键：Shift+1 = Zoom to fit（**已有** `FitToScreen`，本轮确认保留）；新增 Shift+2 = 缩放到选中（`zoom_to_selection`，选中 AABB 并集 `fit_to_content`，无选中仅 flash"未选中元素"）；新增 Shift+3 = 缩放回 100%（视口中心 pan 不动，仅改 zoom）。两 Action 均入 `ALL` 列表可重绑定；i18n 补 Action 名与 flash 词条 | 已按倾向拍板：① 快捷键对齐 Excalidraw Shift+1/2/3 ✅；② Shift+2 无选中时提示而非退化成 fit all（与 Excalidraw 一致不改变视口）✅ |
-| 16 | 🔵 elbow 直角可拖 bar 重路由（路由器，未开始） | #7/#折线 elbow 的后续增强：让 elbow 连线可拖动中间 bar 调整走线、端点一动仍自动回正交、能来回切。**先不做**：本轮只上了「编辑护栏」（elbow 线不吐段中点手柄，见 CHANGELOG §折线新增直角折线 elbow）——naive「每段各自正交化」会在抓拐点瞬间把另一根 bar 顶偏、形状跳变，不可接受。真做需 core 直角路由模块（单段可拖 bar → 需存 bar 偏移，牵一处 `#[serde(default)]` shape 字段；或完整多段 + segment 约束），对齐 Excalidraw `elbowArrow.ts` 的 `updateElbowArrowPoints`/routesProvider 思路 | ⬜ 待拍板：单段可拖 bar（小、覆盖流程图绝大多数）vs 多段自由路由（大）；bar 偏移存字段 vs 复用 points 内部编码 |
+| 16 | ⏳ elbow 直角线完整实现（可拖 bar + 可选避让路由）（2026-09-23 拍板启动：分期 E1→E2，评估见细节 §16） | E1 单段 bar 可拖：Shape 加 `elbow_mid_offset`（serde default 零迁移），`elbow_polyline` 接受交叉轴偏移，拖 bar 挪走线、端点/绑定重算后偏移保持；编辑护栏从「不吐手柄」改为「仅暴露 bar 手柄」。E2 障碍避让路由（可选后做）：移植 Excalidraw `elbowArrow.ts` 的 grid+A\*（`routeElbowArrow`/`calculateGrid`/`astar`），连线绕开节点 | E1 已拍板（2026-09-23）：单段 bar（小、覆盖流程图绝大多数）先行；偏移存**交叉轴单字段**而非 points 编码（E2 可作初值）；待拍板：undo 命令形态（倾向新 `SetElbowOffset` vs 复用 `EditShapePoints`）、offset clamp 范围、bar 手柄命中宽度。E2 待拍板：是否立期（痛点=连线穿节点）、届时 points 完整存路由 vs 固定段列表派生 |
+| 17 | 🔶 mermaid 语法完整化（#9 后续，代码交付待人工验收） | 把受限子集扩到「实用流程图」：①**边标签** `-->|是|` / `-- 是 -->`；②**一行多分支 `&`**（`a --> b & c`、`a & b --> c & d` 交叉积）；③**箭头族** `---`/`-.->`/`==>`/`<-->` 等；④**更多节点外形** `((圆))`/`([体育场])`/`[(柱)]`/`{{六边}}`/`[[子程序]]`/`>旗]` + 引号标签 `"…"`。边距/分层布局已支持分叉（非本轮缺口）。subgraph、sequence/class/state **不做** | ✅ 已拍板（3 DP 全按推荐，2026-09-23）：DP1 全部近似映射（零 `ShapeType` 改动）；DP2 边内建 `label` 字段、渲染期画在曲线中点随重路由跟随（零 `.prz` 迁移）；DP3 `()`→Rectangle、`((…))`→Ellipse 校正为标准语义。批次 A/B 已交付，批次 C（barycenter 减交叉 + 边改 elbow）排后待评估 |
+| 18 | ⏳ 相乘叠合模式（Multiply 正片叠底 / 荧光马克笔）（2026-09-23 提出，评估完成待拍板，见细节 §18） | M1（小）荧光马克笔预设近似：荧光色板 + 低不透明度默认填充（Excalidraw highlighter 同款半透明路线）；M2（大）真 multiply：数据模型 `BlendMode{Normal,Multiply}` + 导出侧 CPU 逐像素相乘（依赖导出重写为正向合成）+ 屏幕侧 `Shape::Callback`+glow 自绘 hack 或等 egui 上游 | ⬜ 待拍板：范围（仅填充 / +freedraw / +图片）；M1 是否独立先上；屏幕侧接受 PaintCallback hack（~200–300 行、升级易碎）与否；已核实 egui 0.36.2 无 per-shape blend（epaint 无 BlendMode、glow 固定预乘 alpha）——屏幕实时真 multiply 是唯一硬点 |
 
 ### 各项细节与决策点
 
@@ -254,6 +256,48 @@
   - **G2 点击整组 vs 点单成员**：✅ **点击组内任一成员即选整组**（Excalidraw 默认）；框选按实际命中成员收进选区（框选部分成员时选中那些成员，操作时命中扩展仍生效）；双击穿透选单成员排后增强。
   - **G3 组内元素的删除/拖出**：✅ 删/拖出某成员，**保留其余成员的 group_id**（同组继续存在）；彻底解组需显式 `Ctrl+Shift+G`。
   - **G4 与 11/6 的关系**：✅ 编组后 `Ctrl+D`、对齐/分布均作用于整组（选区=整组），无特殊处理；组整体移动走现有 `MoveItems`；组包围盒手柄：选中**整组**（且选区恰为完整一组）时只画组包围盒，其余多选场景维持现状。
+
+17. **🔶 mermaid 语法完整化（#9 后续，代码交付待人工验收）**
+
+- **现状校准（先纠正一个误解）**：`mermaid.rs` 的分层布局**已支持分叉/汇合**——`a --> b` / `a --> c` 分写两行即被 `intern_node` 复用同一 `a`、`layout_flowchart` 按最长路径把 b/c 摆进同一层（交叉轴并排），`flowchart::tests::layout_levels_follow_longest_path` 已在把关。**所以「不能画侧链」不是布局缺陷**。真正让侧链「不可读/不可用」的是三处**显式报错**：
+  1. **边标签** `-->|是|`（`mermaid.rs:90` 直接 `Err`）——决策分支的「是/否」标注，缺了它菱形分叉看不出走哪条边，这是侧链不可用的**首要原因**；
+  2. **一行多分支 `&`**（`a --> b & c`）——写同向侧链最省事的语法，现在 `b & c` 被当非法 id（含空格/`&`）报错；
+  3. **箭头族 / 多外形**——`---` 无向、`-.->` 虚线、`==>` 粗线、`<-->` 双向、`((圆))`/`([体育场])`/`[(柱)]`/`{{六边}}`/`[[子程序]]`/`>旗]`、引号标签 `"…"` 全部落不到解析（`mermaid.rs:105`）。
+
+- **目标模型硬约束（决定「映射」的成本，务必先看）**：
+  - `shape.rs:5` `ShapeType` **只有** `Rectangle / Ellipse / Diamond / Polyline`——**没有**圆角矩形、体育场、六边形、柱体、子程序、旗形。→ 额外外形只能「映射到近似」或「新增 `ShapeType`」（见 DP1）。
+  - `shape.rs:42` `DashStyle = {Solid, Dashed, Dotted}` + `StrokeStyle.width` + `ArrowHeadStyle = {Arrow, Dot}`（`Option=None` 表无箭头）——**箭头族全部可零成本承载**（见下表），无需新枚举（`--x` 叉形头除外，见下）。
+  - `()→Ellipse` 现状与 mermaid 语义**冲突**：mermaid `()` 是圆角矩形、`((…))` 才是圆。本轮要么校正（`()`→Rectangle 近似、`((…))`→Ellipse），要么保留（观感差异，需明说）。
+  - `ItemKind::Shape`（含 Polyline）整体存 JSON blob → 加字段**零 `.prz` 迁移**（I4）；穷尽 `match` 仅三处（`render.rs` ×2、`export.rs::sample_item_pixel`、`fileio item_kind_str`），新增 `ShapeType` 变体须同步这四处 + 几何/命中。
+
+- **语法覆盖表（→ 目标映射，批次 A 解析 + 批次 B 落地）**：
+
+  | mermaid 写法 | 语义 | start→end 箭头 | dash | width |
+  |---|---|---|---|---|
+  | `-->` | 实线箭头（已有） | None→Arrow | Solid | 常规 |
+  | `---` | 无箭头连线 | None→None | Solid | 常规 |
+  | `-.->` / `-.-` | 虚线箭头 / 虚线 | (Arrow)/None | Dashed | 常规 |
+  | `==>` / `===` | 粗线箭头 / 粗线 | (Arrow)/None | Solid | ×2 |
+  | `<-->` | 双向 | Arrow→Arrow | Solid | 常规 |
+  | `-->|文本|` / `-- 文本 -->` | 带标签 | 同上 | 同上 | 同上 |
+
+  节点外形：`[…]`→Rectangle、`{…}`→Diamond（已有）；`((…))`→Ellipse、`(…)`/`([…])`→Rectangle（圆角近似，DP1 若通过则 Stadium 独立）；`{{…}}` 六边 / `[(…)]` 柱 / `[[…]]` 子程序 / `>…]` 旗 / `[/…/]` 平行四边形——**取决于 DP1**。`--x`/`--o` 叉形/圆点端：`--o`→`Dot`（现成）、`--x` 无对应头 → 降级为 `Arrow` 并注明。
+
+  `&` 交叉积：一行按箭头切段，每段再按 `&` 拆成节点列表，相邻段做笛卡尔积成边（`a & b --> c & d` = a→c,a→d,b→c,b→d；`A --> B & C --> D` = A→B,A→C,B→D,C→D），与 mermaid 一致。引号标签 `["含 空格"]` 与首行前预处理（智能引号 `“”`→`"`、容忍行尾 `;`）参照 `.ref/excalidraw` `mermaidAutoFix.ts` 的归一化思路。
+
+- **拟分三批（各自可独立验收、可拆 commit）**：
+  - **批次 A｜解析层（`mermaid.rs`，core L1、纯函数、零依赖）**：`MermaidEdge` 加 `kind: MermaidArrow`（枚举）+ `label: Option<String>`；`MermaidShape` 扩变体（视 DP1）；`parse_node_token` 支持双括号嵌套（`((`/`([`/`[[`/`[(`) 与引号体；`&` 拆段 + 笛卡尔积；`%%`/空行/行尾 `;`/智能引号预处理；错误仍带行号。→ 单测矩阵（每种箭头/外形/`&`/标签/引号各一条 + 非法回退）。
+  - **批次 B｜映射层（`shape.rs`/`item.rs`/`actions.rs::generate_mermaid_flowchart`）**：`MermaidArrow`→(start/end `ArrowHeadStyle`, `DashStyle`, `width`)；`MermaidShape`→`ShapeType`（按 DP1 结论）；边标签按 DP2 结论落地；`()`→ 校正映射（若采纳）。→ 无头单测断言生成的 item 字段。
+  - **批次 C｜布局质量（`mermaid.rs::layout_flowchart`，可选/排后）**：`&` 展开后同层变宽 → 现「按出现顺序」排布易交叉，可加 **重心排序（barycenter）** 减少边交叉；边默认改 **elbow**（复用 #7 `CurveType::Elbow`）更贴 mermaid 正交观感。→ 视 A/B 验收后再定是否本轮做。
+
+- **决策点（✅ 已拍板 2026-09-23，全按推荐列）**：
+  - **DP1｜额外节点外形**：✅ **(a)+(c)**——解析期把冷门形近似收敛（`((…))`/`([…])`→Ellipse、`(…)`/`[[…]]`/`[(…)]`/`{{…}}`/`>…]`/`[/…/]`→Rectangle、`{…}`→Diamond），零 `ShapeType` 改动、`.prz` 零迁移。新增 `ShapeType::{Stadium,Cylinder,Hexagon}` 忠实渲染留验收反馈后再评估。
+  - **DP2｜边标签形态**：✅ **(b)**——给线性 `ItemKind::Shape` 加 `label: Option<String>` 字段（`#[serde(default)]`，`.prz` 零迁移），渲染期 `draw_edge_label` 每帧把标签画在**线段中点**（两点直边中点=包围盒中心），端点重路由时自动跟随；`generate_mermaid_flowchart` 生成时把 `MermaidEdge.label` 写入该字段，整批 `AddItems` 一条 undo。
+  - **DP3｜`()→圆` 语义校正**：✅ **校正**——`()` 圆角矩形→Rectangle、`((…))` 圆→Ellipse（解析期收敛），与 mermaid 文档一致。
+
+- **交付（2026-09-23，批次 A/B）**：core `mermaid.rs` 重写为手写扫描器（`scan_link`/`scan_node`/`parse_shape_body`）——箭头族 `MermaidArrow{Arrow,Open,Dotted,DottedOpen,Thick,ThickOpen,Double}`、`MermaidEdge{kind,label}`、`&` 交叉积、双括号外形（DP1 近似收敛）、pipe `-->|t|` 与 inline `-- t -->`（仅实线）、引号标签、`%%`/行尾 `;` 预处理、`subgraph`/`style`/… 显式报错带行号；15 单测（矩阵 + 非法回退 + 布局）。binary `item.rs` 加 `label` 字段 + `with_label`/`label()`；`actions.rs::generate_mermaid_flowchart` 按 `MermaidArrow`→(start/end 头, `DashStyle`, width×) 映射并落边标签；`render.rs` `draw_edge_label`（两条渲染路径共用）。**未做**：批次 C（barycenter 减交叉 + 边改 elbow）排后待评估；导出为矢量软栅格、Shape 恒 `None`，标签无需改导出。质量门全绿（fmt / clippy -D / core 181 + fileio 9 + binary lib 76，唯一失败 `tick_autosave_writes_sidecar` 经 git stash 验证为**先前已存在的无关 flaky**）；无头冒烟无 panic。待 `cargo run` 人工验收（观感：侧链标签跟随、箭头族线型、特殊形近似）。
+
+- **不在本轮范围（明确划出，避免蔓延）**：`subgraph` 分组框（嵌套布局 + 容器落位，最贵，用户已选「不纳入」）；sequence / class / state / ER / gantt 等**非 flowchart 图种**（用户已选「预留扩展但本轮不做」）。**架构预留**：解析入口 `parse_mermaid_flowchart` 首行按图种关键字分派，未来加图种 = 新 `match` 臂 + 独立布局模块，不改 flowchart 分支；建议在函数 doc 注明此为图种分派点。
 
 ---
 

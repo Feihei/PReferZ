@@ -196,6 +196,7 @@ impl PReferZApp {
                 let to_screen = item_local_to_screen(item, &self.viewport);
                 let shapes = build_shape_visuals(&item.kind, &to_screen, self.viewport.zoom);
                 ui.painter().extend(shapes);
+                self.draw_edge_label(ui, item);
             }
             // 墨迹（plan #10）：速度锥形 ribbon 填充轮廓。
             ItemKind::Freedraw { .. } => {
@@ -366,6 +367,40 @@ impl PReferZApp {
         }
     }
 
+    /// 线性对象边标签（plan #17 DP2）：把 mermaid `-->|文本|` / `-- 文本 -->` 生成的
+    /// 连线文字画在当前线段中点的屏幕位置，随端点重路由自动跟随。仅带 `label` 的
+    /// Polyline 生效（mermaid 恒生成两点直边，故中点 = 包围盒中心；若后续手动改成
+    /// 曲线/elbow，标签仍落在原包围盒中心，属可接受的小偏差）。
+    fn draw_edge_label(&self, ui: &egui::Ui, item: &Item) {
+        let ItemKind::Shape {
+            shape_type, label, ..
+        } = &item.kind
+        else {
+            return;
+        };
+        if !matches!(shape_type, ShapeType::Polyline) {
+            return;
+        }
+        let Some(text) = label else { return };
+        if text.is_empty() {
+            return;
+        }
+        let to_screen = item_local_to_screen(item, &self.viewport);
+        let scale = to_screen
+            .transform_vector(euclid::Vector2D::<f32, ItemLocalSpace>::new(1.0, 0.0))
+            .length()
+            .max(1e-4);
+        let center = self.viewport.canvas_to_pos2(item.bounding_rect().center());
+        let text_col = ui.visuals().text_color();
+        let galley = ui.painter().layout_no_wrap(
+            text.clone(),
+            egui::FontId::proportional(15.0 * scale),
+            text_col,
+        );
+        let pos = center - galley.size() * 0.5;
+        ui.painter().galley(pos, galley, text_col);
+    }
+
     pub(crate) fn render_scene(&mut self, ui: &mut egui::Ui) {
         let screen_rect = ui.max_rect();
 
@@ -482,6 +517,7 @@ impl PReferZApp {
                     let to_screen = item_local_to_screen(item, &self.viewport);
                     let shapes = build_shape_visuals(&item.kind, &to_screen, self.viewport.zoom);
                     ui.painter().extend(shapes);
+                    self.draw_edge_label(ui, item);
                 }
                 // 墨迹（plan #10）：速度锥形 ribbon 填充轮廓。
                 ItemKind::Freedraw { .. } => {

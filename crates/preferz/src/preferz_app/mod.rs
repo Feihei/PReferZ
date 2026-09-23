@@ -28,7 +28,9 @@ use preferz_core::commands::{
     SetStrokeStyle, SetTextStyle, TransformItem,
 };
 use preferz_core::flowchart;
-use preferz_core::mermaid::{layout_flowchart, parse_mermaid_flowchart, MermaidShape};
+use preferz_core::mermaid::{
+    layout_flowchart, parse_mermaid_flowchart, MermaidArrow, MermaidShape,
+};
 use preferz_core::shape::{
     ArrowHeadStyle, CurveType, DashStyle, FillStyle, FontFamily, PixmapStyle, ShapeType,
     Sloppiness, StrokeStyle, TextAlignH, TextAlignV, TextStyle,

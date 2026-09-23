@@ -665,6 +665,24 @@ impl PReferZApp {
         for e in &fc.edges {
             let from = node_rects[e.from];
             let to = node_rects[e.to];
+            // 箭头族 → (start/end 箭头头, 线型 dash, 宽度倍数)（plan #17）。
+            let (start_arrow, end_arrow, dash, width_mult) = match e.kind {
+                MermaidArrow::Arrow => (None, Some(ArrowHeadStyle::Arrow), DashStyle::Solid, 1.0),
+                MermaidArrow::Open => (None, None, DashStyle::Solid, 1.0),
+                MermaidArrow::Dotted => (None, Some(ArrowHeadStyle::Arrow), DashStyle::Dashed, 1.0),
+                MermaidArrow::DottedOpen => (None, None, DashStyle::Dashed, 1.0),
+                MermaidArrow::Thick => (None, Some(ArrowHeadStyle::Arrow), DashStyle::Solid, 2.0),
+                MermaidArrow::ThickOpen => (None, None, DashStyle::Solid, 2.0),
+                MermaidArrow::Double => (
+                    Some(ArrowHeadStyle::Arrow),
+                    Some(ArrowHeadStyle::Arrow),
+                    DashStyle::Solid,
+                    1.0,
+                ),
+            };
+            let mut edge_stroke = stroke;
+            edge_stroke.dash = dash;
+            edge_stroke.width = stroke.width * width_mult;
             // 主轴方向取中心差的主导轴（与分层布局方向一致）
             let dx = to.center().x - from.center().x;
             let dy = to.center().y - from.center().y;
@@ -687,16 +705,17 @@ impl PReferZApp {
             let mut arrow = Item::new_polyline(
                 vec![(s.x - min.x, s.y - min.y), (d.x - min.x, d.y - min.y)],
                 ((d.x - s.x).abs(), (d.y - s.y).abs()),
-                None,
-                Some(ArrowHeadStyle::Arrow),
+                start_arrow,
+                end_arrow,
                 false,
                 min.x,
                 min.y,
-                stroke,
+                edge_stroke,
             );
             if let ItemKind::Shape {
                 start_binding,
                 end_binding,
+                label,
                 ..
             } = &mut arrow.kind
             {
@@ -708,6 +727,8 @@ impl PReferZApp {
                     target: node_ids[e.to],
                     anchor: Some(dst_anchor),
                 });
+                // 边标签（plan #17 DP2）：存于线性对象自身，渲染期画在曲线中点。
+                *label = e.label.clone().filter(|s| !s.is_empty());
             }
             added.push(arrow);
         }
