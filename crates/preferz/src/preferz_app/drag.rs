@@ -255,6 +255,24 @@ impl PReferZApp {
                         }
                         return;
                     }
+                    // elbow bar：进入 bar 拖拽（预览直接改 elbow_mid_offset）。
+                    if let Handle::ElbowBar = h {
+                        let start_offset = match &item.kind {
+                            ItemKind::Shape {
+                                elbow_mid_offset, ..
+                            } => *elbow_mid_offset,
+                            _ => 0.0,
+                        };
+                        let start_canvas = self.viewport.pos2_to_canvas(screen_pos);
+                        self.drag = DragState::ElbowBar {
+                            item_id: item.id,
+                            start_canvas,
+                            start_offset,
+                        };
+                        self.transform_handles.active_handle = h;
+                        self.transform_handles.is_dragging = true;
+                        return;
+                    }
                     // 翻转边手柄：点击即触发翻转，不进入拖拽（spec L239「翻转边」）
                     if h == Handle::FlipH || h == Handle::FlipV {
                         let ids: Vec<ItemId> = self.scene.selection.iter().cloned().collect();
@@ -522,6 +540,8 @@ impl PReferZApp {
                         Handle::FlipH | Handle::FlipV | Handle::None => {}
                         // 线类顶点/段中点begin_drag 中已进入 LineEndpoint 拖拽，不会到达这里
                         Handle::Endpoint(_) | Handle::SegmentMid(_) => {}
+                        // elbow barbegin_drag 中已进入 ElbowBar 拖拽，不会到达这里
+                        Handle::ElbowBar => {}
                     }
                 }
                 // plan #5：缩放/旋转形状时，实时联动重算绑定到它的线端点
@@ -733,6 +753,50 @@ impl PReferZApp {
                                     }
                                 }
                             }
+                        }
+                    }
+                }
+            }
+            DragState::ElbowBar {
+                item_id,
+                start_canvas,
+                start_offset,
+            } => {
+                let item_id = *item_id;
+                let start_canvas = *start_canvas;
+                let start_offset = *start_offset;
+                let current_canvas = self.viewport.pos2_to_canvas(screen_pos);
+                let delta_canvas = current_canvas - start_canvas;
+                // bar 沿局部短轴偏移：elbow_polyline_offset 按 |dx|<=|dy| 选轴，
+                // 拖拽位移逆变换到局部后取对应分量叠加到 start_offset。
+                let new_offset = self.scene.get_item(&item_id).and_then(|item| {
+                    let pts = match &item.kind {
+                        ItemKind::Shape { points, .. } => points.clone(),
+                        _ => return None,
+                    };
+                    if pts.len() != 2 {
+                        return None;
+                    }
+                    let dx = pts[1].0 - pts[0].0;
+                    let dy = pts[1].1 - pts[0].1;
+                    let delta_local = item
+                        .local_to_canvas()
+                        .inverse()
+                        .map(|inv| inv.transform_vector(delta_canvas))?;
+                    let d = if dx.abs() <= dy.abs() {
+                        delta_local.x
+                    } else {
+                        delta_local.y
+                    };
+                    Some(start_offset + d)
+                });
+                if let Some(new_offset) = new_offset {
+                    if let Some(item) = self.scene.get_item_mut(&item_id) {
+                        if let ItemKind::Shape {
+                            elbow_mid_offset, ..
+                        } = &mut item.kind
+                        {
+                            *elbow_mid_offset = new_offset;
                         }
                     }
                 }
@@ -1163,6 +1227,29 @@ impl PReferZApp {
             }
             // 多边形在函数开头已提前 return（多拍工具不在释放时收尾），这里只为穷尽匹配
             DragState::CreatingPolygon { .. } => {}
+            DragState::ElbowBar {
+                item_id,
+                start_offset,
+                ..
+            } => {
+                // 预览已直改 elbow_mid_offset；释放时若有变化则固化到 undo 栈
+                let cur_offset = self
+                    .scene
+                    .get_item(&item_id)
+                    .and_then(|item| match &item.kind {
+                        ItemKind::Shape {
+                            elbow_mid_offset, ..
+                        } => Some(*elbow_mid_offset),
+                        _ => None,
+                    })
+                    .unwrap_or(start_offset);
+                if (cur_offset - start_offset).abs() > 1e-4 {
+                    let cmd = SetElbowOffset::new(item_id, start_offset, cur_offset)
+                        .with_preview_applied(true);
+                    self.push_cmd(Box::new(cmd));
+                }
+                self.transform_handles.end_drag();
+            }
             DragState::Idle => {}
         }
     }

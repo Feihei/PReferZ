@@ -149,9 +149,10 @@
 | 13 | ✅ 元素编组 / 解组（2026-09-08 `4033726`，待人工验收） | `Item.group_id: Option<Uuid>`（单组，持久化）；点击组成员全选、移动整体；`Ctrl+G` 编组 / `Ctrl+Shift+G` 解组 | 已拍板（G1–G4 全按倾向列）：单组；点击整组；删/拖出成员其余保持编组；组粒度复制/对齐/分布 |
 | 14 | ✅ 移动整条线贴合图形时建立端点绑定（2026-09-10 `38de45b`/`aa928e1`，已验收 ✅） | **锚点绑定模型**：`Option<ItemId>` → `EndpointBinding{target, anchor}`（锚点=贴合点在目标局部系坐标）；`resolve_bindings` 按锚点重算，端点钉同一表面点（修复矩形移动时端点沿边滑动、直线被拉平）；旧存档纯 uuid serde untagged 自动迁移（回退最近轮廓点）。**整线绑定**：MoveItems 预览对组内每条 Polyline 两端做 snap 查询（排除移动组自身），命中→贴边+绑定直改，未命中→端点随线自由+解绑；释放用 `MultiCommand` 打包 MoveItems + EditShapePoints，一条 undo 记录。另修复 skip_first_redo 回归（绑定字段释放直改） | 已按倾向拍板：① 整线贴合默认绑定（Excalidraw=是）✅；② 预览吸附视觉与端点编辑模式一致（同阈值/同高亮）✅；③ 端点同时贴近多目标取最近（find_snap_target 语义）✅ |
 | 15 | ✅ 视口缩放套件（View all / 缩放到选中 / 100%）（2026-09-10 本批，待人工验收） | Excalidraw 同款三键：Shift+1 = Zoom to fit（**已有** `FitToScreen`，本轮确认保留）；新增 Shift+2 = 缩放到选中（`zoom_to_selection`，选中 AABB 并集 `fit_to_content`，无选中仅 flash"未选中元素"）；新增 Shift+3 = 缩放回 100%（视口中心 pan 不动，仅改 zoom）。两 Action 均入 `ALL` 列表可重绑定；i18n 补 Action 名与 flash 词条 | 已按倾向拍板：① 快捷键对齐 Excalidraw Shift+1/2/3 ✅；② Shift+2 无选中时提示而非退化成 fit all（与 Excalidraw 一致不改变视口）✅ |
-| 16 | ⏳ elbow 直角线完整实现（可拖 bar + 可选避让路由）（2026-09-23 拍板启动：分期 E1→E2，评估见细节 §16） | E1 单段 bar 可拖：Shape 加 `elbow_mid_offset`（serde default 零迁移），`elbow_polyline` 接受交叉轴偏移，拖 bar 挪走线、端点/绑定重算后偏移保持；编辑护栏从「不吐手柄」改为「仅暴露 bar 手柄」。E2 障碍避让路由（可选后做）：移植 Excalidraw `elbowArrow.ts` 的 grid+A\*（`routeElbowArrow`/`calculateGrid`/`astar`），连线绕开节点 | E1 已拍板（2026-09-23）：单段 bar（小、覆盖流程图绝大多数）先行；偏移存**交叉轴单字段**而非 points 编码（E2 可作初值）；待拍板：undo 命令形态（倾向新 `SetElbowOffset` vs 复用 `EditShapePoints`）、offset clamp 范围、bar 手柄命中宽度。E2 待拍板：是否立期（痛点=连线穿节点）、届时 points 完整存路由 vs 固定段列表派生 |
+| 16 | ✅ elbow E1 单段 bar 可拖（2026-09-23 交付，待人工验收；E2 避让路由**留待未来**） | E1 单段 bar 可拖：Shape 加 `elbow_mid_offset`（serde default 零迁移），`elbow_polyline_offset` 接受交叉轴偏移（短轴偏移+clamp+dedup），拖 bar 挪走线、端点/绑定重算后偏移保持；编辑护栏从「不吐手柄」改为「仅暴露 bar 手柄」（`Handle::ElbowBar` 带状命中+小方块绘制）；`DragState::ElbowBar` 拖拽态（begin/update/end）；`SetElbowOffset` 命令（skip_first_redo 预览惯例）。E2 障碍避让路由（留待未来）：移植 Excalidraw `elbowArrow.ts` 的 grid+A\*（`routeElbowArrow`/`calculateGrid`/`astar`），连线绕开节点 | ✅ 已拍板（2026-09-23）：E1 单段 bar 先行——偏移存**交叉轴单字段**而非 points 编码（E2 可作初值）；E2 **留待未来**，「连线穿过节点」痛点真实出现再评估立期（届时 points 完整存路由 vs 固定段列表派生一并定）。undo 命令=新 `SetElbowOffset` Copy 快照命令 ✅；offset clamp 至两端点内侧（`bar_axis` 兜底）✅；bar 手柄命中宽度=`max(stroke_width, 8px/zoom)`（`ELBOW_BAR_HIT_PX=8.0`）✅ |
 | 17 | 🔶 mermaid 语法完整化（#9 后续，代码交付待人工验收） | 把受限子集扩到「实用流程图」：①**边标签** `-->|是|` / `-- 是 -->`；②**一行多分支 `&`**（`a --> b & c`、`a & b --> c & d` 交叉积）；③**箭头族** `---`/`-.->`/`==>`/`<-->` 等；④**更多节点外形** `((圆))`/`([体育场])`/`[(柱)]`/`{{六边}}`/`[[子程序]]`/`>旗]` + 引号标签 `"…"`。边距/分层布局已支持分叉（非本轮缺口）。subgraph、sequence/class/state **不做** | ✅ 已拍板（3 DP 全按推荐，2026-09-23）：DP1 全部近似映射（零 `ShapeType` 改动）；DP2 边内建 `label` 字段、渲染期画在曲线中点随重路由跟随（零 `.prz` 迁移）；DP3 `()`→Rectangle、`((…))`→Ellipse 校正为标准语义。批次 A/B 已交付，批次 C（barycenter 减交叉 + 边改 elbow）排后待评估 |
-| 18 | ⏳ 相乘叠合模式（Multiply 正片叠底 / 荧光马克笔）（2026-09-23 提出，评估完成待拍板，见细节 §18） | M1（小）荧光马克笔预设近似：荧光色板 + 低不透明度默认填充（Excalidraw highlighter 同款半透明路线）；M2（大）真 multiply：数据模型 `BlendMode{Normal,Multiply}` + 导出侧 CPU 逐像素相乘（依赖导出重写为正向合成）+ 屏幕侧 `Shape::Callback`+glow 自绘 hack 或等 egui 上游 | ⬜ 待拍板：范围（仅填充 / +freedraw / +图片）；M1 是否独立先上；屏幕侧接受 PaintCallback hack（~200–300 行、升级易碎）与否；已核实 egui 0.36.2 无 per-shape blend（epaint 无 BlendMode、glow 固定预乘 alpha）——屏幕实时真 multiply 是唯一硬点 |
+| 18 | 🔵 相乘叠合模式（Multiply 正片叠底 / 荧光马克笔）——**先不做**（2026-09-23 拍板；评估存档见细节 §18，将来重启可直接沿用） | M1（小）荧光马克笔预设近似：荧光色板 + 低不透明度默认填充（Excalidraw highlighter 同款半透明路线）；M2（大）真 multiply：数据模型 `BlendMode{Normal,Multiply}` + 导出侧 CPU 逐像素相乘（依赖导出重写为正向合成）+ 屏幕侧 `Shape::Callback`+glow 自绘 hack 或等 egui 上游 | ✅ 拍板（2026-09-23）：**先不做**（评估已完成并存档）。将来重启时的关键前提不变：egui 0.36.2 无 per-shape blend（epaint 无 BlendMode、glow 固定预乘 alpha）——屏幕实时真 multiply 是唯一硬点；M2 导出侧前置依赖导出管线重写（矢量元素目前不导出） |
+| 19 | ⏳ elbow 多顶点逐段展开（E1.5，2026-09-24 拍板待实施，见细节 §19） | 闭合折线切 elbow → 转 open + 顶点全保留 + 每段居中正交展开 + 末段连回首点（视觉闭环）；多段不消费 `elbow_mid_offset`（仅两点线有意义）；SegmentMid 手柄对多顶点 elbow 恢复、两点线仍压制；bar 手柄仅两点线出现 | ✅ 已拍板（2026-09-24）：**不跟随 Excalidraw 的 line/arrow 类型分裂**（`elbowed` 仅 arrow、UI 三态仅 arrow 可见、切 elbow 丢中间点），保持统一 Polyline + `CurveType` 三态；三项决策全按推荐 |
 
 ### 各项细节与决策点
 
@@ -257,6 +258,30 @@
   - **G3 组内元素的删除/拖出**：✅ 删/拖出某成员，**保留其余成员的 group_id**（同组继续存在）；彻底解组需显式 `Ctrl+Shift+G`。
   - **G4 与 11/6 的关系**：✅ 编组后 `Ctrl+D`、对齐/分布均作用于整组（选区=整组），无特殊处理；组整体移动走现有 `MoveItems`；组包围盒手柄：选中**整组**（且选区恰为完整一组）时只画组包围盒，其余多选场景维持现状。
 
+16. **✅ elbow E1 单段 bar 可拖（2026-09-23 交付，待人工验收；E2 避让路由留待未来）**
+- **拍板（2026-09-23）**：E1 启动实施；E2（障碍避让路由）**留待未来**——待「连线穿过节点」痛点真实出现再评估立期。
+- 现状：`CurveType::Elbow` 第三态已交付（渲染期把两端点展开为固定 Z 形正交折线，core `item::elbow_polyline`：沿较小 Δ 轴中点转折 3 段；渲染/命中/逐像素导出三处共用；编辑护栏=elbow 线不吐段中点手柄）。**评估结论**：对齐 Excalidraw 需补三块能力，差距不在「画」，在「编辑与路由」。对照 `.ref/excalidraw` `elbowArrow.ts`（2309 行）分层：
+  1. **走线不可定制**：恒中点 Z 形，端点移动/绑定重算时形态单一，无法表达用户偏好的走线位置（现 `elbow_polyline` 只认两端点、无任何用户状态参与）。
+  2. **无 bar 拖动**：Excalidraw 可拖中间正交段（bar）平移走线——`handleSegmentRenormalization`(113)/`handleSegmentMove`(465)/`handleSegmentRelease`(282) 三兄弟：拖动时保持 bar 段位置、只伸缩相邻正交段（不推歪整线），释放把偏移写回；`handleEndpointDrag`(706) 端点拖动时 bar 相对位置尽量保持。
+  3. **无障碍感知**：Excalidraw `routeElbowArrow`(1439) = `calculateGrid`(1853) 动态网格 + `generateDynamicAABBs`(1668) 障碍 AABB 合并（`commonAABB`）+ **A\* 寻路**（`astar` 1537 + `getNeighbors`/`pathTo`/`m_dist`）+ `removeElbowArrowShortSegments`(2186)/`getElbowArrowCornerPoints`(2158) 后处理——连线自动绕开节点。
+  4. **端点 heading**：`getBindPointHeading`(2253)/`offsetFromHeading`(1509)——绑定时按对方方位决定出口边与出线偏移；现实现为边中点锚 + 几何推导，对流程图连线够用。
+- **分期**：
+  - **E1（已交付）单段 bar 可拖**：
+    - 存储：`ItemKind::Shape` 加 `elbow_mid_offset: f32`（`#[serde(default)]`=0，`.prz` 零迁移）。定义为**交叉轴偏移**：以两端点连线为纵轴、bar 沿横轴偏离中点的有符号距离——旋转时随端点局部轴系天然跟随；将来 E2 可作初值。
+    - 几何：`elbow_polyline_offset(pts, offset)`：转折点沿交叉轴平移；offset=0 退化为现行为（`elbow_polyline` 薄封装）；`bar_axis` clamp 防止 bar 越过任一端点；`dedup()` 去零长段（防箭头方向 NaN）。三处消费点（`outline_points` / `contains_canvas_point` / 逐像素导出经 contains 间接）统一传现值，保持一致。
+    - 交互：`DragState::ElbowBar { item_id, start_canvas, start_offset }`；`Handle::ElbowBar` 带状命中（`ELBOW_BAR_HIT_PX=8.0`，`max(stroke_width, 8px/zoom)`）+ 小方块绘制；拖动期 live 直改预览（逆变换到局部取短轴分量）、释放入 `SetElbowOffset`（`skip_first_redo: true`）。
+    - 联动：`resolve_bindings` 重算端点后用现 offset 重建走线——端点动、bar 相对位置保持（Excalidraw renormalization 的单段退化）。
+  - **E2（后做、可选）障碍避让路由**：完整移植 grid + A\*（估算 core 新 `elbow.rs` 600–1000 行；障碍收集复用 #7 `connected_flowchart_rects` 的连通子图 BFS 思路扩展到任意形状）。解决「连线穿过节点」。若 E1 后无此痛点可无限期缓。届时单 offset 字段不够，需升级存储——**方案 X**：points 存完整路由结果 + renormalize 语义（Excalidraw 同构，改动面大）；**方案 Y**：两点 + 「用户固定段列表」派生。heading 语义随 E2 评估。
+- 涉及面：core `item.rs`（字段 / 几何签名 / 三消费点）+ `commands.rs`（`SetElbowOffset` Copy 快照命令）；binary `drag.rs`（ElbowBar 态 begin/update/end）+ `transform_handles.rs`（bar 手柄命中+绘制）+ `stylers.rs`（`ShapeData.elbow_mid_offset` + `outline_points` 传偏移）；fileio 零表结构改动（kind JSON blob 内 serde default）；i18n 零新词条（E1 无 flash 无面板输入）。
+- **已拍板**：① undo 命令=新 `SetElbowOffset` Copy 快照命令 ✅；② offset clamp 至两端点内侧（`bar_axis` 兜底）✅；③ bar 手柄命中宽度=`max(stroke_width, 8px/zoom)`（`ELBOW_BAR_HIT_PX=8.0`）✅；④ E2 留待未来 ✅。
+- **手工验收清单**：
+  - [ ] 选中 elbow 连线，鼠标移到中间正交段（bar）上出现 Grab 光标
+  - [ ] 拖动 bar 平移走线，bar 沿短轴移动、端点不动、预览实时跟随
+  - [ ] 拖到接近端点时 clamp 不出回钩（bar 恒在两端点内侧）
+  - [ ] 释放后 undo 一步恢复原位、redo 一步恢复拖后位
+  - [ ] 拖动绑定端点（移动被连形状）后 bar 偏移保持（走线跟随重算）
+  - [ ] 保存 `.prz` 重开偏移保持；旧档（无 `elbow_mid_offset` 字段）默认 0 不报错
+
 17. **🔶 mermaid 语法完整化（#9 后续，代码交付待人工验收）**
 
 - **现状校准（先纠正一个误解）**：`mermaid.rs` 的分层布局**已支持分叉/汇合**——`a --> b` / `a --> c` 分写两行即被 `intern_node` 复用同一 `a`、`layout_flowchart` 按最长路径把 b/c 摆进同一层（交叉轴并排），`flowchart::tests::layout_levels_follow_longest_path` 已在把关。**所以「不能画侧链」不是布局缺陷**。真正让侧链「不可读/不可用」的是三处**显式报错**：
@@ -298,6 +323,36 @@
 - **交付（2026-09-23，批次 A/B）**：core `mermaid.rs` 重写为手写扫描器（`scan_link`/`scan_node`/`parse_shape_body`）——箭头族 `MermaidArrow{Arrow,Open,Dotted,DottedOpen,Thick,ThickOpen,Double}`、`MermaidEdge{kind,label}`、`&` 交叉积、双括号外形（DP1 近似收敛）、pipe `-->|t|` 与 inline `-- t -->`（仅实线）、引号标签、`%%`/行尾 `;` 预处理、`subgraph`/`style`/… 显式报错带行号；15 单测（矩阵 + 非法回退 + 布局）。binary `item.rs` 加 `label` 字段 + `with_label`/`label()`；`actions.rs::generate_mermaid_flowchart` 按 `MermaidArrow`→(start/end 头, `DashStyle`, width×) 映射并落边标签；`render.rs` `draw_edge_label`（两条渲染路径共用）。**未做**：批次 C（barycenter 减交叉 + 边改 elbow）排后待评估；导出为矢量软栅格、Shape 恒 `None`，标签无需改导出。质量门全绿（fmt / clippy -D / core 181 + fileio 9 + binary lib 76，唯一失败 `tick_autosave_writes_sidecar` 经 git stash 验证为**先前已存在的无关 flaky**）；无头冒烟无 panic。待 `cargo run` 人工验收（观感：侧链标签跟随、箭头族线型、特殊形近似）。
 
 - **不在本轮范围（明确划出，避免蔓延）**：`subgraph` 分组框（嵌套布局 + 容器落位，最贵，用户已选「不纳入」）；sequence / class / state / ER / gantt 等**非 flowchart 图种**（用户已选「预留扩展但本轮不做」）。**架构预留**：解析入口 `parse_mermaid_flowchart` 首行按图种关键字分派，未来加图种 = 新 `match` 臂 + 独立布局模块，不改 flowchart 分支；建议在函数 doc 注明此为图种分派点。
+
+18. **🔵 相乘叠合模式（Multiply 正片叠底 / 荧光马克笔）——先不做（2026-09-23 拍板，评估存档备将来重启）**
+- **拍板（2026-09-23）**：先不做。以下评估与决策点存档，将来重启可直接沿用。
+- 目标观感：荧光马克笔——黄色相乘叠在白底→黄、叠在黑字上→**字仍黑**（multiply 不遮字）；对比半透明黄（normal blend）文字会被罩灰发闷。
+- **技术现状核实（2026-09-23，egui 0.36.2 源码 + 本仓库导出实现）**：
+  1. **egui 0.36 不支持 per-shape 混合模式**：epaint 0.36.2 全源码无 BlendMode 概念，Shape 展平进共享 mesh 后无 per-item blend 通道；egui_glow 每帧固定 `blend_func_separate(ONE, ONE_MINUS_SRC_ALPHA, …)`（预乘 alpha，`egui_glow/src/painter.rs:316`）。上游 per-shape blend 属长期未落地需求。**屏幕实时真 multiply 是本功能唯一硬点**。
+  2. **导出管线无叠加语义**：`export_scene_to_file` 为逐像素「Z 序倒序首个命中项采样」（每像素只取一个 item 颜色混白底即 break），且 Shape/Freedraw 采样返回 `None`（矢量元素不导出）——半透明叠加在导出侧本身就不正确，multiply 无从谈起。**注意**：Excalidraw 无 per-element blend 功能（只有 opacity），此项属产品自定特性、无对齐基线可参照，观感基准自行定义。
+- **分期与决策**：
+  - **M1（小，可与 M2 独立交付）荧光马克笔预设（近似观感）**：不做真 multiply。荧光色板（黄/绿/粉/蓝/橙，高饱和荧光色）+ 选中即套低不透明度默认填充（复用 #2 的 alpha 机制与分档惯例）；范围限 Shape 填充 + Freedraw。局限：文字上方仍 normal blend 罩灰——但 Excalidraw 的荧光观感实为半透明方案，成本 ≈ 色板 + i18n，零渲染风险。
+  - **M2（大）真 multiply**：
+    - 数据模型：`blend: BlendMode{Normal, Multiply}`（`#[serde(default)]`=Normal，`.prz` 零迁移）挂 Shape（填充）/Freedraw（/Pixmap 可选）；侧栏「叠合」2 态分段控件。
+    - **导出侧（容易）**：导出重写为**正向 painter 合成**（Z 正序逐 item 累积）后，multiply = CPU 逐像素 `out *= src/255` 免费真值；PNG 天然支持、JPEG 白底下等价。**前置依赖 = 导出管线重写**（矢量元素软件光栅化 + 正向合成）——该重写本身是独立大项（顺带解决矢量元素导出缺失），M2 排其后。
+    - **屏幕侧（难，风险高）**：唯一通路 `Shape::Callback`（PaintCallback）+ glow 自绘：对该 item 单独 tessellate 出 mesh，回调内临时 `blendFunc(DST_COLOR, ONE_MINUS_SRC_ALPHA)` 画完恢复（egui_glow 回调入参含 `&glow::Context`，通路存在）。代价：自维护 mesh→glow 绘制路径（~200–300 行）+ GL 状态恢复脆弱（scissor/SRGB/纹理绑定），egui 升级易碎；或**等上游** per-shape blend 落地后回归常规路径。
+    - 建议：M2 拆「模型+导出」与「屏幕实时预览」两步；屏幕侧是否接受 PaintCallback hack 为核心决策点。
+- **待拍板**：① 范围（仅填充 / +freedraw / +图片）；② M1 是否独立先上（推荐：可先上缓解 80% 观感需求）；③ 屏幕侧 PaintCallback hack 接受与否（vs 等上游 vs 屏幕近似/导出真值的过渡不一致）；④ 荧光色默认不透明度档位（对齐现有 [15,30,50,75,100]% 分档）。
+
+19. **⏳ elbow 多顶点逐段展开（E1.5，2026-09-24 拍板待实施）**
+- **背景**：E1 交付后对照 Excalidraw 发现其 line/arrow 类型分裂——`elbowed` 字段仅 `ExcalidrawArrowElement`（`types.ts:355-359`）、UI 三态面板仅 arrow 可见（`actionProperties.tsx:2212` 谓词 `isArrowElement`）、切 elbow 时丢中间点（`actionProperties.tsx:2002-2013` 重置 points 到起点）。**拍板不跟随**，保持 PReferZ 统一设计（全 Polyline + `CurveType` 三态），理由：① line/arrow 本就同类型仅差 `end_arrow` 属性、随时互切，绑死 elbow→arrow 会制造「线加箭头 elbow 才出现」的状态耦合；② Excalidraw 分裂是产品定位产物（elbow 与 fixedSegments+fixedPointBinding+heading 连接线机制耦合），非更优建模；③ 统一已付成本（E1 命中/渲染/导出三源、`.prz` 零迁移）。
+- **护栏语义升级为多顶点 elbow**：闭合折线切 elbow → `closed` 转 false、顶点全保留、每段正交展开（短轴中点转折，与 E1 同款几何）、末段连回首点保持视觉闭环（闭环由显式点列保证、不依赖 `closed` 标志）。
+- **已拍板（2026-09-24）**：
+  1. **闭合→开放+末段回首点**：`closed=false` + 几何末段显式连回首点（视觉闭环）
+  2. **多段居中**：多顶点 elbow 每段居中展开、不消费 `elbow_mid_offset`；该字段仅两点线有意义、bar 手柄（E1）仅两点线出现；将来逐段偏移再升级存储（`#[serde(default)]` 兼容）
+  3. **SegmentMid 恢复**：多顶点 elbow 恢复段中点加顶点手柄（新顶点与相邻顶点正交连接）；两点线仍压制段中点（拖它必破两点语义）
+- **实施要点**：
+  - core `item.rs`：新 `elbow_multi_polyline(pts, closed) -> Vec<(f32,f32)>`（逐段调 `elbow_polyline_offset` 居中拼接 + 去重；closed 时补末段回首点）；`contains_canvas_point` elbow 分支按点数分流——两点走 `elbow_polyline_offset`（带 offset）、多顶点走 `elbow_multi_polyline`
+  - binary `stylers.rs`：`outline_points` elbow 分支同步分流
+  - binary `transform_handles.rs`：`is_elbow_line` 护栏改为「两点线压制 SegmentMid、多顶点放行」；bar 手柄条件加 `points.len()==2`
+  - 切换入口 `props.rs::push_poly_curve`：切 elbow 时若 `closed=true` 打包 `SetClosed(false)`（一条 undo，`MultiCommand` 或 `SetCurveType` 带 closed 变更）
+  - 测试：多段展开正交性 / 末段回首点视觉闭环 / 切换 closed 打包 undo / SegmentMid 恢复后加顶点仍 elbow / 两点线行为不变（E1 回归）
+- **不做**：逐段独立偏移（拍板居中）；E2 避让路由仍留待未来
 
 ---
 

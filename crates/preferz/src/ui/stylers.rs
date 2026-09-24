@@ -1,6 +1,6 @@
 use eframe::egui::{self, Color32, Pos2, Shape};
 use preferz_core::item::{
-    catmull_rom_polyline, elbow_polyline, ItemKind, ItemLocalSpace, CURVE_SAMPLES,
+    catmull_rom_polyline, elbow_polyline_offset, ItemKind, ItemLocalSpace, CURVE_SAMPLES,
     ROUNDED_CORNER_SEGMENTS,
 };
 use preferz_core::shape::{
@@ -25,6 +25,9 @@ pub struct ShapeData {
     pub closed: bool,
     /// 曲线模式（Phase I）。仅 Polyline 使用；`Curved` 经 Catmull-Rom 插值。
     pub curve_type: CurveType,
+    /// elbow 中间 bar 交叉轴偏移（plan #16 E1）。仅 `curve_type=Elbow` 的两点
+    /// Polyline 消费；与命中/导出经同一 `elbow_polyline_offset` 同源。
+    pub elbow_mid_offset: f32,
     /// 矩形族圆角比例 0..1（Phase I）。仅矩形族使用。
     pub roundness: f32,
     /// 手绘风描边抖动种子（Phase F）。同一 seed 恒得同一抖动；`CleanStyler` 忽略此字段。
@@ -143,7 +146,7 @@ fn outline_points(shape: &ShapeData, ellipse_segments: usize) -> Vec<(f32, f32)>
                 CurveType::Curved => {
                     catmull_rom_polyline(&shape.points, shape.closed, CURVE_SAMPLES)
                 }
-                CurveType::Elbow => elbow_polyline(&shape.points),
+                CurveType::Elbow => elbow_polyline_offset(&shape.points, shape.elbow_mid_offset),
                 CurveType::Straight => shape.points.clone(),
             }
         }
@@ -765,6 +768,7 @@ pub fn build_shape_visuals(kind: &ItemKind, to_screen: &LocalToScreen, zoom: f32
         end_arrow,
         closed,
         curve_type,
+        elbow_mid_offset,
         roundness,
         seed,
         sloppiness,
@@ -790,6 +794,7 @@ pub fn build_shape_visuals(kind: &ItemKind, to_screen: &LocalToScreen, zoom: f32
         end_arrow: *end_arrow,
         closed: *closed,
         curve_type: *curve_type,
+        elbow_mid_offset: *elbow_mid_offset,
         roundness: *roundness,
         seed: *seed,
         sloppiness: *sloppiness,
@@ -888,6 +893,7 @@ mod tests {
             end_arrow: None,
             closed: false,
             curve_type: CurveType::Straight,
+            elbow_mid_offset: 0.0,
             roundness: 0.0,
             seed,
             sloppiness: Sloppiness::Off,
@@ -903,6 +909,7 @@ mod tests {
             end_arrow: Some(ArrowHeadStyle::Arrow),
             closed: false,
             curve_type: CurveType::Straight,
+            elbow_mid_offset: 0.0,
             roundness: 0.0,
             seed: 42,
             sloppiness: Sloppiness::Off,
@@ -1003,6 +1010,7 @@ mod tests {
             end_arrow: None,
             closed: false,
             curve_type: CurveType::Straight,
+            elbow_mid_offset: 0.0,
             roundness: 0.0,
             seed,
             sloppiness: Sloppiness::Artist,
@@ -1153,6 +1161,7 @@ mod tests {
             end_arrow: None,
             closed: false,
             curve_type: CurveType::Straight,
+            elbow_mid_offset: 0.0,
             roundness: 0.0,
             seed: 5,
             sloppiness: Sloppiness::Artist,
@@ -1199,6 +1208,7 @@ mod tests {
             end_arrow: None,
             closed: false,
             curve_type: CurveType::Curved,
+            elbow_mid_offset: 0.0,
             roundness: 0.0,
             seed: 42,
             sloppiness: Sloppiness::Off,

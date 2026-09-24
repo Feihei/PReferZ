@@ -526,6 +526,39 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 
 ---
 
+## elbow 直角折线 bar 可拖（plan #16 E1，2026-09-23，待提交）
+
+> 承接上一节：elbow 曲线模式已交付但走线恒居中、不可定制。本轮补 **E1 单段 bar 可拖**
+> （E2 障碍避让路由留待未来）。设计见 `plan.md` §16。
+
+- **存储**：`ItemKind::Shape` 加 `elbow_mid_offset: f32`（`#[serde(default)]`=0，`.prz` 零迁移）。
+  定义为**交叉轴偏移**：以两端点连线为纵轴、bar 沿横轴偏离中点的有符号距离——旋转时随端点
+  局部轴系天然跟随；将来 E2 可作初值。偏移存原值不 clamp（用户意图），clamp 属几何层职责。
+- **几何** `elbow_polyline_offset(pts, offset)`：转折点沿交叉轴平移；offset=0 退化为现行为
+  （`elbow_polyline` 薄封装保留向后兼容）；`bar_axis` clamp 在两端点之间防回钩；`dedup()` 去零长段
+  （防箭头方向 NaN）。三处消费点同源：core 命中 `contains_canvas_point`、binary 渲染
+  `stylers::outline_points`、导出经 contains 间接共用。
+- **命令** `SetElbowOffset`（Copy 快照命令）：单项 `new` / 批量 `new_batch` / `with_preview_applied`；
+  undo/redo 写回原值，redo 不 clamp（命令只存用户意图原值）。
+- **交互**：
+  - `Handle::ElbowBar` 手柄：`elbow_bar_screen_segment` 取 bar 两端屏幕坐标；带状命中
+    （`ELBOW_BAR_HIT_PX=8.0`，`max(stroke_width, 8px/zoom)`）；render 画 bar 中点小方块。
+  - `DragState::ElbowBar { item_id, start_canvas, start_offset }`：begin_drag 读现 offset 进态；
+    update_drag_preview 算 `delta_local = inv.transform_vector(current - start)`，按 `|dx|<=|dy|`
+    取 `.x` 或 `.y`，`new_offset = start_offset + d` 直改 `item.kind.elbow_mid_offset`；
+    end_drag 若有变化 push `SetElbowOffset::new(...).with_preview_applied(true)`，无变化不产生命令。
+  - 编辑护栏升级：elbow 线从「不吐段中点手柄」改为「吐 bar 手柄」（拖 bar ≠ 加顶点，两点不变量不破）。
+- **联动**：`resolve_bindings` 重算端点后用现 offset 重建走线——端点动、bar 相对位置保持
+  （Excalidraw renormalization 的单段退化）。
+- **i18n**：E1 无 flash 无面板输入，零新词条。
+- **测试**：core 新增 4 项（偏移沿短轴平移 bar / clamp 不出回钩 / serde 往返+旧档默认 /
+  offset 影响 contains_canvas_point）+ `SetElbowOffset` 批量 undo/redo 1 项；质量门全绿
+  （fmt / `clippy -D warnings` / core 186 passed）。
+- **E2（留待未来）**：障碍避让路由——移植 Excalidraw `elbowArrow.ts` 的 grid+A\*，待「连线穿过节点」
+  痛点真实出现再评估立期。
+
+---
+
 ## 决策点归档（D1–D6 / I1–I4）
 
 > 原列于 plan.md，G/I/H/K 交付后蒸馏归档于此，使 CHANGELOG 自包含、plan.md 仅保留前瞻内容。

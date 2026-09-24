@@ -437,6 +437,73 @@ impl Command for SetCurveType {
     }
 }
 
+// ─────────────────────────── Set elbow offset ───────────────────────────
+
+/// 批量设置 elbow 直角折线的中间 bar 交叉轴偏移（plan #16 E1）。仅 `curve_type=Elbow`
+/// 的线性对象消费该值；其它 shape 写入无害（不读）。单项用 [`Self::new`]，
+/// 多选批量用 [`Self::new_batch`]。undo / redo 写回原值，redo 不 clamp——
+/// clamp 属几何层职责（[`preferz_core::item::elbow_polyline_offset`]），命令只存
+/// 用户意图原值，端点移动后超界由几何兜底。
+pub struct SetElbowOffset {
+    items: Vec<(ItemId, f32, f32)>,
+    preview_already_applied: bool,
+}
+
+impl SetElbowOffset {
+    pub fn new(item_id: ItemId, old_offset: f32, new_offset: f32) -> Self {
+        Self {
+            items: vec![(item_id, old_offset, new_offset)],
+            preview_already_applied: false,
+        }
+    }
+
+    /// 批量构造：`(item_id, old, new)` 三元组列表。
+    pub fn new_batch(items: Vec<(ItemId, f32, f32)>) -> Self {
+        Self {
+            items,
+            preview_already_applied: false,
+        }
+    }
+
+    /// 声明是否为预览模式（UI 已直接改 item 时传 true，push 跳过首次 redo）。
+    pub fn with_preview_applied(mut self, applied: bool) -> Self {
+        self.preview_already_applied = applied;
+        self
+    }
+
+    fn apply(scene: &mut Scene, items: &[(ItemId, f32, f32)], new: bool) {
+        for (id, old, new_offset) in items {
+            let value = if new { *new_offset } else { *old };
+            if let Some(item) = scene.get_item_mut(id) {
+                if let ItemKind::Shape {
+                    elbow_mid_offset, ..
+                } = &mut item.kind
+                {
+                    *elbow_mid_offset = value;
+                }
+            }
+        }
+    }
+}
+
+impl Command for SetElbowOffset {
+    fn redo(&mut self, scene: &mut Scene) {
+        let items = std::mem::take(&mut self.items);
+        Self::apply(scene, &items, true);
+        self.items = items;
+    }
+
+    fn undo(&mut self, scene: &mut Scene) {
+        let items = std::mem::take(&mut self.items);
+        Self::apply(scene, &items, false);
+        self.items = items;
+    }
+
+    fn skip_first_redo(&self) -> bool {
+        self.preview_already_applied
+    }
+}
+
 // ─────────────────────────── Set roundness ───────────────────────────
 
 /// 批量设置矩形族圆角比例（0..1，Phase I）。仅矩形族生效。
@@ -2212,6 +2279,49 @@ mod tests {
         cmd.undo(&mut scene);
         assert!(!closed_of(&scene, a));
         assert!(!closed_of(&scene, b));
+    }
+
+    fn elbow_offset_of(scene: &Scene, id: ItemId) -> f32 {
+        match &scene.get_item(&id).unwrap().kind {
+            ItemKind::Shape {
+                elbow_mid_offset, ..
+            } => *elbow_mid_offset,
+            _ => panic!("非 Shape"),
+        }
+    }
+
+    #[test]
+    fn set_elbow_offset_batch_applies_undoes_and_keeps_each_old_value() {
+        use crate::shape::{ArrowHeadStyle, StrokeStyle};
+        let mut scene = Scene::new();
+        let mk = |scene: &mut Scene, x: f32| {
+            let it = Item::new_polyline(
+                vec![(0.0, 0.0), (100.0, 40.0)],
+                (100.0, 40.0),
+                None,
+                Some(ArrowHeadStyle::Arrow),
+                false,
+                x,
+                0.0,
+                StrokeStyle::default(),
+            );
+            let id = it.id;
+            scene.add_item(it);
+            id
+        };
+        let (a, b) = (mk(&mut scene, 0.0), mk(&mut scene, 200.0));
+        // 两个 item 旧值不同（0 与 -12），undo 必须各回各的
+        let mut cmd = SetElbowOffset::new_batch(vec![(a, 0.0, 25.0), (b, -12.0, 40.0)]);
+        cmd.redo(&mut scene);
+        assert!((elbow_offset_of(&scene, a) - 25.0).abs() < 1e-6);
+        assert!((elbow_offset_of(&scene, b) - 40.0).abs() < 1e-6);
+        cmd.undo(&mut scene);
+        assert_eq!(elbow_offset_of(&scene, a), 0.0);
+        assert!((elbow_offset_of(&scene, b) + 12.0).abs() < 1e-6);
+        // skip_first_redo 语义：预览已应用 → push_cmd 首次 redo 跳过（标志由 UndoStack 读）。
+        let preview_cmd = SetElbowOffset::new(a, 0.0, 7.0).with_preview_applied(true);
+        assert!(preview_cmd.skip_first_redo());
+        assert!(!SetElbowOffset::new(a, 0.0, 7.0).skip_first_redo());
     }
 
     #[test]

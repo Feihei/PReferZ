@@ -23,9 +23,9 @@ use preferz_core::commands::{
     AddItem, AddItems, ArrangeItems, ArrowHeads, CropItems, DeleteItems, EditShapePoints,
     EditTextContent, FillChange, FillState, FlipItems, FrameGeom, FreedrawStyle, MoveItems,
     MultiCommand, NormalizeItems, RenumberFrame, ReorderItems, ReorderRelative, SetArrowHeads,
-    SetClosed, SetCurveType, SetFrameFollowGlobal, SetFrameNumber, SetFrameSize, SetFreedrawStyle,
-    SetGroup, SetPixmapProps, SetPixmapStyle, SetRoundness, SetShapeFill, SetSloppiness,
-    SetStrokeStyle, SetTextStyle, TransformItem,
+    SetClosed, SetCurveType, SetElbowOffset, SetFrameFollowGlobal, SetFrameNumber, SetFrameSize,
+    SetFreedrawStyle, SetGroup, SetPixmapProps, SetPixmapStyle, SetRoundness, SetShapeFill,
+    SetSloppiness, SetStrokeStyle, SetTextStyle, TransformItem,
 };
 use preferz_core::flowchart;
 use preferz_core::mermaid::{
@@ -272,6 +272,14 @@ enum DragState {
         /// 触发阈值时在该端外侧插入一个复制顶点（原端点变成中间顶点），随后拖的
         /// 是新点；未越阈值就释放 = Alt+单击 → 删除所点顶点。
         alt_extend: bool,
+    },
+    /// 拖拽 elbow 直角折线的中间 bar（plan #16 E1）：预览直接改 `elbow_mid_offset`，
+    /// 释放入 `SetElbowOffset`（skip_first_redo）。bar 沿短轴平移，端点不动、
+    /// 绑定不涉；`resolve_bindings` 重算端点后偏移保持（用户意图）。
+    ElbowBar {
+        item_id: ItemId,
+        start_canvas: CanvasPoint,
+        start_offset: f32,
     },
     /// 用 Frame 工具拖拽创建画框（两点式：start → current）。
     CreatingFrame {
@@ -1623,6 +1631,7 @@ impl eframe::App for PReferZApp {
                         }
                         Handle::Rotate => egui::CursorIcon::Grab,
                         Handle::Endpoint(_) | Handle::SegmentMid(_) => egui::CursorIcon::Grab,
+                        Handle::ElbowBar => egui::CursorIcon::Grab,
                         Handle::FlipH => egui::CursorIcon::ResizeHorizontal,
                         Handle::FlipV => egui::CursorIcon::ResizeVertical,
                         Handle::None => {
@@ -2272,6 +2281,7 @@ fn drag_state_name(d: &DragState) -> &'static str {
         DragState::BoxSelect { .. } => "BoxSelect",
         DragState::CreatingShape { .. } => "CreatingShape",
         DragState::LineEndpoint { .. } => "LineEndpoint",
+        DragState::ElbowBar { .. } => "ElbowBar",
         DragState::CreatingFrame { .. } => "CreatingFrame",
         DragState::CreatingPolygon { .. } => "CreatingPolygon",
         DragState::Drawing { .. } => "Drawing",

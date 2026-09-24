@@ -149,6 +149,14 @@ pub enum ItemKind {
         /// `#[serde(default)]`：旧存档无此字段按 `Straight` 加载。
         #[serde(default)]
         curve_type: CurveType,
+        /// elbow 直角折线的中间 bar 交叉轴偏移（plan #16 E1）。仅 `curve_type=Elbow`
+        /// 的两点 Polyline 使用；矩形族/其它曲线模式忽略。值为**短轴偏移**：几何层
+        /// 沿垂直于两端点主导轴的方向，把中间正交段从中点平移此有符号距离（局部
+        /// 坐标）；渲染/命中/导出三处经同一 `elbow_polyline_offset` 消费，clamp 保证
+        /// bar 不越过任一端点。端点/绑定重算后偏移保持（用户意图），超界由 clamp
+        /// 兜底。`#[serde(default)]`：旧存档无此字段按 0（居中）加载，`.prz` 零迁移。
+        #[serde(default)]
+        elbow_mid_offset: f32,
         /// 矩形族圆角比例 0..1（Phase I）。仅矩形族使用；`radius = min(w,h) * roundness`。
         /// `#[serde(default)]`：旧存档无此字段按 0.0（直角）加载。
         #[serde(default)]
@@ -644,6 +652,7 @@ impl Item {
                 end_arrow: None,
                 closed: false,
                 curve_type: CurveType::Straight,
+                elbow_mid_offset: 0.0,
                 roundness: 0.0,
                 seed: 0,
                 sloppiness: Sloppiness::Off,
@@ -686,6 +695,7 @@ impl Item {
                 end_arrow,
                 closed,
                 curve_type: CurveType::Straight,
+                elbow_mid_offset: 0.0,
                 roundness: 0.0,
                 seed: 0,
                 sloppiness: Sloppiness::Off,
@@ -1015,6 +1025,7 @@ impl Item {
             stroke,
             closed,
             curve_type,
+            elbow_mid_offset,
             ..
         } = &self.kind
         {
@@ -1025,7 +1036,7 @@ impl Item {
                 if points.len() >= 2 {
                     let pts = match curve_type {
                         CurveType::Curved => catmull_rom_polyline(points, *closed, CURVE_SAMPLES),
-                        CurveType::Elbow => elbow_polyline(points),
+                        CurveType::Elbow => elbow_polyline_offset(points, *elbow_mid_offset),
                         CurveType::Straight => points.clone(),
                     };
                     let seg_hit = pts
@@ -1314,17 +1325,28 @@ pub fn catmull_rom_polyline(pts: &[(f32, f32)], closed: bool, samples: usize) ->
     out
 }
 
+/// elbow 直角折线展开（居中）：`elbow_polyline_offset` 偏移为 0 的薄封装。
+pub fn elbow_polyline(pts: &[(f32, f32)]) -> Vec<(f32, f32)> {
+    elbow_polyline_offset(pts, 0.0)
+}
+
 /// 两端点 → 正交（直角折线 / elbow）路径点列。命中测试与渲染共用（与
 /// [`catmull_rom_polyline`] 同策——两边必须算出同一条路径，否则"看着在线上"却点不中）。
+/// 把两端点展开成「短腿 → 中间正交 bar → 短腿」的 3 段正交折线，bar 沿**短轴**
+/// （垂直于两端点主导轴的方向）从连线中点平移 `offset`（局部坐标，有符号）。
 ///
-/// 启发式：**先沿较小 Δ 的那条轴走一段"短腿"，再垂直转折，末段与首段平行进入另一端**。
-/// 对流程图绑定连线恒正确：主轴间距固定为 gap、交叉叉距总是 ≥ 一节点宽 + gap（更大），
+/// 启发式：先沿较小 Δ 的那条轴走一段"短腿"，再垂直转折，末段与首段平行进入另一端。
+/// 对流程图绑定连线恒正确：主轴间距固定为 gap、交叉轴间距总是 ≥ 一节点宽 + gap（更大），
 /// 故"较小 Δ 轴"= 主轴 = 两端朝向彼此的那条边界法线，首末段正好沿法线离开/进入
 /// （右/左连线→水平先走、上/下连线→垂直先走）。对任意手动画也是一条干净的对称 Z。
 ///
+/// `offset` 是拖 bar 的用户意图（存储原值不 clamp）：端点移动 / 绑定重算后 bar 相对
+/// 位置保持；仅当 bar 越过任一端点时由 clamp 收到两端点之间，走线恒为干净 Z 形、
+/// 不出回钩。`offset = 0` 退化为居中 Z（与历史 [`elbow_polyline`] 完全一致）。
+///
 /// 仅两点线性对象有意义（其余长度原样返回）；首/末点保持与输入一致，退化（近水平/
 /// 垂直）时直接返回直线，避免零长段干扰箭头方向与命中。
-pub fn elbow_polyline(pts: &[(f32, f32)]) -> Vec<(f32, f32)> {
+pub fn elbow_polyline_offset(pts: &[(f32, f32)], offset: f32) -> Vec<(f32, f32)> {
     if pts.len() != 2 {
         return pts.to_vec();
     }
@@ -1336,14 +1358,24 @@ pub fn elbow_polyline(pts: &[(f32, f32)]) -> Vec<(f32, f32)> {
         return vec![a, b];
     }
     if dx.abs() <= dy.abs() {
-        // 水平先走：中点 x 处做垂直段。
-        let mx = (a.0 + b.0) / 2.0;
-        vec![a, (mx, a.1), (mx, b.1), b]
+        // 水平先走：bar 为垂直段（x = 中点 x + offset），clamp 在两端点 x 之间。
+        let mx = bar_axis((a.0 + b.0) * 0.5, offset, a.0, b.0);
+        let mut out = vec![a, (mx, a.1), (mx, b.1), b];
+        out.dedup(); // clamp 贴端点时可能产生重合点，去零长段（防箭头方向 NaN）
+        out
     } else {
-        // 垂直先走：中点 y 处做水平段。
-        let my = (a.1 + b.1) / 2.0;
-        vec![a, (a.0, my), (b.0, my), b]
+        // 垂直先走：bar 为水平段（y = 中点 y + offset），clamp 在两端点 y 之间。
+        let my = bar_axis((a.1 + b.1) * 0.5, offset, a.1, b.1);
+        let mut out = vec![a, (a.0, my), (b.0, my), b];
+        out.dedup();
+        out
     }
+}
+
+/// bar 轴坐标 = 中点 + 偏移，clamp 在两端点（`p`/`q`）之间——bar 恒落在端点内侧，
+/// 折线不出回钩。端点重算后偏移存原值、超界部分由这里兜底。
+fn bar_axis(mid: f32, offset: f32, p: f32, q: f32) -> f32 {
+    (mid + offset).clamp(p.min(q), p.max(q))
 }
 
 /// 射线法判断点是否在多边形内（局部坐标）。
@@ -1694,6 +1726,102 @@ mod tests {
         // 非两点（多点/退化）→ 原样返回（不做正交化）。
         let tri = vec![(0.0, 0.0), (10.0, 5.0), (20.0, 0.0)];
         assert_eq!(elbow_polyline(&tri), tri);
+    }
+
+    #[test]
+    fn elbow_offset_shifts_bar_on_short_axis() {
+        // dx>dy → 垂直先走、bar 为水平段 y = 中点 + offset；offset=0 与居中版一致。
+        let pts = [(0.0, 0.0), (100.0, 40.0)];
+        assert_eq!(elbow_polyline_offset(&pts, 0.0), elbow_polyline(&pts));
+        assert_eq!(
+            elbow_polyline_offset(&pts, 10.0),
+            vec![(0.0, 0.0), (0.0, 30.0), (100.0, 30.0), (100.0, 40.0)]
+        );
+        // dx<dy → bar 为垂直段 x = 中点 + offset，负偏移向 x-。
+        let pts = [(0.0, 0.0), (40.0, 100.0)];
+        assert_eq!(
+            elbow_polyline_offset(&pts, -8.0),
+            vec![(0.0, 0.0), (12.0, 0.0), (12.0, 100.0), (40.0, 100.0)]
+        );
+    }
+
+    #[test]
+    fn elbow_offset_clamped_between_endpoints_no_hook() {
+        // 偏移存原值；几何层把 bar 收在两端点之间（不出回钩），贴端点时去零长段。
+        let pts = [(0.0, 0.0), (100.0, 40.0)];
+        // 越界 +500 → bar 贴 b.y=40，末段与端点重合被去掉（3 点）。
+        assert_eq!(
+            elbow_polyline_offset(&pts, 500.0),
+            vec![(0.0, 0.0), (0.0, 40.0), (100.0, 40.0)]
+        );
+        // 越界 -500 → bar 贴 a.y=0。
+        assert_eq!(
+            elbow_polyline_offset(&pts, -500.0),
+            vec![(0.0, 0.0), (100.0, 0.0), (100.0, 40.0)]
+        );
+        // 仍保持正交 + 端点不变量。
+        let out = elbow_polyline_offset(&pts, 500.0);
+        assert_eq!(out.first().unwrap(), &pts[0]);
+        assert_eq!(out.last().unwrap(), &pts[1]);
+    }
+
+    #[test]
+    fn elbow_mid_offset_serde_roundtrip_and_legacy_default() {
+        let mut item = make_line(vec![(0.0, 0.0), (80.0, 40.0)], 10.0, 20.0);
+        if let ItemKind::Shape {
+            curve_type,
+            elbow_mid_offset,
+            ..
+        } = &mut item.kind
+        {
+            *curve_type = CurveType::Elbow;
+            *elbow_mid_offset = 30.0;
+        }
+        let json = serde_json::to_string(&item).unwrap();
+        let back: Item = serde_json::from_str(&json).unwrap();
+        match &back.kind {
+            ItemKind::Shape {
+                elbow_mid_offset, ..
+            } => assert!((*elbow_mid_offset - 30.0).abs() < 1e-6),
+            _ => panic!("kind 往返变形"),
+        }
+        // 旧存档兼容：kind JSON 无该字段 → 按 0（居中）加载，`.prz` 零迁移。
+        // ItemKind 是 externally-tagged enum（`{"Shape": {...}}`），删字段走 Shape 子键。
+        let mut v: serde_json::Value = serde_json::to_value(&item).unwrap();
+        v["kind"]["Shape"]
+            .as_object_mut()
+            .unwrap()
+            .remove("elbow_mid_offset");
+        let legacy: Item = serde_json::from_value(v).unwrap();
+        match &legacy.kind {
+            ItemKind::Shape {
+                elbow_mid_offset, ..
+            } => assert_eq!(*elbow_mid_offset, 0.0),
+            _ => panic!("kind 往返变形"),
+        }
+    }
+
+    #[test]
+    fn elbow_offset_affects_contains_canvas_point() {
+        // bar 平移后命中跟随（与渲染同源）：pos=(10,20)、scale=1 → 画布 = 局部 + pos。
+        let mut item = make_line(vec![(0.0, 0.0), (100.0, 40.0)], 10.0, 20.0);
+        if let ItemKind::Shape {
+            curve_type,
+            elbow_mid_offset,
+            ..
+        } = &mut item.kind
+        {
+            *curve_type = CurveType::Elbow;
+            *elbow_mid_offset = 10.0; // 局部 bar y=30 → 画布 y=50
+        }
+        // offset 后 bar 上：局部 (50,30) → 画布 (60,50)，距 0 ≤ 阈值。
+        assert!(item.contains_canvas_point(CanvasPoint::new(60.0, 50.0)));
+        // 居中 bar 位置（画布 y=40）：距偏移后 bar 10 > 阈值 6，不命中。
+        assert!(!item.contains_canvas_point(CanvasPoint::new(60.0, 50.0 - 10.0)));
+        // 对照：无偏移 item 命中居中 bar（画布 y=40）。
+        let plain = make_line(vec![(0.0, 0.0), (100.0, 40.0)], 10.0, 20.0);
+        assert!(plain.contains_canvas_point(CanvasPoint::new(60.0, 40.0)));
+        assert!(!plain.contains_canvas_point(CanvasPoint::new(60.0, 50.0)));
     }
 
     #[test]
