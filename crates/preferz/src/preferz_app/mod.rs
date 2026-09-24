@@ -9,7 +9,7 @@ use crate::ui::stylers::{
 use crate::ui::widgets::palette;
 use crate::ui::widgets::stepper::stepper;
 use crate::ui::widgets::transform_handles::{
-    should_show_flip, should_show_rotate, Handle, TransformHandles,
+    is_multi_vertex_elbow_line, should_show_flip, should_show_rotate, Handle, TransformHandles,
 };
 use crate::viewport::{ViewportEgui, ViewportState};
 use crate::HANDWRITING_FONT_FAMILY;
@@ -28,6 +28,7 @@ use preferz_core::commands::{
     SetSloppiness, SetStrokeStyle, SetTextStyle, TransformItem,
 };
 use preferz_core::flowchart;
+use preferz_core::item::elbow_insert_candidates;
 use preferz_core::mermaid::{
     layout_flowchart, parse_mermaid_flowchart, MermaidArrow, MermaidShape,
 };
@@ -272,6 +273,9 @@ enum DragState {
         /// 触发阈值时在该端外侧插入一个复制顶点（原端点变成中间顶点），随后拖的
         /// 是新点；未越阈值就释放 = Alt+单击 → 删除所点顶点。
         alt_extend: bool,
+        /// plan #21 DP-A：elbow 双击插入的顶点在未拖动释放时**保留**（false =
+        /// 段中点拖拽加点的旧行为：未拖动即释放则移除插入顶点，不产生空命令）。
+        keep_inserted: bool,
     },
     /// 拖拽 elbow 直角折线的中间 bar（plan #16 E1）：预览直接改 `elbow_mid_offset`，
     /// 释放入 `SetElbowOffset`（skip_first_redo）。bar 沿短轴平移，端点不动、
@@ -373,6 +377,10 @@ pub struct PReferZApp {
     /// 新建形状默认手绘风抖动档位（plan #3；默认样式侧栏可调）。
     default_sloppiness: Sloppiness,
     drag: DragState,
+    /// 上一次画布左键**按下**的 (时间, 位置)：下一次按下时据此判定双击
+    /// （plan #21 DP-A：elbow 段中点手柄只认双击插入）。egui 的
+    /// `button_double_clicked` 在释放沿才置位，按下沿用不上，故自跟踪。
+    last_primary_press: Option<(f64, egui::Pos2)>,
     /// 端点拖拽中暂存的绑定目标（plan #5）：拖到形状轮廓上则记 `(端点下标, 形状id)`，
     /// 释放时写入 item 的 `start_binding`/`end_binding`；拖离则记 `None`（解绑）。
     /// 三元组：`(端点索引, 目标 id, 锚点)`——锚点为贴合点在目标局部系的坐标，
@@ -859,6 +867,7 @@ impl PReferZApp {
             default_fill_style: None,
             default_sloppiness: Sloppiness::Off,
             drag: DragState::Idle,
+            last_primary_press: None,
             editing_text: None,
             editing_frame_number: None,
             frame_number_buf: String::new(),
@@ -1552,8 +1561,17 @@ impl eframe::App for PReferZApp {
             // 空白 → 创建文本便签（spec L243 P2-5）
             // response.double_clicked() 已自动考虑上层 Window 遮挡
             if response.double_clicked() && self.editing_text.is_none() {
-                // 多边形绘制中：双击 = 收尾闭合，优先于文本便签（绘制工具下不该建文本）
-                if matches!(self.drag, DragState::CreatingPolygon { .. }) {
+                // elbow 双击插入进行中（plan #21 DP-A：第二次按下已在段中点候选点
+                // 插入顶点、进入端点拖拽）：释放沿交给 end_drag 固化，不创建文本、
+                // 不重置 drag（否则预览顶点成孤儿、无 undo 记录）。
+                if matches!(
+                    self.drag,
+                    DragState::LineEndpoint {
+                        keep_inserted: true,
+                        ..
+                    }
+                ) {
+                } else if matches!(self.drag, DragState::CreatingPolygon { .. }) {
                     self.finish_create_polygon();
                 } else if let Some(pos) = ctx.input(|i| i.pointer.latest_pos()) {
                     // 一次性取全命中信息（id + 是否图片 + 包围盒），避免借用冲突
@@ -1676,7 +1694,16 @@ impl eframe::App for PReferZApp {
                     let additive = ctx.input(|i| i.modifiers.shift);
                     let free_scale = ctx.input(|i| i.modifiers.ctrl);
                     let alt = ctx.input(|i| i.modifiers.alt);
-                    self.begin_drag(pos, additive, free_scale, alt);
+                    // 双击判定（press 沿）：与上一次按下间隔和距离都在双击阈值内。
+                    // 语义与 egui 内部 click 分类一致（0.3s / 6px）。
+                    const DOUBLE_CLICK_TIME: f64 = 0.3;
+                    const DOUBLE_CLICK_DIST: f32 = 6.0;
+                    let now = ctx.input(|i| i.time);
+                    let double_click = self.last_primary_press.is_some_and(|(t, p)| {
+                        now - t <= DOUBLE_CLICK_TIME && (pos - p).length() <= DOUBLE_CLICK_DIST
+                    });
+                    self.last_primary_press = Some((now, pos));
+                    self.begin_drag(pos, additive, free_scale, alt, double_click);
                 }
             }
 
@@ -3356,6 +3383,7 @@ mod tests {
             start_points,
             base_pos,
             alt_extend: false,
+            keep_inserted: false,
         };
         app.end_drag();
     }

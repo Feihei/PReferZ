@@ -69,6 +69,7 @@ impl PReferZApp {
         additive: bool,
         free_scale: bool,
         alt: bool,
+        double_click: bool,
     ) {
         // 文本编辑中不启动拖拽
         if self.editing_text.is_some() {
@@ -212,6 +213,7 @@ impl PReferZApp {
                             start_points,
                             base_pos,
                             alt_extend: alt && is_real,
+                            keep_inserted: false,
                         };
                         self.transform_handles.active_handle = h;
                         self.transform_handles.is_dragging = true;
@@ -219,7 +221,49 @@ impl PReferZApp {
                     }
                     // 线性对象段中点：在段中间插入顶点（预览），随即进入端点拖拽。
                     // start_points 保存插入前的点集，undo 一步即可移除新顶点。
+                    // 多顶点 elbow（plan #21 DP-A）：仅**双击**在候选点插入；
+                    // 单击直接吞掉（手柄只是双击目标提示，不进入任何拖拽）。
                     if let Handle::SegmentMid(seg) = h {
+                        if is_multi_vertex_elbow_line(item) {
+                            if double_click {
+                                let prep = match &item.kind {
+                                    ItemKind::Shape { points, closed, .. } => {
+                                        elbow_insert_candidates(points, *closed)
+                                            .into_iter()
+                                            .find(|(s, _)| *s == seg)
+                                            .map(|(s, mid)| {
+                                                let insert_idx = if s + 1 < points.len() {
+                                                    s + 1
+                                                } else {
+                                                    points.len()
+                                                };
+                                                (points.clone(), insert_idx, mid)
+                                            })
+                                    }
+                                    _ => None,
+                                };
+                                if let Some((start_points, insert_idx, mid)) = prep {
+                                    if let Some(it) = self.scene.get_item_mut(&item.id) {
+                                        if let ItemKind::Shape { points, .. } = &mut it.kind {
+                                            points.insert(insert_idx, mid);
+                                        }
+                                    }
+                                    let start_canvas = self.viewport.pos2_to_canvas(screen_pos);
+                                    self.drag = DragState::LineEndpoint {
+                                        item_id: item.id,
+                                        endpoint: insert_idx,
+                                        start_canvas,
+                                        start_points,
+                                        base_pos: mid,
+                                        alt_extend: false,
+                                        keep_inserted: true,
+                                    };
+                                    self.transform_handles.active_handle = h;
+                                    self.transform_handles.is_dragging = true;
+                                }
+                            }
+                            return;
+                        }
                         let prep = match &item.kind {
                             ItemKind::Shape { points, .. } => {
                                 let n = points.len();
@@ -249,6 +293,7 @@ impl PReferZApp {
                                 start_points,
                                 base_pos: mid,
                                 alt_extend: false,
+                                keep_inserted: false,
                             };
                             self.transform_handles.active_handle = h;
                             self.transform_handles.is_dragging = true;
@@ -462,6 +507,7 @@ impl PReferZApp {
                 start_points,
                 base_pos,
                 alt_extend: true,
+                ..
             } = &self.drag
             {
                 let cur = self.viewport.pos2_to_canvas(screen_pos);
@@ -661,6 +707,7 @@ impl PReferZApp {
                 start_points,
                 base_pos,
                 alt_extend,
+                ..
             } => {
                 let item_id = *item_id;
                 let endpoint = *endpoint;
@@ -1062,6 +1109,7 @@ impl PReferZApp {
                 start_points,
                 base_pos,
                 alt_extend,
+                keep_inserted,
             } => {
                 // 预览已直接改 points；释放时若有变化则固化到 undo 栈
                 let mut new_points = match self.scene.get_item(&item_id) {
@@ -1078,7 +1126,8 @@ impl PReferZApp {
                         self.try_delete_vertex(item_id, endpoint);
                     }
                 } else if !new_points.is_empty() && new_points != start_points {
-                    if new_points.len() != start_points.len()
+                    if !keep_inserted
+                        && new_points.len() != start_points.len()
                         && new_points.get(endpoint) == Some(&base_pos)
                     {
                         // 点击了段中点但未拖动：移除插入的顶点，不产生空命令

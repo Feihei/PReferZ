@@ -613,6 +613,30 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 
 ---
 
+## elbow 多顶点双击插入顶点（plan #21 DP-A/DP-B 拍板，2026-09-24，待提交）
+
+> 承接 #21 主体交付：DP-A 拍板「双击段插入顶点」、DP-B 拍板「取向翻转不加滞回」。
+
+- **双击插入**：多顶点 elbow 的段中点手柄恢复，但**只认双击**（单击吞掉不动作）、位置改为
+  **双击插入候选点**——core 新增 `elbow_insert_candidates(pts, closed)` 纯函数：候选点取该段在
+  推导路径上覆盖的笔直小段（跑段 / bar 半段，含锚点把 bar 一分为二的段归属标注）中点，并过两条
+  硬校验：①**视觉不变**——插入后 `elbow_vertex_polyline` 共线简化与原路径逐点一致（插入会改变
+  相邻 bar 取向判定，中点未必安全；不安全时沿小段换采样 0.25/0.75，仍不安全则该小段无候选）；
+  ②**可拖动**——新顶点小幅移动改变路径（滤掉 bar ⊥ 小段的惰性顶点）。已知覆盖缺口：端点侧
+  小段主导轴取向不利时可能整段无候选（可接受退化）。
+- **交互闭环**：插入后进入端点拖拽（复用 `LineEndpoint`），未拖动释放**保留**顶点
+  （新增 `keep_inserted` 标志，区别于普通段中点加点「未拖动即移除」）；一条 `EditShapePoints`
+  undo。双击判定在 press 沿自跟踪（`last_primary_press`，0.3s / 6px）——egui
+  `button_double_clicked` 释放沿才置位，按下沿用不上；双击插入进行中短路「双击线/空白 →
+  新建文本便签」与 `drag = Idle` 重置（防预览顶点成孤儿）。两点 elbow 不受影响（仍无段中点、
+  仅 bar 手柄）。
+- **测试**：core 新增 4 项（两点/退化空候选、V 形双候选 on-path+live 复核、回钩形改道采样点
+  淘汰、闭合三角形插入）；binary 手柄测试更新。质量门全绿（fmt / `clippy -D warnings` /
+  core 198 + binary 78 passed；`tick_autosave_writes_sidecar_and_keeps_doc_dirty` 为先前已存在
+  的无关失败，干净 HEAD 复现）。
+
+---
+
 ## 决策点归档（D1–D6 / I1–I4）
 
 > 原列于 plan.md，G/I/H/K 交付后蒸馏归档于此，使 CHANGELOG 自包含、plan.md 仅保留前瞻内容。
