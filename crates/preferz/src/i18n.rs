@@ -221,6 +221,8 @@ pub enum T {
     ToolPolygon,
     /// 徒手绘制工具（plan #10）。
     ToolFreehand,
+    /// 文字工具（plan #22）：点画布起一段自由文本，替代「双击建文本」。
+    ToolText,
     /// 墨迹创建成功反馈（plan #10）。
     FlashFreedrawCreated,
     /// 多边形收尾反馈：顶点不足 3 个时无法成面（Phase I）。
@@ -582,6 +584,7 @@ fn translate_en(key: T) -> &'static str {
         T::ToolFrame => "Frame",
         T::ToolPolygon => "Polygon",
         T::ToolFreehand => "Freedraw",
+        T::ToolText => "Text",
         T::FlashFreedrawCreated => "Ink created",
         T::PolygonTooFewPoints => "A polygon needs at least 3 points — discarded.",
         T::PolygonCreated => "Polygon created",
@@ -871,6 +874,7 @@ fn translate_zh(key: T) -> &'static str {
         T::ToolFrame => "画框",
         T::ToolPolygon => "多边形",
         T::ToolFreehand => "徒手",
+        T::ToolText => "文字",
         T::FlashFreedrawCreated => "已绘制墨迹",
         T::PolygonTooFewPoints => "多边形至少需要 3 个顶点，已丢弃",
         T::PolygonCreated => "已创建多边形",
@@ -1015,6 +1019,7 @@ pub fn action_label(lang: Lang, action: Action) -> &'static str {
             ToolFrame => "Tool: frame",
             ToolPolygon => "Tool: polygon",
             ToolFreehand => "Tool: freedraw",
+            ToolText => "Tool: text",
             Crop => "Crop mode",
             ColorPicker => "Color picker",
             ContextMenu => "Show context menu",
@@ -1062,6 +1067,7 @@ pub fn action_label(lang: Lang, action: Action) -> &'static str {
             ToolFrame => "工具：画框",
             ToolPolygon => "工具：多边形",
             ToolFreehand => "工具：徒手绘制",
+            ToolText => "工具：文字",
             Crop => "进入裁剪模式",
             ColorPicker => "切换取色器",
             ContextMenu => "显示右键菜单",

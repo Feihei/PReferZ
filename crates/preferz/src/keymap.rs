@@ -404,6 +404,9 @@ pub enum Action {
     ToolPolygon,
     /// 徒手绘制（plan #10，Excalidraw freedraw=裸 P；本项目另绑 Num7 对齐数字工具行）。
     ToolFreehand,
+    /// 文字（plan #22）：点画布起自由文本。Excalidraw 用裸 T，但本项目裸 T 已被
+    /// `ToggleToolbar`（Blender 同款）占用，故只绑数字工具行续位 Num8。
+    ToolText,
     // 模式
     Crop,
     ColorPicker,
@@ -476,6 +479,7 @@ impl Action {
         Action::ToolFrame,
         Action::ToolPolygon,
         Action::ToolFreehand,
+        Action::ToolText,
         Action::Crop,
         Action::ColorPicker,
         Action::ContextMenu,
@@ -541,6 +545,9 @@ impl Action {
             // 徒手绘制（plan #10）：裸 P 对齐 Excalidraw freedraw（此位原为它预留），
             // Num7 续上本项目 1–6 的数字工具行。两者均无修饰键，严格匹配不冲突。
             ToolFreehand => vec![KeyBind::new(P), KeyBind::new(Num7)],
+            // 文字（plan #22）：Excalidraw 的裸 T 位在本项目是 ToggleToolbar（Blender
+            // 同款，ADR 保留），故续数字工具行绑 Num8。
+            ToolText => vec![KeyBind::new(Num8)],
             Crop => vec![KeyBind::new(C)],
             ColorPicker => vec![KeyBind::new(I)],
             ContextMenu => vec![KeyBind::new(P).ctrl().shift()],

@@ -132,6 +132,9 @@ enum Tool {
     /// 徒手绘制（plan #10）：按住连续采样，释放定型为一条 `ItemKind::Freedraw` 墨迹。
     /// 对齐 Excalidraw freedraw（裸 P + 本项目 Num7）。
     Freehand,
+    /// 文字（plan #22）：点画布即在落点起一段自由文本，起完即回 Select。
+    /// 取代旧的「双击空白/线 → 新建文本便签」（双击手势留给元素编辑，如 elbow 加点）。
+    Text,
 }
 
 /// 画框比例 / 纸张预设（plan #3）。
@@ -1548,9 +1551,10 @@ impl eframe::App for PReferZApp {
                 }
             }
 
-            // 双击：Text item → 编辑；封闭 Shape → 创建/编辑绑定文本；
-            // Pixmap → 视口适应该图片（.issues #2，Excalidraw 同款）；
-            // 空白 → 创建文本便签（spec L243 P2-5）
+            // 双击：elbow 线段 → 插入顶点（plan #21 DP-A）；Text item / 封闭 Shape →
+            // 编辑其文本；Pixmap → 视口适应该图片（.issues #2，Excalidraw 同款）。
+            // 「双击空白建文本便签」于 plan #22 移除——新建文本改由文字工具（Num8）承担，
+            // 双击手势整体留给元素编辑。
             // response.double_clicked() 已自动考虑上层 Window 遮挡
             if response.double_clicked() && self.editing_text.is_none() {
                 if matches!(self.drag, DragState::CreatingPolygon { .. }) {
@@ -1592,22 +1596,11 @@ impl eframe::App for PReferZApp {
                                     self.flash(t(self.lang, T::FlashFitToCanvas).to_string());
                                 }
                             }
-                            // 命中可承载文本的 item → 编辑/新建文本
+                            // 命中可承载文本的 item → 编辑/新建其绑定文本
                             Some((id, false, _)) if self.start_text_edit(id) => {}
-                            // 其余（线/箭头/空白）→ 新建自由文本
-                            _ => {
-                                let canvas_pos = self.viewport.pos2_to_canvas(pos);
-                                self.editing_text = Some(EditingText {
-                                    editing_item_id: None,
-                                    canvas_pos,
-                                    buffer: String::new(),
-                                    font_size: 24.0,
-                                    color: [255, 255, 255, 255],
-                                    first_frame: true,
-                                    container_id: None,
-                                    font_family: FontFamily::Normal,
-                                });
-                            }
+                            // 其余（线/箭头/空白）→ 无事发生：plan #22 起双击不再建
+                            // 自由文本（改由文字工具 Num8），双击留给元素编辑
+                            _ => {}
                         }
                         self.drag = DragState::Idle;
                     }
@@ -1971,7 +1964,7 @@ impl PReferZApp {
                     // 第四项为快捷键角标（数字键优先，无数字键的工具显示主字母键），
                     // 对应 keymap.rs 绑定：1=Select 2=Rect 3=Diamond 4=Ellipse
                     // 5=Arrow 6=Line 7=Freehand；Polygon=Shift+P、Frame=F 无数字键。
-                    let tools: [(Tool, &str, T, &str); 9] = [
+                    let tools: [(Tool, &str, T, &str); 10] = [
                         (Tool::Select, "↖", T::ToolSelect, "1"),
                         (
                             Tool::Shape(ShapeType::Rectangle),
@@ -1992,6 +1985,7 @@ impl PReferZApp {
                         ),
                         (Tool::Polygon, "△", T::ToolPolygon, "P"),
                         (Tool::Freehand, "〰", T::ToolFreehand, "7"),
+                        (Tool::Text, "T", T::ToolText, "8"),
                         (Tool::Frame, "⬚", T::ToolFrame, "F"),
                     ];
                     for (tool, icon, key, badge) in tools {
@@ -2747,6 +2741,8 @@ impl PReferZApp {
             Some(Tool::Frame)
         } else if pressed(Action::ToolFreehand) {
             Some(Tool::Freehand)
+        } else if pressed(Action::ToolText) {
+            Some(Tool::Text)
         } else {
             None
         }
@@ -2876,6 +2872,25 @@ mod tests {
             }
             _ => panic!("徒手产物应为 Freedraw item"),
         }
+    }
+
+    #[test]
+    fn text_tool_click_starts_free_text_and_returns_to_select() {
+        // plan #22：新建文本改由文字工具承担——单击落点起一段自由文本，随即回
+        // Select（一次性工具），编辑期间 begin_drag 被 editing_text 守卫挡住。
+        let mut app = PReferZApp::new();
+        app.tool = Tool::Text;
+        let screen = egui::pos2(40.0, 60.0);
+        let expect_canvas = app.viewport.pos2_to_canvas(screen);
+        app.begin_drag(screen, false, false, false);
+        assert_eq!(app.tool, Tool::Select, "起文本后应回 Select");
+        let editing = app.editing_text.take().expect("应进入文本编辑态");
+        assert!(
+            editing.editing_item_id.is_none() && editing.container_id.is_none(),
+            "文字工具起的是自由文本"
+        );
+        assert_eq!(editing.canvas_pos, expect_canvas);
+        assert!(matches!(app.drag, DragState::Idle), "不该顺带起任何拖拽");
     }
 
     #[test]

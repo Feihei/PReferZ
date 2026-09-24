@@ -222,6 +222,14 @@ impl PReferZApp {
                 self.drag = DragState::Drawing { raw: vec![p] };
                 return;
             }
+            // 文字工具（plan #22）：单击落点即起一段自由文本，随后回 Select
+            // （Excalidraw 同款一次性工具；输入期间 begin_drag 有 editing_text 守卫）。
+            Tool::Text => {
+                let p = self.viewport.pos2_to_canvas(screen_pos);
+                self.tool = Tool::Select;
+                self.begin_free_text_at(p);
+                return;
+            }
             _ => {}
         }
 

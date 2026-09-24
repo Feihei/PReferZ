@@ -3,6 +3,24 @@
 use super::*;
 
 impl PReferZApp {
+    /// 在画布落点起一段**自由文本**（plan #22：文字工具的落点手势）。
+    /// 取代旧的「双击空白 / 双击线 → 新建文本便签」——新建文本从此只有工具入口。
+    pub(crate) fn begin_free_text_at(&mut self, canvas_pos: CanvasPoint) {
+        if self.editing_text.is_some() {
+            return;
+        }
+        self.editing_text = Some(EditingText {
+            editing_item_id: None,
+            canvas_pos,
+            buffer: String::new(),
+            font_size: 24.0,
+            color: [255, 255, 255, 255],
+            first_frame: true,
+            container_id: None,
+            font_family: FontFamily::Normal,
+        });
+    }
+
     /// 对指定 item 开启文本编辑（Excalidraw 语义），双击与 Enter 快捷键共用：
     /// - `Text` item → 编辑其内容；
     /// - 封闭 `Shape` → 编辑已有绑定文本，没有则新建一个空的；
