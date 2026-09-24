@@ -63,13 +63,82 @@ impl PReferZApp {
         self.flash(t(self.lang, T::FlashVertexDeleted));
     }
 
+    /// plan #21 DP-A：多顶点 elbow「双击段插入顶点」的**释放沿**执行体。
+    /// 由 `ui()` 的双击分支调用（egui 的 `double_clicked()` 在释放沿成形，是
+    /// 唯一可信的双击信号；按下沿拿不到）。命中条件与手柄一致：落点的顶层 item
+    /// 是多顶点 elbow + 落点在该段推导路径带内（`hit_test` 返回 `SegmentMid`），
+    /// 并取 core 校验过的候选点（插入后走线视觉不变、且新顶点可拖动）。返回 true
+    /// = 本次双击已消费（调用方据此不再建文本便签）。预览直改 + `EditShapePoints`
+    /// （恒 skip_first_redo）入 undo 栈，一步可撤。
+    pub(crate) fn insert_elbow_vertex_at(&mut self, screen_pos: egui::Pos2) -> bool {
+        // 不依赖选中态（编组线的双击同样成立）：取落点顶层 item
+        let item_id = match interaction::get_item_at(screen_pos, &self.scene, &self.viewport) {
+            Some(item) => item.id,
+            None => return false,
+        };
+        let seg = {
+            let item = match self.scene.get_item(&item_id) {
+                Some(item) => item,
+                None => return false,
+            };
+            if !is_multi_vertex_elbow_line(item) {
+                return false;
+            }
+            match self.transform_handles.hit_test(
+                screen_pos,
+                item,
+                &self.viewport,
+                should_show_flip(item),
+                should_show_rotate(item),
+            ) {
+                Handle::SegmentMid(seg) => seg,
+                _ => return false,
+            }
+        };
+        // 落点偏好（局部坐标）：候选点尽量贴着用户双击的地方长
+        let click_local = self
+            .scene
+            .get_item(&item_id)
+            .and_then(|it| it.canvas_to_local_point(self.viewport.pos2_to_canvas(screen_pos)));
+        let (old_points, insert_point) = match self.scene.get_item(&item_id) {
+            Some(item) => match &item.kind {
+                ItemKind::Shape { points, closed, .. } => {
+                    match elbow_insert_candidates(points, *closed, click_local)
+                        .into_iter()
+                        .find(|c| c.seg == seg)
+                    {
+                        Some(cand) => (points.clone(), cand.point),
+                        None => return false,
+                    }
+                }
+                _ => return false,
+            },
+            None => return false,
+        };
+        let insert_idx = if seg + 1 < old_points.len() {
+            seg + 1
+        } else {
+            old_points.len()
+        };
+        let mut new_points = old_points.clone();
+        new_points.insert(insert_idx, insert_point);
+        if let Some(it) = self.scene.get_item_mut(&item_id) {
+            if let ItemKind::Shape { points, .. } = &mut it.kind {
+                *points = new_points.clone();
+            }
+        }
+        self.push_cmd(Box::new(EditShapePoints::new(
+            item_id, old_points, new_points,
+        )));
+        true
+    }
+
     pub(crate) fn begin_drag(
         &mut self,
         screen_pos: egui::Pos2,
         additive: bool,
         free_scale: bool,
         alt: bool,
-        double_click: bool,
     ) {
         // 文本编辑中不启动拖拽
         if self.editing_text.is_some() {
@@ -213,7 +282,6 @@ impl PReferZApp {
                             start_points,
                             base_pos,
                             alt_extend: alt && is_real,
-                            keep_inserted: false,
                         };
                         self.transform_handles.active_handle = h;
                         self.transform_handles.is_dragging = true;
@@ -221,49 +289,11 @@ impl PReferZApp {
                     }
                     // 线性对象段中点：在段中间插入顶点（预览），随即进入端点拖拽。
                     // start_points 保存插入前的点集，undo 一步即可移除新顶点。
-                    // 多顶点 elbow（plan #21 DP-A）：段路径整条是双击靶区——**双击**
-                    // 插入候选点；单击不吞（continue 到下方常规命中/移动处理）。
+                    // 多顶点 elbow（plan #21 DP-A）：段路径带只是双击靶区，按下沿
+                    // 不做事（插入在释放沿的双击分支做），这里穿透到常规命中。
                     if let Handle::SegmentMid(seg) = h {
                         if is_multi_vertex_elbow_line(item) {
-                            if !double_click {
-                                continue;
-                            }
-                            let prep = match &item.kind {
-                                ItemKind::Shape { points, closed, .. } => {
-                                    elbow_insert_candidates(points, *closed)
-                                        .into_iter()
-                                        .find(|c| c.seg == seg)
-                                        .map(|c| {
-                                            let insert_idx = if c.seg + 1 < points.len() {
-                                                c.seg + 1
-                                            } else {
-                                                points.len()
-                                            };
-                                            (points.clone(), insert_idx, c.point)
-                                        })
-                                }
-                                _ => None,
-                            };
-                            if let Some((start_points, insert_idx, mid)) = prep {
-                                if let Some(it) = self.scene.get_item_mut(&item.id) {
-                                    if let ItemKind::Shape { points, .. } = &mut it.kind {
-                                        points.insert(insert_idx, mid);
-                                    }
-                                }
-                                let start_canvas = self.viewport.pos2_to_canvas(screen_pos);
-                                self.drag = DragState::LineEndpoint {
-                                    item_id: item.id,
-                                    endpoint: insert_idx,
-                                    start_canvas,
-                                    start_points,
-                                    base_pos: mid,
-                                    alt_extend: false,
-                                    keep_inserted: true,
-                                };
-                                self.transform_handles.active_handle = h;
-                                self.transform_handles.is_dragging = true;
-                            }
-                            return;
+                            continue;
                         }
                         let prep = match &item.kind {
                             ItemKind::Shape { points, .. } => {
@@ -294,7 +324,6 @@ impl PReferZApp {
                                 start_points,
                                 base_pos: mid,
                                 alt_extend: false,
-                                keep_inserted: false,
                             };
                             self.transform_handles.active_handle = h;
                             self.transform_handles.is_dragging = true;
@@ -1110,7 +1139,6 @@ impl PReferZApp {
                 start_points,
                 base_pos,
                 alt_extend,
-                keep_inserted,
             } => {
                 // 预览已直接改 points；释放时若有变化则固化到 undo 栈
                 let mut new_points = match self.scene.get_item(&item_id) {
@@ -1127,8 +1155,7 @@ impl PReferZApp {
                         self.try_delete_vertex(item_id, endpoint);
                     }
                 } else if !new_points.is_empty() && new_points != start_points {
-                    if !keep_inserted
-                        && new_points.len() != start_points.len()
+                    if new_points.len() != start_points.len()
                         && new_points.get(endpoint) == Some(&base_pos)
                     {
                         // 点击了段中点但未拖动：移除插入的顶点，不产生空命令

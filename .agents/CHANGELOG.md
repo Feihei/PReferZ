@@ -624,7 +624,8 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
   相邻 bar 取向判定，中点未必安全；不安全时沿小段换采样 0.25/0.75，仍不安全则该小段无候选）；
   ②**可拖动**——新顶点小幅移动改变路径（滤掉 bar ⊥ 小段的惰性顶点）。已知覆盖缺口：端点侧
   小段主导轴取向不利时可能整段无候选（可接受退化）。
-- **交互闭环**：插入后进入端点拖拽（复用 `LineEndpoint`），未拖动释放**保留**顶点
+- **交互闭环（首版，后被「修正二」替换）**：插入后进入端点拖拽（复用 `LineEndpoint`），未拖动
+  释放**保留**顶点
   （新增 `keep_inserted` 标志，区别于普通段中点加点「未拖动即移除」）；一条 `EditShapePoints`
   undo。双击判定在 press 沿自跟踪（`last_primary_press`，0.3s / 6px）——egui
   `button_double_clicked` 释放沿才置位，按下沿用不上；双击插入进行中短路「双击线/空白 →
@@ -636,10 +637,23 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
   通过校验的候选点插入，浅黄方块退化为「落点提示」；**单击不吞**（`continue` 穿透到常规
   选中/移动）；press 沿双击阈值放宽到 0.5s / 12px。补两项 binary 交互测试：双击候选带内 →
   加点 + 一条 undo + undo 还原、单击同点 → 不加点且进入移动拖拽。
-- **测试**：core 新增 4 项（两点/退化空候选、V 形双候选 on-path+live 复核、回钩形改道采样点
-  淘汰、闭合三角形插入）；binary 手柄测试更新。质量门全绿（fmt / `clippy -D warnings` /
-  core 198 + binary 78 passed；`tick_autosave_writes_sidecar_and_keeps_doc_dirty` 为先前已存在
-  的无关失败，干净 HEAD 复现）。
+- **验收反馈修正二（2026-09-24，用户追问「双击是不是被添加文字占用了」→ 命中）**：确实被占用，
+  根因是**判定放错了事件沿**。egui 的 `double_clicked()` 在**释放沿**才成形；首版在按下沿自跟踪
+  (`last_primary_press`，0.5s / 12px) 判双击，阈值比 egui 严 → 我的判定漏、egui 仍判为双击 →
+  落进「双击线/空白 → 新建文本便签」分支。现改为释放沿双击分支**先**调
+  `insert_elbow_vertex_at(pos)`（命中即消费本次双击、不再建文本），并删除按下沿全套机制
+  （`last_primary_press` 字段、`begin_drag` 的 `double_click` 参数、`LineEndpoint.keep_inserted`
+  及 end_drag 的未拖动移除豁免）。取舍：失去"加点即拖"合一手势（落点后由顶点手柄继续拖），
+  换来单一可信双击信号 + 少一套自维护计时状态。命中改为不依赖选中态（取落点顶层 item），
+  编组内的 elbow 线双击同样成立。
+- **落点偏好（同轮改进）**：`elbow_insert_candidates(pts, closed, click)` 加可选落点提示（同一
+  局部坐标系）——小段按离落点远近排序、优先试落点在该小段上的投影，投影不安全（改道 / 惰性）才
+  退回中点 / 偏侧点，即"双击哪儿就长在哪儿"。手柄几何侧传 `None`（候选方块位置须与鼠标无关）。
+- **测试**：core 新增 4 项（两点/退化空候选、V 形 on-path+live 复核、回钩形改道采样点淘汰、
+  闭合三角形插入）+ 落点偏好 1 项；binary 交互测试 2 项（释放沿带内插入 + undo 还原、单击穿透到
+  移动不加点；带外/两点 elbow/尖角折线不消费）；binary 手柄测试更新。质量门全绿（fmt /
+  `clippy -D warnings` / core 199 + binary 78 passed；`tick_autosave_writes_sidecar_and_keeps_doc_dirty`
+  为先前已存在的无关失败，干净 HEAD 复现）。
 
 ---
 

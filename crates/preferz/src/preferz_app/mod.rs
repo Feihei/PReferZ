@@ -273,9 +273,6 @@ enum DragState {
         /// 触发阈值时在该端外侧插入一个复制顶点（原端点变成中间顶点），随后拖的
         /// 是新点；未越阈值就释放 = Alt+单击 → 删除所点顶点。
         alt_extend: bool,
-        /// plan #21 DP-A：elbow 双击插入的顶点在未拖动释放时**保留**（false =
-        /// 段中点拖拽加点的旧行为：未拖动即释放则移除插入顶点，不产生空命令）。
-        keep_inserted: bool,
     },
     /// 拖拽 elbow 直角折线的中间 bar（plan #16 E1）：预览直接改 `elbow_mid_offset`，
     /// 释放入 `SetElbowOffset`（skip_first_redo）。bar 沿短轴平移，端点不动、
@@ -377,10 +374,6 @@ pub struct PReferZApp {
     /// 新建形状默认手绘风抖动档位（plan #3；默认样式侧栏可调）。
     default_sloppiness: Sloppiness,
     drag: DragState,
-    /// 上一次画布左键**按下**的 (时间, 位置)：下一次按下时据此判定双击
-    /// （plan #21 DP-A：elbow 段中点手柄只认双击插入）。egui 的
-    /// `button_double_clicked` 在释放沿才置位，按下沿用不上，故自跟踪。
-    last_primary_press: Option<(f64, egui::Pos2)>,
     /// 端点拖拽中暂存的绑定目标（plan #5）：拖到形状轮廓上则记 `(端点下标, 形状id)`，
     /// 释放时写入 item 的 `start_binding`/`end_binding`；拖离则记 `None`（解绑）。
     /// 三元组：`(端点索引, 目标 id, 锚点)`——锚点为贴合点在目标局部系的坐标，
@@ -867,7 +860,6 @@ impl PReferZApp {
             default_fill_style: None,
             default_sloppiness: Sloppiness::Off,
             drag: DragState::Idle,
-            last_primary_press: None,
             editing_text: None,
             editing_frame_number: None,
             frame_number_buf: String::new(),
@@ -1561,64 +1553,64 @@ impl eframe::App for PReferZApp {
             // 空白 → 创建文本便签（spec L243 P2-5）
             // response.double_clicked() 已自动考虑上层 Window 遮挡
             if response.double_clicked() && self.editing_text.is_none() {
-                // elbow 双击插入进行中（plan #21 DP-A：第二次按下已在段中点候选点
-                // 插入顶点、进入端点拖拽）：释放沿交给 end_drag 固化，不创建文本、
-                // 不重置 drag（否则预览顶点成孤儿、无 undo 记录）。
-                if matches!(
-                    self.drag,
-                    DragState::LineEndpoint {
-                        keep_inserted: true,
-                        ..
-                    }
-                ) {
-                } else if matches!(self.drag, DragState::CreatingPolygon { .. }) {
+                if matches!(self.drag, DragState::CreatingPolygon { .. }) {
+                    // 多边形绘制中：双击 = 收尾闭合，优先于文本便签（绘制工具下不该建文本）
                     self.finish_create_polygon();
                 } else if let Some(pos) = ctx.input(|i| i.pointer.latest_pos()) {
-                    // 一次性取全命中信息（id + 是否图片 + 包围盒），避免借用冲突
-                    let hit =
-                        interaction::get_item_at(pos, &self.scene, &self.viewport).map(|item| {
-                            (
-                                item.id,
-                                matches!(item.kind, ItemKind::Pixmap { .. }),
-                                item.bounding_rect(),
-                            )
-                        });
-                    match hit {
-                        // 双击图片：已处于该图片的适配视图 → 回到上一视图；否则适配视口。
-                        Some((_, true, rect)) => {
-                            let (target_zoom, target_pan) = self.compute_fit(rect);
-                            let already_fit = (self.viewport.zoom - target_zoom).abs() < 1e-3
-                                && (self.viewport.pan - target_pan).length() < 1e-2;
-                            if already_fit {
-                                if let Some((z, p)) = self.view_fit_prev.take() {
-                                    self.viewport.zoom = z;
-                                    self.viewport.pan = p;
-                                    self.flash(t(self.lang, T::FlashFitRestore).to_string());
+                    // plan #21 DP-A：双击落在多顶点 elbow 的段路径带内 → 插入顶点并
+                    // 消费本次双击（不建文本便签、不重置 drag）。egui 的双击分类在
+                    // 释放沿成形，是双击的唯一可信信号（按下沿拿不到）。
+                    if self.insert_elbow_vertex_at(pos) {
+                        ctx.request_repaint();
+                    } else {
+                        // 一次性取全命中信息（id + 是否图片 + 包围盒），避免借用冲突
+                        let hit = interaction::get_item_at(pos, &self.scene, &self.viewport).map(
+                            |item| {
+                                (
+                                    item.id,
+                                    matches!(item.kind, ItemKind::Pixmap { .. }),
+                                    item.bounding_rect(),
+                                )
+                            },
+                        );
+                        match hit {
+                            // 双击图片：已处于该图片的适配视图 → 回到上一视图；否则适配视口。
+                            Some((_, true, rect)) => {
+                                let (target_zoom, target_pan) = self.compute_fit(rect);
+                                let already_fit = (self.viewport.zoom - target_zoom).abs() < 1e-3
+                                    && (self.viewport.pan - target_pan).length() < 1e-2;
+                                if already_fit {
+                                    if let Some((z, p)) = self.view_fit_prev.take() {
+                                        self.viewport.zoom = z;
+                                        self.viewport.pan = p;
+                                        self.flash(t(self.lang, T::FlashFitRestore).to_string());
+                                    }
+                                } else {
+                                    self.view_fit_prev =
+                                        Some((self.viewport.zoom, self.viewport.pan));
+                                    self.viewport.fit_to_content(rect);
+                                    self.flash(t(self.lang, T::FlashFitToCanvas).to_string());
                                 }
-                            } else {
-                                self.view_fit_prev = Some((self.viewport.zoom, self.viewport.pan));
-                                self.viewport.fit_to_content(rect);
-                                self.flash(t(self.lang, T::FlashFitToCanvas).to_string());
+                            }
+                            // 命中可承载文本的 item → 编辑/新建文本
+                            Some((id, false, _)) if self.start_text_edit(id) => {}
+                            // 其余（线/箭头/空白）→ 新建自由文本
+                            _ => {
+                                let canvas_pos = self.viewport.pos2_to_canvas(pos);
+                                self.editing_text = Some(EditingText {
+                                    editing_item_id: None,
+                                    canvas_pos,
+                                    buffer: String::new(),
+                                    font_size: 24.0,
+                                    color: [255, 255, 255, 255],
+                                    first_frame: true,
+                                    container_id: None,
+                                    font_family: FontFamily::Normal,
+                                });
                             }
                         }
-                        // 命中可承载文本的 item → 编辑/新建文本
-                        Some((id, false, _)) if self.start_text_edit(id) => {}
-                        // 其余（线/箭头/空白）→ 新建自由文本
-                        _ => {
-                            let canvas_pos = self.viewport.pos2_to_canvas(pos);
-                            self.editing_text = Some(EditingText {
-                                editing_item_id: None,
-                                canvas_pos,
-                                buffer: String::new(),
-                                font_size: 24.0,
-                                color: [255, 255, 255, 255],
-                                first_frame: true,
-                                container_id: None,
-                                font_family: FontFamily::Normal,
-                            });
-                        }
+                        self.drag = DragState::Idle;
                     }
-                    self.drag = DragState::Idle;
                 }
             }
 
@@ -1694,18 +1686,7 @@ impl eframe::App for PReferZApp {
                     let additive = ctx.input(|i| i.modifiers.shift);
                     let free_scale = ctx.input(|i| i.modifiers.ctrl);
                     let alt = ctx.input(|i| i.modifiers.alt);
-                    // 双击判定（press 沿）：与上一次按下间隔和距离都在阈值内。
-                    // egui 的 click 分类在释放沿才成形、按下沿用不上，故自跟踪；
-                    // 阈值比 egui 的 0.3s / 6px 宽松一档——第二次按下落在手柄带内
-                    // 即算（plan #21 DP-A：elbow 段双击插入顶点）。
-                    const DOUBLE_CLICK_TIME: f64 = 0.5;
-                    const DOUBLE_CLICK_DIST: f32 = 12.0;
-                    let now = ctx.input(|i| i.time);
-                    let double_click = self.last_primary_press.is_some_and(|(t, p)| {
-                        now - t <= DOUBLE_CLICK_TIME && (pos - p).length() <= DOUBLE_CLICK_DIST
-                    });
-                    self.last_primary_press = Some((now, pos));
-                    self.begin_drag(pos, additive, free_scale, alt, double_click);
+                    self.begin_drag(pos, additive, free_scale, alt);
                 }
             }
 
@@ -2992,13 +2973,14 @@ mod tests {
     }
 
     #[test]
-    fn double_click_on_elbow_segment_inserts_vertex() {
-        // plan #21 DP-A：多顶点 elbow 段路径双击 → 在 core 候选点插入顶点。
+    fn double_click_on_elbow_segment_band_inserts_vertex() {
+        // plan #21 DP-A：双击（egui 释放沿分类）落在多顶点 elbow 段路径带内
+        // → 在 core 校验过的候选点插入顶点，一条 undo 可撤。
         let pts = vec![(0.0, 0.0), (50.0, 100.0), (100.0, 0.0)];
         let (mut app, id) = app_with_polyline(pts.clone(), false);
         set_curve_type(&mut app, id, CurveType::Elbow);
         app.scene.select(id);
-        let cand = elbow_insert_candidates(&pts, false)
+        let cand = elbow_insert_candidates(&pts, false, None)
             .into_iter()
             .next()
             .expect("V 形 elbow 应有插入候选");
@@ -3007,9 +2989,17 @@ mod tests {
             .viewport
             .canvas_to_pos2(CanvasPoint::new(cand.point.0, cand.point.1));
 
-        // 单击（非双击）：不加点，穿透到常规命中（选中/移动）
+        assert!(app.insert_elbow_vertex_at(screen), "带内双击应插入顶点");
+        let after = polyline_points(&app, id);
+        assert_eq!(after.len(), pts.len() + 1);
+        assert_eq!(after[cand.seg + 1], cand.point);
+        assert_eq!(app.undo_stack.undo.len(), 1, "插入占一条 undo");
+        assert!(app.perform_undo());
+        assert_eq!(polyline_points(&app, id), pts, "undo 还原");
+
+        // 按下沿（单击）：不吞、穿透到常规命中（选中/移动）——手柄带只是双击靶区
         app.transform_handles.hover_handle = Handle::SegmentMid(cand.seg);
-        app.begin_drag(screen, false, false, false, false);
+        app.begin_drag(screen, false, false, false);
         assert_eq!(polyline_points(&app, id), pts, "单击不该加点");
         assert!(
             matches!(app.drag, DragState::MoveItems { .. }),
@@ -3018,37 +3008,29 @@ mod tests {
         );
         app.end_drag();
         assert!(app.undo_stack.undo.is_empty(), "无位移的移动不入 undo");
-
-        // 双击：插入候选点，未拖动释放仍保留（keep_inserted），一条 undo
-        app.transform_handles.hover_handle = Handle::SegmentMid(cand.seg);
-        app.begin_drag(screen, false, false, false, true);
-        let after = polyline_points(&app, id);
-        assert_eq!(after.len(), pts.len() + 1);
-        assert_eq!(after[cand.seg + 1], cand.point);
-        assert!(matches!(app.drag, DragState::LineEndpoint { .. }));
-        app.end_drag();
-        assert_eq!(
-            polyline_points(&app, id).len(),
-            pts.len() + 1,
-            "释放后顶点保留"
-        );
-        assert_eq!(app.undo_stack.undo.len(), 1, "插入占一条 undo");
-        assert!(app.perform_undo());
-        assert_eq!(polyline_points(&app, id), pts, "undo 还原");
     }
 
     #[test]
-    fn double_click_outside_elbow_candidate_span_does_nothing() {
-        // 双击落点不在任何候选段的推导路径带内（远离线）：不加点。
+    fn insert_elbow_vertex_rejects_non_targets() {
         let pts = vec![(0.0, 0.0), (50.0, 100.0), (100.0, 0.0)];
+        // 落点远离线：带外 → 不消费（交回「双击建文本」）
         let (mut app, id) = app_with_polyline(pts.clone(), false);
         set_curve_type(&mut app, id, CurveType::Elbow);
         app.scene.select(id);
         let far = app.viewport.canvas_to_pos2(CanvasPoint::new(500.0, 500.0));
-        app.transform_handles.hover_handle = Handle::SegmentMid(0);
-        app.begin_drag(far, false, false, false, true);
+        assert!(!app.insert_elbow_vertex_at(far));
         assert_eq!(polyline_points(&app, id), pts);
-        assert!(matches!(app.drag, DragState::BoxSelect { .. }));
+        // 两点 elbow：走 bar 手柄、无插入候选
+        let (mut app2, id2) = app_with_polyline(vec![(0.0, 0.0), (40.0, 80.0)], false);
+        set_curve_type(&mut app2, id2, CurveType::Elbow);
+        app2.scene.select(id2);
+        let on_line = app2.viewport.canvas_to_pos2(CanvasPoint::new(20.0, 40.0));
+        assert!(!app2.insert_elbow_vertex_at(on_line), "两点 elbow 不加点");
+        // 尖角折线：仍走原段中点拖拽加点手势，不由双击消费
+        let (mut app3, id3) = app_with_polyline(pts.clone(), false);
+        app3.scene.select(id3);
+        let on_line3 = app3.viewport.canvas_to_pos2(CanvasPoint::new(25.0, 50.0));
+        assert!(!app3.insert_elbow_vertex_at(on_line3), "非 elbow 不消费");
     }
 
     #[test]
@@ -3451,7 +3433,6 @@ mod tests {
             start_points,
             base_pos,
             alt_extend: false,
-            keep_inserted: false,
         };
         app.end_drag();
     }

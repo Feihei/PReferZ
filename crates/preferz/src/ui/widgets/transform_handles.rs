@@ -97,7 +97,8 @@ fn elbow_insert_screen_candidates(
         let s = to_screen.transform_point(euclid::Point2D::new(p.0, p.1));
         egui::pos2(s.x, s.y)
     };
-    elbow_insert_candidates(points, *closed)
+    // 手柄几何与鼠标无关：不传落点偏好（取规范化的中点优先候选）
+    elbow_insert_candidates(points, *closed, None)
         .into_iter()
         .map(|c| {
             (

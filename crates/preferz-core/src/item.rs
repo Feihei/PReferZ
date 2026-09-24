@@ -1437,17 +1437,25 @@ pub struct ElbowInsertCandidate {
 }
 
 /// 多顶点 elbow 的「双击插入」候选（plan #21 DP-A）：每个可插入段一条候选，
-/// 插入点取该段在推导路径上覆盖的**笔直小段**（跑段 / bar 半段）中点，且必须通过
-/// 两条硬性校验，否则沿小段换采样点 / 放弃：
+/// 插入点取该段在推导路径上覆盖的**笔直小段**（跑段 / bar 半段）上的采样点，且必须
+/// 通过两条硬性校验，否则换小段 / 换采样点 / 放弃：
 /// 1. **视觉不变**：插入后 [`elbow_vertex_polyline`] 的共线简化与原路径一致
 ///    （双击落点即线上的锚点，绝不允许"点一下整条线改道"——插入顶点会改变
-///    相邻 bar 的取向判定，中点未必安全）；
+///    相邻 bar 的取向判定，任意落点未必安全）；
 /// 2. **可拖动**：新顶点小幅移动会改变路径（bar 取向与所在小段平行时插入点
 ///    才有自由度；垂直时是拖不动的惰性顶点，不暴露）。
 ///
+/// `click`（与 `pts` 同一局部坐标系）是**采样偏好**：小段按离落点的远近排序，优先试
+/// 落点在该小段上的投影（"双击哪儿就长在哪儿"），投影不安全时退回中点 / 偏侧点。
+/// 传 `None` 得规范化的中点优先结果（手柄几何用，须与鼠标无关）。
+///
 /// 两点线 / 退化（<3 点）无候选。注意：候选随几何动态变化，取向不利的段可能
 /// 整段无候选（该段无双击靶区，属可接受覆盖缺口，见 plan #21）。
-pub fn elbow_insert_candidates(pts: &[(f32, f32)], closed: bool) -> Vec<ElbowInsertCandidate> {
+pub fn elbow_insert_candidates(
+    pts: &[(f32, f32)],
+    closed: bool,
+    click: Option<(f32, f32)>,
+) -> Vec<ElbowInsertCandidate> {
     const EPS: f32 = 1e-3;
     let n = pts.len();
     if n < 3 {
@@ -1516,13 +1524,43 @@ pub fn elbow_insert_candidates(pts: &[(f32, f32)], closed: bool) -> Vec<ElbowIns
         if let Some(&last) = g.last() {
             pieces.push((start, last));
         }
+        // 采样偏好：离落点近的小段先试
+        if let Some(c) = click {
+            let seg_dist = |a: &(f32, f32), b: &(f32, f32)| -> f32 {
+                let (ax, ay) = *a;
+                let (bx, by) = *b;
+                let (dx, dy) = (bx - ax, by - ay);
+                let len2 = dx * dx + dy * dy;
+                if len2 < 1e-6 {
+                    return ((c.0 - ax).powi(2) + (c.1 - ay).powi(2)).sqrt();
+                }
+                let t = (((c.0 - ax) * dx + (c.1 - ay) * dy) / len2).clamp(0.0, 1.0);
+                let (px, py) = (ax + dx * t, ay + dy * t);
+                ((c.0 - px).powi(2) + (c.1 - py).powi(2)).sqrt()
+            };
+            pieces.sort_by(|p, q| {
+                seg_dist(&p.0, &p.1)
+                    .partial_cmp(&seg_dist(&q.0, &q.1))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+        }
         let mut chosen = None;
         for (a, b) in pieces {
             let (dx, dy) = (b.0 - a.0, b.1 - a.1);
             if dx.abs() < 1.0 && dy.abs() < 1.0 {
                 continue; // 过短小段无可抓取的插入点
             }
-            for f in [0.5f32, 0.25, 0.75] {
+            // 采样顺序：落点投影优先（"双击哪儿就长在哪儿"），再中点 / 偏侧点
+            let mut fracs: Vec<f32> = Vec::new();
+            if let Some(c) = click {
+                let len2 = dx * dx + dy * dy;
+                if len2 > 1e-6 {
+                    let t = (((c.0 - a.0) * dx + (c.1 - a.1) * dy) / len2).clamp(0.0, 1.0);
+                    fracs.push(t);
+                }
+            }
+            fracs.extend([0.5f32, 0.25, 0.75]);
+            for f in fracs {
                 let p = (a.0 + dx * f, a.1 + dy * f);
                 let mut inserted = pts.to_vec();
                 inserted.insert(seg + 1, p);
@@ -2166,10 +2204,10 @@ mod tests {
     #[test]
     fn elbow_insert_candidates_two_points_and_degenerate_empty() {
         // 两点线走 bar 手柄、退化无意义：候选恒空。
-        assert!(elbow_insert_candidates(&[], false).is_empty());
-        assert!(elbow_insert_candidates(&[(1.0, 2.0)], false).is_empty());
-        assert!(elbow_insert_candidates(&[(0.0, 0.0), (40.0, 80.0)], false).is_empty());
-        assert!(elbow_insert_candidates(&[(0.0, 0.0), (40.0, 80.0)], true).is_empty());
+        assert!(elbow_insert_candidates(&[], false, None).is_empty());
+        assert!(elbow_insert_candidates(&[(1.0, 2.0)], false, None).is_empty());
+        assert!(elbow_insert_candidates(&[(0.0, 0.0), (40.0, 80.0)], false, None).is_empty());
+        assert!(elbow_insert_candidates(&[(0.0, 0.0), (40.0, 80.0)], true, None).is_empty());
     }
 
     #[test]
@@ -2179,7 +2217,7 @@ mod tests {
         // 均通过「视觉不变 + 可拖动」校验。
         let pts = [(0.0, 0.0), (50.0, 100.0), (100.0, 0.0)];
         let base = elbow_vertex_polyline(&pts, false);
-        let cands = elbow_insert_candidates(&pts, false);
+        let cands = elbow_insert_candidates(&pts, false, None);
         let got: Vec<(usize, (f32, f32))> = cands.iter().map(|c| (c.seg, c.point)).collect();
         assert_eq!(got, vec![(0usize, (0.0, 50.0)), (1, (100.0, 50.0))]);
         // 带状命中靶区 = 该段覆盖的完整推导路径（seg0：竖跑段 + bar 前半）
@@ -2208,12 +2246,36 @@ mod tests {
     }
 
     #[test]
+    fn elbow_insert_candidates_click_prefers_nearby_sample() {
+        // 落点偏好：双击哪儿就长在哪儿——同一小段上，投影点若安全则优先于中点。
+        let pts = [(0.0, 0.0), (50.0, 100.0), (100.0, 0.0)];
+        let base = elbow_vertex_polyline(&pts, false);
+        let plain = elbow_insert_candidates(&pts, false, None);
+        assert_eq!(plain[0].point, (0.0, 50.0), "无落点时取中点");
+        let near_top = elbow_insert_candidates(&pts, false, Some((30.0, 80.0)));
+        assert_eq!(near_top[0].seg, 0);
+        assert!(
+            near_top[0].point.1 > 60.0,
+            "落点靠上时应贴着落点采样，实际 {:?}",
+            near_top[0].point
+        );
+        assert_eq!(near_top[0].point, (0.0, 80.0));
+        // 无论取哪个采样点，插入后路径都视觉不变
+        let mut inserted = pts.to_vec();
+        inserted.insert(1, near_top[0].point);
+        assert_eq!(
+            orthogonal_simplify(&elbow_vertex_polyline(&inserted, false)),
+            orthogonal_simplify(&base)
+        );
+    }
+
+    #[test]
     fn elbow_insert_candidates_skips_rerouting_pieces() {
         // 回钩形 [(0,0),(200,50),(40,100)]：seg1 笔直小段的中点 (120,100) 插入会
         // 翻转 seg0 bar 取向导致改道——被校验淘汰、换采样点，0.75 处 (80,100)
         // 相邻 bar 取向不变、通过校验；seg0 取水平跑段中点 (100,0)。
         let pts = [(0.0, 0.0), (200.0, 50.0), (40.0, 100.0)];
-        let cands = elbow_insert_candidates(&pts, false);
+        let cands = elbow_insert_candidates(&pts, false, None);
         let got: Vec<(usize, (f32, f32))> = cands.iter().map(|c| (c.seg, c.point)).collect();
         assert_eq!(got, vec![(0usize, (100.0, 0.0)), (1, (80.0, 100.0))]);
         // 复核两个候选均为 no-op
@@ -2232,7 +2294,7 @@ mod tests {
         // 闭合三角形 [(0,0),(100,0),(50,80)]：seg0 水平跑段中点 (50,0) 插入
         // 后路径不变（顶点保留、视觉闭环）。
         let pts = [(0.0, 0.0), (100.0, 0.0), (50.0, 80.0)];
-        let cands = elbow_insert_candidates(&pts, true);
+        let cands = elbow_insert_candidates(&pts, true, None);
         let c0 = cands
             .iter()
             .find(|c| c.seg == 0)
