@@ -1040,7 +1040,7 @@ impl Item {
                             if points.len() == 2 {
                                 elbow_polyline_offset(points, *elbow_mid_offset)
                             } else {
-                                elbow_multi_polyline(points, *closed)
+                                elbow_vertex_polyline(points, *closed)
                             }
                         }
                         CurveType::Straight => points.clone(),
@@ -1378,29 +1378,49 @@ pub fn elbow_polyline_offset(pts: &[(f32, f32)], offset: f32) -> Vec<(f32, f32)>
     }
 }
 
-/// 多顶点 elbow 逐段居中展开（plan #19）：每段相邻顶点独立经 [`elbow_polyline_offset`]
-/// 居中正交化（offset=0），拼接成整体折线；`closed` 时补末段回首点保持视觉闭环。
-/// 顶点全保留、每段短轴中点转折；与两点 [`elbow_polyline_offset`]（带 offset）互补——
-/// 多顶点不消费 `elbow_mid_offset`（仅两点线有意义，见 plan #19 决策 2）。
+/// 多顶点 elbow「顶点锚定 bar」正交展开（plan #21，取代 #19 的逐段居中 Z 展开）。
+/// 每个中间顶点锚定一根正交 bar：bar 过顶点本身、取向**垂直于 (前邻, 后邻) 的主导轴**
+/// （`|dx| <= |dy|` → 竖 bar，与 [`elbow_polyline_offset`] 的短轴优先启发式一致）；
+/// 跑段在相邻 bar 之间垂直连接，端点处跑段沿轴进入。路径是 `points` 的纯函数——
+/// 拖动顶点即平移整根 bar（仅垂直于 bar 的一个自由度改变走线），相邻坐标对齐时
+/// 零长段被 [`Vec::dedup`] 吃掉、折线自动直化（对齐合并不需要额外簿记）。
 ///
-/// 退化（<2 点）原样返回；两点等价 [`elbow_polyline`]（居中）。段间共享顶点拼接时
-/// 跳过下段首点（= 上段末点）去重；近共轴段 `elbow_polyline_offset` 内部返回直线、
-/// 拼接天然正确。闭环末段展开后尾点 = 首点，**保留**首尾重合（闭环折线点列首尾相连，
-/// windows(2) 覆盖末段→首点，视觉闭环由显式末段保证）。
-pub fn elbow_multi_polyline(pts: &[(f32, f32)], closed: bool) -> Vec<(f32, f32)> {
-    let n = pts.len();
-    if n < 2 {
-        return pts.to_vec();
+/// `closed=true` 时末段连回首点保持视觉闭环（推导按开放链处理，首尾重合由 dedup 收口）。
+/// 两点开放链等价 [`elbow_polyline`]（居中）；退化（<2 点）原样返回。恒有：首末点
+/// 保留、每段严格横/竖。注意：顶点恒在 bar 所在直线上，但 bar 的**遍历范围**由相邻
+/// 几何决定——顶点序严重"倒挂"（锚点坐标越过两侧邻居）时锚点可落在绘制段之外，
+/// 此时沿 bar 轴拖动顶点走线不变（单自由度语义的极端表现），属可接受退化。
+pub fn elbow_vertex_polyline(pts: &[(f32, f32)], closed: bool) -> Vec<(f32, f32)> {
+    let mut chain: Vec<(f32, f32)> = pts.to_vec();
+    if chain.len() < 2 {
+        return chain;
     }
-    let mut out: Vec<(f32, f32)> = Vec::new();
-    let seg_count = if closed { n } else { n - 1 };
-    for i in 0..seg_count {
-        let a = pts[i];
-        let b = pts[(i + 1) % n];
-        let seg = elbow_polyline_offset(&[a, b], 0.0);
-        let start = if i == 0 { 0 } else { 1 };
-        out.extend_from_slice(&seg[start..]);
+    if closed {
+        chain.push(pts[0]);
     }
+    if chain.len() == 2 {
+        return elbow_polyline_offset(&chain, 0.0);
+    }
+    let mut out: Vec<(f32, f32)> = vec![chain[0]];
+    let mut q = chain[0];
+    for i in 1..chain.len() - 1 {
+        let (px, py) = chain[i - 1];
+        let (nx, ny) = chain[i + 1];
+        let (x_i, y_i) = chain[i];
+        // bar 取向：垂直于 (前邻, 后邻) 主导轴；平局按竖 bar（与两点线一致）。
+        let vertical = (nx - px).abs() <= (ny - py).abs();
+        // 到达 bar：垂直于 bar 进入（竖 bar → 横跑到 x=x_i；横 bar → 竖跑到 y=y_i）。
+        // 与上一离开角重合时（前后 bar 垂直）推入重复点，由 dedup 收口。
+        q = if vertical { (x_i, q.1) } else { (q.0, y_i) };
+        out.push(q);
+        // 沿 bar 继续到与下一锚点（chain[i+1]，可为中间顶点或终点）前进方向的交汇处：
+        // 竖 bar → 拐角取下一锚点的 y；横 bar → 取其 x。三种下一锚点形态
+        // （竖 bar/横 bar/终点）统一成立，跑段恒垂直于两根相接的 bar。
+        q = if vertical { (x_i, ny) } else { (nx, y_i) };
+        out.push(q);
+    }
+    out.push(chain[chain.len() - 1]);
+    out.dedup();
     out
 }
 
@@ -1857,71 +1877,110 @@ mod tests {
     }
 
     #[test]
-    fn elbow_multi_degenerate_returns_as_is() {
-        assert_eq!(elbow_multi_polyline(&[], false), vec![] as Vec<(f32, f32)>);
+    fn elbow_vertex_degenerate_returns_as_is() {
+        assert_eq!(elbow_vertex_polyline(&[], false), vec![] as Vec<(f32, f32)>);
         let single = vec![(5.0, 7.0)];
-        assert_eq!(elbow_multi_polyline(&single, false), single);
-        assert_eq!(elbow_multi_polyline(&single, true), single);
+        assert_eq!(elbow_vertex_polyline(&single, false), single);
+        assert_eq!(elbow_vertex_polyline(&single, true), single);
     }
 
     #[test]
-    fn elbow_multi_two_points_equals_centered_elbow_polyline() {
+    fn elbow_vertex_two_points_equals_centered_elbow_polyline() {
         let pts = [(0.0, 0.0), (40.0, 100.0)];
         // 开放两点：等价居中 elbow_polyline。
-        assert_eq!(elbow_multi_polyline(&pts, false), elbow_polyline(&pts));
-        // 闭合两点：补末段回首点（往返 Z 形），不等于开放两点。
-        let closed = elbow_multi_polyline(&pts, true);
+        assert_eq!(elbow_vertex_polyline(&pts, false), elbow_polyline(&pts));
+        // 闭合两点：末段连回首点（首尾重合、正交往返），不等于开放两点。
+        let closed = elbow_vertex_polyline(&pts, true);
         assert_eq!(closed.first().unwrap(), &pts[0]);
         assert_eq!(closed.last().unwrap(), &pts[0]);
-        assert!(closed.len() > elbow_polyline(&pts).len());
+        assert!(closed.len() >= 3);
     }
 
     #[test]
-    fn elbow_multi_preserves_vertices_and_is_orthogonal() {
-        // 三顶点开放：每段独立居中正交展开，顶点保留。
-        let pts = [(0.0, 0.0), (40.0, 100.0), (80.0, 0.0)];
-        let out = elbow_multi_polyline(&pts, false);
-        // 首末顶点保留
+    fn elbow_vertex_v_shape_bridge_midpoint() {
+        // V 形穿点：P1(50,40) 锚定横 bar（邻居对 (0,0)-(100,0) 水平主导），
+        // 路径成"桥"，P1 恰为 bar 中点；3 顶点只出 3 段（对比逐段展开的 7 段）。
+        let pts = [(0.0, 0.0), (50.0, 40.0), (100.0, 0.0)];
+        let out = elbow_vertex_polyline(&pts, false);
+        assert_eq!(
+            out,
+            vec![(0.0, 0.0), (0.0, 40.0), (100.0, 40.0), (100.0, 0.0)]
+        );
+    }
+
+    #[test]
+    fn elbow_vertex_stair_vertical_bar() {
+        // 台阶：对角平局按竖 bar（与两点线短轴优先一致），P1(50,50) 恰为 bar 中点。
+        let pts = [(0.0, 0.0), (50.0, 50.0), (100.0, 100.0)];
+        let out = elbow_vertex_polyline(&pts, false);
+        assert_eq!(
+            out,
+            vec![(0.0, 0.0), (50.0, 0.0), (50.0, 100.0), (100.0, 100.0)]
+        );
+    }
+
+    #[test]
+    fn elbow_vertex_aligned_vertices_auto_straighten() {
+        // 对齐自动合并：顶点拖到与两端共线 → 零长段被 dedup 吃掉，退化成直线。
+        let pts = [(0.0, 0.0), (50.0, 0.0), (100.0, 0.0)];
+        assert_eq!(
+            elbow_vertex_polyline(&pts, false),
+            vec![(0.0, 0.0), (100.0, 0.0)]
+        );
+    }
+
+    #[test]
+    fn elbow_vertex_preserves_vertices_and_is_orthogonal() {
+        // 顶点保留 + 每段正交 + 首末点不动（混合横竖 bar 的 4 顶点链）。
+        let pts = [(0.0, 0.0), (50.0, 20.0), (60.0, 40.0), (100.0, 0.0)];
+        let out = elbow_vertex_polyline(&pts, false);
         assert_eq!(out.first().unwrap(), &pts[0]);
-        assert_eq!(out.last().unwrap(), &pts[2]);
-        // 中间顶点 (40,100) 出现在序列中
-        assert!(out.contains(&pts[1]));
-        // 每段正交
+        assert_eq!(out.last().unwrap(), &pts[3]);
         for w in out.windows(2) {
             let axis_aligned = (w[0].0 - w[1].0).abs() < 1e-3 || (w[0].1 - w[1].1).abs() < 1e-3;
             assert!(axis_aligned, "段 {:?}→{:?} 非正交", w[0], w[1]);
         }
-        // 期望拼接：段0 [(0,0),(20,0),(20,100),(40,100)] + 段1 跳首点 [(60,100),(60,0),(80,0)]
+        // P1(50,20) 在横 bar y=20 上、P2(60,40) 是拐角，顶点均落在路径上。
+        assert!(out.contains(&pts[2]));
+        let on_path = |p: (f32, f32)| {
+            out.windows(2).any(|w| {
+                (w[0].0 <= p.0 && p.0 <= w[1].0 || w[1].0 <= p.0 && p.0 <= w[0].0)
+                    && (w[0].1 <= p.1 && p.1 <= w[1].1 || w[1].1 <= p.1 && p.1 <= w[0].1)
+                    && ((w[0].0 - w[1].0).abs() < 1e-3 && (w[0].0 - p.0).abs() < 1e-3
+                        || (w[0].1 - w[1].1).abs() < 1e-3 && (w[0].1 - p.1).abs() < 1e-3)
+            })
+        };
+        assert!(on_path(pts[1]), "P1 {:?} 不在路径上", pts[1]);
         assert_eq!(
             out,
             vec![
                 (0.0, 0.0),
-                (20.0, 0.0),
-                (20.0, 100.0),
-                (40.0, 100.0),
-                (60.0, 100.0),
-                (60.0, 0.0),
-                (80.0, 0.0)
+                (0.0, 20.0),
+                (60.0, 20.0),
+                (60.0, 40.0),
+                (100.0, 40.0),
+                (100.0, 0.0)
             ]
         );
     }
 
     #[test]
-    fn elbow_multi_closed_adds_closing_segment_and_dedups() {
-        // 闭合三角形：末段 (80,0)→(0,0) 连回首点，首尾重合保留（视觉闭环）。
+    fn elbow_vertex_closed_adds_closing_segment_and_dedups() {
+        // 闭合三角形：末段连回首点（视觉闭环，首尾重合保留），全段正交。
         let pts = [(0.0, 0.0), (40.0, 100.0), (80.0, 0.0)];
-        let out = elbow_multi_polyline(&pts, true);
-        // 首尾重合：末点 == 首点（闭环折线点列首尾相连）
+        let out = elbow_vertex_polyline(&pts, true);
         assert_eq!(out.first().unwrap(), &pts[0]);
         assert_eq!(out.last().unwrap(), &pts[0]);
-        // 末段连回首点：windows 末段终点 == 首点
-        let last_seg = out[out.len() - 2];
-        assert!(
-            (last_seg.0 - 80.0).abs() < 1e-3 && (last_seg.1 - 0.0).abs() < 1e-3,
-            "末段起点应为 (80,0)，实为 {:?}",
-            last_seg
+        assert_eq!(
+            out,
+            vec![
+                (0.0, 0.0),
+                (0.0, 100.0),
+                (80.0, 100.0),
+                (80.0, 0.0),
+                (0.0, 0.0)
+            ]
         );
-        // 每段正交
         for w in out.windows(2) {
             let axis_aligned = (w[0].0 - w[1].0).abs() < 1e-3 || (w[0].1 - w[1].1).abs() < 1e-3;
             assert!(axis_aligned, "段 {:?}→{:?} 非正交", w[0], w[1]);
@@ -1929,10 +1988,10 @@ mod tests {
     }
 
     #[test]
-    fn elbow_multi_collinear_segment_passes_through() {
-        // 含共轴段：(0,0)→(40,0) 退化直线，(40,0)→(40,80) 退化直线。
+    fn elbow_vertex_collinear_segment_passes_through() {
+        // 含共轴段：(0,0)→(40,0) 与 (40,0)→(40,80) 均退化直线，路径无新增转折。
         let pts = [(0.0, 0.0), (40.0, 0.0), (40.0, 80.0)];
-        let out = elbow_multi_polyline(&pts, false);
+        let out = elbow_vertex_polyline(&pts, false);
         assert_eq!(out, vec![(0.0, 0.0), (40.0, 0.0), (40.0, 80.0)]);
     }
 

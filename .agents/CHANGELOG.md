@@ -583,6 +583,34 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
   （fmt / `clippy -D warnings` / core 191 passed）。
 - **不做**：逐段独立偏移（拍板居中，将来 `#[serde(default)]` 升级兼容）；E2 避让路由仍留待未来。
 
+## elbow 多顶点改「顶点锚定 bar」纯函数推导（plan #21，2026-09-24，待提交）
+
+> 用户反馈 #19 逐段居中 Z 展开两大问题：顶点一多折线碎乱（3 顶点出 7 段）、段中点拖拽=插顶点
+> 与两点线「拖 bar=平移走线」体验割裂。调研 Excalidraw `elbowArrow.ts`（fixedSegments +
+> `handleSegmentRenormalization` 共线合并/短段折叠/索引重编号）后拍板**不引入 fixedSegments**——
+> PReferZ 的 elbow 与 polyline 同类型可互转、顶点必须保留，改为「顶点锚定 bar」：顶点仍是唯一
+> 用户数据，路径降级为纯函数 `f(points)`，零新增存储、零 `.prz` 迁移。
+
+- **几何** `elbow_vertex_polyline(pts, closed)`（**替换** `elbow_multi_polyline`）：每个中间顶点
+  锚定一根正交 bar——bar 过顶点本身、取向垂直于 (前邻, 后邻) 主导轴（`|dx|<=|dy|` → 竖 bar，
+  与两点线短轴优先启发式一致）；跑段在相邻 bar 间垂直连接，端点处沿轴进入。3 顶点只出 3 段
+  （V 形穿点 → 一座"桥"，顶点恰为 bar 中点）。拖顶点=平移整根 bar（单自由度），相邻坐标对齐时
+  零长段被 dedup 吃掉、折线自动直化——**对齐合并免费获得**，无需 Excalidraw 的重编号簿记。
+  `closed=true` 末段连回首点；两点开放链等价 `elbow_polyline`（E1 行为不变）。
+- **分流**：`contains_canvas_point` 与 `stylers::outline_points` 同步换用新函数（两点仍走
+  `elbow_polyline_offset` 带 offset）。
+- **护栏** `is_elbow_line`：段中点手柄对**任意顶点数 elbow 一律压制**（拖拽加点手势废止；
+  加顶点留待显式手势 DP-A，临时可切 polyline 编辑后切回）；bar 手柄仍仅两点线。
+- **已接受特性**：①顶点严格处于 bar「中点」仅对称情形成立，一般情形顶点在 bar 上、bar 遍历
+  范围由相邻几何决定；②bar 取向取决于邻居对主导轴，拖动越过对角阈值时取向 90° 翻转
+  （滞回 DP-B 先不做，观察反馈）。
+- **测试**：core 新增/替换 8 项（退化/两点等价+闭环/V 形桥/台阶/对齐自动直化/顶点保留+正交/
+  闭合末段回首点/共轴段）；binary 手柄测试更新（多顶点 elbow 同样压制段中点）；质量门全绿
+  （fmt / `clippy -D warnings` / core 194 passed；`tick_autosave_writes_sidecar_and_keeps_doc_dirty`
+  经干净 HEAD 复现为先前已存在的无关失败）。
+- **不做**：Excalidraw `fixedSegments` 模型与 A* 避让路由（E2 留待未来）；`elbow_mid_offset`
+  推广到多顶点（多顶点用户意图由顶点位置表达）。
+
 ---
 
 ## 决策点归档（D1–D6 / I1–I4）

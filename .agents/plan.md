@@ -155,7 +155,7 @@
 | 18 | 🔵 相乘叠合模式（Multiply 正片叠底 / 荧光马克笔）——**先不做**（2026-09-23 拍板；评估存档见细节 §18，将来重启可直接沿用） | M1（小）荧光马克笔预设近似：荧光色板 + 低不透明度默认填充（Excalidraw highlighter 同款半透明路线）；M2（大）真 multiply：数据模型 `BlendMode{Normal,Multiply}` + 导出侧 CPU 逐像素相乘（依赖导出重写为正向合成）+ 屏幕侧 `Shape::Callback`+glow 自绘 hack 或等 egui 上游 | ✅ 拍板（2026-09-23）：**先不做**（评估已完成并存档）。将来重启时的关键前提不变：egui 0.36.2 无 per-shape blend（epaint 无 BlendMode、glow 固定预乘 alpha）——屏幕实时真 multiply 是唯一硬点；M2 导出侧前置依赖导出管线重写（矢量元素目前不导出） |
 | 19 | ✅ elbow 多顶点逐段展开（E1.5，2026-09-24 交付，待人工验收） | 闭合折线切 elbow → 转 open + 顶点全保留 + 每段居中正交展开 + 末段连回首点（视觉闭环，首尾重合保留）；多段不消费 `elbow_mid_offset`（仅两点线有意义）；SegmentMid 手柄对多顶点 elbow 恢复、两点线仍压制；bar 手柄仅两点线出现 | ✅ 已拍板（2026-09-24）：**不跟随 Excalidraw 的 line/arrow 类型分裂**（`elbowed` 仅 arrow、UI 三态仅 arrow 可见、切 elbow 丢中间点），保持统一 Polyline + `CurveType` 三态；三项决策全按推荐 |
 | 20 | 🔶 RoughStyler 对齐 rough.js/Excalidraw 打磨（2026-09-24 调研完成，待启动） | 抖动幅度基准改 rough.js 公式（固定 2 画布px × roughnessGain × amp_scale × zoom，替 6%/8px）+ bowing 随机化 + preserveVertices 端点语义 + hachure 四件套（角度 -41→-49、线宽减半、斜线改完整抖动、随机相位+去 4px 下限）+ 箭头注释更正 | ✅ 已拍板（2026-09-24）：按四级优先级分期（① 幅度基准 → ② bowing/端点 → ③ hachure → ④ 其余按需）；待拍板 DP1–DP4：Architect 是否对齐 roughness 0、solid fill 是否顶点抖、箭头是否改抖、adjustRoughness 与 amp_scale 复合方式 |
-| 21 | ⏳ elbow 多顶点改「顶点锚定 bar」纯函数推导（**取代 #19 的逐段居中 Z 展开**，2026-09-24 拍板待实施） | 中间顶点 = 正交 bar 的锚点（bar 过顶点、取向垂直于邻居对主导轴），路径=纯函数 `f(points)`；拖顶点即平移整根横/竖 bar，坐标对齐时路径自动直化（免费获得 Excalidraw 的对齐合并），段中点拖拽加点废止 | ✅ 已拍板（2026-09-24）：**不引入 Excalidraw `fixedSegments`**——elbow 与 polyline 同类型可互转、顶点必须保留，改为推导模型零新增存储；细节与决策点见 §21 |
+| 21 | 🔶 elbow 多顶点改「顶点锚定 bar」纯函数推导（**取代 #19 的逐段居中 Z 展开**，2026-09-24 代码交付，待人工验收） | 中间顶点 = 正交 bar 的锚点（bar 过顶点、取向垂直于邻居对主导轴），路径=纯函数 `f(points)`；拖顶点即平移整根横/竖 bar，坐标对齐时路径自动直化（免费获得 Excalidraw 的对齐合并），段中点拖拽加点废止 | ✅ 已拍板（2026-09-24）：**不引入 Excalidraw `fixedSegments`**——elbow 与 polyline 同类型可互转、顶点必须保留，改为推导模型零新增存储；交付见 [CHANGELOG §elbow 多顶点改顶点锚定 bar](CHANGELOG.md)，细节与决策点见 §21 |
 
 ### 各项细节与决策点
 
@@ -403,7 +403,7 @@
 
 - **质量门**：`cargo fmt --all --check`、`cargo clippy --workspace --all-targets -- -D warnings`（零警告）、`cargo test --workspace` 全绿；新增单测断言抖动幅度落入 rough.js 公式区间（如 100px 边 underlay ≤ ±2px·zoom、300px 边 ≤ ±1.5px·zoom）。
 
-21. **⏳ elbow 多顶点改「顶点锚定 bar」纯函数推导（取代 #19 的逐段居中 Z 展开）**
+21. **🔶 elbow 多顶点改「顶点锚定 bar」纯函数推导（取代 #19 的逐段居中 Z 展开，2026-09-24 代码交付，待人工验收）**
 - **背景（2026-09-24 用户反馈）**：#19 交付的逐段居中 Z 展开实测两大问题——①每段独立 Z 形导致顶点一多折线碎乱（3 顶点出 7 段）；②段中点手柄拖拽=插顶点（与两点线「拖 bar=平移走线」体验割裂），难控制。调研 Excalidraw elbowArrow.ts 确认其模型（不存中间顶点、拖段=写 `fixedSegments`、`handleSegmentRenormalization` 做共线合并+短段折叠+索引重编号）。
 - **关键约束（决定不照搬 Excalidraw）**：PReferZ 的 elbow 与 polyline 是**同一种元素**（统一 Polyline + `CurveType` 三态，#19 拍板），互相转换必须无损往返 → **顶点必须保留为用户数据**。Excalidraw 的 `fixedSegments` + 派生模型会让顶点失去数据地位，切回 polyline 无法还原。因此改为「顶点锚定 bar」：顶点仍是唯一用户数据，**路径降级为纯函数 `f(points) → 折线点列`**，零新增存储、零 `.prz` 迁移。
 - **推导规则（已拍板 2026-09-24）**：
