@@ -152,7 +152,7 @@
 | 16 | ✅ elbow E1 单段 bar 可拖（2026-09-23 交付，待人工验收；E2 避让路由**留待未来**） | E1 单段 bar 可拖：Shape 加 `elbow_mid_offset`（serde default 零迁移），`elbow_polyline_offset` 接受交叉轴偏移（短轴偏移+clamp+dedup），拖 bar 挪走线、端点/绑定重算后偏移保持；编辑护栏从「不吐手柄」改为「仅暴露 bar 手柄」（`Handle::ElbowBar` 带状命中+小方块绘制）；`DragState::ElbowBar` 拖拽态（begin/update/end）；`SetElbowOffset` 命令（skip_first_redo 预览惯例）。E2 障碍避让路由（留待未来）：移植 Excalidraw `elbowArrow.ts` 的 grid+A\*（`routeElbowArrow`/`calculateGrid`/`astar`），连线绕开节点 | ✅ 已拍板（2026-09-23）：E1 单段 bar 先行——偏移存**交叉轴单字段**而非 points 编码（E2 可作初值）；E2 **留待未来**，「连线穿过节点」痛点真实出现再评估立期（届时 points 完整存路由 vs 固定段列表派生一并定）。undo 命令=新 `SetElbowOffset` Copy 快照命令 ✅；offset clamp 至两端点内侧（`bar_axis` 兜底）✅；bar 手柄命中宽度=`max(stroke_width, 8px/zoom)`（`ELBOW_BAR_HIT_PX=8.0`）✅ |
 | 17 | 🔶 mermaid 语法完整化（#9 后续，代码交付待人工验收） | 把受限子集扩到「实用流程图」：①**边标签** `-->|是|` / `-- 是 -->`；②**一行多分支 `&`**（`a --> b & c`、`a & b --> c & d` 交叉积）；③**箭头族** `---`/`-.->`/`==>`/`<-->` 等；④**更多节点外形** `((圆))`/`([体育场])`/`[(柱)]`/`{{六边}}`/`[[子程序]]`/`>旗]` + 引号标签 `"…"`。边距/分层布局已支持分叉（非本轮缺口）。subgraph、sequence/class/state **不做** | ✅ 已拍板（3 DP 全按推荐，2026-09-23）：DP1 全部近似映射（零 `ShapeType` 改动）；DP2 边内建 `label` 字段、渲染期画在曲线中点随重路由跟随（零 `.prz` 迁移）；DP3 `()`→Rectangle、`((…))`→Ellipse 校正为标准语义。批次 A/B 已交付，批次 C（barycenter 减交叉 + 边改 elbow）排后待评估 |
 | 18 | 🔵 相乘叠合模式（Multiply 正片叠底 / 荧光马克笔）——**先不做**（2026-09-23 拍板；评估存档见细节 §18，将来重启可直接沿用） | M1（小）荧光马克笔预设近似：荧光色板 + 低不透明度默认填充（Excalidraw highlighter 同款半透明路线）；M2（大）真 multiply：数据模型 `BlendMode{Normal,Multiply}` + 导出侧 CPU 逐像素相乘（依赖导出重写为正向合成）+ 屏幕侧 `Shape::Callback`+glow 自绘 hack 或等 egui 上游 | ✅ 拍板（2026-09-23）：**先不做**（评估已完成并存档）。将来重启时的关键前提不变：egui 0.36.2 无 per-shape blend（epaint 无 BlendMode、glow 固定预乘 alpha）——屏幕实时真 multiply 是唯一硬点；M2 导出侧前置依赖导出管线重写（矢量元素目前不导出） |
-| 19 | ⏳ elbow 多顶点逐段展开（E1.5，2026-09-24 拍板待实施，见细节 §19） | 闭合折线切 elbow → 转 open + 顶点全保留 + 每段居中正交展开 + 末段连回首点（视觉闭环）；多段不消费 `elbow_mid_offset`（仅两点线有意义）；SegmentMid 手柄对多顶点 elbow 恢复、两点线仍压制；bar 手柄仅两点线出现 | ✅ 已拍板（2026-09-24）：**不跟随 Excalidraw 的 line/arrow 类型分裂**（`elbowed` 仅 arrow、UI 三态仅 arrow 可见、切 elbow 丢中间点），保持统一 Polyline + `CurveType` 三态；三项决策全按推荐 |
+| 19 | ✅ elbow 多顶点逐段展开（E1.5，2026-09-24 交付，待人工验收） | 闭合折线切 elbow → 转 open + 顶点全保留 + 每段居中正交展开 + 末段连回首点（视觉闭环，首尾重合保留）；多段不消费 `elbow_mid_offset`（仅两点线有意义）；SegmentMid 手柄对多顶点 elbow 恢复、两点线仍压制；bar 手柄仅两点线出现 | ✅ 已拍板（2026-09-24）：**不跟随 Excalidraw 的 line/arrow 类型分裂**（`elbowed` 仅 arrow、UI 三态仅 arrow 可见、切 elbow 丢中间点），保持统一 Polyline + `CurveType` 三态；三项决策全按推荐 |
 
 ### 各项细节与决策点
 
@@ -339,7 +339,7 @@
     - 建议：M2 拆「模型+导出」与「屏幕实时预览」两步；屏幕侧是否接受 PaintCallback hack 为核心决策点。
 - **待拍板**：① 范围（仅填充 / +freedraw / +图片）；② M1 是否独立先上（推荐：可先上缓解 80% 观感需求）；③ 屏幕侧 PaintCallback hack 接受与否（vs 等上游 vs 屏幕近似/导出真值的过渡不一致）；④ 荧光色默认不透明度档位（对齐现有 [15,30,50,75,100]% 分档）。
 
-19. **⏳ elbow 多顶点逐段展开（E1.5，2026-09-24 拍板待实施）**
+19. **✅ elbow 多顶点逐段展开（E1.5，2026-09-24 交付，待人工验收）**
 - **背景**：E1 交付后对照 Excalidraw 发现其 line/arrow 类型分裂——`elbowed` 字段仅 `ExcalidrawArrowElement`（`types.ts:355-359`）、UI 三态面板仅 arrow 可见（`actionProperties.tsx:2212` 谓词 `isArrowElement`）、切 elbow 时丢中间点（`actionProperties.tsx:2002-2013` 重置 points 到起点）。**拍板不跟随**，保持 PReferZ 统一设计（全 Polyline + `CurveType` 三态），理由：① line/arrow 本就同类型仅差 `end_arrow` 属性、随时互切，绑死 elbow→arrow 会制造「线加箭头 elbow 才出现」的状态耦合；② Excalidraw 分裂是产品定位产物（elbow 与 fixedSegments+fixedPointBinding+heading 连接线机制耦合），非更优建模；③ 统一已付成本（E1 命中/渲染/导出三源、`.prz` 零迁移）。
 - **护栏语义升级为多顶点 elbow**：闭合折线切 elbow → `closed` 转 false、顶点全保留、每段正交展开（短轴中点转折，与 E1 同款几何）、末段连回首点保持视觉闭环（闭环由显式点列保证、不依赖 `closed` 标志）。
 - **已拍板（2026-09-24）**：

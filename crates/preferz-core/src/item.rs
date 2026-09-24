@@ -1036,7 +1036,13 @@ impl Item {
                 if points.len() >= 2 {
                     let pts = match curve_type {
                         CurveType::Curved => catmull_rom_polyline(points, *closed, CURVE_SAMPLES),
-                        CurveType::Elbow => elbow_polyline_offset(points, *elbow_mid_offset),
+                        CurveType::Elbow => {
+                            if points.len() == 2 {
+                                elbow_polyline_offset(points, *elbow_mid_offset)
+                            } else {
+                                elbow_multi_polyline(points, *closed)
+                            }
+                        }
                         CurveType::Straight => points.clone(),
                     };
                     let seg_hit = pts
@@ -1370,6 +1376,32 @@ pub fn elbow_polyline_offset(pts: &[(f32, f32)], offset: f32) -> Vec<(f32, f32)>
         out.dedup();
         out
     }
+}
+
+/// 多顶点 elbow 逐段居中展开（plan #19）：每段相邻顶点独立经 [`elbow_polyline_offset`]
+/// 居中正交化（offset=0），拼接成整体折线；`closed` 时补末段回首点保持视觉闭环。
+/// 顶点全保留、每段短轴中点转折；与两点 [`elbow_polyline_offset`]（带 offset）互补——
+/// 多顶点不消费 `elbow_mid_offset`（仅两点线有意义，见 plan #19 决策 2）。
+///
+/// 退化（<2 点）原样返回；两点等价 [`elbow_polyline`]（居中）。段间共享顶点拼接时
+/// 跳过下段首点（= 上段末点）去重；近共轴段 `elbow_polyline_offset` 内部返回直线、
+/// 拼接天然正确。闭环末段展开后尾点 = 首点，**保留**首尾重合（闭环折线点列首尾相连，
+/// windows(2) 覆盖末段→首点，视觉闭环由显式末段保证）。
+pub fn elbow_multi_polyline(pts: &[(f32, f32)], closed: bool) -> Vec<(f32, f32)> {
+    let n = pts.len();
+    if n < 2 {
+        return pts.to_vec();
+    }
+    let mut out: Vec<(f32, f32)> = Vec::new();
+    let seg_count = if closed { n } else { n - 1 };
+    for i in 0..seg_count {
+        let a = pts[i];
+        let b = pts[(i + 1) % n];
+        let seg = elbow_polyline_offset(&[a, b], 0.0);
+        let start = if i == 0 { 0 } else { 1 };
+        out.extend_from_slice(&seg[start..]);
+    }
+    out
 }
 
 /// bar 轴坐标 = 中点 + 偏移，clamp 在两端点（`p`/`q`）之间——bar 恒落在端点内侧，
@@ -1822,6 +1854,86 @@ mod tests {
         let plain = make_line(vec![(0.0, 0.0), (100.0, 40.0)], 10.0, 20.0);
         assert!(plain.contains_canvas_point(CanvasPoint::new(60.0, 40.0)));
         assert!(!plain.contains_canvas_point(CanvasPoint::new(60.0, 50.0)));
+    }
+
+    #[test]
+    fn elbow_multi_degenerate_returns_as_is() {
+        assert_eq!(elbow_multi_polyline(&[], false), vec![] as Vec<(f32, f32)>);
+        let single = vec![(5.0, 7.0)];
+        assert_eq!(elbow_multi_polyline(&single, false), single);
+        assert_eq!(elbow_multi_polyline(&single, true), single);
+    }
+
+    #[test]
+    fn elbow_multi_two_points_equals_centered_elbow_polyline() {
+        let pts = [(0.0, 0.0), (40.0, 100.0)];
+        // 开放两点：等价居中 elbow_polyline。
+        assert_eq!(elbow_multi_polyline(&pts, false), elbow_polyline(&pts));
+        // 闭合两点：补末段回首点（往返 Z 形），不等于开放两点。
+        let closed = elbow_multi_polyline(&pts, true);
+        assert_eq!(closed.first().unwrap(), &pts[0]);
+        assert_eq!(closed.last().unwrap(), &pts[0]);
+        assert!(closed.len() > elbow_polyline(&pts).len());
+    }
+
+    #[test]
+    fn elbow_multi_preserves_vertices_and_is_orthogonal() {
+        // 三顶点开放：每段独立居中正交展开，顶点保留。
+        let pts = [(0.0, 0.0), (40.0, 100.0), (80.0, 0.0)];
+        let out = elbow_multi_polyline(&pts, false);
+        // 首末顶点保留
+        assert_eq!(out.first().unwrap(), &pts[0]);
+        assert_eq!(out.last().unwrap(), &pts[2]);
+        // 中间顶点 (40,100) 出现在序列中
+        assert!(out.contains(&pts[1]));
+        // 每段正交
+        for w in out.windows(2) {
+            let axis_aligned = (w[0].0 - w[1].0).abs() < 1e-3 || (w[0].1 - w[1].1).abs() < 1e-3;
+            assert!(axis_aligned, "段 {:?}→{:?} 非正交", w[0], w[1]);
+        }
+        // 期望拼接：段0 [(0,0),(20,0),(20,100),(40,100)] + 段1 跳首点 [(60,100),(60,0),(80,0)]
+        assert_eq!(
+            out,
+            vec![
+                (0.0, 0.0),
+                (20.0, 0.0),
+                (20.0, 100.0),
+                (40.0, 100.0),
+                (60.0, 100.0),
+                (60.0, 0.0),
+                (80.0, 0.0)
+            ]
+        );
+    }
+
+    #[test]
+    fn elbow_multi_closed_adds_closing_segment_and_dedups() {
+        // 闭合三角形：末段 (80,0)→(0,0) 连回首点，首尾重合保留（视觉闭环）。
+        let pts = [(0.0, 0.0), (40.0, 100.0), (80.0, 0.0)];
+        let out = elbow_multi_polyline(&pts, true);
+        // 首尾重合：末点 == 首点（闭环折线点列首尾相连）
+        assert_eq!(out.first().unwrap(), &pts[0]);
+        assert_eq!(out.last().unwrap(), &pts[0]);
+        // 末段连回首点：windows 末段终点 == 首点
+        let last_seg = out[out.len() - 2];
+        assert!(
+            (last_seg.0 - 80.0).abs() < 1e-3 && (last_seg.1 - 0.0).abs() < 1e-3,
+            "末段起点应为 (80,0)，实为 {:?}",
+            last_seg
+        );
+        // 每段正交
+        for w in out.windows(2) {
+            let axis_aligned = (w[0].0 - w[1].0).abs() < 1e-3 || (w[0].1 - w[1].1).abs() < 1e-3;
+            assert!(axis_aligned, "段 {:?}→{:?} 非正交", w[0], w[1]);
+        }
+    }
+
+    #[test]
+    fn elbow_multi_collinear_segment_passes_through() {
+        // 含共轴段：(0,0)→(40,0) 退化直线，(40,0)→(40,80) 退化直线。
+        let pts = [(0.0, 0.0), (40.0, 0.0), (40.0, 80.0)];
+        let out = elbow_multi_polyline(&pts, false);
+        assert_eq!(out, vec![(0.0, 0.0), (40.0, 0.0), (40.0, 80.0)]);
     }
 
     #[test]

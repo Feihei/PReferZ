@@ -1,7 +1,7 @@
 use eframe::egui::{self, Color32, Pos2, Shape};
 use preferz_core::item::{
-    catmull_rom_polyline, elbow_polyline_offset, ItemKind, ItemLocalSpace, CURVE_SAMPLES,
-    ROUNDED_CORNER_SEGMENTS,
+    catmull_rom_polyline, elbow_multi_polyline, elbow_polyline_offset, ItemKind, ItemLocalSpace,
+    CURVE_SAMPLES, ROUNDED_CORNER_SEGMENTS,
 };
 use preferz_core::shape::{
     ArrowHeadStyle, CurveType, DashStyle, FillStyle, SeededRng, ShapeType, Sloppiness, StrokeStyle,
@@ -146,7 +146,13 @@ fn outline_points(shape: &ShapeData, ellipse_segments: usize) -> Vec<(f32, f32)>
                 CurveType::Curved => {
                     catmull_rom_polyline(&shape.points, shape.closed, CURVE_SAMPLES)
                 }
-                CurveType::Elbow => elbow_polyline_offset(&shape.points, shape.elbow_mid_offset),
+                CurveType::Elbow => {
+                    if shape.points.len() == 2 {
+                        elbow_polyline_offset(&shape.points, shape.elbow_mid_offset)
+                    } else {
+                        elbow_multi_polyline(&shape.points, shape.closed)
+                    }
+                }
                 CurveType::Straight => shape.points.clone(),
             }
         }

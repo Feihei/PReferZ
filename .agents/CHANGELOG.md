@@ -559,6 +559,32 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 
 ---
 
+## elbow 多顶点逐段展开（plan #19 E1.5，2026-09-24，待提交）
+
+> 承接 E1：elbow bar 可拖交付后，对照 Excalidraw 发现其 line/arrow 类型分裂（`elbowed` 仅 arrow、
+> UI 三态仅 arrow 可见、切 elbow 丢中间点）。**拍板不跟随**，保持 PReferZ 统一设计（全 Polyline +
+> `CurveType` 三态），把多顶点折线切 elbow 的「静默无效」歧义升级为**多顶点逐段正交展开**。
+
+- **几何** `elbow_multi_polyline(pts, closed)`：每段相邻顶点独立经 `elbow_polyline_offset` 居中
+  正交化（offset=0），拼接成整体折线；段间共享顶点拼接时跳过下段首点去重；`closed` 时补末段回首点，
+  **保留首尾重合**（闭环折线点列首尾相连，windows(2) 覆盖末段→首点，视觉闭环由显式末段保证）。
+  退化（<2 点）原样返回；两点等价 `elbow_polyline`（居中）；近共轴段返回直线拼接天然正确。
+- **分流**：`contains_canvas_point` 与 `stylers::outline_points` 的 Elbow 分支按点数分流——
+  两点走 `elbow_polyline_offset`（带 offset，E1 行为不变）、多顶点走 `elbow_multi_polyline`。
+- **护栏升级** `is_two_point_elbow_line`：段中点手柄（SegmentMid）对多顶点 elbow **恢复**（加顶点后
+  与相邻顶点正交连接）、两点线仍压制（对角弦中点破坏两点不变量）；bar 手柄仅两点线出现
+  （多段居中不消费 `elbow_mid_offset`）。
+- **切换入口** `push_poly_curve`：切 elbow 时若 `closed=true` 打包 `SetClosed(false)`（`MultiCommand`
+  一条 undo）——闭合折线转开放、顶点全保留、末段连回首点视觉闭环。
+- **决策（2026-09-24，全按推荐）**：① 闭合→开放+末段回首点（视觉闭环）；② 多段居中（offset 仅两点线）；
+  ③ SegmentMid 恢复（多顶点）、两点线压制。
+- **测试**：core 新增 5 项（退化/两点等价/多顶点正交+顶点保留/闭合末段回首点/共轴段拼接）；
+  binary `is_two_point_elbow_line` 测试更新（多顶点 elbow 不压制段中点）；质量门全绿
+  （fmt / `clippy -D warnings` / core 191 passed）。
+- **不做**：逐段独立偏移（拍板居中，将来 `#[serde(default)]` 升级兼容）；E2 避让路由仍留待未来。
+
+---
+
 ## 决策点归档（D1–D6 / I1–I4）
 
 > 原列于 plan.md，G/I/H/K 交付后蒸馏归档于此，使 CHANGELOG 自包含、plan.md 仅保留前瞻内容。

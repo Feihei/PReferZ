@@ -52,18 +52,18 @@ fn is_line(item: &Item) -> bool {
     )
 }
 
-/// 是否为直角折线（elbow）线性对象。elbow 是渲染期把两端点即时展开成正交折线，
-/// 段中点手柄按**存储点**（对角弦）取位、并非可见拐角，拖它会塞进真顶点使
-/// `points.len()!=2` → elbow 失效退化成多段线且切不回。故 elbow 线**不暴露段中点
-/// 加点手柄**（只留两端点拖拽 + 属性栏切换曲线模式）。多拐点重路由见 plan（另排期）。
-fn is_elbow_line(item: &Item) -> bool {
+/// 是否为两点 elbow 线（plan #19：仅两点线压制段中点手柄、暴露 bar 手柄）。
+/// 多顶点 elbow 放行段中点（加顶点后与相邻顶点正交连接）；bar 手柄仅两点线有意义
+/// （多段居中展开不消费 `elbow_mid_offset`）。
+fn is_two_point_elbow_line(item: &Item) -> bool {
     matches!(
         item.kind,
         ItemKind::Shape {
             shape_type: ShapeType::Polyline,
             curve_type: CurveType::Elbow,
+            ref points,
             ..
-        }
+        } if points.len() == 2
     )
 }
 
@@ -257,10 +257,10 @@ impl TransformHandles {
                     return Handle::Endpoint(i);
                 }
             }
-            // 段中点：开放折线 n-1 段，闭合多边形含收尾段。elbow 线不给加点手柄
-            // （见 `is_elbow_line`：对角弦中点会破坏两点不变量）。
+            // 段中点：开放折线 n-1 段，闭合多边形含收尾段。两点 elbow 线不给加点手柄
+            // （见 `is_two_point_elbow_line`：对角弦中点会破坏两点不变量）；多顶点 elbow 放行（plan #19）。
             let n = eps.len();
-            if n >= 2 && !is_elbow_line(item) {
+            if n >= 2 && !is_two_point_elbow_line(item) {
                 let closed = matches!(item.kind, ItemKind::Shape { closed: true, .. });
                 let seg_count = if closed { n } else { n - 1 };
                 let mid_size = Self::handle_size() * 1.4;
@@ -274,8 +274,8 @@ impl TransformHandles {
                     }
                 }
             }
-            // elbow bar：沿中间正交段全长做带状命中（plan #16 E1）。
-            if is_elbow_line(item) {
+            // elbow bar：沿中间正交段全长做带状命中（plan #16 E1，仅两点线）。
+            if is_two_point_elbow_line(item) {
                 if let Some((p1, p2)) = elbow_bar_screen_segment(item, viewport) {
                     let half = ELBOW_BAR_HIT_PX.max(stroke_screen_width(item, viewport));
                     if dist_point_segment_screen(screen_pos, p1, p2) <= half {
@@ -349,7 +349,7 @@ impl TransformHandles {
                 painter.rect_filled(r, egui::CornerRadius::same(1), fill);
             }
             let n = eps.len();
-            if n >= 2 && !is_elbow_line(item) {
+            if n >= 2 && !is_two_point_elbow_line(item) {
                 let closed = matches!(item.kind, ItemKind::Shape { closed: true, .. });
                 let seg_count = if closed { n } else { n - 1 };
                 let mid_fill = egui::Color32::from_rgb(255, 225, 130);
@@ -361,8 +361,8 @@ impl TransformHandles {
                     painter.rect_filled(r, egui::CornerRadius::same(1), mid_fill);
                 }
             }
-            // elbow bar 手柄：bar 中点小方块（plan #16 E1，提示可拖拽平移走线）。
-            if is_elbow_line(item) {
+            // elbow bar 手柄：bar 中点小方块（plan #16 E1，仅两点线；提示可拖拽平移走线）。
+            if is_two_point_elbow_line(item) {
                 if let Some((p1, p2)) = elbow_bar_screen_segment(item, viewport) {
                     let m = egui::pos2((p1.x + p2.x) * 0.5, (p1.y + p2.y) * 0.5);
                     let mid_fill = egui::Color32::from_rgb(255, 225, 130);
@@ -457,16 +457,20 @@ mod tests {
     }
 
     #[test]
-    fn only_elbow_polylines_suppress_segment_mid_handle() {
-        // elbow 线：仍属线性对象（端点可拖），但 is_elbow_line=true → 命中/绘制据此跳过段中点。
+    fn only_two_point_elbow_suppresses_segment_mid_handle() {
+        // 两点 elbow 线：压制段中点（对角弦中点会破坏两点不变量）、暴露 bar 手柄。
         let elbow = line(CurveType::Elbow, 2);
         assert!(is_line(&elbow));
-        assert!(is_elbow_line(&elbow));
+        assert!(is_two_point_elbow_line(&elbow));
+        // 多顶点 elbow 线（plan #19）：放行段中点（加顶点后与相邻顶点正交连接）。
+        let multi = line(CurveType::Elbow, 3);
+        assert!(is_line(&multi));
+        assert!(!is_two_point_elbow_line(&multi));
         // 尖角 / 圆滑折线：仍保留段中点加点手柄。
         for c in [CurveType::Straight, CurveType::Curved] {
             let l = line(c, 3);
             assert!(is_line(&l));
-            assert!(!is_elbow_line(&l));
+            assert!(!is_two_point_elbow_line(&l));
         }
     }
 }

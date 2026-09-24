@@ -1471,9 +1471,32 @@ impl PReferZApp {
                 })
             })
             .collect();
-        if !items.is_empty() {
-            self.push_cmd(Box::new(SetCurveType::new_batch(items)));
+        if items.is_empty() {
+            return;
         }
+        // plan #19：切 elbow 时闭合折线转开放（顶点保留 + 末段连回首点视觉闭环），
+        // closed 变更与 curve_type 变更打包成一条 undo。
+        let mut cmds: Vec<Box<dyn Command>> = vec![Box::new(SetCurveType::new_batch(items))];
+        if new_curve == CurveType::Elbow {
+            let closed_changes: Vec<(ItemId, bool, bool)> = ids
+                .iter()
+                .filter_map(|id| {
+                    self.scene.get_item(id).and_then(|it| match &it.kind {
+                        ItemKind::Shape { closed: true, .. } => Some((*id, true, false)),
+                        _ => None,
+                    })
+                })
+                .collect();
+            if !closed_changes.is_empty() {
+                cmds.push(Box::new(SetClosed::new_batch(closed_changes)));
+            }
+        }
+        let cmd: Box<dyn Command> = if cmds.len() == 1 {
+            cmds.into_iter().next().unwrap()
+        } else {
+            Box::new(MultiCommand::new(cmds))
+        };
+        self.push_cmd(cmd);
     }
 
     /// 应用文字颜色（调色板选色）：写色并脱离"跟随形状"。走连续编辑合并路径（一条 undo）。
