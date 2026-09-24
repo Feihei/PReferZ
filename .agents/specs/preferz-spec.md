@@ -28,7 +28,7 @@
 | 无限画布 | ✅ | 鼠标中键平移、滚轮缩放、F 键 fit | QGraphicsView 缩放/平移 |
 | 图片导入 | ✅ | 拖放文件、菜单打开、剪贴板粘贴（Ctrl+V） | `view.do_insert_images()` |
 | 图片项 | ✅ | 在画布上自由移动、缩放、旋转 | BeePixmapItem |
-| 文本便签 | ✅ | 双击空白创建，TextEdit overlay 编辑，Enter/失焦提交，Esc 取消 | BeeTextItem |
+| 文本便签 | ✅ | 文字工具（工具栏 T / `Num8`）点画布创建，TextEdit overlay 编辑，Enter/失焦提交，Esc 取消（plan #22 起双击不再建文本） | BeeTextItem |
 | 选中与手柄 | ✅ | 单击选中 + 四角缩放 + 旋转手柄 + 翻转边 + 框选 | SelectableMixin |
 | 撤销/重做 | ✅ | Ctrl+Z / Ctrl+Shift+Z（自定义 Command trait） | QUndoStack |
 | 图层 | ✅ | 置顶/置底，Z 序管理（ReorderItems） | `max_z`/`min_z` + `Z_STEP` |
@@ -282,7 +282,7 @@ impl UndoStack {
 - [x] 框选：空白处左键拖拽成矩形框，Shift 加选
 - [x] 多选：Scene.selection HashSet + selection_bounding_rect + 统一外框渲染
 - [x] 缩放/旋转数学：以对角为锚点缩放、以中心为锚点旋转（自由函数 apply_scale_drag / apply_rotate_drag）
-- [x] 文本便签：双击空白创建 `TextItem`，TextEdit overlay 编辑，Enter/失焦提交，空内容丢弃
+- [x] 文本便签：文字工具（`Num8`，plan #22）点画布创建 `TextItem`，TextEdit overlay 编辑，Enter/失焦提交，空内容丢弃（历史上是「双击空白创建」，双击已让给元素编辑）
 - [x] 图层操作：置顶/置底、Z 序重排（ReorderItems 命令）
 - [x] 删除选中项（Delete 键）
 

@@ -657,6 +657,28 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 
 ---
 
+## 文字工具 + 双击职责归位（plan #22，2026-09-25，待提交）
+
+> #21 做 elbow「双击段加点」时暴露：画布双击一直被「新建文本便签」占用（spec 早期定的
+> P2-5 入口），两个手势抢同一信号。**拍板（用户提议）**：双击属于元素编辑，新建文本属于
+> 工具——照 Excalidraw 那样给文本一个独立工具入口。
+
+- **文字工具**：`Tool::Text` + `Action::ToolText`（默认绑 `Num8`）+ 工具栏「T」按钮（角标 8）
+  + i18n 标签/动作描述（中英）。`begin_drag` 的 Text 分支 = 落点 `begin_free_text_at(canvas_pos)`
+  起自由文本，并**立即回 Select**（一次性工具）；提交/取消沿用既有 Enter / Esc / 失焦路径
+  （编辑期间 `begin_drag` 顶部的 `editing_text` 守卫挡住画布）。
+- **删除双击建文本**：`ui()` 双击分支中「线/箭头/空白 → 新建 `EditingText`」的兜底臂改为空操作。
+  保留的双击语义：Pixmap → 视口适配、Text / 封闭 Shape → 编辑其文本（编辑既有 ≠ 新建）、
+  elbow 段 → 插入顶点（#21 DP-A，同分支优先消费）。
+- **键位**：不照搬 Excalidraw 裸 `T`——该位是本项目 `ToggleToolbar`（Blender 同款，ADR-0007 保留）；
+  续 1–7 数字工具行取 `Num8`，零冲突、设置面板可另绑。
+- **测试**：binary `text_tool_click_starts_free_text_and_returns_to_select`（进编辑态 + 回 Select +
+  自由文本无宿主/容器 + 不起拖拽）；`Action::ALL` 覆盖测试自动纳入 ToolText（绑位唯一性/标签
+  完整性由既有测试把关）。质量门全绿（fmt / `clippy -D warnings` / core 199 + binary 79 passed；
+  `tick_autosave_writes_sidecar_and_keeps_doc_dirty` 仍为先前已存在的无关失败）。
+
+---
+
 ## 决策点归档（D1–D6 / I1–I4）
 
 > 原列于 plan.md，G/I/H/K 交付后蒸馏归档于此，使 CHANGELOG 自包含、plan.md 仅保留前瞻内容。
