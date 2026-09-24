@@ -1424,19 +1424,30 @@ pub fn elbow_vertex_polyline(pts: &[(f32, f32)], closed: bool) -> Vec<(f32, f32)
     out
 }
 
-/// 多顶点 elbow 的「双击插入」候选点（plan #21 DP-A）：对每个可插入段返回
-/// `(seg, 插入点)`（`seg` 为段起始顶点在 points 中的下标；闭合线的收尾段
-/// `seg = n-1`）。候选点取该段在推导路径上覆盖的**笔直小段**（跑段 / bar 半段）
-/// 的中点，且必须通过两条硬性校验，否则沿小段换采样点 / 放弃：
+/// 多顶点 elbow 一个段的双击插入候选（plan #21 DP-A）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct ElbowInsertCandidate {
+    /// 段起始顶点在 points 中的下标（闭合线的收尾段 `seg = n-1`）。
+    pub seg: usize,
+    /// 通过校验的插入点（在该段路径上，插入后视觉不变）。
+    pub point: (f32, f32),
+    /// 该段在推导路径上覆盖的完整折线（跑段 + bar 半段）——UI 用它做**带状命中**，
+    /// 双击线上任意处即插入 `point`（不必瞄准小方块）。
+    pub span: Vec<(f32, f32)>,
+}
+
+/// 多顶点 elbow 的「双击插入」候选（plan #21 DP-A）：每个可插入段一条候选，
+/// 插入点取该段在推导路径上覆盖的**笔直小段**（跑段 / bar 半段）中点，且必须通过
+/// 两条硬性校验，否则沿小段换采样点 / 放弃：
 /// 1. **视觉不变**：插入后 [`elbow_vertex_polyline`] 的共线简化与原路径一致
 ///    （双击落点即线上的锚点，绝不允许"点一下整条线改道"——插入顶点会改变
 ///    相邻 bar 的取向判定，中点未必安全）；
 /// 2. **可拖动**：新顶点小幅移动会改变路径（bar 取向与所在小段平行时插入点
 ///    才有自由度；垂直时是拖不动的惰性顶点，不暴露）。
 ///
-/// 两点线 / 退化（<3 点）无候选。注意：候选随几何动态变化，端点侧小段在
-/// 主导轴取向不利时可能整段无候选（属可接受覆盖缺口，见 plan #21）。
-pub fn elbow_insert_candidates(pts: &[(f32, f32)], closed: bool) -> Vec<(usize, (f32, f32))> {
+/// 两点线 / 退化（<3 点）无候选。注意：候选随几何动态变化，取向不利的段可能
+/// 整段无候选（该段无双击靶区，属可接受覆盖缺口，见 plan #21）。
+pub fn elbow_insert_candidates(pts: &[(f32, f32)], closed: bool) -> Vec<ElbowInsertCandidate> {
     const EPS: f32 = 1e-3;
     let n = pts.len();
     if n < 3 {
@@ -1543,7 +1554,11 @@ pub fn elbow_insert_candidates(pts: &[(f32, f32)], closed: bool) -> Vec<(usize, 
             }
         }
         if let Some(p) = chosen {
-            out.push((seg, p));
+            out.push(ElbowInsertCandidate {
+                seg,
+                point: p,
+                span: g,
+            });
         }
     }
     out
@@ -2165,30 +2180,29 @@ mod tests {
         let pts = [(0.0, 0.0), (50.0, 100.0), (100.0, 0.0)];
         let base = elbow_vertex_polyline(&pts, false);
         let cands = elbow_insert_candidates(&pts, false);
-        assert_eq!(cands.len(), 2, "实际候选：{:?}", cands);
-        assert_eq!(cands[0].0, 0);
-        assert_eq!(cands[0].1, (0.0, 50.0));
-        assert_eq!(cands[1].0, 1);
-        assert_eq!(cands[1].1, (100.0, 50.0));
+        let got: Vec<(usize, (f32, f32))> = cands.iter().map(|c| (c.seg, c.point)).collect();
+        assert_eq!(got, vec![(0usize, (0.0, 50.0)), (1, (100.0, 50.0))]);
+        // 带状命中靶区 = 该段覆盖的完整推导路径（seg0：竖跑段 + bar 前半）
+        assert_eq!(cands[0].span, vec![(0.0, 0.0), (0.0, 100.0), (50.0, 100.0)]);
         // 插入任一候选后路径不变（no-op），拖动后路径改变（live）——直接复核校验语义
-        for (seg, p) in &cands {
+        for c in &cands {
             let mut inserted = pts.to_vec();
-            inserted.insert(seg + 1, *p);
+            inserted.insert(c.seg + 1, c.point);
             assert_eq!(
                 orthogonal_simplify(&elbow_vertex_polyline(&inserted, false)),
                 orthogonal_simplify(&base),
                 "插入 {:?} 后路径改变",
-                p
+                c.point
             );
             let mut moved = inserted.clone();
-            moved[seg + 1].0 += 5.0;
+            moved[c.seg + 1].0 += 5.0;
             let mut moved_v = inserted.clone();
-            moved_v[seg + 1].1 += 5.0;
+            moved_v[c.seg + 1].1 += 5.0;
             assert!(
                 elbow_vertex_polyline(&moved, false) != base
                     || elbow_vertex_polyline(&moved_v, false) != base,
                 "候选 {:?} 惰性",
-                p
+                c.point
             );
         }
     }
@@ -2200,16 +2214,12 @@ mod tests {
         // 相邻 bar 取向不变、通过校验；seg0 取水平跑段中点 (100,0)。
         let pts = [(0.0, 0.0), (200.0, 50.0), (40.0, 100.0)];
         let cands = elbow_insert_candidates(&pts, false);
-        assert_eq!(
-            cands,
-            vec![(0usize, (100.0, 0.0)), (1usize, (80.0, 100.0))],
-            "实际候选：{:?}",
-            cands
-        );
+        let got: Vec<(usize, (f32, f32))> = cands.iter().map(|c| (c.seg, c.point)).collect();
+        assert_eq!(got, vec![(0usize, (100.0, 0.0)), (1, (80.0, 100.0))]);
         // 复核两个候选均为 no-op
-        for (seg, p) in &cands {
+        for c in &cands {
             let mut inserted = pts.to_vec();
-            inserted.insert(seg + 1, *p);
+            inserted.insert(c.seg + 1, c.point);
             assert_eq!(
                 orthogonal_simplify(&elbow_vertex_polyline(&inserted, false)),
                 orthogonal_simplify(&elbow_vertex_polyline(&pts, false))
@@ -2223,15 +2233,14 @@ mod tests {
         // 后路径不变（顶点保留、视觉闭环）。
         let pts = [(0.0, 0.0), (100.0, 0.0), (50.0, 80.0)];
         let cands = elbow_insert_candidates(&pts, true);
-        assert!(
-            cands.iter().any(|(seg, p)| *seg == 0 && *p == (50.0, 0.0)),
-            "实际候选：{:?}",
-            cands
-        );
+        let c0 = cands
+            .iter()
+            .find(|c| c.seg == 0)
+            .unwrap_or_else(|| panic!("实际候选：{:?}", cands));
+        assert_eq!(c0.point, (50.0, 0.0));
         // 插入候选后仍为闭环（首尾重合）且路径不变
-        let (seg, p) = cands.iter().find(|(seg, _)| *seg == 0).unwrap();
         let mut inserted = pts.to_vec();
-        inserted.insert(seg + 1, *p);
+        inserted.insert(1, c0.point);
         assert_eq!(
             orthogonal_simplify(&elbow_vertex_polyline(&inserted, true)),
             orthogonal_simplify(&elbow_vertex_polyline(&pts, true))

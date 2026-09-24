@@ -221,46 +221,47 @@ impl PReferZApp {
                     }
                     // 线性对象段中点：在段中间插入顶点（预览），随即进入端点拖拽。
                     // start_points 保存插入前的点集，undo 一步即可移除新顶点。
-                    // 多顶点 elbow（plan #21 DP-A）：仅**双击**在候选点插入；
-                    // 单击直接吞掉（手柄只是双击目标提示，不进入任何拖拽）。
+                    // 多顶点 elbow（plan #21 DP-A）：段路径整条是双击靶区——**双击**
+                    // 插入候选点；单击不吞（continue 到下方常规命中/移动处理）。
                     if let Handle::SegmentMid(seg) = h {
                         if is_multi_vertex_elbow_line(item) {
-                            if double_click {
-                                let prep = match &item.kind {
-                                    ItemKind::Shape { points, closed, .. } => {
-                                        elbow_insert_candidates(points, *closed)
-                                            .into_iter()
-                                            .find(|(s, _)| *s == seg)
-                                            .map(|(s, mid)| {
-                                                let insert_idx = if s + 1 < points.len() {
-                                                    s + 1
-                                                } else {
-                                                    points.len()
-                                                };
-                                                (points.clone(), insert_idx, mid)
-                                            })
-                                    }
-                                    _ => None,
-                                };
-                                if let Some((start_points, insert_idx, mid)) = prep {
-                                    if let Some(it) = self.scene.get_item_mut(&item.id) {
-                                        if let ItemKind::Shape { points, .. } = &mut it.kind {
-                                            points.insert(insert_idx, mid);
-                                        }
-                                    }
-                                    let start_canvas = self.viewport.pos2_to_canvas(screen_pos);
-                                    self.drag = DragState::LineEndpoint {
-                                        item_id: item.id,
-                                        endpoint: insert_idx,
-                                        start_canvas,
-                                        start_points,
-                                        base_pos: mid,
-                                        alt_extend: false,
-                                        keep_inserted: true,
-                                    };
-                                    self.transform_handles.active_handle = h;
-                                    self.transform_handles.is_dragging = true;
+                            if !double_click {
+                                continue;
+                            }
+                            let prep = match &item.kind {
+                                ItemKind::Shape { points, closed, .. } => {
+                                    elbow_insert_candidates(points, *closed)
+                                        .into_iter()
+                                        .find(|c| c.seg == seg)
+                                        .map(|c| {
+                                            let insert_idx = if c.seg + 1 < points.len() {
+                                                c.seg + 1
+                                            } else {
+                                                points.len()
+                                            };
+                                            (points.clone(), insert_idx, c.point)
+                                        })
                                 }
+                                _ => None,
+                            };
+                            if let Some((start_points, insert_idx, mid)) = prep {
+                                if let Some(it) = self.scene.get_item_mut(&item.id) {
+                                    if let ItemKind::Shape { points, .. } = &mut it.kind {
+                                        points.insert(insert_idx, mid);
+                                    }
+                                }
+                                let start_canvas = self.viewport.pos2_to_canvas(screen_pos);
+                                self.drag = DragState::LineEndpoint {
+                                    item_id: item.id,
+                                    endpoint: insert_idx,
+                                    start_canvas,
+                                    start_points,
+                                    base_pos: mid,
+                                    alt_extend: false,
+                                    keep_inserted: true,
+                                };
+                                self.transform_handles.active_handle = h;
+                                self.transform_handles.is_dragging = true;
                             }
                             return;
                         }

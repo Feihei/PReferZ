@@ -53,8 +53,8 @@ fn is_line(item: &Item) -> bool {
     )
 }
 
-/// 是否为 elbow 线（任意顶点数，plan #21）。段中点手柄对 elbow 改用
-/// 「双击插入」候选点位置（见 [`elbow_insert_screen_positions`]）。
+/// 是否为 elbow 线（任意顶点数，plan #21）。多顶点 elbow 的段中点手柄 =
+/// 双击插入候选（见 [`elbow_insert_screen_candidates`]）。
 fn is_elbow_line(item: &Item) -> bool {
     matches!(
         item.kind,
@@ -79,13 +79,13 @@ pub(crate) fn is_multi_vertex_elbow_line(item: &Item) -> bool {
         && matches!(item.kind, ItemKind::Shape { ref points, .. } if points.len() > 2)
 }
 
-/// 多顶点 elbow 的双击插入候选点屏幕位置（plan #21 DP-A）。候选点由 core 的
-/// `elbow_insert_candidates` 保证 on-path、插入后视觉不变且可拖动；此处仅做
-/// 局部→屏幕变换。返回 `(seg, 屏幕位置)`，seg 为段起始顶点下标。
-fn elbow_insert_screen_positions(
+/// 多顶点 elbow 的双击插入候选（屏幕坐标）。`seg` 段起始顶点下标、`point` 插入点、
+/// `span` 该段覆盖的推导路径折线（带状命中靶区）。候选由 core
+/// `elbow_insert_candidates` 保证 on-path、插入后视觉不变且可拖动。
+fn elbow_insert_screen_candidates(
     item: &Item,
     viewport: &ViewportState,
-) -> Vec<(usize, egui::Pos2)> {
+) -> Vec<(usize, egui::Pos2, Vec<egui::Pos2>)> {
     let ItemKind::Shape { points, closed, .. } = &item.kind else {
         return Vec::new();
     };
@@ -93,11 +93,18 @@ fn elbow_insert_screen_positions(
         return Vec::new();
     }
     let to_screen = item_local_to_screen(item, viewport);
+    let to_pt = |p: (f32, f32)| {
+        let s = to_screen.transform_point(euclid::Point2D::new(p.0, p.1));
+        egui::pos2(s.x, s.y)
+    };
     elbow_insert_candidates(points, *closed)
         .into_iter()
-        .map(|(seg, p)| {
-            let s = to_screen.transform_point(euclid::Point2D::new(p.0, p.1));
-            (seg, egui::pos2(s.x, s.y))
+        .map(|c| {
+            (
+                c.seg,
+                to_pt(c.point),
+                c.span.iter().map(|p| to_pt(*p)).collect(),
+            )
         })
         .collect()
 }
@@ -294,8 +301,8 @@ impl TransformHandles {
             }
             // 段中点：开放折线 n-1 段，闭合多边形含收尾段。两点 elbow 不给
             // （对角弦中点会破坏两点不变量）；多顶点 elbow 的段中点 = 双击插入
-            // 候选点（plan #21 DP-A，on-path 且插入后视觉不变）；普通折线 =
-            // 弦中点（拖拽加点）。
+            // 候选（plan #21 DP-A，整段推导路径带状命中，插入后视觉不变）；
+            // 普通折线 = 弦中点（拖拽加点）。
             let n = eps.len();
             if n >= 2 {
                 let closed = matches!(item.kind, ItemKind::Shape { closed: true, .. });
@@ -303,11 +310,18 @@ impl TransformHandles {
                 if is_two_point_elbow_line(item) {
                     // 两点 elbow：无段中点（仅 bar 手柄，见下）
                 } else if is_elbow_line(item) {
-                    for (seg, p) in elbow_insert_screen_positions(item, viewport) {
-                        let r = egui::Rect::from_center_size(p, egui::Vec2::splat(mid_size));
-                        if r.contains(screen_pos) {
-                            return Handle::SegmentMid(seg);
+                    let half = ELBOW_BAR_HIT_PX.max(stroke_screen_width(item, viewport));
+                    let mut best: Option<(f32, usize)> = None;
+                    for (seg, _, span) in elbow_insert_screen_candidates(item, viewport) {
+                        for w in span.windows(2) {
+                            let d = dist_point_segment_screen(screen_pos, w[0], w[1]);
+                            if d <= half && best.is_none_or(|(bd, _)| d < bd) {
+                                best = Some((d, seg));
+                            }
                         }
+                    }
+                    if let Some((_, seg)) = best {
+                        return Handle::SegmentMid(seg);
                     }
                 } else {
                     let seg_count = if closed { n } else { n - 1 };
@@ -403,8 +417,8 @@ impl TransformHandles {
                 if is_two_point_elbow_line(item) {
                     // 两点 elbow：无段中点（仅 bar 手柄，见下）
                 } else if is_elbow_line(item) {
-                    // 多顶点 elbow：双击插入候选点（plan #21 DP-A）
-                    for (_, p) in elbow_insert_screen_positions(item, viewport) {
+                    // 多顶点 elbow：双击插入点（plan #21 DP-A，提示双击线上任意处可加点）
+                    for (_, p, _) in elbow_insert_screen_candidates(item, viewport) {
                         let r = egui::Rect::from_center_size(p, egui::Vec2::splat(6.0));
                         painter.rect_filled(r, egui::CornerRadius::same(1), mid_fill);
                     }

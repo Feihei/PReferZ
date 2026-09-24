@@ -1694,10 +1694,12 @@ impl eframe::App for PReferZApp {
                     let additive = ctx.input(|i| i.modifiers.shift);
                     let free_scale = ctx.input(|i| i.modifiers.ctrl);
                     let alt = ctx.input(|i| i.modifiers.alt);
-                    // 双击判定（press 沿）：与上一次按下间隔和距离都在双击阈值内。
-                    // 语义与 egui 内部 click 分类一致（0.3s / 6px）。
-                    const DOUBLE_CLICK_TIME: f64 = 0.3;
-                    const DOUBLE_CLICK_DIST: f32 = 6.0;
+                    // 双击判定（press 沿）：与上一次按下间隔和距离都在阈值内。
+                    // egui 的 click 分类在释放沿才成形、按下沿用不上，故自跟踪；
+                    // 阈值比 egui 的 0.3s / 6px 宽松一档——第二次按下落在手柄带内
+                    // 即算（plan #21 DP-A：elbow 段双击插入顶点）。
+                    const DOUBLE_CLICK_TIME: f64 = 0.5;
+                    const DOUBLE_CLICK_DIST: f32 = 12.0;
                     let now = ctx.input(|i| i.time);
                     let double_click = self.last_primary_press.is_some_and(|(t, p)| {
                         now - t <= DOUBLE_CLICK_TIME && (pos - p).length() <= DOUBLE_CLICK_DIST
@@ -2981,6 +2983,72 @@ mod tests {
             ItemKind::Shape { points, .. } => points.clone(),
             _ => panic!("应为 Shape"),
         }
+    }
+
+    fn set_curve_type(app: &mut PReferZApp, id: ItemId, curve: CurveType) {
+        if let ItemKind::Shape { curve_type, .. } = &mut app.scene.get_item_mut(&id).unwrap().kind {
+            *curve_type = curve;
+        }
+    }
+
+    #[test]
+    fn double_click_on_elbow_segment_inserts_vertex() {
+        // plan #21 DP-A：多顶点 elbow 段路径双击 → 在 core 候选点插入顶点。
+        let pts = vec![(0.0, 0.0), (50.0, 100.0), (100.0, 0.0)];
+        let (mut app, id) = app_with_polyline(pts.clone(), false);
+        set_curve_type(&mut app, id, CurveType::Elbow);
+        app.scene.select(id);
+        let cand = elbow_insert_candidates(&pts, false)
+            .into_iter()
+            .next()
+            .expect("V 形 elbow 应有插入候选");
+        // 候选点在推导路径上（item pos=0/scale=1 → 局部 == 画布）
+        let screen = app
+            .viewport
+            .canvas_to_pos2(CanvasPoint::new(cand.point.0, cand.point.1));
+
+        // 单击（非双击）：不加点，穿透到常规命中（选中/移动）
+        app.transform_handles.hover_handle = Handle::SegmentMid(cand.seg);
+        app.begin_drag(screen, false, false, false, false);
+        assert_eq!(polyline_points(&app, id), pts, "单击不该加点");
+        assert!(
+            matches!(app.drag, DragState::MoveItems { .. }),
+            "单击应穿透到移动拖拽，实际 {:?}",
+            drag_state_name(&app.drag)
+        );
+        app.end_drag();
+        assert!(app.undo_stack.undo.is_empty(), "无位移的移动不入 undo");
+
+        // 双击：插入候选点，未拖动释放仍保留（keep_inserted），一条 undo
+        app.transform_handles.hover_handle = Handle::SegmentMid(cand.seg);
+        app.begin_drag(screen, false, false, false, true);
+        let after = polyline_points(&app, id);
+        assert_eq!(after.len(), pts.len() + 1);
+        assert_eq!(after[cand.seg + 1], cand.point);
+        assert!(matches!(app.drag, DragState::LineEndpoint { .. }));
+        app.end_drag();
+        assert_eq!(
+            polyline_points(&app, id).len(),
+            pts.len() + 1,
+            "释放后顶点保留"
+        );
+        assert_eq!(app.undo_stack.undo.len(), 1, "插入占一条 undo");
+        assert!(app.perform_undo());
+        assert_eq!(polyline_points(&app, id), pts, "undo 还原");
+    }
+
+    #[test]
+    fn double_click_outside_elbow_candidate_span_does_nothing() {
+        // 双击落点不在任何候选段的推导路径带内（远离线）：不加点。
+        let pts = vec![(0.0, 0.0), (50.0, 100.0), (100.0, 0.0)];
+        let (mut app, id) = app_with_polyline(pts.clone(), false);
+        set_curve_type(&mut app, id, CurveType::Elbow);
+        app.scene.select(id);
+        let far = app.viewport.canvas_to_pos2(CanvasPoint::new(500.0, 500.0));
+        app.transform_handles.hover_handle = Handle::SegmentMid(0);
+        app.begin_drag(far, false, false, false, true);
+        assert_eq!(polyline_points(&app, id), pts);
+        assert!(matches!(app.drag, DragState::BoxSelect { .. }));
     }
 
     #[test]
