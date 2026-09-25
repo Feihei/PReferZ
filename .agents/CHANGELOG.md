@@ -677,6 +677,57 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
   完整性由既有测试把关）。质量门全绿（fmt / `clippy -D warnings` / core 199 + binary 79 passed；
   `tick_autosave_writes_sidecar_and_keeps_doc_dirty` 仍为先前已存在的无关失败）。
 
+## RoughStyler 对齐 rough.js/Excalidraw（plan #20，2026-09-25，待提交）
+
+> 2026-09-24 调研：RoughStyler ↔ rough.js 4.6.6 + Excalidraw `generateRoughOptions`
+> 逐行对照，发现六类不对齐（抖动幅度基准差 1.5–10 倍为大头）。四决策点拍板：
+> DP1 Architect 维持 0.5×（不改四档 UI）、DP2 solid 填充顶点跟随 rough.js 抖动、
+> DP3 箭头跟随 Excalidraw 改抖、DP4 小图衰减与 amp_scale 相乘。
+
+- **批次1 抖动幅度基准**：`sketch_edge` 的 `max_offset` 由 `min(边长×6%, 8px)·zoom·amp_scale`
+  改为 rough.js `_line` 公式——`2 画布px × roughnessGain(边长) × amp_scale × zoom`
+  （<200→1、200–500 线性 0.9→0.4、>500→0.4；边长 <20 画布px 短线衰减 `len/10`）；
+  `curve_jitter_amp` 由"平均采样间距×6%"改为 rough.js `curve()` 的
+  `(1+amp_scale×0.2)×amp_scale×zoom`（与曲线尺寸/采样密度解耦）；新增
+  `small_size_roughness_scale` 移植 Excalidraw `adjustRoughness` 小图衰减
+  （max<10→÷3、<20→÷2，三种例外不衰减），与 amp_scale **相乘**（DP4）。
+- **批次2 bowing + 端点语义**：`mid_disp` 符号/幅度改 SeededRng 随机（rough.js 无饱和
+  `/200` 线性，修"矩形四边一致外凸吹气感"）；新增 `preserve_vertices`（Excalidraw 同名
+  选项）——Architect/Artist 档端点精确不抖、仅 Cartoonist 抖（修绑定/拼接接头脱开）。
+- **批次3 hachure 四件套**：① `HACHURE_ANGLE_DEG` -41→-49（rough.js `hachureAngle+90`
+  有效 49° 仰角；cross-hatch 第二组自动 +41）；② 填充线宽 = 描边一半
+  （Excalidraw `fillWeight = strokeWidth/2`，Clean/Rough 一致）；③ 斜线段改走
+  `sketch_edge` 完整双线抖动（rough.js `doubleLineOps`，取代旧端点 ±0.15·gap）；
+  ④ 随机相位（roughness≥1 时 ~30% 概率跳首线，`scan-line-hachure.ts`）+ gap 下限
+  4px → `round(max(gap, 0.1))`。
+- **批次4 其余（已拍板项）**：solid 填充顶点抖动 ±2 画布px × amp_scale（DP2，
+  rough.js `solidFillPolygon`）；箭头两翼改抖（DP3，`push_arrow_heads_rough`，
+  roughness 封顶 min(1, roughness)，翼尖 preserveVertices 锚定，更正 stylers.rs 错误注释，
+  ADR-0005 补录修订）；dash 模式 disableMultiStroke（单笔）+ strokeWidth+0.5；
+  椭圆自适应采样数（rough.js `generateEllipseParams`，Ø100→12 段、Ø400→23 段）
+  + 随机起始相位（`radOffset`，独立种子 `seed^0x5EED_11C5`）。
+- **不做**（plan #20 明确划出）：zigzag/dots 填充（ADR-0005 注明后续自移植）、
+  圆角矩形 `_bezierTo` 平滑抖动、椭圆 `overlap` 收笔重叠段。
+- **测试**：stylers 36 项全绿——新增 roughnessGain 分段公式、adjustRoughness 矩阵、
+  Cartoonist 端点抖动逐轴上界（100/300/1000px）、Architect/Artist 顶点精确、
+  bowing 符号跨 seed 随机、跳首线=线表去首、49° 仰角方向、填充半宽；更新
+  椭圆段数/箭头翼数/solid 填充抖动上界等既有断言。质量门：fmt / `clippy -D warnings`
+  全绿；`cargo test --workspace` 除 `tick_autosave_writes_sidecar_and_keeps_doc_dirty`
+  （经 git stash 验证为先前已存在的无关失败）全绿。待 `cargo run` 人工验收。
+
+### 验收反馈批次（2026-09-25 同日，Feihei 实测 4 项）
+
+1. **sloppiness 三档观感偏弱**：`amp_scale` 整体加倍——Architect 0.5→1.0、Artist 1.0→2.0、
+   Cartoonist 1.8→3.6（曲线 / solid 填充 / hachure 抖动联动放大）；preserveVertices 规则不变
+   （仅 Cartoonist 端点抖）。
+2. **描边宽度档偏粗**：三处 stepper 档位 `[2,4,8,16,32]` → `[1,2,4,8,16]`（XS/S/M/L/XL），
+   默认 4.0 由 S 变 M。
+3. **圆角档位偏大**：`roundness_radius` 减半为 `short × roundness × 0.5`——roundness=1.0
+   才是短边全圆弧，M 档 0.5 ≈ 1/4 短边（原 0.5 即满圆弧、上两档无意义）。
+4. **圆角矩形手绘风碎短线**：`is_smooth` 把带圆角矩形并入平滑路线（整圈抖动 + Catmull-Rom，
+   与椭圆同策；直边段共线插值后仍直），新增回归测试
+   `rough_styler_rounded_rect_is_smooth_not_fragmented`。
+
 ---
 
 ## elbow 锚点拖拽约束 + 插入点不落拐角（plan #21 三次验收反馈，2026-09-25，待提交）

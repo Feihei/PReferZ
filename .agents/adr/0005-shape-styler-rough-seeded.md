@@ -27,3 +27,18 @@
 - ✅ 同 seed 恒得同一轮廓（缩放/重开不跳变），单测直接断言确定性
 - ✅ 依赖树不变，编译时间不涨
 - ⚠️ rough.js 后续特性（hachure 填充等）需继续自移植
+
+## 修订（2026-09-25，plan #20 RoughStyler 对齐 rough.js/Excalidraw）
+
+逐行对照 rough.js 4.6.6 + Excalidraw `generateRoughOptions` 后修订两项原决策（用户拍板）：
+
+- **箭头改抖**（推翻上文"箭头不抖"）：原注释"Excalidraw 同样只在笔画上抖、箭头保持规整"
+  与事实不符——Excalidraw 箭头端头是 rough polygon（`shape.ts:422` triangle，roughness 封顶
+  `min(1, roughness)`）。现 `push_arrow_heads_rough` 两翼走 `sketch_edge` 完整双线抖动；
+  preserveVertices（Architect/Artist）保证翼尖锚在几何端点，绑定接头不受影响。Dot 端头仍规整。
+- **solid 填充顶点改抖**（推翻上文"填充保持精确几何"的静止状态——hachure 已于后续批次交付，
+  此处再跟随 rough.js `solidFillPolygon` 顶点 ±2 画布px × amp_scale 抖动，pure 色块边缘与
+  手绘描边更贴合）。
+
+其余原决策（零依赖、SeededRng、双线笔触、画布px×zoom 抖动语义、确定性种子）维持不变。
+计划中"曲线轮廓不走逐边抖动"亦维持（对齐 rough.js `curve()` 路线）。

@@ -78,13 +78,15 @@ fn rotate_vec2(v: egui::Vec2, angle: f32) -> egui::Vec2 {
     egui::vec2(v.x * c - v.y * s, v.x * s + v.y * c)
 }
 
-/// 矩形族的圆角半径（局部坐标）：`min(w, h) * roundness`，且不超过短边的一半。
+/// 矩形族的圆角半径（局部坐标）：`min(w, h) × roundness × 0.5`，且不超过短边的一半。
 ///
-/// 超过一半会让两头的圆弧互相吃掉，退化成畸形轮廓，故显式夹紧。
+/// plan #20 验收反馈：原 `short × roundness` 在 M 档 0.5 就把短边全变成圆弧，
+/// 上面的档位失去意义——改为 0.5 系数后 roundness=1.0 才是短边两侧各占一半
+/// （短边全圆弧），0.5（M 档）≈ 四分之一短边。
 fn roundness_radius(base_size: (f32, f32), roundness: f32) -> f32 {
     let (w, h) = base_size;
     let short = w.min(h);
-    (short * roundness).clamp(0.0, short / 2.0)
+    (short * roundness * 0.5).clamp(0.0, short / 2.0)
 }
 
 /// 圆角矩形的轮廓点（顺时针，未闭合——闭合由调用方按 `is_closed` 处理）。
@@ -112,12 +114,18 @@ fn rounded_rect_points(w: f32, h: f32, r: f32) -> Vec<(f32, f32)> {
 /// 生成轮廓点的局部坐标。矩形族按 `base_size` 推导，Polyline 直接用 `points`。
 ///
 /// `ellipse_segments` 控制椭圆的采样点数：`CleanStyler` 用 64 段（边缘平滑），
-/// `RoughStyler` 用 24 段——后者还会把采样点插值成光滑曲线，无需靠堆段数换圆度。
+/// `RoughStyler` 用 rough.js `generateEllipseParams` 的自适应段数。
+/// `ellipse_phase` 为椭圆采样起始角（弧度）：`CleanStyler` 恒 0，
+/// `RoughStyler` 按 rough.js `radOffset` 给随档位缩放的随机相位。
 ///
 /// 两处会改写点列（Phase I）：
 /// - 矩形 `roundness > 0` → 四角换成圆弧采样点；
 /// - Polyline + `Curved` → 经 `catmull_rom_polyline` 插值（与命中测试同源）。
-fn outline_points(shape: &ShapeData, ellipse_segments: usize) -> Vec<(f32, f32)> {
+fn outline_points(
+    shape: &ShapeData,
+    ellipse_segments: usize,
+    ellipse_phase: f32,
+) -> Vec<(f32, f32)> {
     let (w, h) = shape.base_size;
     match shape.shape_type {
         ShapeType::Rectangle => {
@@ -133,7 +141,8 @@ fn outline_points(shape: &ShapeData, ellipse_segments: usize) -> Vec<(f32, f32)>
             let (cx, cy, rx, ry) = (w / 2.0, h / 2.0, w / 2.0, h / 2.0);
             (0..ellipse_segments)
                 .map(|i| {
-                    let a = i as f32 / ellipse_segments as f32 * std::f32::consts::TAU;
+                    let a =
+                        ellipse_phase + i as f32 / ellipse_segments as f32 * std::f32::consts::TAU;
                     (cx + rx * a.cos(), cy + ry * a.sin())
                 })
                 .collect()
@@ -177,8 +186,9 @@ fn is_closed(shape: &ShapeData) -> bool {
 /// 与 Arrow 的视觉分量相当），圆心沿线段方向内缩一个半径，使圆点**相切于端点**
 /// 而不是盖住它（Excalidraw 同款观感）。
 ///
-/// 两个风格器共用：手绘风下**箭头不抖动** —— 抖动的箭头会认不出指向，
-/// 且 Excalidraw 同样只在笔画上抖、箭头保持规整。
+/// 本函数画**规整**箭头（`CleanStyler` 用）；`RoughStyler` 走
+/// [`RoughStyler::push_arrow_heads_rough`]——DP3 拍板跟随 Excalidraw：箭头是
+/// rough polygon 会抖（此前注释"Excalidraw 箭头保持规整"与事实不符，已更正）。
 fn push_arrow_heads(
     out: &mut Vec<Shape>,
     pts: &[Pos2],
@@ -265,12 +275,17 @@ fn dash_lengths(dash: DashStyle, zoom: f32, line_width: f32) -> (f32, f32) {
 
 // ─────────────────────────── Hachure 填充（Excalidraw 同款） ───────────────────────────
 
-/// 斜线填充的默认角度（度，屏幕坐标系）。rough.js / Excalidraw 同款默认值。
-const HACHURE_ANGLE_DEG: f32 = -41.0;
+/// 斜线填充的默认角度（度，屏幕坐标系）。
+///
+/// rough.js 的 `hachureAngle` 默认 -41 会在 `scan-line-hachure.ts` 里 **+90** 后
+/// 使用（有效 49° 仰角）；本常量直接取换算后的线方向，故为 -49。
+/// cross-hatch 第二组 +90 → +41，与 rough.js 两组方向一致。
+const HACHURE_ANGLE_DEG: f32 = -49.0;
 
-/// 斜线填充的行距：rough.js 同款 `hachureGap = 4 × 线宽`，并给个下限防止细线贴死。
-fn hachure_gap(line_width: f32) -> f32 {
-    (line_width * 4.0).max(4.0)
+/// 斜线填充的行距：rough.js 同款 `hachureGap = 4 × 线宽`，gap 下限按
+/// rough.js `round(max(gap, 0.1))`（plan #20 批次3，取代旧的 4px 下限）。
+fn hachure_gap(stroke_width: f32, zoom: f32) -> f32 {
+    (stroke_width * 4.0).max(0.1).round() * zoom
 }
 
 /// 生成沿 `angle_deg` 方向的斜线填充线段（屏幕空间）。
@@ -278,7 +293,16 @@ fn hachure_gap(line_width: f32) -> f32 {
 /// 算法：把多边形旋转 `-angle`，使填充线方向变为水平；对每条水平扫描线求与
 /// 多边形各边的交点横坐标，排序后两两配对（穿入/穿出交替），再旋回。
 /// 对凸/凹简单多边形均适用（凹多边形一条扫描线可得 >2 个交点，配对后为多段）。
-fn hachure_segments(pts: &[Pos2], angle_deg: f32, gap: f32) -> Vec<[Pos2; 2]> {
+///
+/// `skip_first_line`：rough.js `scan-line-hachure.ts` 在 roughness≥1 时约 30% 概率
+/// 把扫描起点后移一整行（"跳首线"的随机相位）；扫描步距恒为 `gap`，故跳首线的
+/// 结果恰等于不跳时的线表去掉第一条。
+fn hachure_segments(
+    pts: &[Pos2],
+    angle_deg: f32,
+    gap: f32,
+    skip_first_line: bool,
+) -> Vec<[Pos2; 2]> {
     if pts.len() < 3 || gap <= 1e-3 {
         return Vec::new();
     }
@@ -294,7 +318,7 @@ fn hachure_segments(pts: &[Pos2], angle_deg: f32, gap: f32) -> Vec<[Pos2; 2]> {
     let ymax = rp.iter().map(|p| p.y).fold(f32::MIN, f32::max);
 
     let mut segs = Vec::new();
-    let mut y = ymin + gap * 0.5;
+    let mut y = ymin + gap * 0.5 + if skip_first_line { gap } else { 0.0 };
     while y < ymax {
         let mut xs: Vec<f32> = Vec::new();
         for i in 0..rp.len() {
@@ -317,7 +341,10 @@ fn hachure_segments(pts: &[Pos2], angle_deg: f32, gap: f32) -> Vec<[Pos2; 2]> {
     segs
 }
 
-/// 斜线段列表 → egui 形状（颜色即填充色，线宽同描边）。
+/// 斜线段列表 → egui 形状（颜色即填充色）。
+///
+/// 填充线宽取描边的一半（Excalidraw `fillWeight = strokeWidth / 2`，
+/// plan #20 批次3；调用方传 `line_width * 0.5`）。
 fn hachure_shapes(
     pts: &[Pos2],
     angle_deg: f32,
@@ -326,7 +353,7 @@ fn hachure_shapes(
     color: Color32,
 ) -> Vec<Shape> {
     let stroke = egui::Stroke::new(line_width, color);
-    hachure_segments(pts, angle_deg, gap)
+    hachure_segments(pts, angle_deg, gap, false)
         .into_iter()
         .map(|seg| Shape::line_segment(seg, stroke))
         .collect()
@@ -373,7 +400,10 @@ impl ShapeStyler for CleanStyler {
         to_screen: &LocalToScreen,
         zoom: f32,
     ) -> Vec<Shape> {
-        let mut pts = to_screen_points(&outline_points(shape, Self::ELLIPSE_SEGMENTS), to_screen);
+        let mut pts = to_screen_points(
+            &outline_points(shape, Self::ELLIPSE_SEGMENTS, 0.0),
+            to_screen,
+        );
         if pts.len() < 2 {
             return Vec::new();
         }
@@ -382,6 +412,7 @@ impl ShapeStyler for CleanStyler {
         let line_width = stroke.width * zoom;
         let egui_stroke = egui::Stroke::new(line_width, stroke_color);
         let closed = is_closed(shape);
+        let fill_width = line_width * 0.5; // Excalidraw fillWeight = strokeWidth / 2
 
         // 开放折线：直接画线 + 箭头，无填充概念。
         if !closed {
@@ -414,8 +445,8 @@ impl ShapeStyler for CleanStyler {
                 FillStyle::Hachure => out.extend(hachure_shapes(
                     &pts,
                     HACHURE_ANGLE_DEG,
-                    hachure_gap(line_width),
-                    line_width,
+                    hachure_gap(stroke.width, zoom),
+                    fill_width,
                     fill_color,
                 )),
                 FillStyle::CrossHatch => {
@@ -423,8 +454,8 @@ impl ShapeStyler for CleanStyler {
                         out.extend(hachure_shapes(
                             &pts,
                             angle,
-                            hachure_gap(line_width),
-                            line_width,
+                            hachure_gap(stroke.width, zoom),
+                            fill_width,
                             fill_color,
                         ));
                     }
@@ -464,28 +495,72 @@ impl RoughStyler {
     const PASSES: usize = 2;
     /// 弓形系数：控制贝塞尔控制点垂直于边的位移强度。
     const BOWING: f32 = 1.0;
-    /// 抖动幅度上限（画布像素）：防止长边抖成波浪。
-    const MAX_OFFSET_CANVAS: f32 = 8.0;
-    /// 抖动幅度占边长的比例。
-    const OFFSET_RATIO: f32 = 0.06;
-    /// 椭圆近似的采样点数：`RoughStyler` 采样后还要经
-    /// [`RoughStyler::closed_catmull_rom`] 插值成光滑曲线，故点数只需够圆即可。
-    const ELLIPSE_SEGMENTS: usize = 24;
+    /// rough.js `maxRandomnessOffset` 默认值（画布像素）：underlay 端点/控制点
+    /// 抖动幅度基准（plan #20 批次1，取代旧的 `min(边长6%, 8px)`）。
+    const MAX_RANDOMNESS_OFFSET: f32 = 2.0;
+    /// rough.js `curveStepCount` 默认值：椭圆自适应采样数的下限。
+    const CURVE_STEP_COUNT: f32 = 9.0;
     /// dash 模式下把每条贝塞尔采样为折线的点数。
     const DASH_SAMPLES: usize = 16;
 
+    /// rough.js `_line` 的 `roughnessGain`：按**画布**边长衰减——<200 → 1、
+    /// >500 → 0.4、中间线性（plan #20 批次1）。
+    fn roughness_gain(len_canvas: f32) -> f32 {
+        if len_canvas < 200.0 {
+            1.0
+        } else if len_canvas > 500.0 {
+            0.4
+        } else {
+            -0.0016668 * len_canvas + 1.233334
+        }
+    }
+
+    /// Excalidraw `adjustRoughness` 的小图衰减系数（与 amp_scale **相乘**，DP4）。
+    /// max 边 <10 → ÷3、<20 → ÷2；三种例外不衰减（与 Excalidraw 同条件）：
+    /// 两边都够大（min≥20 且 max≥50）、带圆角的矩形（min≥15）、线性元素够长（max≥50）。
+    fn small_size_roughness_scale(shape: &ShapeData) -> f32 {
+        let (w, h) = shape.base_size;
+        let (max_s, min_s) = (w.max(h), w.min(h));
+        let round_eligible =
+            matches!(shape.shape_type, ShapeType::Rectangle) && shape.roundness > 0.0;
+        if (min_s >= 20.0 && max_s >= 50.0)
+            || (min_s >= 15.0 && round_eligible)
+            || (matches!(shape.shape_type, ShapeType::Polyline) && max_s >= 50.0)
+        {
+            return 1.0;
+        }
+        if max_s < 10.0 {
+            1.0 / 3.0
+        } else {
+            0.5
+        }
+    }
+
+    /// rough.js `generateEllipseParams` 的椭圆采样段数（`curveStepCount`=9、
+    /// Excalidraw 对 ellipse 设 `curveFitting=1` 故半径不加随机抖动）：
+    /// `ceil(max(9, 9/√200 · √(2π·√((rx²+ry²)/2))))`，小圆 9 段、大圆按周长增长。
+    fn ellipse_step_count(w: f32, h: f32) -> usize {
+        let (rx, ry) = (w * 0.5, h * 0.5);
+        let psq = (std::f32::consts::TAU * ((rx * rx + ry * ry) * 0.5).sqrt()).sqrt();
+        (Self::CURVE_STEP_COUNT.max(Self::CURVE_STEP_COUNT / 200.0f32.sqrt() * psq)).ceil() as usize
+    }
+
     /// 该轮廓是否为**曲线类**：抖动后需连成光滑曲线，而非逐边画抖动的直线段。
     ///
-    /// 两类属于曲线：
+    /// 三类属于曲线：
     /// - 椭圆：由采样点近似，直接连段会露出多边形折角（手绘风下尤其刺眼）；
-    /// - `Curved` 的 Polyline：Catmull-Rom 采样后本身就是曲线控制点。
+    /// - `Curved` 的 Polyline：Catmull-Rom 采样后本身就是曲线控制点；
+    /// - 圆角矩形：四角是圆弧采样点，逐边抖动会把轮廓碎成大量短线段
+    ///   （plan #20 验收反馈），改走"整圈抖动 + Catmull-Rom"平滑路线——
+    ///   直边段的采样点共线，插值后仍是直线。
     ///
-    /// 矩形 / 菱形 / `Straight` 折线本来就是直边，保持逐边抖动。
+    /// 矩形（无圆角）/ 菱形本来就是直边，保持逐边抖动。
     fn is_smooth(shape: &ShapeData) -> bool {
         match shape.shape_type {
             ShapeType::Ellipse => true,
+            ShapeType::Rectangle => roundness_radius(shape.base_size, shape.roundness) > 1e-3,
             ShapeType::Polyline => matches!(shape.curve_type, CurveType::Curved),
-            ShapeType::Rectangle | ShapeType::Diamond => false,
+            ShapeType::Diamond => false,
         }
     }
 
@@ -547,27 +622,13 @@ impl RoughStyler {
         }
     }
 
-    /// 闭合点环的抖动幅度（屏幕像素）：取相邻点平均间距换算回画布像素后乘
-    /// [`RoughStyler::OFFSET_RATIO`]，再受 `MAX_OFFSET_CANVAS` 约束——
-    /// 与 [`RoughStyler::sketch_edge`] 同一尺度，保证直线与曲线抖动观感一致。
+    /// 曲线（椭圆 / Curved 折线）采样点的抖动幅度（屏幕像素）。
     ///
-    /// 开放曲线的周长不含"末点 → 首点"那一段（它并不存在），否则平均间距被
-    /// 虚增，抖动幅度会偏大。
-    fn curve_jitter_amp(pts: &[Pos2], zoom: f32, closed: bool, amp_scale: f32) -> f32 {
-        let n = pts.len();
-        if n < 2 {
-            return 0.0;
-        }
-        let zoom = zoom.max(1e-3);
-        let seg_count = if closed { n } else { n - 1 };
-        let perimeter: f32 = (0..seg_count)
-            .map(|i| (pts[i] - pts[(i + 1) % n]).length())
-            .sum();
-        let avg_canvas = perimeter / seg_count as f32 / zoom;
-        // 不再额外打五折：此前 ×0.5 加上采样密集导致曲线抖动仅零点几像素，
-        // 各 Sloppiness 档位肉眼无差别（用户反馈"曲线手绘样式都一样"）。
-        // 现在与逐边抖动同一尺度，档位差异（0.5/1/1.8）可感知。
-        (avg_canvas * Self::OFFSET_RATIO).min(Self::MAX_OFFSET_CANVAS) * zoom * amp_scale
+    /// rough.js `curve()` 的逐点偏移 = `_curveWithOffset(points, 1×(1+roughness×0.2))`
+    /// 再经 `_offsetOpt` 乘 roughness——与采样密度/曲线尺寸无关，只随档位变化
+    /// （plan #20 批次1：取代旧"平均采样间距×6%"，修"曲线抖动与尺寸挂钩、档位难辨"）。
+    fn curve_jitter_amp(zoom: f32, amp_scale: f32) -> f32 {
+        (1.0 + amp_scale * 0.2) * amp_scale * zoom
     }
 
     /// 按 dash 样式把一条抖动贝塞尔落到 egui 形状列表。
@@ -606,32 +667,53 @@ impl RoughStyler {
 
     /// 生成一条抖动边 `a → b` 的三次贝塞尔控制点 `[p0, c1, c2, p3]`。
     ///
+    /// 公式对齐 rough.js `_line`（plan #20 批次1/2）：抖动幅度 =
+    /// `maxRandomnessOffset(2 画布px) × roughnessGain(边长) × amp_scale × zoom`，
+    /// 边长 <20 画布px 时衰减为 `len/10`；bowing 幅度 = `2·len/200 × gain × amp_scale`
+    /// （不饱和），**符号随机**；`ctx.preserve_vertices`（Excalidraw 同名选项，
+    /// Architect/Artist 档生效）时端点不抖。
+    ///
     /// 退化边（长度 ≈ 0）直接返回零抖动直线，避免除以 0 得到 NaN。
-    fn sketch_edge(rng: &mut SeededRng, a: Pos2, b: Pos2, zoom: f32, amp_scale: f32) -> [Pos2; 4] {
+    fn sketch_edge(rng: &mut SeededRng, a: Pos2, b: Pos2, ctx: &RoughCtx) -> [Pos2; 4] {
         let d = b - a;
         let len = d.length();
         if len < 1e-3 {
             return [a, a, b, b];
         }
 
-        // 抖动幅度以画布像素计量，再换算回屏幕像素（见类型注释）；
-        // 乘档位系数得到 Architect/Artist/Cartoonist 三档观感（plan #3）。
+        let zoom = ctx.zoom;
+        let amp_scale = ctx.amp_scale;
+        let preserve_vertices = ctx.preserve_vertices;
         let len_canvas = len / zoom;
-        let max_offset =
-            (len_canvas * Self::OFFSET_RATIO).min(Self::MAX_OFFSET_CANVAS) * zoom * amp_scale;
-        let half = max_offset * 0.5;
+        let gain = Self::roughness_gain(len_canvas);
+        let mut offset = Self::MAX_RANDOMNESS_OFFSET;
+        if offset * offset * 100.0 > len_canvas * len_canvas {
+            offset = len_canvas / 10.0;
+        }
+        let max_offset = offset * gain * amp_scale * zoom;
 
-        // 弓形位移：垂直于边，强度随边长增长（200 画布像素处饱和）。
-        let bow_k = (len_canvas / 200.0).min(1.0);
-        let bow = Self::BOWING * max_offset * bow_k / len;
-        let mid_disp = egui::vec2(-d.y * bow, d.x * bow);
+        // 弓形位移：垂直于边，rough.js 不饱和（/200 线性），符号+幅度随机
+        let bow = Self::BOWING * Self::MAX_RANDOMNESS_OFFSET * len_canvas / 200.0
+            * gain
+            * amp_scale
+            * zoom;
+        let mid_disp = (egui::vec2(-d.y, d.x) / len) * bow * rng.signed();
 
-        // 控制点沿边的位置（0.2~0.4 与 0.4~0.8），rough.js 的 divergePoint。
+        // 控制点沿边的位置（0.2~0.4），rough.js 的 divergePoint。
         let diverge = 0.2 + rng.next_f32() * 0.2;
-        let jitter = |rng: &mut SeededRng| egui::vec2(rng.signed() * half, rng.signed() * half);
+        let jitter =
+            |rng: &mut SeededRng| egui::vec2(rng.signed() * max_offset, rng.signed() * max_offset);
 
-        let p0 = a + jitter(rng);
-        let p3 = b + jitter(rng);
+        let p0 = if preserve_vertices {
+            a
+        } else {
+            a + jitter(rng)
+        };
+        let p3 = if preserve_vertices {
+            b
+        } else {
+            b + jitter(rng)
+        };
         let m1 = a + d * diverge;
         let m2 = a + d * (2.0 * diverge);
         let c1 = m1 + mid_disp + jitter(rng);
@@ -657,6 +739,106 @@ impl RoughStyler {
             })
             .collect()
     }
+
+    /// 手绘风箭头 V 形两翼：走 [`RoughStyler::sketch_edge`] 完整双线抖动
+    /// （plan #20 批次4，DP3 拍板跟随 Excalidraw——其箭头是 rough polygon，
+    /// roughness 封顶 `min(1, roughness)`，见 `shape.ts:339/422`）。
+    /// Dot 端头保持规整实心圆。
+    fn push_arrow_heads_rough(
+        out: &mut Vec<Shape>,
+        pts: &[Pos2],
+        ctx: &RoughCtx,
+        rng: &mut SeededRng,
+        start_arrow: Option<ArrowHeadStyle>,
+        end_arrow: Option<ArrowHeadStyle>,
+    ) {
+        if pts.len() < 2 {
+            return;
+        }
+        let amp_scale = ctx.amp_scale.min(1.0);
+        let wing_ctx = RoughCtx {
+            zoom: ctx.zoom,
+            amp_scale,
+            preserve_vertices: ctx.preserve_vertices,
+            line_width: ctx.line_width,
+            stroke_color: ctx.stroke_color,
+        };
+        let half = std::f32::consts::FRAC_PI_2 * (5.0 / 9.0); // ≈50°
+        let path_stroke = egui::epaint::PathStroke::new(ctx.line_width, ctx.stroke_color);
+        let mut push_wing = |out: &mut Vec<Shape>, tip: Pos2, dir: egui::Vec2, angle: f32| {
+            let wing_tip = tip + rotate_vec2(dir, angle) * (ctx.line_width * 4.0);
+            for _ in 0..Self::PASSES {
+                let bez = Self::sketch_edge(rng, tip, wing_tip, &wing_ctx);
+                out.push(Shape::CubicBezier(
+                    egui::epaint::CubicBezierShape::from_points_stroke(
+                        bez,
+                        false,
+                        Color32::TRANSPARENT,
+                        path_stroke.clone(),
+                    ),
+                ));
+            }
+        };
+
+        // 起点箭头：尖端指向起点，两翼伸向线段体内。
+        match start_arrow {
+            Some(ArrowHeadStyle::Arrow) => {
+                let dir = pts[1] - pts[0];
+                if dir.length() > 1e-3 {
+                    let dir = dir / dir.length();
+                    push_wing(out, pts[0], dir, half);
+                    push_wing(out, pts[0], dir, -half);
+                }
+            }
+            Some(ArrowHeadStyle::Dot) => {
+                let dir = pts[1] - pts[0];
+                let len = dir.length();
+                if len > 1e-3 {
+                    let dir = dir / len;
+                    let radius = (ctx.line_width * 1.5).max(1.0);
+                    out.push(Shape::circle_filled(
+                        pts[0] + dir * radius,
+                        radius,
+                        ctx.stroke_color,
+                    ));
+                }
+            }
+            None => {}
+        }
+
+        // 终点箭头：尖端指向终点，两翼伸向线段体内。
+        let last = pts[pts.len() - 1];
+        let dir = last - pts[pts.len() - 2];
+        if dir.length() > 1e-3 {
+            let dir = dir / dir.length();
+            match end_arrow {
+                Some(ArrowHeadStyle::Arrow) => {
+                    push_wing(out, last, dir, -half);
+                    push_wing(out, last, dir, half);
+                }
+                Some(ArrowHeadStyle::Dot) => {
+                    let radius = (ctx.line_width * 1.5).max(1.0);
+                    out.push(Shape::circle_filled(
+                        last - dir * radius,
+                        radius,
+                        ctx.stroke_color,
+                    ));
+                }
+                None => {}
+            }
+        }
+    }
+}
+
+/// `RoughStyler` 单次 build 的共享派生参数（避免逐函数长参数列）。
+struct RoughCtx {
+    zoom: f32,
+    /// `amp_scale() × adjustRoughness` 小图衰减（DP4 相乘）。
+    amp_scale: f32,
+    /// Excalidraw `preserveVertices`：Architect/Artist 端点不抖。
+    preserve_vertices: bool,
+    line_width: f32,
+    stroke_color: Color32,
 }
 
 impl ShapeStyler for RoughStyler {
@@ -669,45 +851,80 @@ impl ShapeStyler for RoughStyler {
         to_screen: &LocalToScreen,
         zoom: f32,
     ) -> Vec<Shape> {
-        let pts = to_screen_points(&outline_points(shape, Self::ELLIPSE_SEGMENTS), to_screen);
+        // Excalidraw generateRoughOptions：非实线 dash → disableMultiStroke（单笔）
+        // + strokeWidth+0.5 补回观感粗细（plan #20 批次4）；fillWeight/hachureGap
+        // 显式独立计算，不跟随加宽后的描边。
+        let solid_dash = stroke.dash == DashStyle::Solid;
+        let passes = if solid_dash { Self::PASSES } else { 1 };
+        let line_width = (stroke.width + if solid_dash { 0.0 } else { 0.5 }) * zoom;
+        let closed = is_closed(shape);
+        let mut out = Vec::new();
+
+        let ctx = RoughCtx {
+            zoom,
+            amp_scale: shape.sloppiness.amp_scale() * Self::small_size_roughness_scale(shape),
+            // Excalidraw preserveVertices = roughness < cartoonist：Architect/Artist
+            // 档端点不抖（plan #20 批次2；DP1 拍板维持 PReferZ 三档幅度映射）。
+            preserve_vertices: shape.sloppiness != Sloppiness::Cartoonist,
+            line_width,
+            stroke_color: color_from(stroke.color),
+        };
+
+        // 椭圆：rough.js generateEllipseParams 自适应段数 + radOffset 随机起始相位
+        let ellipse_segments = Self::ellipse_step_count(shape.base_size.0, shape.base_size.1);
+        let ellipse_phase = if matches!(shape.shape_type, ShapeType::Ellipse) {
+            SeededRng::new(shape.seed ^ 0x5EED_11C5).signed() * ctx.amp_scale * 0.5
+        } else {
+            0.0
+        };
+        let pts = to_screen_points(
+            &outline_points(shape, ellipse_segments, ellipse_phase),
+            to_screen,
+        );
         if pts.len() < 2 {
             return Vec::new();
         }
 
-        let stroke_color = color_from(stroke.color);
-        let line_width = stroke.width * zoom;
-        let egui_stroke = egui::Stroke::new(line_width, stroke_color);
-        let closed = is_closed(shape);
-        let mut out = Vec::new();
-
-        // 填充层：纯色 = 精确实心多边形（与 CleanStyler 一致）；斜线/交叉线 =
-        // 端点抖动的斜线段（手绘观感），抖动用独立种子的 rng，与描边抖动解耦。
+        // 填充层：solid = 顶点抖动的实心多边形（DP2 拍板跟随 rough.js
+        // solidFillPolygon：顶点 ±2 画布px × amp_scale）；hachure/cross-hatch =
+        // 斜线段走 sketch_edge 完整双线抖动（rough.js hachure-filler 的
+        // doubleLineOps），线宽减半（fillWeight = strokeWidth/2），roughness≥1 时
+        // ~30% 概率跳首线（scan-line-hachure）。抖动用独立种子的 rng，与描边解耦。
         if closed {
             if let Some(f) = fill {
                 match fill_style {
-                    FillStyle::Solid => out.push(closed_filled_path(pts.clone(), f)),
+                    FillStyle::Solid => {
+                        let mut solid_rng = SeededRng::new(shape.seed ^ 0x5011_DF11);
+                        let amp = Self::MAX_RANDOMNESS_OFFSET * ctx.amp_scale * zoom;
+                        let jittered: Vec<Pos2> = pts
+                            .iter()
+                            .map(|p| {
+                                *p + egui::vec2(solid_rng.signed() * amp, solid_rng.signed() * amp)
+                            })
+                            .collect();
+                        out.push(closed_filled_path(jittered, f));
+                    }
                     FillStyle::Hachure | FillStyle::CrossHatch => {
                         let angles: &[f32] = match fill_style {
                             FillStyle::CrossHatch => &[HACHURE_ANGLE_DEG, HACHURE_ANGLE_DEG + 90.0],
                             _ => &[HACHURE_ANGLE_DEG],
                         };
                         let mut fill_rng = SeededRng::new(shape.seed ^ 0x6841_4355_4C4C_5F53); // "hACULL_S"
-                        let amp = hachure_gap(line_width) * 0.15;
+                        let skip_first = ctx.amp_scale >= 1.0 && fill_rng.next_f32() > 0.7;
+                        let gap = hachure_gap(stroke.width, zoom);
+                        let path_stroke = egui::epaint::PathStroke::new(line_width * 0.5, f);
                         for angle in angles {
-                            let segs = hachure_segments(&pts, *angle, hachure_gap(line_width));
+                            let segs = hachure_segments(&pts, *angle, gap, skip_first);
                             for [a, b] in segs {
                                 for _ in 0..Self::PASSES {
-                                    let a = a + egui::vec2(
-                                        fill_rng.signed() * amp,
-                                        fill_rng.signed() * amp,
-                                    );
-                                    let b = b + egui::vec2(
-                                        fill_rng.signed() * amp,
-                                        fill_rng.signed() * amp,
-                                    );
-                                    out.push(Shape::line_segment(
-                                        [a, b],
-                                        egui::Stroke::new(line_width, f),
+                                    let bez = Self::sketch_edge(&mut fill_rng, a, b, &ctx);
+                                    out.push(Shape::CubicBezier(
+                                        egui::epaint::CubicBezierShape::from_points_stroke(
+                                            bez,
+                                            false,
+                                            Color32::TRANSPARENT,
+                                            path_stroke.clone(),
+                                        ),
                                     ));
                                 }
                             }
@@ -718,16 +935,15 @@ impl ShapeStyler for RoughStyler {
         }
 
         let mut rng = SeededRng::new(shape.seed);
-        let amp_scale = shape.sloppiness.amp_scale();
 
         if Self::is_smooth(shape) {
             // 曲线类轮廓（椭圆、Curved 折线）：整圈抖动后连成光滑曲线。
             // 若沿用逐边直线抖动，采样段之间的折角会非常明显。
-            let amp = Self::curve_jitter_amp(&pts, zoom, closed, amp_scale);
-            for _ in 0..Self::PASSES {
+            let amp = Self::curve_jitter_amp(zoom, ctx.amp_scale);
+            for _ in 0..passes {
                 let jittered = Self::jitter_points(&mut rng, &pts, amp);
                 for bez in Self::catmull_rom_beziers(&jittered, closed) {
-                    Self::push_edge(&mut out, bez, stroke, line_width, stroke_color, zoom);
+                    Self::push_edge(&mut out, bez, stroke, line_width, ctx.stroke_color, zoom);
                 }
             }
         } else {
@@ -736,19 +952,19 @@ impl ShapeStyler for RoughStyler {
             for i in 0..seg_count {
                 let a = pts[i];
                 let b = pts[(i + 1) % pts.len()];
-                for _ in 0..Self::PASSES {
-                    let bez = Self::sketch_edge(&mut rng, a, b, zoom, amp_scale);
-                    Self::push_edge(&mut out, bez, stroke, line_width, stroke_color, zoom);
+                for _ in 0..passes {
+                    let bez = Self::sketch_edge(&mut rng, a, b, &ctx);
+                    Self::push_edge(&mut out, bez, stroke, line_width, ctx.stroke_color, zoom);
                 }
             }
         }
 
         if !closed {
-            push_arrow_heads(
+            Self::push_arrow_heads_rough(
                 &mut out,
                 &pts,
-                egui_stroke,
-                line_width,
+                &ctx,
+                &mut rng,
                 shape.start_arrow,
                 shape.end_arrow,
             );
@@ -956,23 +1172,41 @@ mod tests {
     }
 
     #[test]
-    fn rough_styler_fill_stays_exact_polygon() {
+    fn rough_styler_fill_emits_jittered_solid_polygon() {
         let stroke = StrokeStyle::default();
+        let mut d = rect(7);
+        d.sloppiness = Sloppiness::Artist;
         let shapes = RoughStyler.build_shapes(
-            &rect(7),
+            &d,
             &stroke,
             Some(Color32::from_rgb(10, 20, 30)),
             FillStyle::Solid,
             &identity(),
             1.0,
         );
-        // 1 个精确凸多边形填充 + 8 条抖动边
+        // 1 个实心多边形填充（DP2：顶点抖动，但仍是单个 Path）+ 8 条抖动边
         assert_eq!(shapes.len(), 9);
         assert!(matches!(shapes[0], Shape::Path(_)));
+        // DP2：Artist 档（amp_scale 2.0）solid 填充顶点抖动 ≤ ±2 画布px × amp
+        let Shape::Path(p) = &shapes[0] else {
+            panic!("expected Path");
+        };
+        let corners = [
+            egui::pos2(0.0, 0.0),
+            egui::pos2(100.0, 0.0),
+            egui::pos2(100.0, 60.0),
+            egui::pos2(0.0, 60.0),
+        ];
+        for (actual, want) in p.points.iter().zip(corners) {
+            assert!(
+                (*actual - want).length() <= 2.0 * Sloppiness::Artist.amp_scale() + 1e-3,
+                "solid 填充顶点抖动越界: {actual:?} vs {want:?}"
+            );
+        }
     }
 
     #[test]
-    fn rough_styler_keeps_arrow_heads_crisp() {
+    fn rough_styler_arrow_heads_are_sketched_with_capped_roughness() {
         let stroke = StrokeStyle::default();
         let shapes = RoughStyler.build_shapes(
             &open_line(),
@@ -982,15 +1216,15 @@ mod tests {
             &identity(),
             1.0,
         );
-        // 1 条边 × 2 passes + 2 笔箭头 = 4
-        assert_eq!(shapes.len(), 4);
-        assert_eq!(
-            shapes
-                .iter()
-                .filter(|s| matches!(s, Shape::CubicBezier(_)))
-                .count(),
-            2
-        );
+        // 1 条边 × 2 passes + 终点箭头 2 翼 × 2 passes（DP3 箭头改抖）= 6，全为贝塞尔
+        assert_eq!(shapes.len(), 6);
+        assert!(shapes.iter().all(|s| matches!(s, Shape::CubicBezier(_))));
+        // 翼尖仍锚在几何端点（Artist 档 preserveVertices：端点不抖）
+        let bez = beziers(&shapes);
+        let wing1 = bez[2];
+        let wing2 = bez[4];
+        assert!((wing1[0] - egui::pos2(100.0, 0.0)).length() < 1e-3);
+        assert!((wing2[0] - egui::pos2(100.0, 0.0)).length() < 1e-3);
     }
 
     #[test]
@@ -1045,13 +1279,15 @@ mod tests {
             &identity(),
             1.0,
         );
-        // 24 段 × 2 passes = 48 条贝塞尔；曲线轮廓不得退化成直线段拼接
-        assert_eq!(shapes.len(), 48);
+        // 自适应段数（rough.js generateEllipseParams）× 2 passes；曲线轮廓不得退化成直线段拼接
+        let segs = RoughStyler::ellipse_step_count(100.0, 100.0);
+        assert_eq!(segs, 12);
+        assert_eq!(shapes.len(), segs * 2);
         assert!(shapes.iter().all(|s| matches!(s, Shape::CubicBezier(_))));
 
         // 每条 pass 内部：相邻两段首尾重合且切线共线（C1 连续），否则会看到折角
         let bez = beziers(&shapes);
-        for pass in bez.chunks(24) {
+        for pass in bez.chunks(segs) {
             for i in 0..pass.len() {
                 let cur = pass[i];
                 let next = pass[(i + 1) % pass.len()];
@@ -1066,6 +1302,14 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn ellipse_step_count_follows_roughjs_generate_ellipse_params() {
+        // 小圆取 curveStepCount 下限 9；Ø400 → 23；Ø800 → 32
+        assert_eq!(RoughStyler::ellipse_step_count(10.0, 10.0), 9);
+        assert_eq!(RoughStyler::ellipse_step_count(400.0, 400.0), 23);
+        assert_eq!(RoughStyler::ellipse_step_count(800.0, 800.0), 32);
     }
 
     #[test]
@@ -1223,12 +1467,12 @@ mod tests {
 
     #[test]
     fn roundness_radius_is_clamped_to_half_of_short_side() {
-        // 比例语义：radius = min(w, h) * roundness
+        // 比例语义：radius = min(w, h) * roundness * 0.5（1.0 = 短边全圆弧）
         assert_eq!(roundness_radius((100.0, 40.0), 0.0), 0.0);
-        assert!((roundness_radius((100.0, 40.0), 0.5) - 20.0).abs() < 1e-5);
-        // 超过 0.5 会两头相吃，必须夹到短边一半
+        assert!((roundness_radius((100.0, 40.0), 0.5) - 10.0).abs() < 1e-5);
+        // 1.0 → 短边一半（两头的圆弧恰好相接），即最大圆角
         assert!((roundness_radius((100.0, 40.0), 1.0) - 20.0).abs() < 1e-5);
-        assert!((roundness_radius((100.0, 40.0), 0.25) - 10.0).abs() < 1e-5);
+        assert!((roundness_radius((100.0, 40.0), 0.25) - 5.0).abs() < 1e-5);
     }
 
     #[test]
@@ -1296,8 +1540,8 @@ mod tests {
         let mut straight = curved_open_line();
         straight.curve_type = CurveType::Straight;
 
-        let curved_pts = outline_points(&curved, 64);
-        let straight_pts = outline_points(&straight, 64);
+        let curved_pts = outline_points(&curved, 64, 0.0);
+        let straight_pts = outline_points(&straight, 64, 0.0);
         assert_eq!(straight_pts.len(), 3, "Straight 直接用控制点");
         assert_eq!(curved_pts.len(), 2 * CURVE_SAMPLES + 1);
 
@@ -1311,7 +1555,7 @@ mod tests {
     fn curved_polyline_bulges_away_from_the_straight_chord() {
         // 中点 (50,40) 在 Straight 下贴着弦；Curved 应把它推向控制点 (50,0)
         let curved = curved_open_line();
-        let pts = outline_points(&curved, 64);
+        let pts = outline_points(&curved, 64, 0.0);
         let mid = pts[pts.len() / 2];
         assert!(mid.1 < 20.0, "曲线中段应明显偏离弦，实际 y={}", mid.1);
     }
@@ -1380,7 +1624,7 @@ mod tests {
         let b = RoughStyler.build_shapes(&d, &stroke, None, FillStyle::Solid, &identity(), 1.0);
         assert_eq!(debug(&a), debug(&b), "同 seed 必须得到同一抖动");
         // 开放曲线：段数 = (采样点数 - 1) × passes
-        let sampled = outline_points(&d, 24).len();
+        let sampled = outline_points(&d, 24, 0.0).len();
         assert_eq!(a.len(), (sampled - 1) * RoughStyler::PASSES);
         assert!(a.iter().all(|s| matches!(s, Shape::CubicBezier(_))));
         for bez in beziers(&a) {
@@ -1472,5 +1716,231 @@ mod tests {
         // 单点墨迹（<2）→ 空。
         let dot = Item::new_freedraw(&[(5.0, 5.0)], &[1.0], 3.0, [0, 0, 0, 255]);
         assert!(build_freedraw_visuals(&dot.kind, &identity()).is_empty());
+    }
+
+    // ── plan #20：RoughStyler 对齐 rough.js / Excalidraw 公式 ──
+
+    fn straight_line(size: f32, sloppiness: Sloppiness) -> ShapeData {
+        ShapeData {
+            shape_type: ShapeType::Polyline,
+            base_size: (size, 0.0),
+            points: vec![(0.0, 0.0), (size, 0.0)],
+            start_arrow: None,
+            end_arrow: None,
+            closed: false,
+            curve_type: CurveType::Straight,
+            elbow_mid_offset: 0.0,
+            roundness: 0.0,
+            seed: 42,
+            sloppiness,
+        }
+    }
+
+    #[test]
+    fn roughness_gain_matches_roughjs_piecewise_formula() {
+        assert_eq!(RoughStyler::roughness_gain(100.0), 1.0);
+        assert!((RoughStyler::roughness_gain(200.0) - 0.9).abs() < 1e-3);
+        assert!((RoughStyler::roughness_gain(300.0) - 0.7333).abs() < 1e-3);
+        assert!((RoughStyler::roughness_gain(500.0) - 0.4).abs() < 1e-3);
+        assert!((RoughStyler::roughness_gain(1000.0) - 0.4).abs() < 1e-3);
+    }
+
+    #[test]
+    fn small_size_roughness_scale_matches_excalidraw_adjust_roughness() {
+        let mut d = rect(1);
+        // 100×60：min 20 且 max 50 → 不衰减
+        assert_eq!(RoughStyler::small_size_roughness_scale(&d), 1.0);
+        // 8×8：max <10 → ÷3
+        d.base_size = (8.0, 8.0);
+        assert!((RoughStyler::small_size_roughness_scale(&d) - 1.0 / 3.0).abs() < 1e-6);
+        // 15×15：max <20 → ÷2
+        d.base_size = (15.0, 15.0);
+        assert_eq!(RoughStyler::small_size_roughness_scale(&d), 0.5);
+        // 15×60 带圆角矩形：round 例外 → 不衰减
+        d.base_size = (15.0, 60.0);
+        d.roundness = 0.3;
+        assert_eq!(RoughStyler::small_size_roughness_scale(&d), 1.0);
+        d.roundness = 0.0;
+        assert_eq!(RoughStyler::small_size_roughness_scale(&d), 0.5);
+        // 线性元素 max ≥ 50 → 不衰减
+        let line = straight_line(100.0, Sloppiness::Artist);
+        assert_eq!(RoughStyler::small_size_roughness_scale(&line), 1.0);
+    }
+
+    #[test]
+    fn cartoonist_endpoint_jitter_bounded_by_roughjs_formula() {
+        // 端点位移 ≤ 2 画布px × roughnessGain(边长) × amp_scale（zoom=1）
+        for (size, gain) in [(100.0, 1.0), (300.0, 0.7333), (1000.0, 0.4)] {
+            let d = straight_line(size, Sloppiness::Cartoonist); // amp_scale = 3.6
+            let shapes = RoughStyler.build_shapes(
+                &d,
+                &StrokeStyle::default(),
+                None,
+                FillStyle::Solid,
+                &identity(),
+                1.0,
+            );
+            let bez = beziers(&shapes);
+            let bound = 2.0 * gain * Sloppiness::Cartoonist.amp_scale() + 1e-3;
+            let a = egui::pos2(0.0, 0.0);
+            let b = egui::pos2(size, 0.0);
+            // rough.js 端点 x/y 各自独立 ±offset，逐轴断言（plan #20 质量门）
+            let p0 = bez[0][0];
+            let p3 = bez[bez.len() - 1][3];
+            assert!(
+                (p0.x - a.x).abs() <= bound && (p0.y - a.y).abs() <= bound,
+                "size={size} 起点抖动越界: {p0:?}"
+            );
+            assert!(
+                (p3.x - b.x).abs() <= bound && (p3.y - b.y).abs() <= bound,
+                "size={size} 终点抖动越界: {p3:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn architect_and_artist_preserve_vertices() {
+        // rough.js preserveVertices：roughness < cartoonist 的档位端点精确
+        // （绑定/拼接接头不因端点抖动脱开）
+        for s in [Sloppiness::Architect, Sloppiness::Artist] {
+            let d = straight_line(100.0, s);
+            let shapes = RoughStyler.build_shapes(
+                &d,
+                &StrokeStyle::default(),
+                None,
+                FillStyle::Solid,
+                &identity(),
+                1.0,
+            );
+            let bez = beziers(&shapes);
+            for seg in &bez {
+                assert_eq!(seg[0], egui::pos2(0.0, 0.0), "{s:?} 起点必须精确");
+                assert_eq!(seg[3], egui::pos2(100.0, 0.0), "{s:?} 终点必须精确");
+            }
+        }
+    }
+
+    #[test]
+    fn bowing_sign_is_randomized_across_seeds() {
+        // 同一条 100px 边、不同 seed：贝塞尔控制点相对弦的垂直偏移必须出现
+        // 正负两种符号（否则矩形四边一致外凸成"吹气感"，rough.js 无此行为）
+        let mut has_pos = false;
+        let mut has_neg = false;
+        for seed in 0..32u64 {
+            let mut d = straight_line(100.0, Sloppiness::Artist);
+            d.seed = seed;
+            let shapes = RoughStyler.build_shapes(
+                &d,
+                &StrokeStyle::default(),
+                None,
+                FillStyle::Solid,
+                &identity(),
+                1.0,
+            );
+            let dy = beziers(&shapes)[0][1].y;
+            if dy > 1e-3 {
+                has_pos = true;
+            } else if dy < -1e-3 {
+                has_neg = true;
+            }
+        }
+        assert!(has_pos && has_neg, "bowing 符号必须随机");
+    }
+
+    #[test]
+    fn hachure_skip_first_line_shifts_scan_by_exactly_one_gap() {
+        // 跳首线 = 扫描起点后移一整行 → 线表恰为不跳时去掉第一条
+        let pts = vec![
+            egui::pos2(0.0, 0.0),
+            egui::pos2(100.0, 0.0),
+            egui::pos2(100.0, 100.0),
+            egui::pos2(0.0, 100.0),
+        ];
+        let normal = hachure_segments(&pts, HACHURE_ANGLE_DEG, 10.0, false);
+        let skipped = hachure_segments(&pts, HACHURE_ANGLE_DEG, 10.0, true);
+        assert_eq!(skipped.len(), normal.len() - 1);
+        for (s, n) in skipped.iter().zip(normal.iter().skip(1)) {
+            assert_eq!(s[0], n[0]);
+            assert_eq!(s[1], n[1]);
+        }
+    }
+
+    #[test]
+    fn hachure_lines_run_at_roughjs_effective_49_degree() {
+        // rough.js hachureAngle(-41)+90 = 49° 仰角；屏幕 y 向下 → 方向 (cos49°, -sin49°)
+        let pts = vec![
+            egui::pos2(0.0, 0.0),
+            egui::pos2(100.0, 0.0),
+            egui::pos2(100.0, 100.0),
+            egui::pos2(0.0, 100.0),
+        ];
+        let segs = hachure_segments(&pts, HACHURE_ANGLE_DEG, 10.0, false);
+        assert!(!segs.is_empty());
+        let [a, b] = segs[0];
+        let d = (b - a) / (b - a).length();
+        let rad = 49.0f32.to_radians();
+        let want = egui::vec2(rad.cos(), -rad.sin());
+        assert!(
+            (d - want).length() < 1e-3 || (d + want).length() < 1e-3,
+            "斜线方向 {d:?} 偏离 49° 仰角"
+        );
+    }
+
+    #[test]
+    fn rough_styler_rounded_rect_is_smooth_not_fragmented() {
+        // plan #20 验收反馈：圆角矩形逐边抖动会碎成大量短线段——
+        // 现在走"整圈抖动 + Catmull-Rom"平滑路线（与椭圆同策）。
+        let mut d = rect(3);
+        d.roundness = 0.5; // 半径 = 40 × 0.5 × 0.5 = 10，四角有圆弧采样点
+        let shapes = RoughStyler.build_shapes(
+            &d,
+            &StrokeStyle::default(),
+            None,
+            FillStyle::Solid,
+            &identity(),
+            1.0,
+        );
+        // 轮廓点数 = 4 角 × (ROUNDED_CORNER_SEGMENTS + 1)，闭合环每点一段 × 2 passes
+        let n = rounded_rect_points(100.0, 40.0, roundness_radius((100.0, 40.0), 0.5)).len();
+        assert_eq!(shapes.len(), n * RoughStyler::PASSES);
+        assert!(shapes.iter().all(|s| matches!(s, Shape::CubicBezier(_))));
+    }
+
+    #[test]
+    fn rough_hachure_fill_lines_use_half_stroke_width() {
+        let stroke = StrokeStyle {
+            color: [0, 0, 0, 255],
+            width: 2.0,
+            dash: DashStyle::Solid,
+        };
+        let with_fill = RoughStyler.build_shapes(
+            &rect(7),
+            &stroke,
+            Some(Color32::RED),
+            FillStyle::Hachure,
+            &identity(),
+            1.0,
+        );
+        let without_fill = RoughStyler.build_shapes(
+            &rect(7),
+            &stroke,
+            None,
+            FillStyle::Hachure,
+            &identity(),
+            1.0,
+        );
+        // 填充层在轮廓层之前：前 (with - without) 个 shape 即填充线
+        let fill_count = with_fill.len() - without_fill.len();
+        assert!(fill_count > 0, "hachure 填充必须产出线段");
+        for s in &with_fill[..fill_count] {
+            let Shape::CubicBezier(b) = s else {
+                panic!("hachure 填充线现在走 sketch_edge（贝塞尔），got {s:?}");
+            };
+            assert!(
+                (b.stroke.width - 1.0).abs() < 1e-3,
+                "填充线宽应为 strokeWidth/2 = 1.0，got {}",
+                b.stroke.width
+            );
+        }
     }
 }

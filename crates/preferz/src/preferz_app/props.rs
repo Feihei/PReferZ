@@ -301,7 +301,7 @@ impl PReferZApp {
                     stepper(
                         ui,
                         &mut self.default_stroke.width,
-                        &[2.0, 4.0, 8.0, 16.0, 32.0],
+                        &[1.0, 2.0, 4.0, 8.0, 16.0],
                         &["XS", "S", "M", "L", "XL"],
                         1.0..=64.0,
                         None,
@@ -413,7 +413,7 @@ impl PReferZApp {
             if stepper(
                 ui,
                 &mut w,
-                &[2.0, 4.0, 8.0, 16.0, 32.0],
+                &[1.0, 2.0, 4.0, 8.0, 16.0],
                 &["XS", "S", "M", "L", "XL"],
                 1.0..=64.0,
                 None,
@@ -492,7 +492,7 @@ impl PReferZApp {
             if stepper(
                 ui,
                 &mut w,
-                &[2.0, 4.0, 8.0, 16.0, 32.0],
+                &[1.0, 2.0, 4.0, 8.0, 16.0],
                 &["XS", "S", "M", "L", "XL"],
                 1.0..=64.0,
                 None,

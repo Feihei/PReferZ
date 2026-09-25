@@ -66,13 +66,17 @@ pub enum Sloppiness {
 }
 
 impl Sloppiness {
-    /// 抖动幅度乘数（1.0 = 旧 `rough: true` 观感，Phase F 基准）。
+    /// 抖动幅度乘数。
+    ///
+    /// plan #20 验收反馈（2026-09-25）：对齐 rough.js 公式后 Architect 与 Off、
+    /// Artist 草图感均偏弱，整体加倍——Architect 1.0（≈Excalidraw artist）、
+    /// Artist 2.0（≈Excalidraw cartoonist）、Cartoonist 3.6（更夸张的演示档）。
     pub fn amp_scale(self) -> f32 {
         match self {
             Sloppiness::Off => 0.0,
-            Sloppiness::Architect => 0.5,
-            Sloppiness::Artist => 1.0,
-            Sloppiness::Cartoonist => 1.8,
+            Sloppiness::Architect => 1.0,
+            Sloppiness::Artist => 2.0,
+            Sloppiness::Cartoonist => 3.6,
         }
     }
 }

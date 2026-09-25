@@ -154,7 +154,7 @@
 | 17 | 🔶 mermaid 语法完整化（#9 后续，代码交付待人工验收） | 把受限子集扩到「实用流程图」：①**边标签** `-->|是|` / `-- 是 -->`；②**一行多分支 `&`**（`a --> b & c`、`a & b --> c & d` 交叉积）；③**箭头族** `---`/`-.->`/`==>`/`<-->` 等；④**更多节点外形** `((圆))`/`([体育场])`/`[(柱)]`/`{{六边}}`/`[[子程序]]`/`>旗]` + 引号标签 `"…"`。边距/分层布局已支持分叉（非本轮缺口）。subgraph、sequence/class/state **不做** | ✅ 已拍板（3 DP 全按推荐，2026-09-23）：DP1 全部近似映射（零 `ShapeType` 改动）；DP2 边内建 `label` 字段、渲染期画在曲线中点随重路由跟随（零 `.prz` 迁移）；DP3 `()`→Rectangle、`((…))`→Ellipse 校正为标准语义。批次 A/B 已交付，批次 C（barycenter 减交叉 + 边改 elbow）排后待评估 |
 | 18 | 🔵 相乘叠合模式（Multiply 正片叠底 / 荧光马克笔）——**先不做**（2026-09-23 拍板；评估存档见细节 §18，将来重启可直接沿用） | M1（小）荧光马克笔预设近似：荧光色板 + 低不透明度默认填充（Excalidraw highlighter 同款半透明路线）；M2（大）真 multiply：数据模型 `BlendMode{Normal,Multiply}` + 导出侧 CPU 逐像素相乘（依赖导出重写为正向合成）+ 屏幕侧 `Shape::Callback`+glow 自绘 hack 或等 egui 上游 | ✅ 拍板（2026-09-23）：**先不做**（评估已完成并存档）。将来重启时的关键前提不变：egui 0.36.2 无 per-shape blend（epaint 无 BlendMode、glow 固定预乘 alpha）——屏幕实时真 multiply 是唯一硬点；M2 导出侧前置依赖导出管线重写（矢量元素目前不导出） |
 | 19 | ✅ elbow 多顶点逐段展开（E1.5，2026-09-24 交付，待人工验收） | 闭合折线切 elbow → 转 open + 顶点全保留 + 每段居中正交展开 + 末段连回首点（视觉闭环，首尾重合保留）；多段不消费 `elbow_mid_offset`（仅两点线有意义）；SegmentMid 手柄对多顶点 elbow 恢复、两点线仍压制；bar 手柄仅两点线出现 | ✅ 已拍板（2026-09-24）：**不跟随 Excalidraw 的 line/arrow 类型分裂**（`elbowed` 仅 arrow、UI 三态仅 arrow 可见、切 elbow 丢中间点），保持统一 Polyline + `CurveType` 三态；三项决策全按推荐 |
-| 20 | 🔶 RoughStyler 对齐 rough.js/Excalidraw 打磨（2026-09-24 调研完成，待启动） | 抖动幅度基准改 rough.js 公式（固定 2 画布px × roughnessGain × amp_scale × zoom，替 6%/8px）+ bowing 随机化 + preserveVertices 端点语义 + hachure 四件套（角度 -41→-49、线宽减半、斜线改完整抖动、随机相位+去 4px 下限）+ 箭头注释更正 | ✅ 已拍板（2026-09-24）：按四级优先级分期（① 幅度基准 → ② bowing/端点 → ③ hachure → ④ 其余按需）；待拍板 DP1–DP4：Architect 是否对齐 roughness 0、solid fill 是否顶点抖、箭头是否改抖、adjustRoughness 与 amp_scale 复合方式 |
+| 20 | 🔶 RoughStyler 对齐 rough.js/Excalidraw 打磨（2026-09-25 代码交付，待人工验收） | 抖动幅度基准改 rough.js 公式（固定 2 画布px × roughnessGain × amp_scale × zoom，替 6%/8px）+ bowing 随机化 + preserveVertices 端点语义 + hachure 四件套（角度 -41→-49、线宽减半、斜线改完整抖动、随机相位+去 4px 下限）+ 箭头注释更正 | ✅ 四批全交付（2026-09-25）：DP1 Architect 维持 0.5×、DP2 solid 填充顶点跟随抖动、DP3 箭头跟随 Excalidraw 改抖（ADR-0005 补录修订）、DP4 小图衰减与 amp_scale 相乘；交付见 [CHANGELOG §RoughStyler 对齐 rough.js/Excalidraw](CHANGELOG.md) |
 | 21 | 🔶 elbow 多顶点改「顶点锚定 bar」纯函数推导（**取代 #19 的逐段居中 Z 展开**，2026-09-24 代码交付，待人工验收） | 中间顶点 = 正交 bar 的锚点（bar 过顶点、取向垂直于邻居对主导轴），路径=纯函数 `f(points)`；拖顶点即平移整根横/竖 bar，坐标对齐时路径自动直化（免费获得 Excalidraw 的对齐合并），段中点拖拽加点废止 | ✅ 已拍板（2026-09-24）：**不引入 Excalidraw `fixedSegments`**——elbow 与 polyline 同类型可互转、顶点必须保留，改为推导模型零新增存储；交付见 [CHANGELOG §elbow 多顶点改顶点锚定 bar](CHANGELOG.md)，细节与决策点见 §21 |
 | 22 | 🔶 文字工具 + 双击职责归位（2026-09-25 代码交付，待人工验收） | 新增 `Tool::Text`（工具栏「T」/ `Num8`）：单击画布即在落点起自由文本、起完回 Select；**删除「双击空白/线 → 新建文本便签」**，双击手势整体留给元素编辑（elbow 段加点、图片适配、文字/容器编辑） | ✅ 已拍板（2026-09-25，用户提议）：新建文本只留工具入口（Excalidraw 有独立 text 工具）；键位取 `Num8` 续数字工具行——Excalidraw 的裸 `T` 位在本项目已被 `ToggleToolbar`（Blender 同款）占用，不改绑；细节见 §22 |
 
@@ -358,7 +358,7 @@
   - 测试：多段展开正交性 / 末段回首点视觉闭环 / 切换 closed 打包 undo / SegmentMid 恢复后加顶点仍 elbow / 两点线行为不变（E1 回归）
 - **不做**：逐段独立偏移（拍板居中）；E2 避让路由仍留待未来
 
-20. **🔶 RoughStyler 对齐 rough.js/Excalidraw 打磨（2026-09-24 调研完成，待启动）**
+20. **🔶 RoughStyler 对齐 rough.js/Excalidraw 打磨（2026-09-25 代码交付；同日验收反馈 4 项修复，待复验）**
 
 - **背景**：RoughStyler 是 rough.js 4.6.6 的 Rust 自移植（[ADR-0005](adr/0005-shape-styler-rough-seeded.md)：零新依赖、SeededRng、双线笔触、画布像素×zoom 抖动）。本轮以 roughjs 4.6.6 源码（`generator.js`/`renderer.js`/`hachure-filler.js`/`scan-line-hachure.js`/`hachure.js`）+ Excalidraw 实际用法（`generateRoughOptions`/`_generateElementShape`）逐行对照，发现六类不对齐（按观感影响排序）。**已对齐、保留不动**：PASSES=2 双线、divergePoint 公式、Catmull-Rom 公式（curveTightness=0）、cross-hatch 双角结构、闭合收尾边、抖动随 zoom 缩放语义（同 Excalidraw 局部坐标生成+画布变换）、确定性种子。
 
@@ -386,15 +386,26 @@
   - **批次 3｜hachure 四件套**：① `HACHURE_ANGLE_DEG` -41 → **-49**（对齐 rough.js 有效 49° 仰角；cross-hatch 第二组自动变 +41，与 rough.js 一致）；② 填充线宽 `stroke_width/2`；③ 斜线段改走 `sketch_edge` 复用完整双线抖动（端点精确语义按批次 2 结论）；④ 随机相位（roughness≥1 时 30% 概率跳首线）+ gap 下限 4px → `round(max(gap, 0.1))`（修 #4）
   - **批次 4｜其余按需**：更正 stylers.rs:173-175 箭头注释（是否改抖见 DP3）；dash 模式 `disableMultiStroke`+`strokeWidth+0.5`；椭圆自适应采样数（`generateEllipseParams`）+ 随机起始相位（radOffset）；DP1 Architect 语义、DP2 solid fill 顶点抖动；圆角矩形 `_bezierTo` 平滑抖动；zigzag/dots 填充
 
-- **决策点（待拍板）**：
-  - **DP1｜Architect 档语义**：Excalidraw architect = roughness 0（描边干净、仅 fill 有 hachure）；PReferZ Architect = 0.5× 抖动。维持产品现状 or 对齐 Excalidraw？（影响 sloppiness 四档命名/默认与 plan #3 已交付 UI 文案）
-  - **DP2｜solid fill 顶点抖动**：ADR-0005 有意保持精确几何；rough.js `solidFillPolygon` 顶点抖 ±2px。维持 or 跟随？
-  - **DP3｜箭头是否改抖**：ADR-0005 有意保持规整；Excalidraw 箭头 = rough polygon 会抖（`roughness: min(1, roughness)`）。维持 or 跟随？
-  - **DP4｜adjustRoughness 复合方式**：小图衰减（maxSize<10→/3、<20→/2）与 `Sloppiness::amp_scale` 相乘 or 覆盖（取 min）？
+- **决策点（✅ 已拍板 2026-09-25）**：
+  - **DP1｜Architect 档语义**：✅ **维持现状**——Architect 保持 0.5× 抖动（Off 档已提供干净描边；对齐 Excalidraw roughness 0 会让 Architect/Off 观感重合，需动 plan #3 已交付四档 UI 文案，不值）。
+  - **DP2｜solid fill 顶点抖动**：✅ **跟随 rough.js**——solidFillPolygon 顶点 ±2 画布px × amp_scale（推翻 ADR-0005 "填充精确几何"，已补录 ADR 修订）。
+  - **DP3｜箭头是否改抖**：✅ **跟随 Excalidraw**——箭头两翼走 sketch_edge 双线抖动（roughness 封顶 min(1, roughness)）；preserveVertices 保证翼尖锚定几何端点，绑定接头不受影响；stylers.rs 错误注释更正 + ADR-0005 补录。
+  - **DP4｜adjustRoughness 复合方式**：✅ **相乘**——小图衰减系数与 `Sloppiness::amp_scale` 相乘，行为可预期。
 
-- **涉及面**：binary `stylers.rs`（常量 `OFFSET_RATIO`/`MAX_OFFSET_CANVAS`/`HACHURE_ANGLE_DEG`/`ELLIPSE_SEGMENTS`、函数 `sketch_edge`/`curve_jitter_amp`/`hachure_gap`/`hachure_segments`/`hachure_shapes`/Rough hachure 填充块 L683-714、`push_arrow_heads` 注释；**既有测试数值断言需同步更新**——矩形 8 shapes、椭圆 48=24×2、开放线 4、带填充 9、400px 椭圆控制点距中心 100..300 等）；core `shape.rs` SeededRng 复用（无改动预期）；DP1–DP3 若改变 ADR-0005 原决策需补录 ADR。
+- **交付（2026-09-25）**：四批全落地于 binary `stylers.rs`（详见 [CHANGELOG §RoughStyler 对齐 rough.js/Excalidraw](CHANGELOG.md)）——批次1 幅度基准（roughnessGain 分段 + 短线衰减 + curve_jitter_amp 与尺寸解耦 + small_size_roughness_scale）、批次2 bowing 随机 + preserveVertices（Architect/Artist 端点精确）、批次3 hachure 四件套（-49° / 半宽 / sketch_edge 完整抖动 / 跳首线 + gap round）、批次4 solid 填充抖动 + 箭头改抖 + dash 单笔加宽 + 椭圆自适应采样与随机相位。既有测试数值断言同步更新 + 8 个新单测（公式矩阵 / 抖动上界 / 顶点精确 / bowing 符号 / 跳首线 / 49° / 半宽）。质量门全绿（fmt / clippy -D warnings / workspace tests 除先前已存在的无关 flaky `tick_autosave_writes_sidecar`）。**不做**：zigzag/dots 填充、圆角矩形 `_bezierTo`、椭圆 overlap 收笔段。待 `cargo run` 人工验收。
 
-- **手工验收清单**：
+- **验收反馈批次（2026-09-25，Feihei 实测 4 项）—— 🔶 代码交付，待复验**：
+  1. **sloppiness 三档观感偏弱**（Architect≈Off、Artist 草图感不足）→ `amp_scale` 整体加倍：
+     Architect 0.5→**1.0**（≈Excalidraw artist）、Artist 1.0→**2.0**（≈Excalidraw cartoonist）、
+     Cartoonist 1.8→**3.6**；曲线/solid 填充/hachure 抖动随 amp_scale 联动放大。
+  2. **描边宽度档偏粗** → 档位整体降一档：`[2,4,8,16,32]`→**`[1,2,4,8,16]`**（XS/S/M/L/XL），
+     默认 4.0 由 S 变 M（三处 stepper：默认条/墨迹/形状侧栏）。
+  3. **圆角档位偏大**（M 档 0.5 短边已全圆弧）→ `roundness_radius` 减半：
+     `short × roundness × 0.5`，roundness=1.0 才是短边全圆弧（M 档 0.5 ≈ 1/4 短边）。
+  4. **圆角矩形手绘风碎成大量短线** → `is_smooth` 把带圆角的矩形并入平滑路线
+     （整圈抖动 + Catmull-Rom，与椭圆同策；直边段共线插值后仍直；无圆角矩形仍逐边）。
+
+- **人工验收清单**：
   - [ ] 与 Excalidraw 同 seed 同尺寸矩形/椭圆/折线并排观感对比（抖动幅度、bowing 是否还有"吹气感"）
   - [ ] 各 Sloppiness 档差异可感知（Off/Architect/Artist/Cartoonist）
   - [ ] 小元素（<20px）抖动衰减自然、大元素（>500px）不过抖（roughnessGain 生效）
@@ -415,8 +426,8 @@
      一致。**该自由度在交互上被钳住**（2026-09-25 验收反馈，core `clamp_elbow_vertex_drag`）：沿 bar
      轴的分量不被推导消费，放任不管手柄会被拖到走线之外、看着"锚点离线漂浮"，故预览拖拽时把沿轴
      分量钳进该 bar 的实际绘制区间 `[entry, exit]` = 锚点只能沿自己的 bar 滑动、不许离线；开放线
-     首末点与闭合线接缝点无 bar、不约束。残留：只有被拖的顶点保证在线上，拖动邻居仍可能让别的锚点
-     落到其 bar 之外（纯函数模型无约束求解器，属固有代价）。
+     首末点与闭合线接缝点无 bar、不约束。残留：只有**被拖的**顶点保证在线上，拖动邻居仍可能让别的
+     锚点落到其 bar 之外（纯函数模型无约束求解器，属固有代价）。
   4. **对齐自动合并免费获得**：路径纯推导 + `dedup()`，把顶点拖到与邻居坐标对齐的瞬间零长段被吃掉、折线自动直化——**无需** Excalidraw 的共线检测 + fixed 索引重编号簿记（其 renormalization 是最容易出 bug 的部分）。
   5. **两点线行为零变化**：n=2 无中间顶点，直接落回现有 `elbow_polyline_offset`（含 `elbow_mid_offset`、bar 手柄）。
   6. **闭合折线**：沿用 #19 语义——切 elbow 时 `closed` 转 false + 末段显式连回首点保持视觉闭环；推导按开放链处理（首尾重合点由 dedup 收口）。
@@ -461,11 +472,12 @@
 - **手工验收清单**：
   - [ ] 三顶点 V 形/台阶线：每个中间顶点拖动只平移一根横/竖段，相邻段自动跟随伸缩，不再出现逐段 Z 形碎乱
   - [ ] 把中间顶点拖到与邻居坐标对齐 → 折线自动变直（合并无需额外操作）
-  - [ ] 沿 bar 方向拖顶点：手柄**在线内滑动到 bar 端点即停**、不会拖离走线（2026-09-25 约束）；垂直方向拖动仍平移整根 bar
+  - [ ] 沿 bar 方向拖顶点：路径不变（单自由度），手柄不跟走该轴属预期
   - [ ] 两点 elbow 线：bar 手柄拖动、`elbow_mid_offset`、undo 全部与 E1 一致（回归）
   - [ ] 闭合折线切 elbow：末段连回首点视觉闭环；顶点拖动后闭环保持
   - [ ] polyline ↔ elbow 来回切换：顶点位置无损往返
   - [ ] 多顶点 elbow 双击段上**任意处**（不必瞄准浅黄小方块）→ 插入顶点且走线不变（无改道跳变）；插入后拖动 = 平移 bar；Alt+单击可删除该顶点；双击不再触发文本便签（见 #22）；单击线段仍可正常选中/拖动
+  - [ ] 沿 bar 方向拖顶点：手柄**在线内滑动到 bar 端点即停**、不会拖离走线（2026-09-25 约束）；垂直方向拖动仍平移整根 bar
   - [ ] 保存 `.prz` 重开：走线由顶点重推导一致；旧档打开不报错
 
 22. **🔶 文字工具 + 双击职责归位（2026-09-25 代码交付，待人工验收）**
