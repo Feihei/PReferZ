@@ -818,7 +818,24 @@ impl PReferZApp {
                         .inverse()
                         .map(|inv| inv.transform_vector(delta_canvas));
                     if let Some(delta_local) = delta_local {
-                        if let ItemKind::Shape { points, .. } = &mut item.kind {
+                        if let ItemKind::Shape {
+                            points,
+                            closed,
+                            curve_type,
+                            ..
+                        } = &mut item.kind
+                        {
+                            let target = (base_pos.0 + delta_local.x, base_pos.1 + delta_local.y);
+                            // elbow 线（plan #21）：顶点是它所锚定 bar 的锚点，只有垂直于
+                            // bar 的分量被推导消费（=平移整根 bar）；不管沿轴分量，手柄会被
+                            // 拖到走线之外看着"离线漂浮"→ 钳回 bar 的绘制区间，锚点只能
+                            // 沿自己的 bar 滑动。
+                            let target =
+                                if matches!(curve_type, CurveType::Elbow) && points.len() > 2 {
+                                    clamp_elbow_vertex_drag(points, *closed, endpoint, target)
+                                } else {
+                                    target
+                                };
                             if let Some(p) = points.get_mut(endpoint) {
                                 match snap_local {
                                     Some((bid, local)) => {
@@ -828,10 +845,7 @@ impl PReferZApp {
                                         self.snap_highlight = Some(bid);
                                     }
                                     None => {
-                                        *p = (
-                                            base_pos.0 + delta_local.x,
-                                            base_pos.1 + delta_local.y,
-                                        );
+                                        *p = target;
                                         // 拖离形状：若该端点原已绑定，本次拖拽将解绑
                                         self.pending_endpoint_binding = None;
                                         self.snap_highlight = None;

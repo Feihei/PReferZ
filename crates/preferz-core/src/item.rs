@@ -1550,12 +1550,14 @@ pub fn elbow_insert_candidates(
             if dx.abs() < 1.0 && dy.abs() < 1.0 {
                 continue; // 过短小段无可抓取的插入点
             }
-            // 采样顺序：落点投影优先（"双击哪儿就长在哪儿"），再中点 / 偏侧点
+            // 采样顺序：落点投影优先（"双击哪儿就长在哪儿"），再中点 / 偏侧点。
+            // 投影只允许落在小段**内部** [0.15, 0.85]——点在小段端点（=拐角）外侧时
+            // clamp 到 0/1 会把锚点正好摆在角上，拖起来就成了角点而非线上滑点。
             let mut fracs: Vec<f32> = Vec::new();
             if let Some(c) = click {
                 let len2 = dx * dx + dy * dy;
                 if len2 > 1e-6 {
-                    let t = (((c.0 - a.0) * dx + (c.1 - a.1) * dy) / len2).clamp(0.0, 1.0);
+                    let t = (((c.0 - a.0) * dx + (c.1 - a.1) * dy) / len2).clamp(0.15, 0.85);
                     fracs.push(t);
                 }
             }
@@ -1600,6 +1602,69 @@ pub fn elbow_insert_candidates(
         }
     }
     out
+}
+
+/// 多顶点 elbow 拖拽顶点的落点约束（plan #21）：顶点是它所锚定 bar 的锚点，只有
+/// **垂直于 bar** 的分量被推导消费（=平移整根 bar），沿 bar 轴的分量不落地，放任它
+/// 手柄会被拖到走线之外、看着像"锚点离线漂浮"。这里把沿轴分量钳进该 bar 的实际绘制
+/// 区间 `[entry, exit]`——即锚点只能沿自己的 bar 滑动、不许离线。
+///
+/// `probe` = 未约束的目标位置。不约束的情形原样返回：两点线 / 退化（<3 点）、
+/// 无 bar 的顶点（开放线首末点、闭合线的接缝点 0——它们本身就是路径端点，恒在线上）。
+pub fn clamp_elbow_vertex_drag(
+    pts: &[(f32, f32)],
+    closed: bool,
+    idx: usize,
+    probe: (f32, f32),
+) -> (f32, f32) {
+    let n = pts.len();
+    // 无 bar 的顶点：开放线首末点；闭合线只有接缝点 0（chain 里它同时是首末点，
+    // 其余点包括 n-1 都是 chain 的中间顶点，各有一根 bar）。
+    let seam_like = if closed {
+        idx == 0
+    } else {
+        idx == 0 || idx == n - 1
+    };
+    if n < 3 || seam_like {
+        return probe;
+    }
+    let mut chain: Vec<(f32, f32)> = pts.to_vec();
+    if closed {
+        chain.push(pts[0]);
+    }
+    chain[idx] = probe;
+    // bar 取向（与 elbow_vertex_polyline 同式：垂直于邻居对主导轴，平局取竖 bar）
+    let vertical_at = |i: usize| -> bool {
+        let (px, py) = chain[i - 1];
+        let (nx, ny) = chain[i + 1];
+        (nx - px).abs() <= (ny - py).abs()
+    };
+    // 走一遍上游拿进入本 bar 前的当前点 q。推导里「离开角」= (x_i, 下一邻的轴坐标)
+    // 不依赖上游，故只需逐点推进它（进入角由它即时决定，不必保留）。
+    let mut q = chain[0];
+    for i in 1..idx {
+        let v = vertical_at(i);
+        let (x_i, y_i) = chain[i];
+        let (nx, ny) = chain[i + 1];
+        q = if v { (x_i, ny) } else { (nx, y_i) };
+    }
+    let (nx, ny) = chain[idx + 1];
+    let (entry, exit) = if vertical_at(idx) {
+        ((probe.0, q.1), (probe.0, ny))
+    } else {
+        ((q.0, probe.1), (nx, probe.1))
+    };
+    if vertical_at(idx) {
+        (
+            probe.0,
+            probe.1.clamp(entry.1.min(exit.1), entry.1.max(exit.1)),
+        )
+    } else {
+        (
+            probe.0.clamp(entry.0.min(exit.0), entry.0.max(exit.0)),
+            probe.1,
+        )
+    }
 }
 
 /// 共线简化：移除位于水平/垂直直线中间的冗余点（插入 no-op 校验用——推导会在
@@ -2240,6 +2305,131 @@ mod tests {
                 elbow_vertex_polyline(&moved, false) != base
                     || elbow_vertex_polyline(&moved_v, false) != base,
                 "候选 {:?} 惰性",
+                c.point
+            );
+        }
+    }
+
+    fn on_orthogonal_path(path: &[(f32, f32)], p: (f32, f32)) -> bool {
+        const EPS: f32 = 1e-3;
+        path.windows(2).any(|w| {
+            let (a, b) = (w[0], w[1]);
+            let (ux, uy) = (b.0 - a.0, b.1 - a.1);
+            let len = (ux * ux + uy * uy).sqrt();
+            let within = p.0 >= a.0.min(b.0) - EPS
+                && p.0 <= a.0.max(b.0) + EPS
+                && p.1 >= a.1.min(b.1) - EPS
+                && p.1 <= a.1.max(b.1) + EPS;
+            if len < EPS {
+                return within && ((p.0 - a.0).abs() < EPS && (p.1 - a.1).abs() < EPS);
+            }
+            let cross = (ux * (p.1 - a.1) - uy * (p.0 - a.0)).abs() / len;
+            cross < EPS && within
+        })
+    }
+
+    #[test]
+    fn clamp_elbow_vertex_drag_keeps_anchor_on_path() {
+        // ∩ 形 [(0,0),(100,40),(200,0)]：顶点 1 锚横 bar（y=40，x∈[0,200]）。
+        // 沿 bar 轴（x）拖出区间应钳回区间端；垂直轴（y）自由 = 平移整根 bar。
+        let pts = [(0.0, 0.0), (100.0, 40.0), (200.0, 0.0)];
+        assert_eq!(
+            clamp_elbow_vertex_drag(&pts, false, 1, (300.0, 40.0)),
+            (200.0, 40.0)
+        );
+        assert_eq!(
+            clamp_elbow_vertex_drag(&pts, false, 1, (-50.0, 40.0)),
+            (0.0, 40.0)
+        );
+        assert_eq!(
+            clamp_elbow_vertex_drag(&pts, false, 1, (100.0, 120.0)),
+            (100.0, 120.0),
+            "垂直于 bar 的分量不该被动"
+        );
+        // 不约束的情形：原样返回
+        assert_eq!(
+            clamp_elbow_vertex_drag(&pts, false, 0, (999.0, -1.0)),
+            (999.0, -1.0),
+            "端点无 bar"
+        );
+        let two = [(0.0, 0.0), (40.0, 80.0)];
+        assert_eq!(
+            clamp_elbow_vertex_drag(&two, false, 1, (7.0, 9.0)),
+            (7.0, 9.0)
+        );
+        // 性质：任意探针经约束后，锚点必落在重推导的走线上
+        for probe in [
+            (300.0, 40.0),
+            (-20.0, 200.0),
+            (60.0, -30.0),
+            (150.0, 150.0),
+            (100.0, 40.0),
+        ] {
+            let fixed = clamp_elbow_vertex_drag(&pts, false, 1, probe);
+            let mut next = pts.to_vec();
+            next[1] = fixed;
+            assert!(
+                on_orthogonal_path(&elbow_vertex_polyline(&next, false), fixed),
+                "探针 {:?} → 约束后 {:?} 仍离线",
+                probe,
+                fixed
+            );
+        }
+    }
+
+    #[test]
+    fn clamp_elbow_vertex_drag_property_over_multi_vertex_shapes() {
+        // 多组几何 × 多方向探针：约束后的锚点恒在重推导路径上（含闭合三角形）
+        let shapes: Vec<(Vec<(f32, f32)>, bool)> = vec![
+            (vec![(0.0, 0.0), (50.0, 100.0), (100.0, 0.0)], false),
+            (
+                vec![(0.0, 0.0), (200.0, 50.0), (40.0, 100.0), (120.0, 180.0)],
+                false,
+            ),
+            (vec![(0.0, 0.0), (100.0, 0.0), (50.0, 80.0)], true),
+        ];
+        for (pts, closed) in shapes {
+            let n = pts.len();
+            for idx in 0..n {
+                for dx in [-220.0f32, -70.0, 0.0, 95.0, 260.0] {
+                    for dy in [-140.0f32, -35.0, 0.0, 60.0, 190.0] {
+                        let probe = (pts[idx].0 + dx, pts[idx].1 + dy);
+                        let fixed = clamp_elbow_vertex_drag(&pts, closed, idx, probe);
+                        let mut next = pts.clone();
+                        next[idx] = fixed;
+                        assert!(
+                            on_orthogonal_path(&elbow_vertex_polyline(&next, closed), fixed),
+                            "pts={:?} closed={} idx={} probe={:?} → fixed={:?} 离线",
+                            pts,
+                            closed,
+                            idx,
+                            probe,
+                            fixed
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn elbow_insert_candidates_click_beyond_corner_lands_inside_segment() {
+        // 点在小段端点（拐角）外侧：投影须被限制在小段内部，锚点不得正好落在角点上
+        // （否则新锚点表现成"角点拖动"，丢掉 bar 语义）。
+        let pts = [(0.0, 0.0), (100.0, 40.0), (200.0, 0.0)];
+        let base = elbow_vertex_polyline(&pts, false);
+        let cands = elbow_insert_candidates(&pts, false, Some((260.0, 40.0)));
+        assert!(!cands.is_empty(), "应有候选");
+        for c in &cands {
+            let corners = base.windows(2).map(|w| w[0]).collect::<Vec<_>>();
+            assert!(
+                !corners.contains(&c.point),
+                "候选 {:?} 正好落在拐角上",
+                c.point
+            );
+            assert!(
+                on_orthogonal_path(&base, c.point),
+                "候选 {:?} 不在走线上",
                 c.point
             );
         }

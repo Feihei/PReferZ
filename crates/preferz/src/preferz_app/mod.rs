@@ -28,7 +28,7 @@ use preferz_core::commands::{
     SetSloppiness, SetStrokeStyle, SetTextStyle, TransformItem,
 };
 use preferz_core::flowchart;
-use preferz_core::item::elbow_insert_candidates;
+use preferz_core::item::{clamp_elbow_vertex_drag, elbow_insert_candidates};
 use preferz_core::mermaid::{
     layout_flowchart, parse_mermaid_flowchart, MermaidArrow, MermaidShape,
 };
@@ -3023,6 +3023,44 @@ mod tests {
         );
         app.end_drag();
         assert!(app.undo_stack.undo.is_empty(), "无位移的移动不入 undo");
+    }
+
+    #[test]
+    fn elbow_vertex_drag_is_clamped_onto_its_bar() {
+        // plan #21：直角模式拖锚点——垂直于 bar 的分量平移整根 bar，沿 bar 轴的分量
+        // 被钳在该 bar 的绘制区间内（锚点不许离线漂浮）。
+        let pts = vec![(0.0, 0.0), (100.0, 40.0), (200.0, 0.0)];
+        let (mut app, id) = app_with_polyline(pts.clone(), false);
+        set_curve_type(&mut app, id, CurveType::Elbow);
+        // 以顶点 1 自身位置作为拖拽起点（局部 == 画布：pos 0 / scale 1）
+        let anchor_screen = app
+            .viewport
+            .canvas_to_pos2(CanvasPoint::new(pts[1].0, pts[1].1));
+        let start_canvas = app.viewport.pos2_to_canvas(anchor_screen);
+        app.drag = DragState::LineEndpoint {
+            item_id: id,
+            endpoint: 1,
+            start_canvas,
+            start_points: pts.clone(),
+            base_pos: pts[1],
+            alt_extend: false,
+        };
+        // 沿 bar 轴（x）甩到走线右端之外 → 钳回 (200, 40)
+        let beyond = app.viewport.canvas_to_pos2(CanvasPoint::new(300.0, 40.0));
+        app.update_drag_preview(beyond, false, false);
+        assert_eq!(
+            polyline_points(&app, id)[1],
+            (200.0, 40.0),
+            "沿 bar 轴拖出应被钳回走线端"
+        );
+        // 垂直分量（y）自由 = 平移整根 bar
+        let across = app.viewport.canvas_to_pos2(CanvasPoint::new(100.0, 120.0));
+        app.update_drag_preview(across, false, false);
+        assert_eq!(
+            polyline_points(&app, id)[1],
+            (100.0, 120.0),
+            "垂直于 bar 的拖拽不该被约束"
+        );
     }
 
     #[test]
