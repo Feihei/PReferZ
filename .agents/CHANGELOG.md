@@ -777,6 +777,48 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 
 ---
 
+## elbow 插入候选取向稳定性（plan #21 五次验收反馈，2026-09-25，待提交）
+
+> 用户实测：双击能加点后，**插入的节点有时候会变成角点而不是线段锚点**。
+
+- **根因在段级、不在采样点**：插入顶点的 bar 取向 =（前邻，后邻）主导轴，与采样位置无关；
+  段两端角连线接近对角（`|dx|≈|dy|`）时，微小拖动任一邻居就翻转主导轴、bar 转成垂直于所在
+  小段——锚点当场退化成角点。此前两条校验（视觉不变 / 可拖动）都只看插入瞬间，拦不住后续
+  几何微动。
+- **修复**：core 新增段级闸门 `bar_orientation_stable(prev, next, delta)`——两个邻居各沿 x/y
+  扰动 ±5，主导轴取向必须全程不变；不稳定的段**整段无候选**（含两点线分支，只排除贴近对角
+  约 ±10px 的窄带，不影响常规横平竖直的连线）。属既已接受的覆盖缺口族（取向不利的段无双击
+  靶区）。
+- **测试**：`elbow_insert_candidates_rejects_near_diagonal_segments`（余量 5 的 seg 被拒、
+  余量 50 的保留、邻居拖 10px 后锚点仍直线穿越不出角；两点线精确对角空候选、余量 20 恢复）。
+  core 207 passed；质量门全绿（无关失败 `tick_autosave_*` 同前）。
+
+---
+
+## elbow 倒角参数（plan #23，2026-09-25，待提交）
+
+> 用户提议：elbow 也跟矩形一样有倒角参数（Excalidraw 的 roundness 同样作用于直角连线）。
+
+- **复用 `Shape.roundness` 字段**（I4：`#[serde(default)]` 已有，`.prz` 零迁移）——同一
+  None/S/M/L/XL 档位在矩形与 elbow 上观感一致。
+- **core**：`roundness_radius` 从 binary stylers 上收 core（矩形/elbow 共用
+  `min(w,h) × roundness × 0.5`）；新纯函数 `round_orthogonal_corners(pts, closed, radius)`——
+  每个直角拐角按 8 段圆弧替换，半径逐角钳到相邻半段长（短段相接两角在段中点相汇后 dedup）、
+  退化/非正交拐角原样通过、开放链首末点不倒角、闭合链环绕取邻；切点精确推入（三角函数在
+  0/90° 的 ~1e-8 误差会让相汇点 dedup 失效）。
+- **渲染**：`stylers::outline_points` 的 Elbow 分支在派生路径后按 roundness 倒角，两点 Z 与
+  多顶点顶点模型都生效；RoughStyler 直接吃弧采样点列（与圆角矩形同路线，手绘圆角）。
+- **命中同源**：`contains_canvas_point` 的 Elbow 分支同样先倒角再测距——弧内缩最深
+  0.41×r，直角路径测距会漏点圆弧（"看着圆过的角一定点得中"）。
+- **属性栏**：圆角节从「仅矩形族」扩展到 elbow 折线；`SetRoundness` undo 链路本就通用，零改动。
+- **边界**：手柄方块 / 双击候选点 / 拖拽钳制仍在直角几何上（倒角是纯视觉后处理，不改 points
+  数据，圆角处手柄与渲染线有 ≤0.41×r 视觉偏差，Excalidraw 同性质）；范围仅 `CurveType::Elbow`。
+- **测试**：core `roundness_radius_matches_rect_semantics` /
+  `round_orthogonal_corners_l_shape_arc_and_clamp`（L 形弧心切点 + 短段钳制 + 闭合正方形 36 点）/
+  `elbow_roundness_affects_contains_canvas_point`（弧上点命中、直角路径同点不命中）。
+
+---
+
 ## 决策点归档（D1–D6 / I1–I4）
 
 > 原列于 plan.md，G/I/H/K 交付后蒸馏归档于此，使 CHANGELOG 自包含、plan.md 仅保留前瞻内容。

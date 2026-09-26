@@ -157,6 +157,7 @@
 | 20 | 🔶 RoughStyler 对齐 rough.js/Excalidraw 打磨（2026-09-25 代码交付，待人工验收） | 抖动幅度基准改 rough.js 公式（固定 2 画布px × roughnessGain × amp_scale × zoom，替 6%/8px）+ bowing 随机化 + preserveVertices 端点语义 + hachure 四件套（角度 -41→-49、线宽减半、斜线改完整抖动、随机相位+去 4px 下限）+ 箭头注释更正 | ✅ 四批全交付（2026-09-25）：DP1 Architect 维持 0.5×、DP2 solid 填充顶点跟随抖动、DP3 箭头跟随 Excalidraw 改抖（ADR-0005 补录修订）、DP4 小图衰减与 amp_scale 相乘；交付见 [CHANGELOG §RoughStyler 对齐 rough.js/Excalidraw](CHANGELOG.md) |
 | 21 | 🔶 elbow 多顶点改「顶点锚定 bar」纯函数推导（**取代 #19 的逐段居中 Z 展开**，2026-09-24 代码交付，待人工验收） | 中间顶点 = 正交 bar 的锚点（bar 过顶点、取向垂直于邻居对主导轴），路径=纯函数 `f(points)`；拖顶点即平移整根横/竖 bar，坐标对齐时路径自动直化（免费获得 Excalidraw 的对齐合并），段中点拖拽加点废止 | ✅ 已拍板（2026-09-24）：**不引入 Excalidraw `fixedSegments`**——elbow 与 polyline 同类型可互转、顶点必须保留，改为推导模型零新增存储；交付见 [CHANGELOG §elbow 多顶点改顶点锚定 bar](CHANGELOG.md)，细节与决策点见 §21 |
 | 22 | 🔶 文字工具 + 双击职责归位（2026-09-25 代码交付，待人工验收） | 新增 `Tool::Text`（工具栏「T」/ `Num8`）：单击画布即在落点起自由文本、起完回 Select；**删除「双击空白/线 → 新建文本便签」**，双击手势整体留给元素编辑（elbow 段加点、图片适配、文字/容器编辑） | ✅ 已拍板（2026-09-25，用户提议）：新建文本只留工具入口（Excalidraw 有独立 text 工具）；键位取 `Num8` 续数字工具行——Excalidraw 的裸 `T` 位在本项目已被 `ToggleToolbar`（Blender 同款）占用，不改绑；细节见 §22 |
+| 23 | 🔶 elbow 倒角参数（2026-09-25 代码交付，待人工验收） | 复用 `Shape.roundness` 字段（零迁移）：派生路径的每个 90° 拐角按 8 段圆弧替换（core `round_orthogonal_corners` 纯函数），半径 = `min(bbox) × roundness × 0.5` 与矩形族同式；渲染（stylers）与命中（contains_canvas_point）同源消费；属性栏圆角滑条扩展到 elbow 线 | ✅ 已拍板（2026-09-25，均按推荐）：①**复用 roundness 字段**（同一档位语义两类对象观感一致，`.prz` 零迁移）；②半径按**包围盒短边**比例（同矩形），逐角钳到相邻半段长；③命中走**倒角后**路径（同源纪律，圆过的角点得中）；④RoughStyler 吃弧采样点列（与圆角矩形同路线，手绘圆角）；⑤范围仅 elbow（Straight/Curved 不动）；细节见 §23 |
 
 ### 各项细节与决策点
 
@@ -476,6 +477,14 @@
          拐角外侧时投影正好钉在小段端点（=拐角）上，拖起来就成了"拖角点"而非"沿 bar 滑"。
          改为只允许落在小段**内部** `[0.15, 0.85]`（`elbow_insert_candidates`），并有回归测试
          断言候选点不等于任何拐角、且恒在走线上。
+      5. **近对角段整段不提供插入（2026-09-25 五次反馈）**：仍有"插入的锚点变成角点"——根因
+         不在采样点而在**段级取向稳定性**：新顶点的 bar 取向 =（前邻，后邻）主导轴，与采样点
+         无关；段两端角连线接近对角（`|dx|≈|dy|`）时，微小拖动任一邻居就翻转主导轴、bar 转成
+         垂直于所在小段，锚点当场退化成角点。修复 = 第三条段级闸门 `bar_orientation_stable`
+         （core：两个邻居各沿 x/y 扰动 ±5，取向必须全程不变，不稳定的段整段无候选；两点线
+         同样适用，只排除贴近对角 ±10px 的窄带）。测试
+         `elbow_insert_candidates_rejects_near_diagonal_segments`（近对角 seg 被拒 + 稳定 seg
+         保留 + 邻居拖动后锚点仍直线穿越）。
   - **DP-B｜取向翻转滞回：不加**。确定性规则固有行为，先观察验收反馈再定。
 - **不做**：Excalidraw `fixedSegments` 模型与 A* 避让路由（E2 仍留待未来，见 #16）；`elbow_mid_offset` 推广到多顶点（多顶点的用户意图由顶点位置表达）。
 - **手工验收清单**：
@@ -512,6 +521,44 @@
   - [ ] 双击画布空白 / 双击普通线、箭头 → **不再**冒出文本输入框
   - [ ] 双击图片仍是「适配视图 ↔ 上一视图」；双击矩形/椭圆/菱形/闭合多边形仍可编辑其绑定文字；双击 Text 仍可改内容
   - [ ] 既有键位不回归：裸 `T` 仍是工具栏显隐、`N` 属性栏、`P`/`Shift+P`/`1–7` 工具切换正常
+
+23. **🔶 elbow 倒角参数（2026-09-25 代码交付，待人工验收）**
+- **背景（2026-09-25 用户提议）**：elbow 折线派生路径恒为直角拐角，希望像矩形一样有倒角（圆角）
+  参数。Excalidraw 的 line/arrow roundness 同样作用于 elbow 尖角。
+- **改动**：
+  - core `item.rs`：`roundness_radius(base_size, roundness)` 从 binary stylers **上收 core**
+    （矩形族与 elbow 共用同一比例语义：`min(w,h) × roundness × 0.5`，1.0 = 短边全圆弧）；
+    新 `round_orthogonal_corners(pts, closed, radius)`——正交折线倒角纯函数：每个 90° 拐角按
+    `ROUNDED_CORNER_SEGMENTS`（8）段圆弧替换，半径逐角钳到相邻两半段长（短段相接两角在段
+    中点相汇，dedup 收口）；退化/非正交拐角原样通过；开放链首末点不倒角、闭合链环绕取邻；
+    输出未闭合（与圆角矩形轮廓同约定）。切点精确推入（三角函数 0/90° 有 ~1e-8 误差，会让
+    相汇点 dedup 失效）。
+  - 渲染（binary `stylers.rs`）：`CurveType::Elbow` 分支在派生路径后按 roundness 倒角——
+    **两点 Z 与多顶点顶点模型都生效**；RoughStyler 直接吃弧采样点列（与圆角矩形同路线，
+    手绘风得"手画的圆角"）。
+  - 命中（core `contains_canvas_point`）：Elbow 分支同源倒角后再测距——"看着圆过的角一定点得中"
+    （圆弧内缩最深 0.41×r，直角路径测距会漏点弧上）。
+  - 属性栏（binary `props.rs`）：圆角节从「仅矩形族」扩展到 **elbow 折线**；`SetRoundness`
+    命令与 `apply_continuous` undo 链路本就通用，零改动。
+- **已拍板决策点（2026-09-25，均按推荐）**：
+  1. **复用 `Shape.roundness` 字段**（不新增 elbow 专字段）：同一 None/S/M/L/XL 档位在矩形与
+     elbow 上观感一致，`#[serde(default)]` 已有、`.prz` 零迁移。
+  2. **半径 = 包围盒短边比例**（同矩形公式）：尺寸自适应；不做 Excalidraw 式固定像素。
+  3. **命中走倒角后路径**（同源纪律优先于命中面积微增）。
+  4. **手柄/插入候选仍在直角几何上**：顶点方块、双击候选点、拖拽钳制均按未倒角派生路径计算
+     （倒角是纯视觉后处理，不改 points 数据）；圆角处手柄方块与渲染线有 ≤0.41×r 的视觉偏差，
+     属可接受（Excalidraw 同性质）。
+  5. **范围仅 `CurveType::Elbow`**：Straight 保持折线尖角（顶点即用户数据，倒角语义未定）、
+     Curved 已有样条。
+- **测试**：core `roundness_radius_matches_rect_semantics` / `round_orthogonal_corners_l_shape_arc_and_clamp`
+  （L 形弧心切点 + 短段钳制 + 闭合正方形）/ `elbow_roundness_affects_contains_canvas_point`
+  （弧上点命中、直角路径同点不命中）；stylers 既有圆角矩形测试回归。
+- **手工验收清单**：
+  - [ ] 选中 elbow 线（两点/多顶点）→ 属性栏出现「圆角」节；None/S/M/L/XL 五档切换，拐角变圆弧、弧度随档位增大
+  - [ ] XL 档短段不被穿越（相邻两角在段中点相汇，无交叉/毛刺）；拖动顶点 / 拖 bar 时圆角跟随
+  - [ ] 手绘风（Rough 档）下圆角仍呈手绘弧线；闭合 elbow 折线圆角闭环
+  - [ ] 点击圆角弧线上 → 命中（不漏点）；undo 一步还原档位；保存重开 roundness 保留
+  - [ ] 矩形圆角滑条回归不变；Straight/Curved 线不受影响
 
 ---
 
