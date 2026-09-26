@@ -754,6 +754,29 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 
 ---
 
+## 两点 elbow 纳入双击插入（plan #21 四次验收反馈，2026-09-25，待提交）
+
+> 用户实测：多段线 elbow 双击能加点，但**直线/箭头转成的 elbow**、**Ctrl+方向键建的流程图
+> 连线**（都是两点 elbow）双击无作用。
+
+- **重新推导推翻旧排除**：此前两点线被排除是担心插入会改道。实际上在 bar 线上插一点后，
+  三点顶点模型（`elbow_vertex_polyline`）重推导的走线与两点展开（`elbow_polyline_offset`）
+  **完全一致**——同一条 Z，视觉 no-op（顶点模型的 bar 取向启发式与两点展开分支同式）。
+- **实现**：core `elbow_insert_candidates` 增加 `mid_offset` 参数并新增两点线分支——靶区 =
+  展开路径的 bar 段（唯一与 bar 同向的段；退化直线 = 整条线），插入点取落点投影（钳小段内部
+  防落拐角），no-op / live 校验同多顶点。binary `insert_elbow_vertex_at` 兼收两点线的
+  `ElbowBar` 命中（bar 带与插入靶区同区：**单击拖 bar、双击插入**）；插入同时取消 press 沿
+  误起的 bar 拖拽（偏移还原 `start_offset`、不产生 `SetElbowOffset`），候选点也按还原后的
+  偏移计算——第二次按下期间指针漂几像素仍算双击，按预览偏移算会让落点带跳变。插入后
+  `elbow_mid_offset` 不再被消费（bar 位置由顶点坐标接管，polyline ↔ elbow 往返仍无损）。
+  闭合两点线折叠退化、不支持。
+- **测试**：core 新增两点线专项（中点候选 / 腿上落点钳进 bar / 带偏移 no-op / 退化直线插入
+  仍直 / 闭合两点线空候选）203 passed；binary 新增「双击 bar 带插入 + 取消 bar 拖拽 + undo
+  还原」91 passed。质量门全绿（fmt / `clippy -D warnings`；
+  `tick_autosave_writes_sidecar_and_keeps_doc_dirty` 仍为先前已存在的无关失败）。
+
+---
+
 ## 决策点归档（D1–D6 / I1–I4）
 
 > 原列于 plan.md，G/I/H/K 交付后蒸馏归档于此，使 CHANGELOG 自包含、plan.md 仅保留前瞻内容。
