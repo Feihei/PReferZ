@@ -63,13 +63,15 @@ impl PReferZApp {
         self.flash(t(self.lang, T::FlashVertexDeleted));
     }
 
-    /// plan #21 DP-A：多顶点 elbow「双击段插入顶点」的**释放沿**执行体。
+    /// plan #21 DP-A：elbow「双击段插入顶点」的**释放沿**执行体。
     /// 由 `ui()` 的双击分支调用（egui 的 `double_clicked()` 在释放沿成形，是
     /// 唯一可信的双击信号；按下沿拿不到）。命中条件与手柄一致：落点的顶层 item
-    /// 是多顶点 elbow + 落点在该段推导路径带内（`hit_test` 返回 `SegmentMid`），
-    /// 并取 core 校验过的候选点（插入后走线视觉不变、且新顶点可拖动）。返回 true
-    /// = 本次双击已消费（调用方据此不再建文本便签）。预览直改 + `EditShapePoints`
-    /// （恒 skip_first_redo）入 undo 栈，一步可撤。
+    /// 是 elbow 线 + 落点在靶区带内——多顶点看段路径带（`SegmentMid`），两点线看
+    /// bar 带（`ElbowBar`，与拖 bar 同区：单击拖 bar / 双击插入；直线转 elbow、
+    /// Ctrl+方向键流程图连线都是两点 elbow）。取 core 校验过的候选点（插入后走线
+    /// 视觉不变、且新顶点可拖动）。返回 true = 本次双击已消费（调用方据此不再建
+    /// 文本便签）。预览直改 + `EditShapePoints`（恒 skip_first_redo）入 undo 栈，
+    /// 一步可撤。
     pub(crate) fn insert_elbow_vertex_at(&mut self, screen_pos: egui::Pos2) -> bool {
         // 不依赖选中态（编组线的双击同样成立）：取落点顶层 item
         let item_id = match interaction::get_item_at(screen_pos, &self.scene, &self.viewport) {
@@ -81,20 +83,53 @@ impl PReferZApp {
                 Some(item) => item,
                 None => return false,
             };
-            if !is_multi_vertex_elbow_line(item) {
+            if !is_elbow_line(item) {
                 return false;
             }
-            match self.transform_handles.hit_test(
+            let (n, closed) = match &item.kind {
+                ItemKind::Shape { points, closed, .. } => (points.len(), *closed),
+                _ => return false,
+            };
+            let h = self.transform_handles.hit_test(
                 screen_pos,
                 item,
                 &self.viewport,
                 should_show_flip(item),
                 should_show_rotate(item),
-            ) {
-                Handle::SegmentMid(seg) => seg,
+            );
+            match (n, closed, h) {
+                (_, _, Handle::SegmentMid(seg)) if n > 2 => seg,
+                // 两点线：bar 带即插入靶区（seg 0 = 两端点之间的唯一段）
+                (2, false, Handle::ElbowBar) => 0,
                 _ => return false,
             }
         };
+        // 两点线双击落在 bar 上时，press 沿已起了 bar 拖拽：还原偏移预览并结束
+        // 拖拽状态，别让随后的 end_drag 把一次误位移固化成 SetElbowOffset。
+        // 候选点也必须按**还原后**的 start_offset 取 bar 线——第二次按下期间指针
+        // 漂几像素仍算双击，若按预览偏移算插入点，落点会带一次跳变。
+        let mut restored_offset = None;
+        if let DragState::ElbowBar {
+            item_id: drag_id,
+            start_offset,
+            ..
+        } = &self.drag
+        {
+            if *drag_id == item_id {
+                let start_offset = *start_offset;
+                if let Some(it) = self.scene.get_item_mut(&item_id) {
+                    if let ItemKind::Shape {
+                        elbow_mid_offset, ..
+                    } = &mut it.kind
+                    {
+                        *elbow_mid_offset = start_offset;
+                    }
+                }
+                self.drag = DragState::Idle;
+                self.transform_handles.end_drag();
+                restored_offset = Some(start_offset);
+            }
+        }
         // 落点偏好（局部坐标）：候选点尽量贴着用户双击的地方长
         let click_local = self
             .scene
@@ -102,8 +137,14 @@ impl PReferZApp {
             .and_then(|it| it.canvas_to_local_point(self.viewport.pos2_to_canvas(screen_pos)));
         let (old_points, insert_point) = match self.scene.get_item(&item_id) {
             Some(item) => match &item.kind {
-                ItemKind::Shape { points, closed, .. } => {
-                    match elbow_insert_candidates(points, *closed, click_local)
+                ItemKind::Shape {
+                    points,
+                    closed,
+                    elbow_mid_offset,
+                    ..
+                } => {
+                    let mid_offset = restored_offset.unwrap_or(*elbow_mid_offset);
+                    match elbow_insert_candidates(points, *closed, mid_offset, click_local)
                         .into_iter()
                         .find(|c| c.seg == seg)
                     {

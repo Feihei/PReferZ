@@ -9,7 +9,8 @@ use crate::ui::stylers::{
 use crate::ui::widgets::palette;
 use crate::ui::widgets::stepper::stepper;
 use crate::ui::widgets::transform_handles::{
-    is_multi_vertex_elbow_line, should_show_flip, should_show_rotate, Handle, TransformHandles,
+    is_elbow_line, is_multi_vertex_elbow_line, should_show_flip, should_show_rotate, Handle,
+    TransformHandles,
 };
 use crate::viewport::{ViewportEgui, ViewportState};
 use crate::HANDWRITING_FONT_FAMILY;
@@ -2995,7 +2996,7 @@ mod tests {
         let (mut app, id) = app_with_polyline(pts.clone(), false);
         set_curve_type(&mut app, id, CurveType::Elbow);
         app.scene.select(id);
-        let cand = elbow_insert_candidates(&pts, false, None)
+        let cand = elbow_insert_candidates(&pts, false, 0.0, None)
             .into_iter()
             .next()
             .expect("V 形 elbow 应有插入候选");
@@ -3064,6 +3065,49 @@ mod tests {
     }
 
     #[test]
+    fn double_click_on_two_point_elbow_bar_inserts_vertex() {
+        // plan #21 验收反馈：直线/箭头转的 elbow、Ctrl+方向流程图连线都是两点
+        // elbow——双击 bar 带（与拖 bar 同区）应插入顶点且走线不变；插入同时取消
+        // press 沿误起的 bar 拖拽（偏移还原，不产生 SetElbowOffset）。
+        let pts = vec![(0.0, 0.0), (200.0, 100.0)];
+        let (mut app, id) = app_with_polyline(pts.clone(), false);
+        set_curve_type(&mut app, id, CurveType::Elbow);
+        app.scene.select(id);
+        // bar 中点 (100, 50)（局部 == 画布）——ElbowBar 手柄 / 插入靶区所在
+        let screen = app.viewport.canvas_to_pos2(CanvasPoint::new(100.0, 50.0));
+        // press 沿：双击第一下落在 bar 上会起 bar 拖拽（无位移 → 偏移预览不变）
+        app.drag = DragState::ElbowBar {
+            item_id: id,
+            start_canvas: CanvasPoint::new(100.0, 50.0),
+            start_offset: 0.0,
+        };
+        assert!(
+            app.insert_elbow_vertex_at(screen),
+            "两点 elbow bar 双击应插入"
+        );
+        let after = polyline_points(&app, id);
+        assert_eq!(after.len(), 3);
+        // 插入点 = bar 中点，且走线与两点展开一致（视觉 no-op）
+        assert_eq!(after[1], (100.0, 50.0));
+        assert_eq!(
+            preferz_core::item::elbow_vertex_polyline(&after, false),
+            vec![(0.0, 0.0), (0.0, 50.0), (200.0, 50.0), (200.0, 100.0)]
+        );
+        // bar 拖拽被取消：偏移还原为 start_offset、drag 归 Idle
+        assert!(matches!(app.drag, DragState::Idle));
+        match &app.scene.get_item(&id).unwrap().kind {
+            ItemKind::Shape {
+                elbow_mid_offset, ..
+            } => assert_eq!(*elbow_mid_offset, 0.0, "误位移应被还原"),
+            _ => panic!("应为 Shape"),
+        }
+        // 一条 undo（插入），undo 还原后回到两点
+        assert_eq!(app.undo_stack.undo.len(), 1);
+        assert!(app.perform_undo());
+        assert_eq!(polyline_points(&app, id), pts);
+    }
+
+    #[test]
     fn insert_elbow_vertex_rejects_non_targets() {
         let pts = vec![(0.0, 0.0), (50.0, 100.0), (100.0, 0.0)];
         // 落点远离线：带外 → 不消费（交回「双击建文本」）
@@ -3073,12 +3117,7 @@ mod tests {
         let far = app.viewport.canvas_to_pos2(CanvasPoint::new(500.0, 500.0));
         assert!(!app.insert_elbow_vertex_at(far));
         assert_eq!(polyline_points(&app, id), pts);
-        // 两点 elbow：走 bar 手柄、无插入候选
-        let (mut app2, id2) = app_with_polyline(vec![(0.0, 0.0), (40.0, 80.0)], false);
-        set_curve_type(&mut app2, id2, CurveType::Elbow);
-        app2.scene.select(id2);
-        let on_line = app2.viewport.canvas_to_pos2(CanvasPoint::new(20.0, 40.0));
-        assert!(!app2.insert_elbow_vertex_at(on_line), "两点 elbow 不加点");
+        // 两点 elbow 现已支持（见 double_click_on_two_point_elbow_bar_inserts_vertex）
         // 尖角折线：仍走原段中点拖拽加点手势，不由双击消费
         let (mut app3, id3) = app_with_polyline(pts.clone(), false);
         app3.scene.select(id3);

@@ -1436,6 +1436,88 @@ pub struct ElbowInsertCandidate {
     pub span: Vec<(f32, f32)>,
 }
 
+/// 两点 elbow 的双击插入候选（plan #21 验收反馈：直线/箭头转 elbow、Ctrl+方向键
+/// 流程图连线都是两点 elbow，此前双击无作用）。靶区 = 展开路径的 bar 段（展开路径中
+/// 唯一与 bar 同向的段；退化直线时即整条线），插入点取落点在 bar 上的投影（钳在小段
+/// 内部，不落拐角）。在 bar 线上插入一个顶点后，三点顶点模型重推导的走线与两点展开
+/// 完全一致（同一条 Z）——no-op 校验即验证这一点；闭合两点线退化折叠、不支持。
+fn elbow_two_point_insert_candidates(
+    pts: &[(f32, f32)],
+    closed: bool,
+    mid_offset: f32,
+    click: Option<(f32, f32)>,
+) -> Vec<ElbowInsertCandidate> {
+    const EPS: f32 = 1e-3;
+    if closed {
+        return Vec::new(); // 闭合两点线折叠退化，插入只会改道
+    }
+    let (a, b) = (pts[0], pts[1]);
+    if a == b {
+        return Vec::new();
+    }
+    let base = orthogonal_simplify(&elbow_polyline_offset(pts, mid_offset));
+    if base.len() < 2 {
+        return Vec::new();
+    }
+    // bar 取向与两点展开的分支一致：|dx|<=|dy| → 竖 bar
+    let vertical_bar = (b.0 - a.0).abs() <= (b.1 - a.1).abs();
+    let bar = base.windows(2).map(|w| (w[0], w[1])).find(|(s, e)| {
+        let vert = (s.0 - e.0).abs() < EPS;
+        let horiz = (s.1 - e.1).abs() < EPS;
+        if vertical_bar {
+            vert
+        } else {
+            horiz
+        }
+    });
+    let Some((s, e)) = bar else {
+        return Vec::new();
+    };
+    let (dx, dy) = (e.0 - s.0, e.1 - s.1);
+    if dx.abs() < 1.0 && dy.abs() < 1.0 {
+        return Vec::new(); // bar 退化到不可抓取
+    }
+    // 采样顺序：落点投影优先，再中点 / 偏侧点（与多顶点分支同策）
+    let mut fracs: Vec<f32> = Vec::new();
+    if let Some(c) = click {
+        let len2 = dx * dx + dy * dy;
+        if len2 > 1e-6 {
+            fracs.push((((c.0 - s.0) * dx + (c.1 - s.1) * dy) / len2).clamp(0.15, 0.85));
+        }
+    }
+    fracs.extend([0.5f32, 0.25, 0.75]);
+    for f in fracs {
+        let p = (s.0 + dx * f, s.1 + dy * f);
+        let inserted = vec![a, p, b];
+        if !orthogonal_path_eq(
+            &orthogonal_simplify(&elbow_vertex_polyline(&inserted, false)),
+            &base,
+        ) {
+            continue; // 插入改道：换采样点
+        }
+        let mut moved_h = inserted.clone();
+        moved_h[1].0 += 5.0;
+        let mut moved_v = inserted.clone();
+        moved_v[1].1 += 5.0;
+        let live = !orthogonal_path_eq(
+            &orthogonal_simplify(&elbow_vertex_polyline(&moved_h, false)),
+            &base,
+        ) || !orthogonal_path_eq(
+            &orthogonal_simplify(&elbow_vertex_polyline(&moved_v, false)),
+            &base,
+        );
+        if !live {
+            break;
+        }
+        return vec![ElbowInsertCandidate {
+            seg: 0,
+            point: p,
+            span: vec![s, e],
+        }];
+    }
+    Vec::new()
+}
+
 /// 多顶点 elbow 的「双击插入」候选（plan #21 DP-A）：每个可插入段一条候选，
 /// 插入点取该段在推导路径上覆盖的**笔直小段**（跑段 / bar 半段）上的采样点，且必须
 /// 通过两条硬性校验，否则换小段 / 换采样点 / 放弃：
@@ -1449,17 +1531,26 @@ pub struct ElbowInsertCandidate {
 /// 落点在该小段上的投影（"双击哪儿就长在哪儿"），投影不安全时退回中点 / 偏侧点。
 /// 传 `None` 得规范化的中点优先结果（手柄几何用，须与鼠标无关）。
 ///
-/// 两点线 / 退化（<3 点）无候选。注意：候选随几何动态变化，取向不利的段可能
-/// 整段无候选（该段无双击靶区，属可接受覆盖缺口，见 plan #21）。
+/// 两点线支持（2026-09-25 验收反馈）：直线/箭头转成的 elbow、Ctrl+方向键建的流程图
+/// 连线都是两点 elbow——在 bar 线上插入一个顶点后，三点顶点模型推导出的走线与两点
+/// 展开完全一致（同一条 Z，视觉 no-op），故两点线的双击靶区 = bar 段本身（与拖拽
+/// bar 手柄同区：单击拖 bar、双击插入）。插入后 `elbow_mid_offset` 不再被消费（bar
+/// 位置由顶点坐标接管）。闭合两点线退化折叠、不支持。`mid_offset` 仅两点线消费
+/// （其当前渲染是 `elbow_polyline_offset(pts, mid_offset)`，no-op 校验要对齐它）。
+/// 取向不利的段可能整段无候选（该段无双击靶区，属可接受覆盖缺口，见 plan #21）。
 pub fn elbow_insert_candidates(
     pts: &[(f32, f32)],
     closed: bool,
+    mid_offset: f32,
     click: Option<(f32, f32)>,
 ) -> Vec<ElbowInsertCandidate> {
     const EPS: f32 = 1e-3;
     let n = pts.len();
-    if n < 3 {
+    if n < 2 {
         return Vec::new();
+    }
+    if n == 2 {
+        return elbow_two_point_insert_candidates(pts, closed, mid_offset, click);
     }
     let base = orthogonal_simplify(&elbow_vertex_polyline(pts, closed));
     let mut chain: Vec<(f32, f32)> = pts.to_vec();
@@ -2268,11 +2359,66 @@ mod tests {
 
     #[test]
     fn elbow_insert_candidates_two_points_and_degenerate_empty() {
-        // 两点线走 bar 手柄、退化无意义：候选恒空。
-        assert!(elbow_insert_candidates(&[], false, None).is_empty());
-        assert!(elbow_insert_candidates(&[(1.0, 2.0)], false, None).is_empty());
-        assert!(elbow_insert_candidates(&[(0.0, 0.0), (40.0, 80.0)], false, None).is_empty());
-        assert!(elbow_insert_candidates(&[(0.0, 0.0), (40.0, 80.0)], true, None).is_empty());
+        // 退化 / 单点 / 闭合两点线（折叠退化）无候选。
+        assert!(elbow_insert_candidates(&[], false, 0.0, None).is_empty());
+        assert!(elbow_insert_candidates(&[(1.0, 2.0)], false, 0.0, None).is_empty());
+        assert!(
+            elbow_insert_candidates(&[(0.0, 0.0), (40.0, 80.0)], true, 0.0, None).is_empty(),
+            "闭合两点线折叠退化"
+        );
+    }
+
+    #[test]
+    fn elbow_insert_candidates_two_point_elbow_bar_line() {
+        // 两点 elbow（直线/箭头转换、Ctrl+方向流程图连线）：在 bar 线上插一点，
+        // 三点顶点模型重推导 = 同一条 Z（视觉 no-op）。
+        let pts = [(0.0, 0.0), (200.0, 100.0)];
+        let base = elbow_polyline_offset(&pts, 0.0); // dx>dy → 横 bar @ y=50
+        assert_eq!(
+            base,
+            vec![(0.0, 0.0), (0.0, 50.0), (200.0, 50.0), (200.0, 100.0)]
+        );
+        // 无落点：bar 中点 (100, 50)
+        let cands = elbow_insert_candidates(&pts, false, 0.0, None);
+        assert_eq!(cands.len(), 1);
+        assert_eq!(cands[0].seg, 0);
+        assert_eq!(cands[0].point, (100.0, 50.0));
+        assert_eq!(cands[0].span, vec![(0.0, 50.0), (200.0, 50.0)]);
+        // 落点在左腿上（x=0 远离 bar）→ 投影钳进 bar 内部，不落拐角
+        let clicked = elbow_insert_candidates(&pts, false, 0.0, Some((0.0, 20.0)));
+        assert!((clicked[0].point.0 - 30.0).abs() < 1e-2 && clicked[0].point.1 == 50.0);
+        // 插入后走线不变
+        let mut inserted = pts.to_vec();
+        inserted.insert(1, cands[0].point);
+        assert_eq!(
+            orthogonal_simplify(&elbow_vertex_polyline(&inserted, false)),
+            orthogonal_simplify(&base)
+        );
+        // 带偏移的两点线：base 是 clamp 后的 Z，bar 线上的插入点同样 no-op
+        let offset = 30.0;
+        let base_off = elbow_polyline_offset(&pts, offset);
+        let cands_off = elbow_insert_candidates(&pts, false, offset, None);
+        assert_eq!(
+            cands_off[0].point.1, base_off[1].1,
+            "插入点在带偏移的 bar 线上"
+        );
+        let mut inserted_off = pts.to_vec();
+        inserted_off.insert(1, cands_off[0].point);
+        assert_eq!(
+            orthogonal_simplify(&elbow_vertex_polyline(&inserted_off, false)),
+            orthogonal_simplify(&base_off)
+        );
+        // 退化直线（共线两端点）：整条线是靶区，插入后仍是直线
+        let straight = [(0.0, 0.0), (0.0, 100.0)];
+        let cands_s = elbow_insert_candidates(&straight, false, 0.0, None);
+        assert_eq!(cands_s.len(), 1);
+        assert_eq!(cands_s[0].point, (0.0, 50.0));
+        let mut inserted_s = straight.to_vec();
+        inserted_s.insert(1, cands_s[0].point);
+        assert_eq!(
+            elbow_vertex_polyline(&inserted_s, false),
+            vec![(0.0, 0.0), (0.0, 100.0)]
+        );
     }
 
     #[test]
@@ -2282,7 +2428,7 @@ mod tests {
         // 均通过「视觉不变 + 可拖动」校验。
         let pts = [(0.0, 0.0), (50.0, 100.0), (100.0, 0.0)];
         let base = elbow_vertex_polyline(&pts, false);
-        let cands = elbow_insert_candidates(&pts, false, None);
+        let cands = elbow_insert_candidates(&pts, false, 0.0, None);
         let got: Vec<(usize, (f32, f32))> = cands.iter().map(|c| (c.seg, c.point)).collect();
         assert_eq!(got, vec![(0usize, (0.0, 50.0)), (1, (100.0, 50.0))]);
         // 带状命中靶区 = 该段覆盖的完整推导路径（seg0：竖跑段 + bar 前半）
@@ -2418,7 +2564,7 @@ mod tests {
         // （否则新锚点表现成"角点拖动"，丢掉 bar 语义）。
         let pts = [(0.0, 0.0), (100.0, 40.0), (200.0, 0.0)];
         let base = elbow_vertex_polyline(&pts, false);
-        let cands = elbow_insert_candidates(&pts, false, Some((260.0, 40.0)));
+        let cands = elbow_insert_candidates(&pts, false, 0.0, Some((260.0, 40.0)));
         assert!(!cands.is_empty(), "应有候选");
         for c in &cands {
             let corners = base.windows(2).map(|w| w[0]).collect::<Vec<_>>();
@@ -2440,9 +2586,9 @@ mod tests {
         // 落点偏好：双击哪儿就长在哪儿——同一小段上，投影点若安全则优先于中点。
         let pts = [(0.0, 0.0), (50.0, 100.0), (100.0, 0.0)];
         let base = elbow_vertex_polyline(&pts, false);
-        let plain = elbow_insert_candidates(&pts, false, None);
+        let plain = elbow_insert_candidates(&pts, false, 0.0, None);
         assert_eq!(plain[0].point, (0.0, 50.0), "无落点时取中点");
-        let near_top = elbow_insert_candidates(&pts, false, Some((30.0, 80.0)));
+        let near_top = elbow_insert_candidates(&pts, false, 0.0, Some((30.0, 80.0)));
         assert_eq!(near_top[0].seg, 0);
         assert!(
             near_top[0].point.1 > 60.0,
@@ -2465,7 +2611,7 @@ mod tests {
         // 翻转 seg0 bar 取向导致改道——被校验淘汰、换采样点，0.75 处 (80,100)
         // 相邻 bar 取向不变、通过校验；seg0 取水平跑段中点 (100,0)。
         let pts = [(0.0, 0.0), (200.0, 50.0), (40.0, 100.0)];
-        let cands = elbow_insert_candidates(&pts, false, None);
+        let cands = elbow_insert_candidates(&pts, false, 0.0, None);
         let got: Vec<(usize, (f32, f32))> = cands.iter().map(|c| (c.seg, c.point)).collect();
         assert_eq!(got, vec![(0usize, (100.0, 0.0)), (1, (80.0, 100.0))]);
         // 复核两个候选均为 no-op
@@ -2484,7 +2630,7 @@ mod tests {
         // 闭合三角形 [(0,0),(100,0),(50,80)]：seg0 水平跑段中点 (50,0) 插入
         // 后路径不变（顶点保留、视觉闭环）。
         let pts = [(0.0, 0.0), (100.0, 0.0), (50.0, 80.0)];
-        let cands = elbow_insert_candidates(&pts, true, None);
+        let cands = elbow_insert_candidates(&pts, true, 0.0, None);
         let c0 = cands
             .iter()
             .find(|c| c.seg == 0)

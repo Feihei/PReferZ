@@ -54,8 +54,9 @@ fn is_line(item: &Item) -> bool {
 }
 
 /// 是否为 elbow 线（任意顶点数，plan #21）。多顶点 elbow 的段中点手柄 =
-/// 双击插入候选（见 [`elbow_insert_screen_candidates`]）。
-fn is_elbow_line(item: &Item) -> bool {
+/// 双击插入候选（见 [`elbow_insert_screen_candidates`]）；两点线的 bar 带
+/// 兼作双击插入靶区（见 `PReferZApp::insert_elbow_vertex_at`）。
+pub(crate) fn is_elbow_line(item: &Item) -> bool {
     matches!(
         item.kind,
         ItemKind::Shape {
@@ -86,7 +87,13 @@ fn elbow_insert_screen_candidates(
     item: &Item,
     viewport: &ViewportState,
 ) -> Vec<(usize, egui::Pos2, Vec<egui::Pos2>)> {
-    let ItemKind::Shape { points, closed, .. } = &item.kind else {
+    let ItemKind::Shape {
+        points,
+        closed,
+        elbow_mid_offset,
+        ..
+    } = &item.kind
+    else {
         return Vec::new();
     };
     if !is_multi_vertex_elbow_line(item) {
@@ -98,7 +105,7 @@ fn elbow_insert_screen_candidates(
         egui::pos2(s.x, s.y)
     };
     // 手柄几何与鼠标无关：不传落点偏好（取规范化的中点优先候选）
-    elbow_insert_candidates(points, *closed, None)
+    elbow_insert_candidates(points, *closed, *elbow_mid_offset, None)
         .into_iter()
         .map(|c| {
             (
