@@ -1026,6 +1026,7 @@ impl Item {
             closed,
             curve_type,
             elbow_mid_offset,
+            roundness,
             ..
         } = &self.kind
         {
@@ -1037,10 +1038,18 @@ impl Item {
                     let pts = match curve_type {
                         CurveType::Curved => catmull_rom_polyline(points, *closed, CURVE_SAMPLES),
                         CurveType::Elbow => {
-                            if points.len() == 2 {
+                            let base = if points.len() == 2 {
                                 elbow_polyline_offset(points, *elbow_mid_offset)
                             } else {
                                 elbow_vertex_polyline(points, *closed)
+                            };
+                            // 倒角与渲染同源（plan #23）：圆过的角也要点得中
+                            let size = self.base_size();
+                            let r = roundness_radius((size.x, size.y), *roundness);
+                            if r > 1e-3 {
+                                round_orthogonal_corners(&base, *closed, r)
+                            } else {
+                                base
                             }
                         }
                         CurveType::Straight => points.clone(),
@@ -1292,6 +1301,77 @@ fn catmull_rom_point(
 /// 圆角矩形的每个角的采样段数。8 段在常见缩放下已看不出折角。
 pub const ROUNDED_CORNER_SEGMENTS: usize = 8;
 
+/// 圆角半径（局部坐标）：`min(w, h) × roundness × 0.5`，不超过短边的一半。
+/// 矩形族与 elbow 折线（plan #23）共用同一比例语义——同一个 roundness 档位
+/// （None/S/M/L/XL）在两类对象上观感一致。
+pub fn roundness_radius(base_size: (f32, f32), roundness: f32) -> f32 {
+    let short = base_size.0.min(base_size.1).max(0.0);
+    (short * roundness * 0.5).clamp(0.0, short / 2.0)
+}
+
+/// 正交折线的倒角后处理（plan #23）：每个 90° 拐角按 [`ROUNDED_CORNER_SEGMENTS`]
+/// 段圆弧替换，半径逐角钳制到相邻两半段长的一半（短段相接时两角在段中点相汇，
+/// 不会越界）。输入须是横平竖直、无连续重复点的折线（elbow 派生路径满足）；遇到
+/// 退化/非正交拐角原样通过该角。开放链首末点是路径端点、不倒角；闭合链环绕取邻。
+/// 输出未闭合——闭合由调用方按 `is_closed` 处理（与圆角矩形轮廓同约定）。
+/// 命中测试（[`Item::contains_canvas_point`]）与渲染（binary 层 `ui::stylers`）
+/// 共用此函数，保证"看着圆过的角一定点得中"。
+pub fn round_orthogonal_corners(pts: &[(f32, f32)], closed: bool, radius: f32) -> Vec<(f32, f32)> {
+    let n = pts.len();
+    if n < 2 || radius <= 1e-3 {
+        return pts.to_vec();
+    }
+    let wrap = |i: i64| -> (f32, f32) { pts[(i.rem_euclid(n as i64)) as usize] };
+    let corner_range = if closed { 0..n } else { 1..n - 1 };
+    let mut out: Vec<(f32, f32)> =
+        Vec::with_capacity(n + corner_range.len() * (ROUNDED_CORNER_SEGMENTS + 1));
+    if !closed {
+        out.push(pts[0]);
+    }
+    for i in corner_range {
+        let v = pts[i];
+        let (prev, next) = if closed {
+            (wrap(i as i64 - 1), wrap(i as i64 + 1))
+        } else {
+            (pts[i - 1], pts[i + 1])
+        };
+        let (d_in, d_out) = ((v.0 - prev.0, v.1 - prev.1), (next.0 - v.0, next.1 - v.1));
+        let (lin, lout) = (d_in.0.hypot(d_in.1), d_out.0.hypot(d_out.1));
+        // 退化段 / 非正交拐角（点积占比不可忽略）不倒角，原样通过
+        if lin < 1e-3
+            || lout < 1e-3
+            || (d_in.0 * d_out.0 + d_in.1 * d_out.1).abs() > 1e-3 * lin * lout
+        {
+            out.push(v);
+            continue;
+        }
+        let r = radius.min(lin / 2.0).min(lout / 2.0);
+        let u_in = (d_in.0 / lin, d_in.1 / lin);
+        let u_out = (d_out.0 / lout, d_out.1 / lout);
+        let p_in = (v.0 - u_in.0 * r, v.1 - u_in.1 * r);
+        let center = (v.0 + (u_out.0 - u_in.0) * r, v.1 + (u_out.1 - u_in.1) * r);
+        let a0 = (p_in.1 - center.1).atan2(p_in.0 - center.0);
+        let p_out = (v.0 + u_out.0 * r, v.1 + u_out.1 * r);
+        let mut delta = (p_out.1 - center.1).atan2(p_out.0 - center.0) - a0;
+        while delta > std::f32::consts::PI {
+            delta -= std::f32::consts::TAU;
+        }
+        while delta < -std::f32::consts::PI {
+            delta += std::f32::consts::TAU;
+        }
+        // 切点精确推入（三角函数在 0/90° 有 ~1e-8 误差，会让相邻角的相汇点
+        // dedup 失效、命中测试出现零长段）
+        out.push(p_in);
+        for s in 1..ROUNDED_CORNER_SEGMENTS {
+            let a = a0 + delta * (s as f32 / ROUNDED_CORNER_SEGMENTS as f32);
+            out.push((center.0 + r * a.cos(), center.1 + r * a.sin()));
+        }
+        out.push(p_out);
+    }
+    out.dedup();
+    out
+}
+
 /// 把控制点采样成折线。开曲线端点用 clamp（首/末点复制）；闭曲线用环绕索引。
 ///
 /// 命中测试（[`Item::contains_canvas_point`]）与渲染（`binary` 层 `ui::stylers`）
@@ -1436,6 +1516,23 @@ pub struct ElbowInsertCandidate {
     pub span: Vec<(f32, f32)>,
 }
 
+/// 段级稳定性（plan #21 五次验收反馈）：插入顶点的 bar 取向 =（前邻，后邻）主导轴，
+/// **与采样点无关**。两端角连线接近对角（|dx|≈|dy|）时，微小拖动任一邻居就会翻转
+/// 主导轴、bar 转成垂直于所在小段——插入的锚点当场退化成角点。把两个邻居各沿 x/y
+/// 扰动 ±`delta`，取向必须全程不变；不稳定的段整段不提供双击插入（可接受覆盖缺口）。
+fn bar_orientation_stable(prev: (f32, f32), next: (f32, f32), delta: f32) -> bool {
+    let vertical = |p: (f32, f32), n: (f32, f32)| (n.0 - p.0).abs() <= (n.1 - p.1).abs();
+    let want = vertical(prev, next);
+    let mut stable = true;
+    for sign in [-1.0f32, 1.0f32] {
+        stable &= vertical((prev.0 + sign * delta, prev.1), next) == want;
+        stable &= vertical((prev.0, prev.1 + sign * delta), next) == want;
+        stable &= vertical(prev, (next.0 + sign * delta, next.1)) == want;
+        stable &= vertical(prev, (next.0, next.1 + sign * delta)) == want;
+    }
+    stable
+}
+
 /// 两点 elbow 的双击插入候选（plan #21 验收反馈：直线/箭头转 elbow、Ctrl+方向键
 /// 流程图连线都是两点 elbow，此前双击无作用）。靶区 = 展开路径的 bar 段（展开路径中
 /// 唯一与 bar 同向的段；退化直线时即整条线），插入点取落点在 bar 上的投影（钳在小段
@@ -1454,6 +1551,9 @@ fn elbow_two_point_insert_candidates(
     let (a, b) = (pts[0], pts[1]);
     if a == b {
         return Vec::new();
+    }
+    if !bar_orientation_stable(a, b, 5.0) {
+        return Vec::new(); // 近对角线：锚点保不住平行取向（见 bar_orientation_stable）
     }
     let base = orthogonal_simplify(&elbow_polyline_offset(pts, mid_offset));
     if base.len() < 2 {
@@ -1520,12 +1620,15 @@ fn elbow_two_point_insert_candidates(
 
 /// 多顶点 elbow 的「双击插入」候选（plan #21 DP-A）：每个可插入段一条候选，
 /// 插入点取该段在推导路径上覆盖的**笔直小段**（跑段 / bar 半段）上的采样点，且必须
-/// 通过两条硬性校验，否则换小段 / 换采样点 / 放弃：
+/// 通过硬性校验，否则换小段 / 换采样点 / 放弃：
 /// 1. **视觉不变**：插入后 [`elbow_vertex_polyline`] 的共线简化与原路径一致
 ///    （双击落点即线上的锚点，绝不允许"点一下整条线改道"——插入顶点会改变
 ///    相邻 bar 的取向判定，任意落点未必安全）；
 /// 2. **可拖动**：新顶点小幅移动会改变路径（bar 取向与所在小段平行时插入点
-///    才有自由度；垂直时是拖不动的惰性顶点，不暴露）。
+///    才有自由度；垂直时是拖不动的惰性顶点，不暴露）；
+/// 3. **取向稳定**（段级，2026-09-25 验收反馈）：段两端角连线接近对角时，微小
+///    拖动邻居即翻转新顶点的 bar 取向、锚点退化成角点——见
+///    [`bar_orientation_stable`]，这样的段整段无候选。
 ///
 /// `click`（与 `pts` 同一局部坐标系）是**采样偏好**：小段按离落点的远近排序，优先试
 /// 落点在该小段上的投影（"双击哪儿就长在哪儿"），投影不安全时退回中点 / 偏侧点。
@@ -1586,6 +1689,11 @@ pub fn elbow_insert_candidates(
 
     let mut out = Vec::new();
     for seg in 0..m - 1 {
+        // 段级稳定性闸门：新顶点的 bar 取向只取决于（前邻,后邻）= (chain[seg],
+        // chain[seg+1])，与采样点无关——近对角的段所有采样点都不稳定，整段放弃。
+        if !bar_orientation_stable(chain[seg], chain[seg + 1], 5.0) {
+            continue;
+        }
         let group: Vec<(f32, f32)> = annotated
             .iter()
             .filter(|(_, s)| *s == seg)
@@ -2239,6 +2347,72 @@ mod tests {
     }
 
     #[test]
+    fn roundness_radius_matches_rect_semantics() {
+        // 与矩形族同式：min(w,h) × roundness × 0.5，1.0 = 短边全圆弧
+        assert_eq!(roundness_radius((100.0, 40.0), 0.0), 0.0);
+        assert!((roundness_radius((100.0, 40.0), 0.5) - 10.0).abs() < 1e-5);
+        assert!((roundness_radius((100.0, 40.0), 1.0) - 20.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn round_orthogonal_corners_l_shape_arc_and_clamp() {
+        // L 形 [(0,0),(100,0),(100,80)] r=10：拐角 (100,0) → 弧心 (90,10)
+        let out = round_orthogonal_corners(&[(0.0, 0.0), (100.0, 0.0), (100.0, 80.0)], false, 10.0);
+        assert_eq!(out[0], (0.0, 0.0));
+        assert_eq!(out[1], (90.0, 0.0), "切点内缩 r");
+        assert_eq!(*out.last().unwrap(), (100.0, 10.0));
+        let mid = out[1 + ROUNDED_CORNER_SEGMENTS / 2];
+        assert!((mid.0 - (90.0 + 10.0 * std::f32::consts::FRAC_1_SQRT_2)).abs() < 1e-3);
+        assert!((mid.1 - (10.0 - 10.0 * std::f32::consts::FRAC_1_SQRT_2)).abs() < 1e-3);
+        // 短段相接：半径逐角钳到相邻半段长（4px 竖段两角各占 2px，段中点相汇）
+        let out = round_orthogonal_corners(
+            &[(0.0, 0.0), (10.0, 0.0), (10.0, 4.0), (20.0, 4.0)],
+            false,
+            10.0,
+        );
+        assert_eq!(out[1], (8.0, 0.0));
+        assert_eq!(*out.last().unwrap(), (12.0, 4.0));
+        assert_eq!(
+            out.iter().filter(|p| **p == (10.0, 2.0)).count(),
+            1,
+            "两角在短段中点相汇，精确切点 dedup 成一点"
+        );
+        // 闭合正方形：4 角各 9 点 = 36，起点为角 0 的切入切点
+        let sq = round_orthogonal_corners(
+            &[(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)],
+            true,
+            2.0,
+        );
+        assert_eq!(sq.len(), 4 * (ROUNDED_CORNER_SEGMENTS + 1));
+        assert_eq!(sq[0], (0.0, 2.0));
+        assert!(sq
+            .iter()
+            .all(|(x, y)| (0.0..=10.0).contains(x) && (0.0..=10.0).contains(y)));
+    }
+
+    #[test]
+    fn elbow_roundness_affects_contains_canvas_point() {
+        // 倒角与渲染同源：圆弧上的点命中，直角路径上同一点不命中
+        let mut rounded = make_line(vec![(0.0, 0.0), (100.0, 0.0), (100.0, 80.0)], 0.0, 0.0);
+        if let ItemKind::Shape {
+            curve_type,
+            roundness,
+            ..
+        } = &mut rounded.kind
+        {
+            *curve_type = CurveType::Elbow;
+            *roundness = 1.0; // 半径 = min(100,80) × 1.0 × 0.5 = 40，弧心 (60,40)
+        }
+        // 45° 弧上点（局部=画布）：距直角路径 11.7 > 阈值 6
+        assert!(rounded.contains_canvas_point(CanvasPoint::new(88.28, 11.72)));
+        let mut sharp = make_line(vec![(0.0, 0.0), (100.0, 0.0), (100.0, 80.0)], 0.0, 0.0);
+        if let ItemKind::Shape { curve_type, .. } = &mut sharp.kind {
+            *curve_type = CurveType::Elbow;
+        }
+        assert!(!sharp.contains_canvas_point(CanvasPoint::new(88.28, 11.72)));
+    }
+
+    #[test]
     fn elbow_vertex_degenerate_returns_as_is() {
         assert_eq!(elbow_vertex_polyline(&[], false), vec![] as Vec<(f32, f32)>);
         let single = vec![(5.0, 7.0)];
@@ -2418,6 +2592,37 @@ mod tests {
         assert_eq!(
             elbow_vertex_polyline(&inserted_s, false),
             vec![(0.0, 0.0), (0.0, 100.0)]
+        );
+    }
+
+    #[test]
+    fn elbow_insert_candidates_rejects_near_diagonal_segments() {
+        // 近对角段（|dx|-|dy| 余量 < 扰动 2δ）：微拖邻居即翻转新顶点 bar 取向、
+        // 锚点退化角点 → 整段无候选（plan #21 五次验收反馈）。
+        // seg0 = (0,0)→(105,100) 余量 5 被拒；seg1 余量 95 稳定、保留候选。
+        let near_tie = [(0.0, 0.0), (105.0, 100.0), (200.0, 100.0)];
+        let cands = elbow_insert_candidates(&near_tie, false, 0.0, None);
+        assert_eq!(cands.len(), 1);
+        assert_eq!(cands[0].seg, 1, "近对角的 seg0 无候选，稳定的 seg1 保留");
+        // 余量拉开 50 → seg0 恢复候选；seg1（(150,100)→(200,100) 余量 50）本就稳定可插
+        let stable = [(0.0, 0.0), (150.0, 100.0), (200.0, 100.0)];
+        let cands = elbow_insert_candidates(&stable, false, 0.0, None);
+        assert_eq!(cands.iter().map(|c| c.seg).collect::<Vec<_>>(), vec![0, 1]);
+        let mut inserted = stable.to_vec();
+        inserted.insert(1, cands[0].point);
+        let mut dragged = inserted.clone();
+        dragged[0].0 += 10.0;
+        let simplified = orthogonal_simplify(&elbow_vertex_polyline(&dragged, false));
+        assert!(
+            !simplified.contains(&cands[0].point),
+            "邻居拖动后插入点仍是线段锚点而非角点"
+        );
+        // 两点线同理：精确对角（余量 0）不提供插入，拉开余量恢复
+        assert!(
+            elbow_insert_candidates(&[(0.0, 0.0), (100.0, 100.0)], false, 0.0, None).is_empty()
+        );
+        assert!(
+            !elbow_insert_candidates(&[(0.0, 0.0), (100.0, 80.0)], false, 0.0, None).is_empty()
         );
     }
 

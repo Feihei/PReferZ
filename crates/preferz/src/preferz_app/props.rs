@@ -702,16 +702,19 @@ impl PReferZApp {
                 }
             }
         }
-        // 圆角（仅矩形族）
-        let rect_ids: Vec<ItemId> = ids
+        // 圆角（矩形族 + elbow 折线，plan #23：共用 roundness 字段与半径语义）
+        let roundable_ids: Vec<ItemId> = ids
             .iter()
             .copied()
             .filter(|id| {
-                matches!(self.scene.get_item(id), Some(item) if matches!(item.kind, ItemKind::Shape { shape_type: ShapeType::Rectangle, .. }))
+                matches!(self.scene.get_item(id), Some(item) if matches!(&item.kind,
+                    ItemKind::Shape { shape_type: ShapeType::Rectangle, .. }
+                    | ItemKind::Shape { shape_type: ShapeType::Polyline, curve_type: CurveType::Elbow, .. })
+                )
             })
             .collect();
-        if !rect_ids.is_empty() {
-            if let Some(p) = prop(&self.scene, &rect_ids, |it| match &it.kind {
+        if !roundable_ids.is_empty() {
+            if let Some(p) = prop(&self.scene, &roundable_ids, |it| match &it.kind {
                 ItemKind::Shape { roundness, .. } => Some(*roundness),
                 _ => None,
             }) {
@@ -726,7 +729,7 @@ impl PReferZApp {
                     None,
                 ) {
                     self.apply_continuous(
-                        &rect_ids,
+                        &roundable_ids,
                         PropKind::Roundness,
                         |k| match k {
                             ItemKind::Shape { roundness, .. } => Some(PropValue::Float(*roundness)),

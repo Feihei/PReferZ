@@ -1,7 +1,7 @@
 use eframe::egui::{self, Color32, Pos2, Shape};
 use preferz_core::item::{
-    catmull_rom_polyline, elbow_polyline_offset, elbow_vertex_polyline, ItemKind, ItemLocalSpace,
-    CURVE_SAMPLES, ROUNDED_CORNER_SEGMENTS,
+    catmull_rom_polyline, elbow_polyline_offset, elbow_vertex_polyline, round_orthogonal_corners,
+    roundness_radius, ItemKind, ItemLocalSpace, CURVE_SAMPLES, ROUNDED_CORNER_SEGMENTS,
 };
 use preferz_core::shape::{
     ArrowHeadStyle, CurveType, DashStyle, FillStyle, SeededRng, ShapeType, Sloppiness, StrokeStyle,
@@ -80,15 +80,6 @@ fn rotate_vec2(v: egui::Vec2, angle: f32) -> egui::Vec2 {
 
 /// 矩形族的圆角半径（局部坐标）：`min(w, h) × roundness × 0.5`，且不超过短边的一半。
 ///
-/// plan #20 验收反馈：原 `short × roundness` 在 M 档 0.5 就把短边全变成圆弧，
-/// 上面的档位失去意义——改为 0.5 系数后 roundness=1.0 才是短边两侧各占一半
-/// （短边全圆弧），0.5（M 档）≈ 四分之一短边。
-fn roundness_radius(base_size: (f32, f32), roundness: f32) -> f32 {
-    let (w, h) = base_size;
-    let short = w.min(h);
-    (short * roundness * 0.5).clamp(0.0, short / 2.0)
-}
-
 /// 圆角矩形的轮廓点（顺时针，未闭合——闭合由调用方按 `is_closed` 处理）。
 ///
 /// 每个圆角按 [`ROUNDED_CORNER_SEGMENTS`] 段圆弧采样，故整条轮廓是凸多边形：
@@ -156,10 +147,18 @@ fn outline_points(
                     catmull_rom_polyline(&shape.points, shape.closed, CURVE_SAMPLES)
                 }
                 CurveType::Elbow => {
-                    if shape.points.len() == 2 {
+                    let base = if shape.points.len() == 2 {
                         elbow_polyline_offset(&shape.points, shape.elbow_mid_offset)
                     } else {
                         elbow_vertex_polyline(&shape.points, shape.closed)
+                    };
+                    // 倒角（plan #23）：与矩形族共用 roundness 字段与半径语义，
+                    // 派生路径的每个直角拐角换圆弧采样（命中测试同源，见 core）。
+                    let r = roundness_radius(shape.base_size, shape.roundness);
+                    if r > 1e-3 {
+                        round_orthogonal_corners(&base, shape.closed, r)
+                    } else {
+                        base
                     }
                 }
                 CurveType::Straight => shape.points.clone(),
