@@ -126,8 +126,8 @@ Documentation follows the llaia layout, all under `.agents/`:
 
 | Entry | Content |
 |---|---|
-| `.agents/plan.md` | Forward-looking roadmap: pending acceptance items + next steps (Excalidraw alignment打磨批次) + decision points. **Read first when picking up work.** |
-| `.agents/CHANGELOG.md` | Delivery archive of completed phases. Completed plan docs are distilled here, then removed. |
+| `.agents/plan.md` | Forward-looking roadmap: 待人工复验清单 + Excalidraw 对齐打磨批次的未完成项（#16 E2 / #17 批次 C / #20 剩余缺口 / #18）+ 远期。**Read first when picking up work.** 已交付项的归档在 `CHANGELOG.md`（含决策点 D/I/L 系列），不重复维护。 |
+| `.agents/CHANGELOG.md` | Delivery archive of all completed work, 唯一归档处：每项的实现要点、测试计数、决策点（§D / §I / §L 系列）。 |
 | `.agents/specs/` | Design specs: `preferz-spec.md` (full design spec with phases, data models, API details), `shapes-and-frame-slides-design.md`, `linear-object-design.md` |
 | `.agents/adr/` | Architecture decision records (NNNN-title, one decision each) |
 | `.agents/release-notes/` | Per-version release notes, one file per tag: `v0.1.1.md` ↔ tag `v0.1.1` (`TEMPLATE.md` + `README.md` for the convention). Must be committed **before** tagging — `release.yml` reads `${GITHUB_REF_NAME}.md` as the Release body and fails the build if absent. `release.ps1` checks it up front. |

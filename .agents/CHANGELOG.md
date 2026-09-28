@@ -54,7 +54,7 @@
 - 实现中修复两处错误：漏 import `KeyBind`（clippy 编译失败）；`rebind` 未沿用槽位
   `on_release` 导致 Ctrl+V 改绑后失效
 - 2026-09-01 复盘拍板（[ADR-0007](adr/0007-keymap-no-customization.md)）：**不做用户
-  自定义**，默认键位对齐 Excalidraw；后续见 plan.md Phase K 与决策点 D6（面板去留）
+  自定义**，默认键位对齐 Excalidraw；Phase K 已交付、决策点 D6（面板去留）见下文 §决策点归档
 
 ## 修复与工程批次（2026-08-29 ~ 2026-09-01）
 
@@ -64,7 +64,7 @@
 - `68394fa` `chore`: 忽略 `.workbuddy/` 项目数据目录
 - `0696777` `refactor`: main.rs 复用 lib 导出，消除重复编译同一份模块树（编译单元减半）
 - `f341f74` `chore`: 跟踪 Cargo.lock（二进制 crate 需可复现构建）
-- `8862638` `docs`: 对齐 Excalidraw 三方向实施规划（G/I/H 概要与决策点 D1-D5 现收录在 [`plan.md`](plan.md)）
+- `8862638` `docs`: 对齐 Excalidraw 三方向实施规划（G/I/H 概要与决策点 D1-D5 现收录在本文件 §决策点归档）
 - `bace60d` `fix(ui)`: 裁剪遮罩跳过亚像素退化梯形（第一版，未根治旋转图闪黑）
 - `74a5869` `fix(ui)`: 裁剪遮罩改单凸多边形压暗整图 + 亮区重绘，根除旋转图闪黑
   （遮罩改由「图片边→裁剪边」4 梯形拼合为「单凸多边形压暗 + 裁剪框内亮图重绘」，
@@ -118,7 +118,7 @@
 
 ## Phase H：选中弹出属性侧栏（2026-09-02）
 
-- 右侧 `SidePanel` 按 `ItemKind` 分节（Shape / Text / Pixmap / Frame），选中项 per-item 编辑（plan.md `H` 项）
+- 右侧 `SidePanel` 按 `ItemKind` 分节（Shape / Text / Pixmap / Frame），选中项 per-item 编辑
 - D3 多选语义：显示交集值，不一致时仍显示代表值但修改批量应用到所有选中项（Excalidraw 同款，不禁用控件）
 - 连续控件（描边色/宽/线型、填充、圆角、字号/文字色/背景、图片不透明度/灰度）拖动期间每帧直接改 item，
   帧末合成为**一条**批量 undo 命令（`PropEdit` + `ensure_prop_edit` + `apply_continuous`），避免 undo 历史被冲垮
@@ -234,7 +234,7 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 
 ## 直线/箭头端点吸附图形边缘（plan #5，2026-09-07，`a803bbe`）
 
-> 决策点 2026-09-06 拍板（plan.md §5），同日实现交付。人工验收待 Feihei `cargo run` 确认。
+> 决策点 2026-09-06 拍板（L1，见 §决策点归档），同日实现交付。人工验收待 Feihei `cargo run` 确认。
 > 与 #7 连接符共用绑定模型。
 
 - **吸附**：拖 `LineEndpoint` 时，仅真实端点（`points[0]` / `points[last]`）可吸附；查询点取
@@ -266,7 +266,7 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 
 ## 元素编组 / 解组（plan #13，2026-09-08，`4033726`）
 
-> 决策点 G1–G4 2026-09-08 拍板（全按倾向列，见 plan.md）。人工验收待 Feihei `cargo run` 确认。
+> 决策点 G1–G4 2026-09-08 拍板（全按倾向列，本节即归档）。人工验收待 Feihei `cargo run` 确认。
 
 - **core**：`Item.group_id: Option<Uuid>`（`#[serde(default)]`，旧存档无损）；
   `Scene::group`（≥2 项赋同一新组 id）/ `ungroup`（清空指定项）/ `group_members_of`
@@ -286,6 +286,133 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
   检测旧文件缺列就 `ALTER TABLE` 补列（就地迁移，一次完成）；保存/加载组 id 往返。
 - 8 个新单测（6 scene：编组/换组/部分解组/命令往返/整组复制/部分复制 + 2 fileio：
   组往返/旧 5 列 schema 迁移）；工作区 157 测试。
+
+---
+
+## 样式面板批次：调色板 + 填充透明 / sloppiness / 文字对齐与手写体（plan #1/#2/#3，2026-09-10，`0aec50d`）
+
+> 决策点（2026-09-10，全按倾向）：手写体走**伪手写渲染**（复用 RoughStyler 思路、不嵌第二套
+> TTF，零体积增量——⚠ 该决策后于 2026-09-21 被推翻，改内嵌 851 远星夜行真字体，见下文
+> §悬浮 HUD / 边栏动画 / 调色板对齐批）；top picks 描边/填充**共用同 5 色**（黑红绿蓝橙，已与
+> Excalidraw 对齐）；填充默认 alpha **50%**；sloppiness 对齐 Excalidraw **3 档**。
+> 详见本节末「首轮验收反馈」。
+
+- **#1 绑定文字对齐 + 字号 + 字体切换**：`TextStyle` 扩 6 字段（`align_h`/`align_v`/`font_family`
+  等，`#[serde(default)]` 向后兼容，I4）；core 加 `TextAlignH{Left,Center,Right}` +
+  `TextAlignV{Top,Middle,Bottom}`（默认 Center = 历史居中行为）；`layout_handwritten` 逐字符排版 +
+  `SeededRng` 确定性抖动（字号 ±4%、幅度 0.045×font_px，兼容换行）；侧栏字体族两档分段（所有
+  文字）+ H/V 对齐分段（仅绑定文字）；全部走 `SetTextStyle` 整份快照入 undo。垂直对齐仅绑定
+  文字，自由文字固定 top-left。
+- **#2 调色板对齐 + 填充半透明**：`FILL_PICKS = STROKE_PICKS`（原 4 粉彩 → 与描边同 5 色）；
+  新建形状/属性栏 None→Some 填色套 `FILL_DEFAULT_ALPHA`(128)；侧栏填充色后新增 0–100%
+  不透明度滑块（`apply_continuous` 仅改 alpha 通道）。
+- **#3 stroke width / sloppiness / edges 倒角**：`rough: bool` → `Sloppiness{Off,Architect,
+  Artist,Cartoonist}` 四档（`amp_scale` 0/0.5/1/1.8），`deserialize_sloppiness` 兼容旧 bool
+  （true→Artist）；`SetRough`→`SetSloppiness` 批量命令，侧栏 checkbox 改四档分段。
+  **edges 经 `.ref/excalidraw` 调研无需新 UI**：矩形倒角 = 已有 roundness 滑块，多边形曲线切换 =
+  已有 `curve_type` Straight/Curved（Catmull-Rom）。
+- **首轮验收反馈（2026-09-10，`a4a464a` + `f8257d7`）**：伪手写自由文本漏加 origin 偏移（文字跑屏
+  左上角）修正；抖动幅度改为 10% 字号 / 字号与间距 ±8%；`apply_dark_mode_filter` 矩阵行错位修正
+  （dark 色板恢复为 Excalidraw 同款亮色五档，+4 回归测试）；曲线抖动去掉 ×0.5 衰减（Sloppiness
+  档位差异恢复可感知）；选中图形时绑定文字纳入侧栏文字节；描边色改动经 `MultiCommand` 同步填充 +
+  绑定文字；填充改预乘 alpha；绑定文字手写偏移对齐。
+- 质量门全绿（fmt / `clippy -D warnings` / `cargo test --workspace`）。待 `cargo run` 人工验收。
+
+---
+
+## 锚点绑定模型 + 整线贴合建绑定（plan #14，2026-09-10~11，`38de45b`/`aa928e1`/`af15f97`）
+
+> 决策点（2026-09-10~11，全按倾向）：整线贴合**默认建绑定**（Excalidraw 同款）；预览吸附视觉与
+> 端点编辑模式一致（同阈值 / 同高亮）；端点同时贴近多目标取最近（`find_snap_target` 语义）。
+> ✅ 2026-09-10 人工验收通过。
+
+- **锚点绑定替换绝对坐标**：两端 `Option<ItemId>` → `EndpointBinding{target, anchor}`，锚点存
+  贴合点在目标**局部系**的坐标；`resolve_bindings` 按锚点重算——端点钉同一表面点，修掉「矩形移动
+  时端点沿边滑动、线被拉平」。旧存档纯 uuid 走 serde `untagged` 自动迁移（回退最近轮廓点）。
+- **整线绑定**：`MoveItems` 预览对组内每条 Polyline 两端做 snap 查询（排除移动组自身），命中 →
+  贴边 + 绑定预览直改；未命中 → 端点随线自由 + 解绑；释放用 `MultiCommand` 打包 `MoveItems` +
+  `EditShapePoints`，一条 undo。
+- **修复 `af15f97`**：吸附释放后绑定从未生效——`skip_first_redo` 跳过了唯一一次写绑定的 redo。
+  同时修绑定字段在预览期直改的同类回归。
+- 验收：整线贴合图形建绑定、拖离解绑、绑定后形状移动端点跟随、undo 一步还原。
+
+---
+
+## 视口缩放套件：缩放到选中 / 缩放回 100%（plan #15，2026-09-11，`f509287`）
+
+> 决策点（2026-09-10，全按倾向）：快捷键对齐 Excalidraw `Shift+1/2/3`；`Shift+2` 无选中时**提示**
+> 而非退化成 fit all（与 Excalidraw 一致，不改变视口）。`Shift+1` = 已有 `FitToScreen` 保留。
+
+- `Action::ZoomToSelection`（`Shift+2`）：选中项 AABB 并集 `fit_to_content`；无选中仅 flash
+  「未选中元素」。
+- `Action::ZoomReset`（`Shift+3`）：缩放回 1.0，视口中心 pan 不动、仅改 zoom。
+- 两 Action 均入 `Action::ALL`（可改绑）；i18n 补动作名与 flash 词条。
+
+---
+
+## 多边形节点增删 + 首尾重合自动闭合（plan #4，2026-09-11，`43576da`）
+
+> 决策点（2026-09-11，经 `.ref/excalidraw` 调研更正原倾向）：现行 Excalidraw 的 **Alt 是加顶点
+> 手势**、删顶点走「点选 + Delete」；本仓库无顶点选中态（手柄只有 hover/drag），照搬需新增状态机，
+> 故改为 **Alt+单击删顶点 / Alt+拖端点延伸**。守卫：开放折线保 ≥2、闭合多边形保 ≥3 顶点。
+> 自动闭合沿用 Excalidraw 同值阈值 `LINE_CONFIRM_THRESHOLD`（屏 8px / zoom）。
+
+- **命令层**：`EditShapePoints` 增 `with_closed`（点集 + closed 同条 undo，redo/undo 一并写回），
+  **不新增** `DeleteVertex`/`AppendVertex`。
+- **app**：`try_delete_vertex`（守卫 + 删端点连带解绑 + 预览直改）；`begin_drag` 接 Alt（内部顶点
+  按下即删 / 端点进 `alt_extend` 拖拽）；`update_drag_preview` **延迟**插入延伸顶点（屏 4px 触发，
+  未触发前不动原端点，防单击抖动误提交微移动）；`end_drag` 未越阈释放 = 删顶点，提交时若开放 +
+  ≥3 顶点 + 首尾距 ≤8px → 吸附对端、`closed=true`、该端解绑（闭合优先于同次吸附绑定）。
+- i18n 4 词条；测试：`should_auto_close` 判定矩阵、删除守卫/解绑还原、`with_closed` 往返。
+- **验收反馈更正（2026-09-14，`8ba4ac5`）**：闭合时首尾**精确重合**的两点在渲染/采样层视作**一个
+  点**（数据结构不变），修圆滑（spline）模式接缝处的反向小环；任一重合端点拖开 >8px 自动**恢复
+  开放**（flash「已恢复开放」），`Ctrl+Z` 一步还原；拖普通闭合多边形顶点仍只移点、不解闭合。
+
+---
+
+## 流程图 Ctrl+方向创建 / Alt+方向导航（plan #7，2026-09-11，`56dd3d4`）
+
+> 决策点（2026-09-11，经调研更正原倾向）：新节点取**同源同风格克隆**（Excalidraw
+> `isFlowchartNodeElement` = 矩形/椭圆/菱形，Polyline 不作源；不克隆绑定文字、不加占位）；
+> **按下即提交**（每按一次 = 一条 undo，选区跳新节点，自然接链），不移植 pending 簇预览/簇增长；
+> 「沿连接导航」是**独立**的 `Alt+方向`（不进 undo），不是 Ctrl+方向的复合。
+> 落位于 2026-09-22 二次更正为分叉避让，见下文 §流程图同向创建改分叉避让。
+
+- **创建** `add_connected_shape`（`Action::AddConnectedShape` = `Ctrl+` 方向 ×4）：复用
+  `duplicate_items` 得新 uuid / 未编组 / 不带绑定文字的克隆 + `Item::new_polyline` 双端
+  `EndpointBinding`（`edge_anchor_local` = 各自朝向对方的**边中点**）；`AddItems` 预览一条 undo；
+  `FLOWCHART_GAP=100`；z 序 = 新节点在源之上、箭头最上。多选 / 非节点源静默无动作。
+- **导航** `navigate_connected`（`Action::NavigateConnected` = `Alt+` 方向 ×4）：从单选元素出发找
+  该方向**直接绑定邻居**（两终端 `binding.target` 恰一端=当前、另一端几何在该方向、取最近）→
+  跳选区；`expand_to_groups` 展开；不入 undo。
+- **keymap**：新增 `pressed_bind` API——方向取**实际命中**的绑定键，改绑后仍可用；`pressed` 变薄
+  封装。i18n 动作标签 ×2。回归：Present 模式裸方向键翻页不受影响（修饰键严格匹配）。
+- 测试 5 项（锚点矩阵、克隆几何/绑定/z 序/undo-redo、非节点源静默、导航双向 + 无邻居保持）。
+- **验收反馈（2026-09-14，`8ba4ac5`）**：同向已有邻居时改分叉避让（取代"邻居旁外推"，后者在
+  反复同向创建时新节点全叠进 B 的后续格子导致重叠）。
+
+---
+
+## flash toast 塌缩修复 + flash/进度条文案 i18n 补漏（2026-09-16，`3bb949c`）
+
+> Feihei 实测两项：①绿色 toast 有时塌成一竖条（每行一个字）；②切 EN 界面后提示仍是中文。
+
+- **① 根因**：flash 用固定 Id 的 `egui::Area`，而 `Area::end()` 把内容尺寸记进 `AreaState` 并在
+  下一帧当 `max_rect`；中文无 ASCII 空格，默认 `TextWrapMode::Words` 把整句当一个超长"单词"按字符
+  硬拆，可用宽度**逐帧收缩**，只要画布还在重绘就收敛成正一列（无重绘时看起来正常——这解释
+  了"有时"）。**修法**：排版上限显式钉死为「屏宽 − 两侧留白」（新常量
+  `FLASH_TOAST_SIDE_MARGIN = 24`，`ui.set_max_width`）——可用宽度不再来自记忆尺寸，收缩链切断；
+  短文案恒单行，超长文案（带路径的错误）稳定折行且留在屏内（优于 `Extend`，后者会横向溢出被裁）。
+  Area Id 另加 flash 序号 `flash_seq`，每条新提示重走一次 sizing pass（居中不再慢一帧）。
+  后台进度条浮层同处理。
+- **② 根因**：flash 与后台进度条的一批文案直接写死在 app 层（`已保存: …` / `已删除 3 项` /
+  `水平翻转` / `排列：线形` / `导入图片: 路径` 等），未过 `t(self.lang, …)`。**修法**：新增 29 个
+  词条（文件操作、翻转/变换/移动/删除、创建图形/直线/箭头/画框/改号、导出无图两类、排列/对齐/
+  分布/归一化模板与排列模式短名、进度条三条），全部改走 `t` / `fill`；
+  `BackgroundOps::start_import` / `start_load` / `start_save` 增 `lang` 参数以本地化进度消息；
+  对齐/分布原先用全角冒号硬拼（英文会得 `Align：Align left`），改为整句模板。
+- **回归闸**：`i18n::tests::english_table_contains_no_cjk`（扫英文表禁 CJK）+
+  `preferz_app::tests::flash_messages_follow_selected_language`（EN 下跑常用动作断言提示无中文）。
 
 ---
 
@@ -344,6 +471,25 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
   留 app；如未来要无头测，先写 core 决策单测钉死语义再动壳。
 - **文档面**（`97bc505`）：`AGENTS.md` 同步架构布局、L1/L2/L3 分层与 `ViewportEgui` 坐标边界约定。
 - 自动化门全绿 + `cargo run` 启动无 panic；GUI 交互动画手感为 Feihei 手工验收项。
+
+---
+
+## 依赖大版本升级：egui/eframe 0.29 → 0.36 + rusqlite 0.31 → 0.40（2026-09-17~20）
+
+> 两项都是"单次 bump、不留兼容写法"的直推升级，**不改用户可见功能**。计划文档见
+> [`plans/`](plans/)（`egui-029-to-036-upgrade.md` / `rusqlite-031-to-040-upgrade.md`）。
+
+- **egui/eframe 0.29.1 → 0.36.2**（`54a9f07` + `dcf4d9a` + `c67779e`，2026-09-17）：单次 bump
+  0.29 → 0.36（跨 7 个 minor，0.30–0.36 的 deprecated API 已全部移除，中间版本只是徒增工作），
+  全仓调用点直接以 0.36 API 重写。**backend 换成 glow、显式关掉 eframe 默认 features 以绕开
+  wgpu**（`dcf4d9a`）——顺带解释后续「滚轮缩放灵敏度折半」（glow 后端手感差异，`253447b` 已对齐
+  观感）。回归修复：`Shift+数字` 快捷键在 0.36 失效（`8dd963d`，`Event::Key.key` 改逻辑键，
+  靠 `physical_key` 回退命中）。
+- **rusqlite 0.31.0 → 0.40.2**（`a72c508`，2026-09-20）：跨 9 个 minor，但本项目用法极窄（仅
+  `preferz-fileio/src/prz.rs` 一文件约 20 个调用点、全是基础 API），**API 层面近乎零改动**，实质
+  变化是 bundled SQLite 引擎 3.45 → 3.53.2。静态门全绿；待真实 `.prz` 往返手测。
+- 同期低风险 bump + 清死依赖（`2fad783`）：uuid / flate2 / log / embed-resource，移除零引用的
+  `thiserror`。
 
 ---
 
@@ -469,7 +615,38 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 - 测试：bin 5（路径后缀、备份检测新/旧/无、tick 触发写盘且保持 dirty/计时清零、未命名与
   未到时不触发、分流谓词）。
 
-## 流程图同向创建改分叉避让（plan #7 二次更正，2026-09-22，待提交）
+---
+
+## 悬浮 HUD / 边栏动画 / 调色板与框选对齐 Excalidraw 批（2026-09-21~22）
+
+> 一次围绕「界面手感与 Excalidraw 对齐」的连续批次，共 16 个 commit（`95bdc8e` … `220c63b`）。
+
+- **布局去底栏化**（`95bdc8e`）：工具栏 / 属性栏改左下 + 右侧**悬浮 bar**，圆角倒角 + 快捷键角标；
+  底栏此前已移除（`96df005`），缩放与语言切换收进悬浮 HUD。
+- **边栏显隐与动画**（`8647619` + `ba6abbc` + `ab47792` + `bc20149`）：`T` 切工具栏 / `N` 切属性栏，
+  滑入滑出动画。四轮修bug链：去掉 smoothstep 贴边卡顿 → 消除跳变/首帧闪现 → `constrain`
+  clamp 残留 + 填充图案竖排。右侧栏格式统一 + 自动高度 + 滚轮透传（`dd569ad`）。
+- **属性样式分档步进器**（`48af469`）：滑块改步进器（与描边档位惯例一致）+ z 序「上移/下移一层」。
+- **调色板重做**（`4a30e02` + `e2c868d`）：内联 picks + Colors / Shades / Hex 三层弹层，文字色
+  跟随边框；Shades 恒显示（非色板色取最近色系）+ 移除文字背景入口；文字/填充调色板加「跟随
+  形状」格（默认跟随，可切回，`31eb1f7`）。对齐按钮 ⇤⇥⇡⇣ 豆腐块修复（`788142c`：思源黑体无该
+  字形，换用已有 ←→↑↓）。
+- **框选 CAD 语义**（`ac6a096`）：左→右 = 窗口选择、右→左 = 交叉选择 + 修四向视觉。
+- **右下角缩放 HUD 可编辑**（`220c63b`）：数字输入回车 + ± 步进按钮。
+- **画框比例并入全局**（`fab015d`）：「跟随全局比例」并入比例下拉，取消独立 bool（`3096ca5`
+  全局画框比例设置 + 侧栏勾选联动）。
+- **手写体换真字体**（`0dfe3f8`）：伪手写渲染改为**内嵌 851 远星夜行**（GB2312 + ASCII 子集，
+  原始 ttf 不进 git，经 `build.rs` deflate 压缩嵌入、运行时解压）——兑现 plan #1「不嵌第二套
+  TTF」的**推翻**：真字形观感优于伪手写。调色板圆点改用思源黑体有字形的 `●`（U+25CF，修复
+  豆腐块，`9562ce3`）。
+- **透明背景线性化**（`a2bf25f` / `d69ec7b` / `2b96ce4` / `6124b3d`）：app 背景不透明度改线性
+  插值、图片 mesh tint 改预乘（否则 pixmap 不透明度不随 alpha 淡出）、不透明度滑块下限统一
+  0.1 → 0.15（背景与图片一致）。
+- **依赖**：`fit-to-content` 绕过交互缩放钳制（`8170640`）。
+
+---
+
+## 流程图同向创建改分叉避让（plan #7 二次更正，2026-09-22，`c89448b`）
 
 > 反馈：选中已有下一节点的图形再按 `Ctrl+同向`，新节点全叠进"邻居远边"同一格 → 重叠，
 > 未形成分叉。原 2026-09-14 `8ba4ac5` 的"邻居旁外推"（主轴=邻居远边 + GAP）根治不了
@@ -492,7 +669,7 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
   `add_connected_shape_forks_around_existing_neighbor`（C=(230,190) 上下分叉，替代旧 (450,10) 外推）。
   质量门全绿（fmt / `clippy -D warnings` / `cargo test --workspace`：core 171 + lib 75 + main 2 + fileio 9）。
 
-## 折线新增直角折线 elbow 曲线模式（plan #7 配套，2026-09-22，待提交）
+## 折线新增直角折线 elbow 曲线模式（plan #7 配套，2026-09-22，`7f97f47` + `a0e09f4`）
 
 > 承接上一节：分叉的斜向箭头不够好看。Excalidraw 的 elbow **不是新元素类型**，而是线性
 > 元素上的一条路径模式（`type:"arrow"` + `elbowed:bool`，`types.ts:357`；子类型由
@@ -514,7 +691,7 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
   （EN `Elbow` / ZH `直角`）。`SetCurveType` 命令与 `push_poly_curve` 天然支持第三态，零改。
 - **默认**：`add_connected_shape` 新建的流程图箭头 `curve_type = Elbow`（分叉自动正交；两端共线的
   首链仍是直线）。
-- **本轮仍不做**：绕节点障碍的 elbow 路由（Excalidraw 完整版 A*）——列为后续；见 plan.md 决策 D4。
+- **本轮仍不做**：绕节点障碍的 elbow 路由（Excalidraw 完整版 A*）——列为后续；见 §决策点归档 D4 与 `plan.md` §Excalidraw 打磨批次。
 - **测试**：core 新增 3 项（较小 Δ 轴选向 / 正交+端点保持 / 共轴与非两点回退）；
   质量门全绿（fmt / `clippy -D warnings` / `cargo test --workspace`：core 174 + lib 75 + main 2 + fileio 9）+ 无头冒烟。
 - **编辑护栏（同批修复）**：elbow 线**不暴露段中点加点手柄**——`transform_handles` 的命中
@@ -526,10 +703,10 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 
 ---
 
-## elbow 直角折线 bar 可拖（plan #16 E1，2026-09-23，待提交）
+## elbow 直角折线 bar 可拖（plan #16 E1，2026-09-23，`2165847`）
 
 > 承接上一节：elbow 曲线模式已交付但走线恒居中、不可定制。本轮补 **E1 单段 bar 可拖**
-> （E2 障碍避让路由留待未来）。设计见 `plan.md` §16。
+> （E2 障碍避让路由留待未来）。E2 剩余工作见 `plan.md` §Excalidraw 打磨批次未完成项。
 
 - **存储**：`ItemKind::Shape` 加 `elbow_mid_offset: f32`（`#[serde(default)]`=0，`.prz` 零迁移）。
   定义为**交叉轴偏移**：以两端点连线为纵轴、bar 沿横轴偏离中点的有符号距离——旋转时随端点
@@ -559,7 +736,7 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 
 ---
 
-## elbow 多顶点逐段展开（plan #19 E1.5，2026-09-24，待提交）
+## elbow 多顶点逐段展开（plan #19 E1.5，2026-09-24，`dca5e8a`，已被 §顶点锚定 bar 取代）
 
 > 承接 E1：elbow bar 可拖交付后，对照 Excalidraw 发现其 line/arrow 类型分裂（`elbowed` 仅 arrow、
 > UI 三态仅 arrow 可见、切 elbow 丢中间点）。**拍板不跟随**，保持 PReferZ 统一设计（全 Polyline +
@@ -583,7 +760,7 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
   （fmt / `clippy -D warnings` / core 191 passed）。
 - **不做**：逐段独立偏移（拍板居中，将来 `#[serde(default)]` 升级兼容）；E2 避让路由仍留待未来。
 
-## elbow 多顶点改「顶点锚定 bar」纯函数推导（plan #21，2026-09-24，待提交）
+## elbow 多顶点改「顶点锚定 bar」纯函数推导（plan #21，2026-09-24，`ea77f02`）
 
 > 用户反馈 #19 逐段居中 Z 展开两大问题：顶点一多折线碎乱（3 顶点出 7 段）、段中点拖拽=插顶点
 > 与两点线「拖 bar=平移走线」体验割裂。调研 Excalidraw `elbowArrow.ts`（fixedSegments +
@@ -613,7 +790,7 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 
 ---
 
-## elbow 多顶点双击插入顶点（plan #21 DP-A/DP-B 拍板，2026-09-24，待提交）
+## elbow 多顶点双击插入顶点（plan #21 DP-A/DP-B 拍板，2026-09-24，`7312a01`）
 
 > 承接 #21 主体交付：DP-A 拍板「双击段插入顶点」、DP-B 拍板「取向翻转不加滞回」。
 
@@ -657,7 +834,7 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 
 ---
 
-## 文字工具 + 双击职责归位（plan #22，2026-09-25，待提交）
+## 文字工具 + 双击职责归位（plan #22，2026-09-25，`da2bd1e`）
 
 > #21 做 elbow「双击段加点」时暴露：画布双击一直被「新建文本便签」占用（spec 早期定的
 > P2-5 入口），两个手势抢同一信号。**拍板（用户提议）**：双击属于元素编辑，新建文本属于
@@ -677,7 +854,7 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
   完整性由既有测试把关）。质量门全绿（fmt / `clippy -D warnings` / core 199 + binary 79 passed；
   `tick_autosave_writes_sidecar_and_keeps_doc_dirty` 仍为先前已存在的无关失败）。
 
-## RoughStyler 对齐 rough.js/Excalidraw（plan #20，2026-09-25，待提交）
+## RoughStyler 对齐 rough.js/Excalidraw（plan #20，2026-09-25，`2e883bf`）
 
 > 2026-09-24 调研：RoughStyler ↔ rough.js 4.6.6 + Excalidraw `generateRoughOptions`
 > 逐行对照，发现六类不对齐（抖动幅度基准差 1.5–10 倍为大头）。四决策点拍板：
@@ -736,7 +913,7 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 
 ---
 
-## elbow 锚点拖拽约束 + 插入点不落拐角（plan #21 三次验收反馈，2026-09-25，待提交）
+## elbow 锚点拖拽约束 + 插入点不落拐角（plan #21 三次验收反馈，2026-09-25，`37ecac9`）
 
 > 用户实测两处：①直角模式的锚点可以被拖到走线之外；②双击新增的锚点是**角点**而不是正交段
 > 中间的滑点。两者都出在「顶点锚定 bar」的第二个自由度上。
@@ -760,7 +937,7 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 
 ---
 
-## 两点 elbow 纳入双击插入（plan #21 四次验收反馈，2026-09-25，待提交）
+## 两点 elbow 纳入双击插入（plan #21 四次验收反馈，2026-09-25，`ef9fc8c`）
 
 > 用户实测：多段线 elbow 双击能加点，但**直线/箭头转成的 elbow**、**Ctrl+方向键建的流程图
 > 连线**（都是两点 elbow）双击无作用。
@@ -783,7 +960,7 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 
 ---
 
-## elbow 插入候选取向稳定性（plan #21 五次验收反馈，2026-09-25，待提交）
+## elbow 插入候选取向稳定性（plan #21 五次验收反馈，2026-09-25，`5e23bac`）
 
 > 用户实测：双击能加点后，**插入的节点有时候会变成角点而不是线段锚点**。
 
@@ -801,7 +978,7 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 
 ---
 
-## elbow 倒角参数（plan #23，2026-09-25，待提交）
+## elbow 倒角参数（plan #23，2026-09-25，`5e23bac`）
 
 > 用户提议：elbow 也跟矩形一样有倒角参数（Excalidraw 的 roundness 同样作用于直角连线）。
 
@@ -825,7 +1002,7 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 
 ---
 
-## elbow 倒角末段修复 + 辅助点移除/离角闸门（plan #21/#23 六次验收反馈，2026-09-25，待提交）
+## elbow 倒角末段修复 + 辅助点移除/离角闸门（plan #21/#23 六次验收反馈，2026-09-25，`2f628b1`）
 
 > 用户实测两项：①elbow 加圆角后**终点前的一段直段消失**；②elbow 选中态仍出现"像多段线
 > 那样的线段中点辅助点"（误以为可拖动加点、与锚点混淆），且新顶点有时仍长在角点上。
@@ -845,7 +1022,7 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 
 ---
 
-## elbow 倒角半径全局统一（plan #23 七次验收反馈，2026-09-25，待提交）
+## elbow 倒角半径全局统一（plan #23 七次验收反馈，2026-09-25，`217f4ae`）
 
 > 用户实测：圆角算法仍有问题——同一根 elbow 线上会出现**半径不一致**的圆角。
 
@@ -886,7 +1063,48 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 
 ---
 
-## 决策点归档（D1–D6 / I1–I4）
+---
+
+## 手绘风验收反馈批次实施（plan #20/#23，2026-09-28，`912d2ac` + `150a1d2`）
+
+> 上文 §验收反馈批次（2026-09-25）记录的 4 项观感反馈在此实施；同日再收 plan #23 的一次反馈。
+> ✅ 2026-09-28 plan #16/#20/#21/#22/#23 手工验收通过。
+
+- `912d2ac`：sloppiness 三档 `amp_scale` 整体加倍（Architect 0.5→1.0、Artist 1.0→2.0、
+  Cartoonist 1.8→3.6，曲线/solid 填充/hachure 联动）；描边宽度档 `[2,4,8,16,32]` → `[1,2,4,8,16]`
+  （默认 4.0 由 S 变 M）；`roundness_radius` 减半为 `short × roundness × 0.5`；圆角矩形并入平滑
+  路线；`jitter_points` 改**逐点局部上限**（min(rough, 0.35 × 较短相邻段)）杜绝小尺寸小倒角
+  角部互越打结。全部落在 `stylers.rs`。
+- `150a1d2`（plan #23 八次反馈）：手绘风 elbow 倒角弧**断线**——`is_smooth` 此前只把带圆角的矩形
+  并入平滑路线，elbow 倒角仍逐边抖动，弧被切成 8 段小贝塞尔后 Cartoonist 档相邻弧段端点各自
+  独立抖动、接缝脱开；低档位又因短线衰减 `len/10` 几乎零抖动、不像手绘弧。`is_smooth` 的 Polyline
+  分支按 `CurveType` 细分——`Elbow` 且 `roundness_radius > 1e-3` 并入平滑路线（兑现 plan #23
+  「与圆角矩形同路线」的原设计）；新增 `rough_styler_elbow_roundness_chains_without_gaps`。
+
+---
+
+## 默认风格总开关（草绘 / 规整，2026-09-28，`69a3b8a` + `1225a31`）
+
+> 对齐 Excalidraw 出厂观感：新建元素默认手绘，而非精确线条。✅ 代码交付，待 `cargo run` 复验。
+
+- **设置面板「默认风格」两档总开关**（默认**草绘**，持久化 `config.json` 的 `default_style` 字段，
+  `serde default` 兼容老配置）：草绘 = 新建形状 sloppiness **Artist（中档）** + 新建文字字体
+  **手写体**；规整 = Off + 黑体。切换**一键覆盖**当前新建默认档（`default_sloppiness` + 新增
+  `default_font_family`）；右侧「新建元素默认样式」面板的 sloppiness 四选一保留作会话内微调。
+- **补齐遗漏注入点**：mermaid 导入的节点/边/绑定文字、流程图分叉箭头此前**恒 Off/Normal**，
+  总开关需覆盖全部新建元素入口；新建文本提交路径此前把字体写死 Normal（overlay 显示与落盘
+  不一致），已打通——core 新增 `Item::with_font_family` builder。
+- **左下悬浮 bar 切换按钮**（`1225a31`）：与主题按钮同模式的 painter 手绘 icon（当前草绘 → 45°
+  斜线表示"规整目标"，当前规整 → 铅笔表示"草绘目标"；嵌入字体无 dingbat 字形，禁用字符 icon）。
+  点击逻辑与设置面板一致，覆盖新建默认档并持久化。
+- 顺带修 `tick_autosave` 测试读真实 `config.json` 的环境耦合（本机 `autosave_enabled=false` 时
+  假失败）。
+- **复验清单**：全新 config 启动显示草绘 → 切规整后重启仍是规整 → 右侧四选一微调仍生效 →
+  mermaid / 流程图分叉随总开关同档 → 旧 config 加载默认草绘且 `.prz` 存档兼容不受影响。
+
+---
+
+## 决策点归档（D1–D6 / I1–I4 / L 系列）
 
 > 原列于 plan.md，G/I/H/K 交付后蒸馏归档于此，使 CHANGELOG 自包含、plan.md 仅保留前瞻内容。
 
@@ -911,3 +1129,30 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 | I4 | .prz 迁移策略 | ✅ 新字段 `#[serde(default)]`，`USER_VERSION` 不变 |
 | — | 圆角范围 | 仅矩形族（按计划） |
 | — | 排后项 | D4 elbow 折线 / D5 hachure 填充 不纳入 Phase I |
+
+### L 系列（2026-09-06 ~ 09-28 拍板，Excalidraw 对齐打磨批次）
+
+> 原列于 plan.md §打磨批次，蒸馏归档于此。**方案标 ⛔ = 经调研推翻原倾向**。
+
+| # | 问题 | 结论 |
+|---|---|---|
+| L1 | 吸附阈值 / 绑定存储 | 屏 10px（画布 `10/zoom`）；存 `Option<ItemId>` 两端各一，**吸附点不存绝对坐标**——`resolve_bindings` 按「另一端点方向」动态重算轮廓最近点（贴近 Excalidraw 动态绑定，天然兼容多段线） |
+| L2 | 分布基准 / 参考系 | 等距（Gap，相邻空隙）与等心（Centers）**两种都做**，横/纵共 4 按钮；参考系=选区包围盒，首尾不动、中间均分 |
+| L3 | 端点删除手势 | ⛔ 原倾向「Alt+拖出」**不符现行 Excalidraw**（现行 Alt 是加顶点、删顶点走点选+Del，而本仓库无顶点选中态）→ 改 **Alt+单击删顶点 / Alt+拖端点延伸**；守卫开放 ≥2 / 闭合 ≥3 |
+| L4 | 命令层 | **复用 `EditShapePoints`**（点集替换，绑定变更已内建）加可选 closed 字段，不新增 DeleteVertex/AppendVertex |
+| L5 | 流程图新节点形态 | 同源同风格克隆（Excalidraw `isFlowchartNodeElement` 三类，Polyline 不作源）；**按下即提交**、不移植 pending 簇预览 |
+| L6 | 同向已有邻居的落位 | ⛔ 原「邻居旁外推」**根除不了重叠**（`find_connected_neighbor` 恒返回同一最近邻居）→ 移植 Excalidraw `placeCluster` 到 core `flowchart::place_node`：主轴恒相对源、交叉轴滑到最近空位成**上下分叉** |
+| L7 | elbow 多顶点模型 | ⛔ **不跟随 Excalidraw 的 line/arrow 类型分裂**（`elbowed` 仅 arrow、切 elbow 丢中间点）→ 保持统一 Polyline + `CurveType` 三态 |
+| L8 | elbow 加顶点手势 | 双击段插入顶点（`elbow_insert_candidates` 纯函数给候选，须过「视觉不变」+「可拖动」双校验）；**2026-09-25 扩展到两点线**（靶区=bar 段，单击拖 bar / 双击插入同区）——重新推导发现两点线的排除是多余的，插入后走线视觉 no-op |
+| L9 | elbow 取向翻转滞回 | **不加**：确定性规则固有行为，先观察验收反馈再定 |
+| L10 | mermaid 额外节点外形 | 解析期**近似收敛**到既有 3 类（`((…))`/`([…])`→Ellipse，其余冷门形→Rectangle，`{…}`→Diamond）——零 `ShapeType` 改动、`.prz` 零迁移；忠实渲染（Stadium/Cylinder/Hexagon）留待验收反馈后再评估 |
+| L11 | mermaid 边标签形态 | 给线性对象加 `label: Option<String>`（`#[serde(default)]`，零迁移），**渲染期画在线段中点**，端点重路由自动跟随（零 `.prz` 迁移） |
+| L12 | mermaid `()` 语义 | ⛔ 校正：`()` 圆角矩形 → Rectangle、`((…))` 圆 → Ellipse，与 mermaid 文档一致（原实现与文档冲突） |
+| L13 | Architect 档语义 | 维持 0.5× 抖动（对齐 Excalidraw roughness 0 会让 Architect/Off 观感重合，要动已交付的四档 UI 文案，不值） |
+| L14 | solid 填充顶点抖动 | **跟随 rough.js**（±2 画布px × amp_scale）——⛔ 推翻 [ADR-0005](adr/0005-shape-styler-rough-seeded.md)「填充精确几何」，已补录 ADR 修订 |
+| L15 | 箭头是否抖动 | **跟随 Excalidraw**（两翼走 sketch_edge 双线抖动，roughness 封顶 min(1,·)）；preserveVertices 保证翼尖锚定几何端点，绑定接头不受影响——⛔ 更正 stylers 中「Excalidraw 箭头不抖」的错误注释 |
+| L16 | `adjustRoughness` 小图衰减 | 与 `Sloppiness::amp_scale` **相乘**，行为可预期 |
+| L17 | elbow 倒角字段 | **复用 `Shape.roundness`**（不新增专字段）：同一档位在矩形与 elbow 上观感一致，`.prz` 零迁移 |
+| L18 | elbow 倒角半径 | 包围盒**短边比例**（同矩形公式，尺寸自适应），非 Excalidraw 式固定像素；命中走**倒角后**路径（同源纪律优先于命中面积微增） |
+| L19 | 相乘叠合模式 | **先不做**：egui 0.36.2 无 per-shape blend（epaint 无 BlendMode、glow 固定预乘 alpha），屏幕实时真 multiply 需 `Shape::Callback` + GL 状态 hack；导出侧需先重写为正向合成。评估已存档，重启可直接沿用 |
+| L20 | 两点 elbow 保持 Z 形 | 用户确认实用、保留；多顶点**不**改回「每两顶点独立居中 Z」——那正是已废弃的 plan #19（相邻 bar 不对齐、顶点一多碎乱、锚点漂离走线） |
