@@ -261,8 +261,18 @@ impl PReferZApp {
                             )),
                     );
                     if edit.first_frame {
-                        response.request_focus();
-                        edit.first_frame = false;
+                        // 焦点延迟请求：文字工具在按下沿起编辑框，同一击的释放沿会被
+                        // egui 0.36 分类为对画布的 click——get_response 的
+                        // surrender_focus_on::Clicks 分支会把焦点从所有「已聚焦但未
+                        // hover」的 widget 剥走 → TextEdit 失焦 → 空内容提交 → 编辑框
+                        // 闪没（单击创建失败；拖拽因不构成 click 而幸存）。故推迟到
+                        // 指针释放且本次 click 分类结束后的帧再请求焦点。
+                        let click_pending =
+                            ctx.input(|i| i.pointer.any_down() || i.pointer.any_click());
+                        if !click_pending {
+                            response.request_focus();
+                            edit.first_frame = false;
+                        }
                     }
                     if ui.ctx().input(|i| i.key_pressed(egui::Key::Escape)) {
                         cancel = true;
@@ -284,8 +294,13 @@ impl PReferZApp {
                             )),
                     );
                     if edit.first_frame {
-                        response.request_focus();
-                        edit.first_frame = false;
+                        // 同上：焦点延迟请求，躲开同一次点击释放沿的 surrender_focus
+                        let click_pending =
+                            ctx.input(|i| i.pointer.any_down() || i.pointer.any_click());
+                        if !click_pending {
+                            response.request_focus();
+                            edit.first_frame = false;
+                        }
                     }
                     if ui.ctx().input(|i| i.key_pressed(egui::Key::Escape)) {
                         cancel = true;

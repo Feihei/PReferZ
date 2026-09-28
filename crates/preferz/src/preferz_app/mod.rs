@@ -2953,6 +2953,7 @@ impl PReferZApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use eframe::App;
 
     #[test]
     fn fill_replaces_indexed_placeholders() {
@@ -2962,6 +2963,123 @@ mod tests {
         );
         // 占位多于参数时保留原样，便于开发期发现漏填
         assert_eq!(fill("a {0} b {1}", &["X".to_string()]), "a X b {1}");
+    }
+
+    // ───────── UI 级事件复现（真 egui Context + 合成 RawInput 驱动完整 App::ui） ─────────
+
+    /// 驱动一帧完整的 App::ui（真 egui pass 生命周期：run_ui = begin_pass + end_pass）。
+    /// 用于复现只靠直接调用 begin_drag / handle_shortcuts 覆盖不到的事件层问题
+    /// （焦点、单击分类、双击判定等都发生在 egui 的 pass 之间）。
+    fn run_ui_frame(
+        app: &mut PReferZApp,
+        ctx: &egui::Context,
+        events: Vec<egui::Event>,
+        time: f64,
+    ) {
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let mut out = ctx.run_ui(
+            egui::RawInput {
+                time: Some(time),
+                screen_rect: Some(screen),
+                events,
+                ..egui::RawInput::default()
+            },
+            |ui| {
+                let mut frame = eframe::Frame::_new_kittest();
+                app.ui(ui, &mut frame);
+            },
+        );
+        // 无渲染器：字体图集等纹理增量无法上 GPU，显式清掉避免 Drop panic
+        out.textures_delta.clear();
+    }
+
+    fn key_event(key: egui::Key, pressed: bool) -> egui::Event {
+        egui::Event::Key {
+            key,
+            physical_key: Some(key),
+            pressed,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+
+    fn pointer_button(pos: egui::Pos2, pressed: bool) -> egui::Event {
+        egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+
+    fn pointer_moved(pos: egui::Pos2) -> egui::Event {
+        egui::Event::PointerMoved(pos)
+    }
+
+    /// 用户报告的场景：按 8 切到文字工具后，**单击**（按下+释放，无位移）应当
+    /// 在落点起自由文本编辑框，且释放后编辑框仍然存活（不被释放沿误关闭）。
+    #[test]
+    fn ui_level_text_tool_single_click_opens_editor() {
+        let mut app = PReferZApp::new();
+        let ctx = egui::Context::default();
+        // 与 main.rs 启动路径一致：装上应用字体（缺了 Handwriting851 家族会 panic）
+        ctx.set_fonts(crate::app_font_definitions());
+        let p = egui::pos2(400.0, 300.0);
+        let mut t = 0.0f64;
+
+        // 预热帧：建立 pass 节奏
+        run_ui_frame(&mut app, &ctx, vec![], t);
+        t += 0.016;
+
+        // 按 8 → 工具切到 Text
+        run_ui_frame(&mut app, &ctx, vec![key_event(egui::Key::Num8, true)], t);
+        t += 0.016;
+        assert_eq!(app.tool, Tool::Text, "按 8 应切到文字工具");
+
+        // 松开 8（独立一帧，避免与其它事件混在同一 pass）
+        run_ui_frame(&mut app, &ctx, vec![key_event(egui::Key::Num8, false)], t);
+        t += 0.016;
+
+        // 单击：按下沿
+        run_ui_frame(&mut app, &ctx, vec![pointer_button(p, true)], t);
+        t += 0.016;
+        assert!(app.editing_text.is_some(), "单击按下沿应进入文本编辑");
+
+        // 单击：释放沿（关键断言——编辑框不应在释放后被关掉）
+        run_ui_frame(&mut app, &ctx, vec![pointer_button(p, false)], t);
+        assert!(
+            app.editing_text.is_some(),
+            "释放后编辑框应仍存活（lost_focus 不应在本次单击释放沿误触发）"
+        );
+    }
+
+    /// 对照组：按 8 后拖拽（按下 → 移动 → 释放）也应起编辑框且释放后存活。
+    #[test]
+    fn ui_level_text_tool_drag_opens_editor() {
+        let mut app = PReferZApp::new();
+        let ctx = egui::Context::default();
+        ctx.set_fonts(crate::app_font_definitions());
+        let p = egui::pos2(400.0, 300.0);
+        let p2 = egui::pos2(420.0, 310.0);
+        let mut t = 0.0f64;
+
+        run_ui_frame(&mut app, &ctx, vec![], t);
+        t += 0.016;
+        run_ui_frame(&mut app, &ctx, vec![key_event(egui::Key::Num8, true)], t);
+        t += 0.016;
+        assert_eq!(app.tool, Tool::Text);
+
+        run_ui_frame(
+            &mut app,
+            &ctx,
+            vec![pointer_button(p, true), pointer_moved(p2)],
+            t,
+        );
+        t += 0.016;
+        assert!(app.editing_text.is_some(), "拖拽路径应进入文本编辑");
+
+        run_ui_frame(&mut app, &ctx, vec![pointer_button(p2, false)], t);
+        assert!(app.editing_text.is_some(), "拖拽释放后编辑框应仍存活");
     }
 
     // ───────── 多边形工具（Phase I） ─────────
