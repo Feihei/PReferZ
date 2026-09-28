@@ -2234,6 +2234,90 @@ impl PReferZApp {
                                 self.default_stroke.color = self.theme.default_stroke_color(ctx);
                                 self.persist_config();
                             }
+                            // 默认风格切换：与主题按钮同模式的手绘 icon（嵌入字体无
+                            // 铅笔等 dingbat 字形，字符 icon 会渲染成豆腐块）。
+                            // 按现有惯例显示**切换目标**：当前草绘→45° 直线（规整），
+                            // 当前规整→铅笔（草绘）。点击逻辑与设置面板「默认风格
+                            // 总开关」逐字一致：覆盖新建默认档并持久化。
+                            ui.add_space(2.0);
+                            let sketch_now = self.default_style == DefaultStylePreset::Sketch;
+                            let gal = ui.visuals().strong_text_color();
+                            let (icon_rect, resp) = ui
+                                .allocate_exact_size(egui::vec2(20.0, 20.0), egui::Sense::click());
+                            let resp = resp.on_hover_text(t(
+                                self.lang,
+                                if sketch_now {
+                                    T::StyleToggleToClean
+                                } else {
+                                    T::StyleToggleToSketch
+                                },
+                            ));
+                            if ui.is_rect_visible(icon_rect) {
+                                let painter = ui.painter();
+                                if resp.hovered() {
+                                    // hover 底色（与主题按钮同配方）
+                                    let bg0 = ui.visuals().window_fill;
+                                    let mix = |a: u8, b: u8| -> u8 {
+                                        ((a as f32) * 0.88 + (b as f32) * 0.12) as u8
+                                    };
+                                    let bg = egui::Color32::from_rgb(
+                                        mix(bg0.r(), gal.r()),
+                                        mix(bg0.g(), gal.g()),
+                                        mix(bg0.b(), gal.b()),
+                                    );
+                                    painter.rect_filled(icon_rect, 4.0, bg);
+                                }
+                                // 局部坐标（0..20）→ 画布坐标
+                                let o = icon_rect.left_top();
+                                let p = |x: f32, y: f32| o + egui::vec2(x, y);
+                                if sketch_now {
+                                    // 规整目标：45° 斜线 + 垂直端刻度（尺寸线样式）
+                                    painter.line_segment(
+                                        [p(5.0, 15.0), p(15.0, 5.0)],
+                                        egui::Stroke::new(1.6_f32, gal),
+                                    );
+                                    painter.line_segment(
+                                        [p(3.4, 13.4), p(6.6, 16.6)],
+                                        egui::Stroke::new(1.4_f32, gal),
+                                    );
+                                    painter.line_segment(
+                                        [p(13.4, 3.4), p(16.6, 6.6)],
+                                        egui::Stroke::new(1.4_f32, gal),
+                                    );
+                                } else {
+                                    // 草绘目标：45° 铅笔（双线笔身 + 实心笔尖三角）
+                                    painter.line_segment(
+                                        [p(5.0, 13.0), p(13.0, 5.0)],
+                                        egui::Stroke::new(1.4_f32, gal),
+                                    );
+                                    painter.line_segment(
+                                        [p(7.2, 15.2), p(15.2, 7.2)],
+                                        egui::Stroke::new(1.4_f32, gal),
+                                    );
+                                    painter.line_segment(
+                                        [p(13.0, 5.0), p(15.2, 7.2)],
+                                        egui::Stroke::new(1.4_f32, gal),
+                                    );
+                                    painter.add(egui::Shape::convex_polygon(
+                                        vec![p(5.0, 13.0), p(7.2, 15.2), p(3.7, 16.5)],
+                                        gal,
+                                        egui::Stroke::NONE,
+                                    ));
+                                }
+                            }
+                            if resp.clicked() {
+                                let preset = if sketch_now {
+                                    DefaultStylePreset::Clean
+                                } else {
+                                    DefaultStylePreset::Sketch
+                                };
+                                self.default_style = preset;
+                                preset.apply_to(
+                                    &mut self.default_sloppiness,
+                                    &mut self.default_font_family,
+                                );
+                                self.persist_config();
+                            }
                         });
                     });
             });

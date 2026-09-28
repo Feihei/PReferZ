@@ -324,6 +324,10 @@ pub enum T {
     FlashPolygonOpened,
     /// HUD 主题切换按钮 hover 提示。
     ThemeToggleHint,
+    /// HUD 风格切换按钮 hover 提示：当前草绘，点击切到规整。
+    StyleToggleToClean,
+    /// HUD 风格切换按钮 hover 提示：当前规整，点击切到草绘。
+    StyleToggleToSketch,
     // ── 编组/解组（plan #13）──
     /// 编组成功提示。
     FlashGrouped,
@@ -655,6 +659,8 @@ fn translate_en(key: T) -> &'static str {
         T::FlashPolygonClosed => "Closed into a polygon",
         T::FlashPolygonOpened => "Reopened",
         T::ThemeToggleHint => "Toggle light / dark theme",
+        T::StyleToggleToClean => "Switch to clean style (precise lines + sans font)",
+        T::StyleToggleToSketch => "Switch to sketch style (hand-drawn lines + handwriting font)",
         T::FlashGrouped => "Grouped",
         T::FlashUngrouped => "Ungrouped",
         T::MenuGroup => "Group",
@@ -948,6 +954,8 @@ fn translate_zh(key: T) -> &'static str {
         T::FlashPolygonClosed => "已闭合成多边形",
         T::FlashPolygonOpened => "已恢复开放",
         T::ThemeToggleHint => "切换明暗主题",
+        T::StyleToggleToClean => "切换为规整（精确线条 + 黑体）",
+        T::StyleToggleToSketch => "切换为草绘（手绘抖动 + 手写体）",
         T::FlashGrouped => "已编组",
         T::FlashUngrouped => "已解组",
         T::MenuGroup => "编组",
