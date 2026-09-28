@@ -690,7 +690,7 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
   （EN `Elbow` / ZH `直角`）。`SetCurveType` 命令与 `push_poly_curve` 天然支持第三态，零改。
 - **默认**：`add_connected_shape` 新建的流程图箭头 `curve_type = Elbow`（分叉自动正交；两端共线的
   首链仍是直线）。
-- **本轮仍不做**：绕节点障碍的 elbow 路由（Excalidraw 完整版 A*）——列为后续；见 §决策点归档 D4 与 `plan.md` §Excalidraw 打磨批次。
+- **本轮仍不做**：绕节点障碍的 elbow 路由（Excalidraw 完整版 A\*）——见 §决策点归档 L21，该项**已取消**。
 - **测试**：core 新增 3 项（较小 Δ 轴选向 / 正交+端点保持 / 共轴与非两点回退）；
   质量门全绿（fmt / `clippy -D warnings` / `cargo test --workspace`：core 174 + lib 75 + main 2 + fileio 9）+ 无头冒烟。
 - **编辑护栏（同批修复）**：elbow 线**不暴露段中点加点手柄**——`transform_handles` 的命中
@@ -698,18 +698,20 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
   拖它会 `points.insert` 一个真顶点使 `points.len()!=2` → `elbow_polyline` 判非两点、直接返回原始
   折线 → 退化成多段线且属性栏切回“直角”也不重路由（改不回）。护栏后 elbow 恒两点、只拖端点 +
   面板可自由来回切。**多拐点自由重路由**需真正的直角路由器（naive「每段各自正交化」会在抓拐点瞬间
-  把另一根 bar 顶偏、形状跳变），登记为 plan 前瞻项、暂不做。新增谓词回归测试 1 项（lib 76）。
+  把另一根 bar 顶偏、形状跳变），当时登记为 plan 前瞻项、暂不做——后由 #21 的多顶点「顶点锚定
+  bar」模型以另一种方式兑现（用户顶点 + 双击插入，非自动路由，见 L21）。新增谓词回归测试 1 项
+  （lib 76）。
 
 ---
 
 ## elbow 直角折线 bar 可拖（plan #16 E1，2026-09-23，`2165847`）
 
 > 承接上一节：elbow 曲线模式已交付但走线恒居中、不可定制。本轮补 **E1 单段 bar 可拖**
-> （E2 障碍避让路由留待未来）。E2 剩余工作见 `plan.md` §Excalidraw 打磨批次未完成项。
+> （E2 障碍避让路由——见 §决策点归档 L21，已取消：多顶点 elbow 的手动绕行已够用）。
 
 - **存储**：`ItemKind::Shape` 加 `elbow_mid_offset: f32`（`#[serde(default)]`=0，`.prz` 零迁移）。
   定义为**交叉轴偏移**：以两端点连线为纵轴、bar 沿横轴偏离中点的有符号距离——旋转时随端点
-  局部轴系天然跟随；将来 E2 可作初值。偏移存原值不 clamp（用户意图），clamp 属几何层职责。
+  局部轴系天然跟随。偏移存原值不 clamp（用户意图），clamp 属几何层职责。
 - **几何** `elbow_polyline_offset(pts, offset)`：转折点沿交叉轴平移；offset=0 退化为现行为
   （`elbow_polyline` 薄封装保留向后兼容）；`bar_axis` clamp 在两端点之间防回钩；`dedup()` 去零长段
   （防箭头方向 NaN）。三处消费点同源：core 命中 `contains_canvas_point`、binary 渲染
@@ -730,8 +732,10 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 - **测试**：core 新增 4 项（偏移沿短轴平移 bar / clamp 不出回钩 / serde 往返+旧档默认 /
   offset 影响 contains_canvas_point）+ `SetElbowOffset` 批量 undo/redo 1 项；质量门全绿
   （fmt / `clippy -D warnings` / core 186 passed）。
-- **E2（留待未来）**：障碍避让路由——移植 Excalidraw `elbowArrow.ts` 的 grid+A\*，待「连线穿过节点」
-  痛点真实出现再评估立期。
+- **E2（已取消）**：障碍避让路由原拟移植 Excalidraw `elbowArrow.ts` 的 grid + A\*，让连线自动绕开
+  节点。#21 的多顶点「顶点锚定 bar」模型交付后**取消**——双击插入顶点 + 拖顶点即可手动绕行，
+  自动路由的边际价值不足以覆盖成本（core 新增 `elbow.rs` 600–1000 行，且单 `elbow_mid_offset`
+  字段不够用、需升级存储）。见 §决策点归档 L21。
 
 ---
 
@@ -757,7 +761,7 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 - **测试**：core 新增 5 项（退化/两点等价/多顶点正交+顶点保留/闭合末段回首点/共轴段拼接）；
   binary `is_two_point_elbow_line` 测试更新（多顶点 elbow 不压制段中点）；质量门全绿
   （fmt / `clippy -D warnings` / core 191 passed）。
-- **不做**：逐段独立偏移（拍板居中，将来 `#[serde(default)]` 升级兼容）；E2 避让路由仍留待未来。
+- **不做**：逐段独立偏移（拍板居中，将来 `#[serde(default)]` 升级兼容）。
 
 ## elbow 多顶点改「顶点锚定 bar」纯函数推导（plan #21，2026-09-24，`ea77f02`）
 
@@ -784,7 +788,7 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
   闭合末段回首点/共轴段）；binary 手柄测试更新（多顶点 elbow 同样压制段中点）；质量门全绿
   （fmt / `clippy -D warnings` / core 194 passed；`tick_autosave_writes_sidecar_and_keeps_doc_dirty`
   经干净 HEAD 复现为先前已存在的无关失败）。
-- **不做**：Excalidraw `fixedSegments` 模型与 A* 避让路由（E2 留待未来）；`elbow_mid_offset`
+- **不做**：Excalidraw `fixedSegments` 模型与 A* 避让路由（E2 后于本节取消，见 L21）；`elbow_mid_offset`
   推广到多顶点（多顶点用户意图由顶点位置表达）。
 
 ---
@@ -1107,8 +1111,8 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 ## 人工复验清账：plan.md 待复验清单全通过（2026-09-28）
 
 > Excalidraw 打磨批次此前的**全部**待人工复验项由 Feihei `cargo run` 逐条确认通过，plan.md 的
-> 「待人工复验」章节就此清空——至此 plan.md 只剩**未实施**项（#16 E2 / #17 批次 C / #20 剩余
-> 缺口 / #18）与远期。
+> 「待人工复验」章节就此清空——至此 plan.md 只剩**未实施**项（#17 批次 C / #20 剩余缺口 /
+> #18）与远期（同日 L21 取消 #16 E2 自动避障路由）。
 
 - **本轮新通过**（此前 🔶）：样式面板批次 #1/#2/#3（含 5 色调色板 / 填充 50% 透明 / sloppiness
   四档 / 文字对齐 + 手写体）、多边形节点增删 #4（Alt+单击删、Alt+拖延伸、端点拖回自动闭合、
@@ -1136,7 +1140,7 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 | D1 | 主题三态 | 仅 Light/Dark vs 增 `Auto`（跟随系统） | 字段预留 `Auto`，第一版只做手动切换 | ✅ 按倾向 |
 | D2 | 画布底色 | 跟主题走 vs 独立可设 | 跟主题走 | ✅ 按倾向 |
 | D3 | 多选属性面板 | 显示交集 vs 禁用面板 | 显示交集可批量改（Excalidraw 同款） | ✅ 按倾向 |
-| D4 | elbow 折线 | 本轮做 vs 排后 | 排后 | 最小版 2026-09-22 落地（`CurveType::Elbow`，见 §折线新增直角折线 elbow）；绕障碍的完整 elbow 路由仍排后 |
+| D4 | elbow 折线 | 本轮做 vs 排后 | 排后 | 最小版 2026-09-22 落地（`CurveType::Elbow`，见 §折线新增直角折线 elbow）；绕障碍的自动 elbow 路由后于 L21 取消 |
 | D5 | hachure 填充 | 本轮做 vs 排后 | 排后，纯色先统一数据模型 | ✅ 排后 |
 | D6 | keymap 设置面板去留 | 保留（已交付可用）vs Phase K 顺手移除入口 | 移除入口，`Action`/`Keymap` 派发架构保留 | ✅ 移除入口（已实施） |
 
@@ -1177,3 +1181,4 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 | L18 | elbow 倒角半径 | 包围盒**短边比例**（同矩形公式，尺寸自适应），非 Excalidraw 式固定像素；命中走**倒角后**路径（同源纪律优先于命中面积微增） |
 | L19 | 相乘叠合模式 | **先不做**：egui 0.36.2 无 per-shape blend（epaint 无 BlendMode、glow 固定预乘 alpha），屏幕实时真 multiply 需 `Shape::Callback` + GL 状态 hack；导出侧需先重写为正向合成。评估已存档，重启可直接沿用 |
 | L20 | 两点 elbow 保持 Z 形 | 用户确认实用、保留；多顶点**不**改回「每两顶点独立居中 Z」——那正是已废弃的 plan #19（相邻 bar 不对齐、顶点一多碎乱、锚点漂离走线） |
+| L21 | elbow 自动避障路由（原 plan #16 E2） | ⛔ **取消**（2026-09-28）：原拟移植 Excalidraw `elbowArrow.ts` 的 grid + A\* 让连线自动绕开节点，但 #21 的多顶点「顶点锚定 bar」模型已交付——**双击插入顶点 + 拖顶点即手动绕行**，用户可控且无存储代价。A\* 的边际价值覆盖不了成本（core 新增 `elbow.rs` 600–1000 行；单 `elbow_mid_offset` 不够用，需升级为存完整路由结果或「用户固定段列表」派生）。**若将来仍要自动避障**，先确认痛点是"用户不愿手动"而非"手动做不到" |
