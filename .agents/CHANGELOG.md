@@ -1129,6 +1129,36 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 
 ---
 
+## 箭头端头样式重定义：方向修复 + 起终点独立样式 + 小图标选择器（2026-09-28，`7378d9f`）
+
+> 用户直接反馈的三连批次：终点箭头方向反了 → 起终点样式对齐 Excalidraw 并可独立选择 →
+> 张角收窄、端头放大、空心三角裁线。端头相关常量收拢到 core `ArrowHeadStyle`。
+
+- **方向修复**：`RoughStyler` 终点箭头翅膀此前沿 `+dir` 伸出线外（V 尖朝线内，箭头方向
+  反转）；`CleanStyler` 一直正确。两风格器统一为「尖端 + 内向单位向量」同源几何
+  （`push_one_arrowhead` / `push_one_arrowhead_rough`），终点传入 `-outward`，方向恒一致。
+- **样式集重定义**（四头 + 无）：`Arrow`（V 形，半张角 50°→**30°**，总张开 60°）/
+  `Triangle`（实心）/ `TriangleOutline`（**新增空心**，仅描边）/ `Dot`（圆点，沿用）。
+  中间批次曾短暂引入 `Bar` 后按反馈移除——`bar` 旧取值经自定义 `Deserialize` 降级
+  `Arrow`（同 sloppiness「宁缺勿炸」约定），`dot` 正常解析，未知值降级不炸档。
+- **端头整体放大 1.5×**：`HEAD_LEN_MULT` 4→6（V 翼长 = 三角腰长 = 线宽 × 6），
+  新增 `DOT_RADIUS_MULT` 2.25（随端头同步放大）。尺寸常量集中在
+  `ArrowHeadStyle::{HALF_ANGLE, HEAD_LEN_MULT, DOT_RADIUS_MULT}`，渲染与面板图标共用。
+- **空心三角裁线**：新增 `trimmed_line_points`——起点/终点为 `TriangleOutline` 时，主线端
+  沿方向内收「头长 × cos30°」恰好落在三角底边中点，线不再穿入三角内部；裁剪量封顶该段
+  长度一半（极短线宁可重叠不裁没了）。Clean 实/虚线与 Rough 直线/平滑两分支都接线；
+  其余样式不裁（V 尖锚线端、实心三角/圆点盖住线端）。
+- **属性栏**：起/终点箭头由两个 on/off 复选框改为**各自独立的五图标选择器**
+  （无 / V / 实心三角 / 空心三角 / 圆点，`arrowhead_icon` painter 自绘 + 悬停中英文提示，
+  选中高亮）；走 `SetArrowHeads` 批量命令支持撤销，另一端保持各 item 原值（多选混合安全），
+  值不一致时显示「不一致」标注。i18n 表同步（EN 无 CJK 回归仍在）。
+- 测试：`7378d9f` 时点 `cargo test --workspace` 329 通过——方向回归（rough 翼尖必须伸进
+  线段体内）、60° 张角几何、实心/空心三角（Clean 填充/描边 + Rough 填充+抖边 / 纯抖边）、
+  空心三角主线裁剪（Clean/Rough 两笔末端都到底边中点）、Dot 半径内缩相切、serde 往返 +
+  `bar` 降级；`fmt --check` / `clippy -D warnings` 零告警。
+
+---
+
 ## 决策点归档（D1–D6 / I1–I4 / L 系列）
 
 > 原列于 plan.md，G/I/H/K 交付后蒸馏归档于此，使 CHANGELOG 自包含、plan.md 仅保留前瞻内容。
