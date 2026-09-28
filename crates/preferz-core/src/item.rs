@@ -1310,25 +1310,65 @@ pub fn roundness_radius(base_size: (f32, f32), roundness: f32) -> f32 {
 }
 
 /// 正交折线的倒角后处理（plan #23）：每个 90° 拐角按 [`ROUNDED_CORNER_SEGMENTS`]
-/// 段圆弧替换，半径逐角钳制到相邻两半段长的一半（短段相接时两角在段中点相汇，
-/// 不会越界）。输入须是横平竖直、无连续重复点的折线（elbow 派生路径满足）；遇到
-/// 退化/非正交拐角原样通过该角。开放链首末点是路径端点、不倒角；闭合链环绕取邻。
-/// 输出未闭合——闭合由调用方按 `is_closed` 处理（与圆角矩形轮廓同约定）。
-/// 命中测试（[`Item::contains_canvas_point`]）与渲染（binary 层 `ui::stylers`）
-/// 共用此函数，保证"看着圆过的角一定点得中"。
+/// 段圆弧替换。半径与矩形族同语义——**全部拐角同一个半径**：先按各段的约束
+/// （一端拐角 ≤ 段长、两端拐角 ≤ 段长一半）求全局 cap，再统一使用（2026-09-25
+/// 七次验收反馈：此前逐角独立钳制，多顶点 elbow 派生路径的短小段会把相邻拐角
+/// 压成小半径，同一线上出现大小不一的圆角）。个别退化段（<1px）不参与 cap，
+/// 其相邻拐角由逐角 min 兜底。输入须是横平竖直、无连续重复点的折线（elbow
+/// 派生路径满足）；退化/非正交拐角原样通过。开放链首末点是路径端点、不倒角；
+/// 闭合链环绕取邻。输出未闭合——闭合由调用方按 `is_closed` 处理（与圆角矩形
+/// 轮廓同约定）。命中测试（[`Item::contains_canvas_point`]）与渲染（binary 层
+/// `ui::stylers`）共用此函数，保证"看着圆过的角一定点得中"。
 pub fn round_orthogonal_corners(pts: &[(f32, f32)], closed: bool, radius: f32) -> Vec<(f32, f32)> {
     let n = pts.len();
     if n < 2 || radius <= 1e-3 {
         return pts.to_vec();
     }
     let wrap = |i: i64| -> (f32, f32) { pts[(i.rem_euclid(n as i64)) as usize] };
-    let corner_range = if closed { 0..n } else { 1..n - 1 };
-    let mut out: Vec<(f32, f32)> =
-        Vec::with_capacity(n + corner_range.len() * (ROUNDED_CORNER_SEGMENTS + 1));
+    let is_corner = |i: usize| closed || (i > 0 && i + 1 < n);
+    let roundable = |i: usize| -> bool {
+        if !is_corner(i) {
+            return false;
+        }
+        let v = pts[i];
+        let (prev, next) = if closed {
+            (wrap(i as i64 - 1), wrap(i as i64 + 1))
+        } else {
+            (pts[i - 1], pts[i + 1])
+        };
+        let (d_in, d_out) = ((v.0 - prev.0, v.1 - prev.1), (next.0 - v.0, next.1 - v.1));
+        let (lin, lout) = (d_in.0.hypot(d_in.1), d_out.0.hypot(d_out.1));
+        lin >= 1e-3
+            && lout >= 1e-3
+            && (d_in.0 * d_out.0 + d_in.1 * d_out.1).abs() <= 1e-3 * lin * lout
+    };
+    // 全局半径 cap：段被几个可倒角拐角共用，就除以几（两端共用 ≤ 半段长，
+    // 单端 ≤ 全段长）；退化段不参与（其端点拐角由逐角 min 兜底）。
+    let mut radius = radius;
+    let leg_count = if closed { n } else { n - 1 };
+    for j in 0..leg_count {
+        let a = pts[j];
+        let b = pts[(j + 1) % n];
+        let len = (b.0 - a.0).hypot(b.1 - a.1);
+        if len < 1.0 {
+            continue;
+        }
+        let mut k = 0;
+        if roundable(j) {
+            k += 1;
+        }
+        if roundable((j + 1) % n) {
+            k += 1;
+        }
+        if k > 0 {
+            radius = radius.min(len / k as f32);
+        }
+    }
+    let mut out: Vec<(f32, f32)> = Vec::with_capacity(n * 2);
     if !closed {
         out.push(pts[0]);
     }
-    for i in corner_range {
+    for i in if closed { 0..n } else { 1..n - 1 } {
         let v = pts[i];
         let (prev, next) = if closed {
             (wrap(i as i64 - 1), wrap(i as i64 + 1))
@@ -2419,6 +2459,36 @@ mod tests {
         assert!(sq
             .iter()
             .all(|(x, y)| (0.0..=10.0).contains(x) && (0.0..=10.0).contains(y)));
+    }
+
+    #[test]
+    fn round_orthogonal_corners_radius_is_uniform() {
+        // 七次验收反馈：全部拐角同一半径（与矩形同语义——最短受拘束段定全局
+        // cap），不再因短小段把个别拐角压小。路径 100/30/100/70，radius=20：
+        // 30px 段两端拐角共用 → cap = 15，三个拐角全为 15（逐角旧算法会给出
+        // 15/15/20 不一致）。
+        let out = round_orthogonal_corners(
+            &[
+                (0.0, 0.0),
+                (100.0, 0.0),
+                (100.0, 30.0),
+                (200.0, 30.0),
+                (200.0, 100.0),
+            ],
+            false,
+            20.0,
+        );
+        assert_eq!(out[1], (85.0, 0.0), "角 1 切入点内缩 15");
+        assert_eq!(*out.last().unwrap(), (200.0, 100.0));
+        assert!(
+            out.contains(&(200.0, 45.0)),
+            "角 3 切出点内缩 15（旧逐角算法此处为 20）"
+        );
+        assert_eq!(
+            out.iter().filter(|p| **p == (100.0, 15.0)).count(),
+            1,
+            "30px 短段两端圆弧在中点精确相汇"
+        );
     }
 
     #[test]
