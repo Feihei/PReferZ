@@ -377,6 +377,11 @@ pub struct PReferZApp {
     default_fill_style: Option<FillStyle>,
     /// 新建形状默认手绘风抖动档位（plan #3；默认样式侧栏可调）。
     default_sloppiness: Sloppiness,
+    /// 默认风格总开关（草绘/规整），切换时一键覆盖上述两个默认档；
+    /// 持久化到 config.json，启动时按预设推导初始档位。
+    default_style: DefaultStylePreset,
+    /// 新建文本默认字体族（默认风格总开关控制；选中项仍可在属性面板单独改）。
+    default_font_family: FontFamily,
     drag: DragState,
     /// 端点拖拽中暂存的绑定目标（plan #5）：拖到形状轮廓上则记 `(端点下标, 形状id)`，
     /// 释放时写入 item 的 `start_binding`/`end_binding`；拖离则记 `None`（解绑）。
@@ -548,6 +553,45 @@ pub(crate) enum CropHandle {
     TopRight,
     BottomLeft,
     BottomRight,
+}
+
+/// 默认风格总开关（2026-09-28，Excalidraw 出厂观感对齐）。
+///
+/// 只约束**新建元素**的默认档，不影响已有元素；切换时一键覆盖
+/// `default_sloppiness` 与 `default_font_family`，会话内仍可在
+/// 「新建元素默认样式」侧栏微调 sloppiness。持久化到 config.json。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum DefaultStylePreset {
+    /// 规整：精确线条（sloppiness Off）+ 黑体（思源黑体）。
+    Clean,
+    /// 草绘（出厂默认）：中等手绘抖动（Artist）+ 手写体（851远星夜行）。
+    #[default]
+    Sketch,
+}
+
+impl DefaultStylePreset {
+    /// 该预设对应的默认手绘风档位。
+    pub(crate) fn sloppiness(self) -> Sloppiness {
+        match self {
+            DefaultStylePreset::Clean => Sloppiness::Off,
+            DefaultStylePreset::Sketch => Sloppiness::Artist,
+        }
+    }
+
+    /// 该预设对应的默认文字字体族。
+    pub(crate) fn font_family(self) -> FontFamily {
+        match self {
+            DefaultStylePreset::Clean => FontFamily::Normal,
+            DefaultStylePreset::Sketch => FontFamily::Handwriting,
+        }
+    }
+
+    /// 应用预设：覆盖当前的新建默认档（设置面板一键切换入口）。
+    pub(crate) fn apply_to(&self, sloppiness: &mut Sloppiness, font_family: &mut FontFamily) {
+        *sloppiness = self.sloppiness();
+        *font_family = self.font_family();
+    }
 }
 
 // ─────────────────────────── 属性侧栏（Phase H） ───────────────────────────
@@ -862,7 +906,11 @@ impl PReferZApp {
             },
             default_fill: None,
             default_fill_style: None,
-            default_sloppiness: Sloppiness::Off,
+            // 默认风格总开关（2026-09-28）：出厂默认草绘，与 Excalidraw 观感一致。
+            // 会话内可在默认样式侧栏微调 sloppiness，但启动档位始终由预设推导。
+            default_style: cfg.default_style,
+            default_sloppiness: cfg.default_style.sloppiness(),
+            default_font_family: cfg.default_style.font_family(),
             drag: DragState::Idle,
             editing_text: None,
             editing_frame_number: None,
@@ -3450,6 +3498,9 @@ mod tests {
         let auto = dir.join("doc.prz.autosave");
 
         let mut app = PReferZApp::new();
+        // PReferZApp::new() 读真实 ~/.preferz/config.json——用户关闭自动保存时
+        // 本测试会假失败，故显式打开（2026-09-28 修复环境耦合）。
+        app.autosave_enabled = true;
         app.current_file = Some(prz.clone());
         // 变更（重置计时）→ 把计时起点拨回 31s 前，等效「已无操作 31s」
         app.mark_dirty();

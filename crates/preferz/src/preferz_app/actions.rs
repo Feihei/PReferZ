@@ -322,7 +322,9 @@ impl PReferZApp {
             min.x,
             min.y,
             stroke,
-        );
+        )
+        // 默认风格总开关：克隆分叉的箭头与其他新建元素保持同档手绘风。
+        .with_sloppiness(self.default_sloppiness);
         if let ItemKind::Shape {
             start_binding,
             end_binding,
@@ -641,7 +643,9 @@ impl PReferZApp {
             };
             let x = ln.x + off_x;
             let y = ln.y + off_y;
-            let shape = Item::new_shape(shape_type, (ln.w, ln.h), x, y, stroke, None);
+            let shape = Item::new_shape(shape_type, (ln.w, ln.h), x, y, stroke, None)
+                // 默认风格总开关：mermaid 导入节点与其他新建形状同档手绘风。
+                .with_sloppiness(self.default_sloppiness);
             let shape_id = shape.id;
             node_ids.push(shape_id);
             node_rects.push(CanvasRect::new(
@@ -658,7 +662,9 @@ impl PReferZApp {
                     18.0,
                     stroke.color,
                     shape_id,
-                );
+                )
+                // 默认风格总开关：导入文字随预设用手写体/黑体。
+                .with_font_family(self.default_font_family);
                 added.push(txt);
             }
         }
@@ -711,7 +717,9 @@ impl PReferZApp {
                 min.x,
                 min.y,
                 edge_stroke,
-            );
+            )
+            // 默认风格总开关：mermaid 导入边与其他新建元素同档手绘风。
+            .with_sloppiness(self.default_sloppiness);
             if let ItemKind::Shape {
                 start_binding,
                 end_binding,

@@ -792,6 +792,15 @@ impl Item {
         }
     }
 
+    /// builder：设置文字字体族（仅 `Text` item 生效，其余 kind 原样返回）。
+    /// 新建文本时注入「默认风格」的字体档（默认风格总开关，2026-09-28）。
+    pub fn with_font_family(mut self, font_family: FontFamily) -> Self {
+        if let ItemKind::Text { font_family: f, .. } = &mut self.kind {
+            *f = font_family;
+        }
+        self
+    }
+
     /// 整份写入 Text 样式（plan #1：委托给 [`ItemKind::set_text_style`]）。
     pub fn set_text_style(&mut self, style: TextStyle) {
         self.kind.set_text_style(style);
@@ -3436,6 +3445,28 @@ mod tests {
         assert_eq!(txt.sloppiness(), Sloppiness::Off);
         let frame = Item::new_frame(1, (10.0, 10.0), 0.0, 0.0, None);
         assert_eq!(frame.sloppiness(), Sloppiness::Off);
+    }
+
+    #[test]
+    fn with_font_family_sets_text_and_ignores_non_text() {
+        let txt = Item::new_text("x".to_string(), 0.0, 0.0, 16.0, [255; 4])
+            .with_font_family(FontFamily::Handwriting);
+        assert_eq!(
+            txt.kind.text_style().map(|s| s.font_family),
+            Some(FontFamily::Handwriting)
+        );
+
+        let bound = Item::new_text_in("x".to_string(), 0.0, 0.0, 16.0, [255; 4], Uuid::new_v4())
+            .with_font_family(FontFamily::Handwriting);
+        assert_eq!(
+            bound.kind.text_style().map(|s| s.font_family),
+            Some(FontFamily::Handwriting)
+        );
+
+        // 非 Text kind 原样返回，不 panic、不报错
+        let frame = Item::new_frame(1, (10.0, 10.0), 0.0, 0.0, None)
+            .with_font_family(FontFamily::Handwriting);
+        assert!(frame.kind.text_style().is_none());
     }
 
     // ── crop 几何（旋转感知） ──

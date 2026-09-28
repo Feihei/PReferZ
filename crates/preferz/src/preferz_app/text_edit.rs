@@ -17,7 +17,8 @@ impl PReferZApp {
             color: [255, 255, 255, 255],
             first_frame: true,
             container_id: None,
-            font_family: FontFamily::Normal,
+            // 默认风格总开关（草绘预设 → 手写体）。
+            font_family: self.default_font_family,
         });
     }
 
@@ -95,7 +96,8 @@ impl PReferZApp {
                                 String::new(),
                                 18.0,
                                 container_stroke,
-                                FontFamily::Normal,
+                                // 默认风格总开关（草绘预设 → 手写体）。
+                                self.default_font_family,
                             ),
                         },
                         None => (
@@ -103,7 +105,8 @@ impl PReferZApp {
                             String::new(),
                             18.0,
                             container_stroke,
-                            FontFamily::Normal,
+                            // 默认风格总开关（草绘预设 → 手写体）。
+                            self.default_font_family,
                         ),
                     };
                 self.editing_text = Some(EditingText {
@@ -302,6 +305,8 @@ impl PReferZApp {
                 None => {
                     // 创建模式：空内容丢弃，非push AddItem
                     if !edit.buffer.trim().is_empty() {
+                        // 字体族取编辑会话初值（= 默认风格总开关推导的档位）；
+                        // 旧路径工厂写死 Normal，从未把 overlay 用的 font_family 落到 item 上。
                         let item = match edit.container_id {
                             Some(cid) => Item::new_text_in(
                                 edit.buffer,
@@ -310,14 +315,16 @@ impl PReferZApp {
                                 edit.font_size,
                                 edit.color,
                                 cid,
-                            ),
+                            )
+                            .with_font_family(edit.font_family),
                             None => Item::new_text(
                                 edit.buffer,
                                 edit.canvas_pos.x,
                                 edit.canvas_pos.y,
                                 edit.font_size,
                                 edit.color,
-                            ),
+                            )
+                            .with_font_family(edit.font_family),
                         };
                         self.push_cmd(Box::new(AddItem::new(item)));
                         self.flash(t(self.lang, T::FlashTextCreated).to_string());

@@ -96,7 +96,7 @@ While an opened `.prz` has unsaved changes, a silent backup `foo.prz.autosave` i
 
 ### Settings
 
-The in-app settings panel covers arrange spacing, always-on-top / frameless / background transparency, autosave (toggle + interval), default frame aspect ratio, UI language, and theme (Dark / Light / Auto).
+The in-app settings panel covers the default style toggle (Sketch — hand-drawn strokes at medium sloppiness + handwriting font, the factory default; Clean — precise lines + sans-serif), arrange spacing, always-on-top / frameless / background transparency, autosave (toggle + interval), default frame aspect ratio, UI language, and theme (Dark / Light / Auto).
 
 Welcome page lists recent projects (persisted at `~/.preferz/recent.json`, up to 10 entries).
 
@@ -200,7 +200,7 @@ cargo build --release -p preferz # 构建发布版本
 
 ### 设置
 
-应用内设置面板提供：排列间距、窗口置顶 / 无边框 / 背景透明度、自动保存（开关 + 间隔）、新建画框默认比例、界面语言、主题（深色 / 浅色 / 跟随系统）。
+应用内设置面板提供：默认风格总开关（草绘——手绘抖动中档 + 手写字体，出厂默认；规整——精确线条 + 黑体）、排列间距、窗口置顶 / 无边框 / 背景不透明度、自动保存（开关 + 间隔）、新建画框默认比例、界面语言、主题（深色 / 浅色 / 跟随系统）。
 
 欢迎页会列出最近打开的工程（持久化于 `~/.preferz/recent.json`，最多 10 项）。
 

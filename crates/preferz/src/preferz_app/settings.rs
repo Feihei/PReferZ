@@ -105,7 +105,8 @@ impl PReferZApp {
         }
     }
 
-    /// 把当前配置（语言 + 主题 + 自动保存 + 全局画框比例）落盘到 `~/.preferz/config.json`。
+    /// 把当前配置（语言 + 主题 + 自动保存 + 全局画框比例 + 默认风格）落盘到
+    /// `~/.preferz/config.json`。
     /// keymap 不再持久化（改绑入口已随 D6 移除，见 `PReferZApp::new`）。
     pub(crate) fn persist_config(&self) {
         save_config(&UserConfig {
@@ -115,6 +116,7 @@ impl PReferZApp {
             autosave_enabled: self.autosave_enabled,
             autosave_interval: self.autosave_interval,
             frame_ratio: self.frame_ratio,
+            default_style: self.default_style,
         });
     }
 
@@ -179,6 +181,29 @@ impl PReferZApp {
             .open(&mut open)
             .resizable(false)
             .show(ctx, |ui| {
+                // 默认风格总开关（2026-09-28）：草绘 = 中档手绘抖动 + 手写体，
+                // 规整 = 精确线条 + 黑体。切换一键覆盖当前新建默认档并持久化；
+                // 会话内仍可在「新建元素默认样式」侧栏微调 sloppiness。
+                ui.label(t(self.lang, T::SettingsDefaultStyle));
+                ui.horizontal(|ui| {
+                    for (preset, label) in [
+                        (DefaultStylePreset::Sketch, T::DefaultStyleSketch),
+                        (DefaultStylePreset::Clean, T::DefaultStyleClean),
+                    ] {
+                        let selected = self.default_style == preset;
+                        if ui.selectable_label(selected, t(self.lang, label)).clicked() && !selected
+                        {
+                            self.default_style = preset;
+                            preset.apply_to(
+                                &mut self.default_sloppiness,
+                                &mut self.default_font_family,
+                            );
+                            self.persist_config();
+                        }
+                    }
+                });
+                ui.separator();
+
                 ui.label(t(self.lang, T::SettingsArrange));
                 ui.add(
                     egui::Slider::new(&mut self.arrange_spacing, 0.0..=200.0)

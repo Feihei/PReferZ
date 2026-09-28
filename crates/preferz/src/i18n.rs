@@ -189,6 +189,9 @@ pub enum T {
     WelcomeHint,
     // ── 设置面板 ──
     SettingsTitle,
+    SettingsDefaultStyle,
+    DefaultStyleSketch,
+    DefaultStyleClean,
     SettingsArrange,
     SettingsSpacing,
     SettingsWindow,
@@ -555,6 +558,9 @@ fn translate_en(key: T) -> &'static str {
         T::WelcomeHint => "Right-click → Open Project / Load Image / Paste Image",
         // 设置面板
         T::SettingsTitle => "Settings",
+        T::SettingsDefaultStyle => "Default Style",
+        T::DefaultStyleSketch => "Sketch",
+        T::DefaultStyleClean => "Clean",
         T::SettingsArrange => "Arrange",
         T::SettingsSpacing => "Spacing",
         T::SettingsWindow => "Window",
@@ -845,6 +851,9 @@ fn translate_zh(key: T) -> &'static str {
         T::WelcomeHint => "右键 → 打开项目 / 载入图片 / 粘贴图片",
         // 设置面板
         T::SettingsTitle => "设置",
+        T::SettingsDefaultStyle => "默认风格",
+        T::DefaultStyleSketch => "草绘",
+        T::DefaultStyleClean => "规整",
         T::SettingsArrange => "排列",
         T::SettingsSpacing => "间距",
         T::SettingsWindow => "窗口",

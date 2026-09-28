@@ -48,6 +48,10 @@ pub(crate) struct UserConfig {
     /// 新建画框拖拽时按此锁定比例；「跟随全局」的画框随全局变更联动。
     #[serde(default)]
     pub(crate) frame_ratio: Option<(u32, u32)>,
+    /// 默认风格总开关（草绘/规整），缺省 `Sketch`（草绘，Excalidraw 出厂观感）。
+    /// 只决定新建元素的默认 sloppiness 与字体档；详细语义见 `DefaultStylePreset`。
+    #[serde(default)]
+    pub(crate) default_style: DefaultStylePreset,
 }
 
 impl Default for UserConfig {
@@ -59,6 +63,7 @@ impl Default for UserConfig {
             autosave_enabled: default_autosave_enabled(),
             autosave_interval: default_autosave_interval(),
             frame_ratio: None,
+            default_style: DefaultStylePreset::default(),
         }
     }
 }
