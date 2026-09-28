@@ -1159,6 +1159,31 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 
 ---
 
+## 属性侧栏：多选属性级交集 + 竖向滚动（2026-09-28，`0e748f7`）
+
+> 用户指出跨类型多选时侧栏是「章节级并集」（各类型节全冒出来——D3 的交集只做到了
+> 控件级）；拍板升级为**属性级交集**（Excalidraw 同款），并要求高度不足时允许竖向
+> 滚动（推翻 2026-09-22 的「无滚动完整展开」）。
+
+- **属性级交集**：选区按字面选中划分类型族（形状/墨迹/文字/图片/画框），≥2 族时
+  只显示「通用」节（`render_common_props`）——**颜色**（形状描边色/墨迹色/文字色
+  统一映射）+ **线宽**（形状描边宽+墨迹基准笔宽统一映射），值不一致显示「不一致」；
+  无公共属性（含图片/画框）时显示「没有可批量编辑的共有属性」提示。单类型多选仍走
+  各类型节；绑定文字并入文字节的入口保留且不参与交集判定。
+- **一条 undo**：复用 `prop_cmd` Stroke 分支混合快照机制，新增 `PropValue::Freedraw →
+  SetFreedrawStyle` 分流；`apply_common_color` 将三族快照混装一个 pending
+  （kind=Stroke），文字改色同时脱离跟随、形状走 `sync_stroke_color_side_effects`
+  联动——跨类型一次改色/改宽合成一条 MultiCommand，撤销一步到位。
+- **竖向滚动**：属性面板与默认样式面板内容套 `egui::ScrollArea`
+  （`.auto_shrink([false, true])` + `max_height(ui.available_height())`）——标题行
+  固定，宽度撑满、高度按内容收缩，不超高时外观与原自适应一致。i18n 新增
+  `PropsSectionCommon`（Common/通用）。
+- 测试：新增 `prop_cmd_merges_freedraw_snapshot_for_common_color`（形状+墨迹混合
+  快照 → 一条 MultiCommand、undo 还原双类型）；全量 111+2+210+9 = 332 通过，
+  `fmt --check` / `clippy -D warnings` 零告警。
+
+---
+
 ## 决策点归档（D1–D6 / I1–I4 / L 系列）
 
 > 原列于 plan.md，G/I/H/K 交付后蒸馏归档于此，使 CHANGELOG 自包含、plan.md 仅保留前瞻内容。
