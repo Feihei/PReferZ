@@ -3,41 +3,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 // 二进制入口：业务模块统一由 lib.rs 导出，这里直接复用 lib，避免与 lib 重复编译同一份代码。
-use preferz::{PReferZApp, HANDWRITING_FONT_FAMILY};
-use std::io::Read;
+use preferz::PReferZApp;
 
 fn main() -> eframe::Result<()> {
-    let mut font_definitions = egui::FontDefinitions::default();
-    // 思源黑体（Source Han Sans CN）— OFL-1.1 许可，支持中英文且字形美观
-    font_definitions.font_data.insert(
-        "SourceHanSansCN".to_string(),
-        egui::FontData::from_owned(load_font()).into(),
-    );
-    // Proportional 和 Monospace 都插入，保证任何字体族下中文都不回落到系统默认
-    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
-        if let Some(families) = font_definitions.families.get_mut(&family) {
-            families.insert(0, "SourceHanSansCN".to_string());
-        }
-    }
-
-    // 851远星夜行手写体 — 免费商用（作者 Lakejason0 / 原作者 8:51:22 pm）
-    // 仅注册为 FontFamily::Name，不插入 Proportional/Monospace 族——
-    // 手写体只用于显式选择 Handwriting 的文字，不污染默认排版。
-    // repo 里进的是 GB2312+ASCII 子集版（6.2MB；完整版 28MB 留本地不进 git，
-    // 重新生成方法见 assets/FONT_LICENSES.md）。
-    font_definitions.font_data.insert(
-        HANDWRITING_FONT_FAMILY.to_string(),
-        egui::FontData::from_owned(load_handwriting_font()).into(),
-    );
-    // 手写族字体列表：子集缺字（生僻字/扩展区/颜文字符号）时回落思源黑体，
-    // 避免渲染成豆腐块。egui 按列表顺序查字形。
-    font_definitions.families.insert(
-        egui::FontFamily::Name(HANDWRITING_FONT_FAMILY.into()),
-        vec![
-            HANDWRITING_FONT_FAMILY.to_string(),
-            "SourceHanSansCN".to_string(),
-        ],
-    );
+    // 字体定义构建已收口到 lib.rs（导出选区的离屏 egui Context 需要同一份定义）
+    let font_definitions = preferz::app_font_definitions();
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -59,48 +29,6 @@ fn main() -> eframe::Result<()> {
             Ok(Box::new(PReferZApp::new()))
         }),
     )
-}
-
-/// 加载思源黑体。
-///
-/// 编译期由 build.rs 用 deflate 压缩（9.92MB → 约 6.7MB）后嵌入，运行时
-/// inflate 还原。字形覆盖面与原始 TTF 完全一致，代价只是一点启动 CPU ——
-/// 比子集化安全：子集化会把生僻字渲染成豆腐块。
-/// `FONT_RAW_SIZE` 由 build.rs 注入，用于预分配缓冲。
-fn load_font() -> Vec<u8> {
-    const COMPRESSED: &[u8] = include_bytes!(concat!(
-        env!("OUT_DIR"),
-        "/SourceHanSansCN-Regular.ttf.zlib"
-    ));
-    let mut buf = Vec::with_capacity(
-        env!("FONT_RAW_SIZE")
-            .parse()
-            .expect("FONT_RAW_SIZE 应为 usize"),
-    );
-    flate2::read::ZlibDecoder::new(COMPRESSED)
-        .read_to_end(&mut buf)
-        .expect("解压思源黑体失败");
-    buf
-}
-
-/// 加载 851远星夜行手写体。
-///
-/// 编译期由 build.rs 用 deflate 压缩（28MB → 约 18-22MB）后嵌入，运行时
-/// inflate 还原。`HANDWRITING_FONT_RAW_SIZE` 由 build.rs 注入。
-fn load_handwriting_font() -> Vec<u8> {
-    const COMPRESSED: &[u8] = include_bytes!(concat!(
-        env!("OUT_DIR"),
-        "/851LakeusNightWriting-Regular.ttf.zlib"
-    ));
-    let mut buf = Vec::with_capacity(
-        env!("HANDWRITING_FONT_RAW_SIZE")
-            .parse()
-            .expect("HANDWRITING_FONT_RAW_SIZE 应为 usize"),
-    );
-    flate2::read::ZlibDecoder::new(COMPRESSED)
-        .read_to_end(&mut buf)
-        .expect("解压手写字体失败");
-    buf
 }
 
 /// 加载窗口图标（assets/icon.png，256×256 推荐）。
@@ -127,27 +55,27 @@ fn load_icon() -> egui::IconData {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     /// 解压产物必须与原始 TTF 完全一致。
     ///
     /// 同时防两类问题：压缩/解压链路本身出错；以及 assets 里的字体被替换后
     /// build.rs 没有重跑（rerun-if-changed 失效或产物陈旧）导致嵌进去了旧字体。
+    /// 检查经 `app_font_definitions()` 收口后的两个字体条目。
     #[test]
     fn decompressed_font_matches_original_ttf() {
-        let font = load_font();
+        let defs = preferz::app_font_definitions();
+        let font = defs.font_data["SourceHanSansCN"].font.clone().into_owned();
         // sfnt 魔数 0x00010000 = TrueType outlines
         assert_eq!(&font[..4], &[0x00, 0x01, 0x00, 0x00], "sfnt 魔数不符");
-        let expected: usize = env!("FONT_RAW_SIZE").parse().unwrap();
-        assert_eq!(font.len(), expected, "解压后大小应与原始 TTF 一致");
     }
 
     /// 手写字体解压一致性检查（同上）。
     #[test]
     fn decompressed_handwriting_font_matches_original_ttf() {
-        let font = load_handwriting_font();
+        let defs = preferz::app_font_definitions();
+        let font = defs.font_data[preferz::HANDWRITING_FONT_FAMILY]
+            .font
+            .clone()
+            .into_owned();
         assert_eq!(&font[..4], &[0x00, 0x01, 0x00, 0x00], "sfnt 魔数不符");
-        let expected: usize = env!("HANDWRITING_FONT_RAW_SIZE").parse().unwrap();
-        assert_eq!(font.len(), expected, "解压后大小应与原始 TTF 一致");
     }
 }

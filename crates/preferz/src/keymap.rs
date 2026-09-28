@@ -374,6 +374,9 @@ pub enum Action {
     LoadImage,
     Save,
     SaveAs,
+    /// 导出选中区域（Excalidraw 同款 `Ctrl+Shift+E`）：弹出导出对话框
+    /// （实时预览 + 透明背景开关 + PNG / SVG / 复制到剪贴板）。无选中时忽略。
+    ExportSelection,
     // 编辑
     Undo,
     Redo,
@@ -460,6 +463,7 @@ impl Action {
         Action::LoadImage,
         Action::Save,
         Action::SaveAs,
+        Action::ExportSelection,
         Action::Undo,
         Action::Redo,
         Action::Paste,
@@ -513,6 +517,8 @@ impl Action {
             LoadImage => vec![KeyBind::new(I).ctrl()],
             Save => vec![KeyBind::new(S).ctrl()],
             SaveAs => vec![KeyBind::new(S).ctrl().shift()],
+            // 导出选区（Excalidraw 同款 Ctrl+Shift+E）
+            ExportSelection => vec![KeyBind::new(E).ctrl().shift()],
             Undo => vec![KeyBind::new(Z).ctrl()],
             // 重做保留两个绑定：Ctrl+Shift+Z 与 Ctrl+Y（与改造前行为一致）
             Redo => vec![KeyBind::new(Z).ctrl().shift(), KeyBind::new(Y).ctrl()],

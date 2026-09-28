@@ -61,12 +61,17 @@ pub(crate) use export::{export_pixmaps_to_dir, export_scene_to_file, ColorSample
 mod actions;
 mod context_menu;
 mod drag;
+mod export_dialog;
 mod file_io;
+mod offscreen;
 mod present;
 mod props;
 mod render;
 mod settings;
+mod svg_export;
 mod text_edit;
+pub(crate) use export_dialog::{ClipboardImageOutcome, ExportDialogState};
+pub(crate) use offscreen::{rasterize_primitives, OffscreenScene};
 
 /// Undo 栈。`push` 会读`Command::skip_first_redo()`
 /// - 交互预览命令（拖拽中已直接改 item）返true 跳过首次 redo
@@ -481,6 +486,10 @@ pub struct PReferZApp {
     /// 待合并的连续编辑——必须整帧没人变才提交，否则同一帧内后一个
     /// 未变化的控件会把前一个控件的编辑提前结算掉。
     prop_changed_this_frame: bool,
+    /// 导出选区对话框（Ctrl+Shift+E）：状态 + 透明背景开关 + 打开时捕获的选区。
+    export_dialog: ExportDialogState,
+    /// 离屏导出用的字体定义缓存（首次打开对话框时解压构建，约 27MB）。
+    export_fonts: Option<egui::FontDefinitions>,
 }
 
 /// 保存提示对话框的触发场景#[derive(Clone, Copy, PartialEq)]
@@ -955,6 +964,8 @@ impl PReferZApp {
             logo_texture: None,
             prop_edit_pending: None,
             prop_changed_this_frame: false,
+            export_dialog: ExportDialogState::default(),
+            export_fonts: None,
         }
     }
 
@@ -1094,6 +1105,34 @@ impl PReferZApp {
                 } else {
                     msg
                 }),
+                Err(e) => self.flash(format!("{}: {}", t(self.lang, T::FlashExportFailed), e)),
+            }
+        }
+        // 导出选区 → 剪贴板（后台光栅化完成后由 UI 线程写 arboard）
+        if let Some(outcome) = self.bg_ops.take_clipboard() {
+            match outcome.result {
+                Ok((rgba, w, h)) => match arboard::Clipboard::new() {
+                    Ok(mut clipboard) => {
+                        let data = arboard::ImageData {
+                            width: w as usize,
+                            height: h as usize,
+                            bytes: std::borrow::Cow::Owned(rgba),
+                        };
+                        match clipboard.set_image(data) {
+                            Ok(()) => {
+                                self.flash(t(self.lang, T::FlashCopiedToClipboard).to_string())
+                            }
+                            Err(e) => self.flash(format!(
+                                "{}: {}",
+                                t(self.lang, T::FlashClipboardFailed),
+                                e
+                            )),
+                        }
+                    }
+                    Err(e) => {
+                        self.flash(format!("{}: {}", t(self.lang, T::FlashClipboardFailed), e))
+                    }
+                },
                 Err(e) => self.flash(format!("{}: {}", t(self.lang, T::FlashExportFailed), e)),
             }
         }
@@ -1808,6 +1847,9 @@ impl eframe::App for PReferZApp {
         if self.mermaid_open {
             self.render_mermaid_window(ctx);
         }
+
+        // 导出选区对话框（Ctrl+Shift+E）
+        self.render_export_selection_dialog(ctx);
 
         // 快捷键派发（改绑捕获入口已按 ADR-0007 / D6 移除，这里只保留查表派发）
         self.handle_shortcuts(ctx);
@@ -2712,6 +2754,8 @@ impl PReferZApp {
         if self.cancel_pressed(ctx) {
             if self.context_menu_open {
                 self.context_menu_open = false;
+            } else if self.export_dialog.open {
+                self.export_dialog.open = false;
             } else if self.color_picker_active {
                 self.color_picker_active = false;
             }
@@ -2787,6 +2831,14 @@ impl PReferZApp {
         }
         if self.keymap.pressed(Action::SaveAs, ctx) {
             self.save_file_as(ctx);
+        }
+        // 导出选区（Excalidraw 同款 Ctrl+Shift+E）：无选中只提示不弹窗
+        if self.keymap.pressed(Action::ExportSelection, ctx) {
+            if self.scene.selection.is_empty() {
+                self.flash(t(self.lang, T::FlashNoSelectionToExport).to_string());
+            } else {
+                self.open_export_selection_dialog();
+            }
         }
         if self.keymap.pressed(Action::OpenProject, ctx) {
             self.open_project_file(ctx);

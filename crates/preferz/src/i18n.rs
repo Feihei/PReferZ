@@ -86,6 +86,14 @@ pub enum T {
     ExportJpgSelection,
     ExportAllImages,
     ExportSelectionImages,
+    // ── 导出选区对话框（Ctrl+Shift+E）──
+    ExportSelectionDialog,  // 对话框标题：导出选区
+    ExportTransparentBg,    // 透明背景
+    ExportToPng,            // 导出 PNG
+    ExportToSvg,            // 导出 SVG
+    ExportCopyToClipboard,  // 复制到剪贴板
+    ExportSizeLabel,        // 尺寸 {0} × {1} px · 导出 {2} × {3} px
+    FlashCopiedToClipboard, // 图片已复制到剪贴板
     // ── flash 消息 ──
     FlashTextCreated,
     FlashTextUpdated,
@@ -461,6 +469,13 @@ fn translate_en(key: T) -> &'static str {
         T::ExportJpgSelection => "JPG (Selection)...",
         T::ExportAllImages => "All Images...",
         T::ExportSelectionImages => "Selection Images...",
+        T::ExportSelectionDialog => "Export Selection",
+        T::ExportTransparentBg => "Transparent background",
+        T::ExportToPng => "PNG",
+        T::ExportToSvg => "SVG",
+        T::ExportCopyToClipboard => "Copy to clipboard",
+        T::ExportSizeLabel => "Size {0} × {1} px · export {2} × {3} px",
+        T::FlashCopiedToClipboard => "Image copied to clipboard",
         // flash 消息
         T::FlashTextCreated => "Text note created",
         T::FlashTextUpdated => "Text note updated",
@@ -756,6 +771,13 @@ fn translate_zh(key: T) -> &'static str {
         T::ExportJpgSelection => "JPG (仅选中)...",
         T::ExportAllImages => "全部图片...",
         T::ExportSelectionImages => "仅选中图片...",
+        T::ExportSelectionDialog => "导出选区",
+        T::ExportTransparentBg => "透明背景",
+        T::ExportToPng => "PNG",
+        T::ExportToSvg => "SVG",
+        T::ExportCopyToClipboard => "复制到剪贴板",
+        T::ExportSizeLabel => "尺寸 {0} × {1} px · 导出 {2} × {3} px",
+        T::FlashCopiedToClipboard => "图片已复制到剪贴板",
         // flash 消息
         T::FlashTextCreated => "已创建文本便签",
         T::FlashTextUpdated => "已更新文本便签",
@@ -1017,6 +1039,7 @@ pub fn action_label(lang: Lang, action: Action) -> &'static str {
             LoadImage => "Load image",
             Save => "Save",
             SaveAs => "Save as",
+            ExportSelection => "Export selection",
             Undo => "Undo",
             Redo => "Redo",
             Paste => "Paste from clipboard",
@@ -1065,6 +1088,7 @@ pub fn action_label(lang: Lang, action: Action) -> &'static str {
             LoadImage => "载入图片",
             Save => "保存",
             SaveAs => "另存为",
+            ExportSelection => "导出选中区域",
             Undo => "撤销",
             Redo => "重做",
             Paste => "从剪贴板粘贴",

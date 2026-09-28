@@ -49,6 +49,8 @@ pub(crate) struct BackgroundOps {
     pub(crate) save_rx: Option<Receiver<SaveOutcome>>,
     /// 场景导出通道。
     pub(crate) export_rx: Option<Receiver<ExportOutcome>>,
+    /// 导出选区 → 剪贴板通道（后台光栅化，UI 线程收货后写 arboard）。
+    pub(crate) clipboard_rx: Option<Receiver<ClipboardImageOutcome>>,
     /// 当前进行的后台任务数量（>0 时显示进度条）。
     pub(crate) pending: usize,
     /// 进度消息。
@@ -211,6 +213,21 @@ impl BackgroundOps {
                     self.msg = None;
                 }
                 self.export_rx = None;
+                return Some(outcome);
+            }
+        }
+        None
+    }
+
+    /// 取出导出选区 → 剪贴板的光栅化结果（由 PReferZApp::poll_background 调用）。
+    pub(crate) fn take_clipboard(&mut self) -> Option<ClipboardImageOutcome> {
+        if let Some(rx) = &self.clipboard_rx {
+            if let Ok(outcome) = rx.try_recv() {
+                self.pending = self.pending.saturating_sub(1);
+                if self.pending == 0 {
+                    self.msg = None;
+                }
+                self.clipboard_rx = None;
                 return Some(outcome);
             }
         }

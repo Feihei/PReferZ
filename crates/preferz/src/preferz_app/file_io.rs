@@ -461,9 +461,9 @@ impl PReferZApp {
             return;
         }
 
-        // 按 selection_only 过滤 items
+        // 按 selection_only 过滤 items（绑定文本随容器联动，见 expanded_export_ids）
         let items_snapshot: Vec<Item> = if selection_only {
-            let sel = &self.scene.selection;
+            let sel = super::export_dialog::expanded_export_ids(&self.scene);
             self.scene
                 .items
                 .iter()
