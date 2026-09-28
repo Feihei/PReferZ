@@ -1159,6 +1159,17 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 
 ---
 
+## Ctrl+Shift+A 取消全选（2026-09-28，`72ebed3`）
+
+- Excalidraw **无**专用取消全选快捷键（其 Esc 兼职清空选择）；本项目 Esc 已被
+  `Cancel` 占用，按用户习惯挂 `Ctrl+Shift+A`（与解组 Ctrl+Shift+G 同型不冲突）。
+- `Action::DeselectAll` 走 keymap 查表，设置面板可改绑；`handle_shortcuts`
+  派发在全选之后；i18n 动作名 `Deselect all` / `取消全选`。
+- 测试：keymap `select_all_and_deselect_all_defaults`（锁定 Ctrl+A / Ctrl+Shift+A
+  两组默认绑定）；全量 112+2+211+9 = 334 通过。
+
+---
+
 ## Ctrl+A 全选（2026-09-28，`0ddcc2c`）
 
 - `Action::SelectAll` 走 keymap 查表（进 `ALL`），默认绑定 **Ctrl+A**（Excalidraw
