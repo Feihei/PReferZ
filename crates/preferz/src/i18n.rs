@@ -270,9 +270,11 @@ pub enum T {
     // ── 箭头样式 ──
     StyleArrowStart,
     StyleArrowEnd,
-    /// 箭头三态：无 / 箭头 / 圆点（Phase I）。
+    /// 箭头五态：无 / 箭头 / 三角 / 空心三角 / 圆点（属性栏以小图标呈现，此处为悬停提示文案）。
     StyleArrowNone,
     StyleArrowArrow,
+    StyleArrowTriangle,
+    StyleArrowTriangleOutline,
     StyleArrowDot,
     // ── 曲线 / 圆角（Phase I）──
     StyleCurve,
@@ -638,6 +640,8 @@ fn translate_en(key: T) -> &'static str {
         T::StyleArrowEnd => "End arrow",
         T::StyleArrowNone => "None",
         T::StyleArrowArrow => "Arrow",
+        T::StyleArrowTriangle => "Triangle",
+        T::StyleArrowTriangleOutline => "Hollow triangle",
         T::StyleArrowDot => "Dot",
         T::StyleCurve => "Edges",
         T::StyleCurveStraight => "Sharp",
@@ -940,6 +944,8 @@ fn translate_zh(key: T) -> &'static str {
         T::StyleArrowEnd => "终点箭头",
         T::StyleArrowNone => "无",
         T::StyleArrowArrow => "箭头",
+        T::StyleArrowTriangle => "三角",
+        T::StyleArrowTriangleOutline => "空心三角",
         T::StyleArrowDot => "圆点",
         T::StyleCurve => "边角",
         T::StyleCurveStraight => "尖角",

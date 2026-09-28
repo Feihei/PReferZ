@@ -1,6 +1,98 @@
 //! props — 从 preferz_app 拆出的方法段（架构整固 Step 3c-ii）。逐字搬迁，`use super::*;` 够到 mod.rs 词汇/私有项。
 use super::*;
 
+/// 单端箭头样式选择器：五个小图标（无 / 箭头 / 三角 / 空心三角 / 圆点），
+/// 悬停显示样式名。点击且与当前值不同时返回 `Some(新值)`；`None` 是合法值（无箭头）。
+fn arrowhead_selector(
+    ui: &mut egui::Ui,
+    lang: Lang,
+    current: Option<ArrowHeadStyle>,
+) -> Option<Option<ArrowHeadStyle>> {
+    let options: [(Option<ArrowHeadStyle>, T); 5] = [
+        (None, T::StyleArrowNone),
+        (Some(ArrowHeadStyle::Arrow), T::StyleArrowArrow),
+        (Some(ArrowHeadStyle::Triangle), T::StyleArrowTriangle),
+        (
+            Some(ArrowHeadStyle::TriangleOutline),
+            T::StyleArrowTriangleOutline,
+        ),
+        (Some(ArrowHeadStyle::Dot), T::StyleArrowDot),
+    ];
+    let mut picked = None;
+    ui.horizontal(|ui| {
+        for (value, hint) in options {
+            if arrowhead_icon(ui, current == value, value, t(lang, hint)) && current != value {
+                picked = Some(value);
+            }
+        }
+    });
+    picked
+}
+
+/// 画一个「线段 + 端头」小图标（与画布渲染同参数：头长 10px、半张角 30°），
+/// 选中/悬停时加高亮底色，返回是否被点击。
+fn arrowhead_icon(
+    ui: &mut egui::Ui,
+    selected: bool,
+    style: Option<ArrowHeadStyle>,
+    tooltip: &str,
+) -> bool {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(28.0, 18.0), egui::Sense::click());
+    let bg = if selected {
+        Some(ui.visuals().selection.bg_fill)
+    } else if resp.hovered() {
+        Some(ui.visuals().widgets.hovered.bg_fill)
+    } else {
+        None
+    };
+    if let Some(bg) = bg {
+        ui.painter().rect_filled(rect.expand(2.0), 3.0, bg);
+    }
+    let color = ui.visuals().text_color();
+    let stroke = egui::Stroke::new(1.6, color);
+    let cy = rect.center().y;
+    let tip = egui::pos2(rect.right() - 3.0, cy);
+    // 一小段线示意「这是端头」
+    ui.painter()
+        .line_segment([egui::pos2(rect.left() + 3.0, cy), tip], stroke);
+    let head_len = 10.0;
+    let (sin, cos) = ArrowHeadStyle::HALF_ANGLE.sin_cos();
+    let b1 = tip - egui::vec2(head_len * cos, head_len * sin);
+    let b2 = tip - egui::vec2(head_len * cos, -head_len * sin);
+    match style {
+        None => {}
+        Some(ArrowHeadStyle::Arrow) => {
+            ui.painter().line_segment([tip, b1], stroke);
+            ui.painter().line_segment([tip, b2], stroke);
+        }
+        Some(ArrowHeadStyle::Triangle) => {
+            ui.painter().add(egui::Shape::Path(egui::epaint::PathShape {
+                points: vec![tip, b1, b2],
+                closed: true,
+                fill: color,
+                stroke: egui::epaint::PathStroke::NONE,
+            }));
+        }
+        Some(ArrowHeadStyle::TriangleOutline) => {
+            ui.painter().add(egui::Shape::Path(egui::epaint::PathShape {
+                points: vec![tip, b1, b2],
+                closed: true,
+                fill: egui::Color32::TRANSPARENT,
+                stroke: stroke.into(),
+            }));
+        }
+        Some(ArrowHeadStyle::Dot) => {
+            // 实心圆点，相切于端点（圆心向线段内缩一个半径）
+            let radius = 4.0;
+            ui.painter()
+                .circle_filled(tip - egui::vec2(radius, 0.0), radius, color);
+        }
+    }
+    let clicked = resp.clicked();
+    resp.on_hover_text(tooltip);
+    clicked
+}
+
 /// 从 Shape 的 `ItemKind` 抽填充快照（颜色 + 样式 + 是否跟随描边），供 `apply_continuous`
 /// 的 snap 端复用（fn item 可多次传入，闭包则会被 move）。
 fn fill_snap(k: &ItemKind) -> Option<PropValue> {
@@ -831,7 +923,8 @@ impl PReferZApp {
                     }
                 }
             }
-            // 起/终点箭头（仅开放折线；闭合图形首尾相连，箭头无意义）
+            // 起/终点箭头（仅开放折线；闭合图形首尾相连，箭头无意义）。
+            // Excalidraw 同款：两端各自独立选样式（无 / Arrow / Triangle / Dot / Bar）。
             let all_closed = poly_ids.iter().all(|id| {
                 matches!(self.scene.get_item(id), Some(item) if matches!(item.kind, ItemKind::Shape { closed: true, .. }))
             });
@@ -846,78 +939,51 @@ impl PReferZApp {
                     _ => None,
                 }) {
                     let (start, end) = p.value();
-                    let mut sc = start.is_some();
-                    if ui.checkbox(&mut sc, t(lang, T::StyleArrowStart)).changed() {
-                        let new_start = if sc {
-                            Some(ArrowHeadStyle::Arrow)
-                        } else {
-                            None
-                        };
-                        let items: Vec<(ItemId, ArrowHeads, ArrowHeads)> = poly_ids
-                            .iter()
-                            .filter_map(|id| {
-                                self.scene.get_item(id).and_then(|it| match &it.kind {
-                                    ItemKind::Shape {
-                                        start_arrow,
-                                        end_arrow,
-                                        closed: false,
-                                        ..
-                                    } => Some((
-                                        *id,
-                                        ArrowHeads {
-                                            start: *start_arrow,
-                                            end: *end_arrow,
-                                        },
-                                        ArrowHeads {
-                                            start: new_start,
-                                            end: *end_arrow,
-                                        },
-                                    )),
-                                    _ => None,
-                                })
-                            })
-                            .collect();
-                        if !items.is_empty() {
-                            self.push_cmd(Box::new(SetArrowHeads::new_batch(items)));
-                        }
+                    if p.is_mixed() {
+                        ui.label(t(lang, T::PropsMixedValue));
                     }
-                    let mut ec = end.is_some();
-                    if ui.checkbox(&mut ec, t(lang, T::StyleArrowEnd)).changed() {
-                        let new_end = if ec {
-                            Some(ArrowHeadStyle::Arrow)
-                        } else {
-                            None
-                        };
-                        let items: Vec<(ItemId, ArrowHeads, ArrowHeads)> = poly_ids
-                            .iter()
-                            .filter_map(|id| {
-                                self.scene.get_item(id).and_then(|it| match &it.kind {
-                                    ItemKind::Shape {
-                                        start_arrow,
-                                        end_arrow,
-                                        closed: false,
-                                        ..
-                                    } => Some((
-                                        *id,
-                                        ArrowHeads {
-                                            start: *start_arrow,
-                                            end: *end_arrow,
-                                        },
-                                        ArrowHeads {
-                                            start: *start_arrow,
-                                            end: new_end,
-                                        },
-                                    )),
-                                    _ => None,
-                                })
-                            })
-                            .collect();
-                        if !items.is_empty() {
-                            self.push_cmd(Box::new(SetArrowHeads::new_batch(items)));
-                        }
+                    ui.label(t(lang, T::StyleArrowStart));
+                    if let Some(new) = arrowhead_selector(ui, lang, start) {
+                        self.push_arrowhead(&poly_ids, true, new);
+                    }
+                    ui.label(t(lang, T::StyleArrowEnd));
+                    if let Some(new) = arrowhead_selector(ui, lang, end) {
+                        self.push_arrowhead(&poly_ids, false, new);
                     }
                 }
             }
+        }
+    }
+
+    /// 批量设置开放折线某一端的箭头样式（`start: bool` 选端；另一端保持各 item 原值）。
+    /// `new: Option<ArrowHeadStyle>` 中 `None` 表示「无箭头」。读当前值合成一条 undo 命令。
+    fn push_arrowhead(&mut self, ids: &[ItemId], start: bool, new: Option<ArrowHeadStyle>) {
+        let items: Vec<(ItemId, ArrowHeads, ArrowHeads)> = ids
+            .iter()
+            .filter_map(|id| {
+                self.scene.get_item(id).and_then(|it| match &it.kind {
+                    ItemKind::Shape {
+                        start_arrow,
+                        end_arrow,
+                        closed: false,
+                        ..
+                    } => Some((
+                        *id,
+                        ArrowHeads {
+                            start: *start_arrow,
+                            end: *end_arrow,
+                        },
+                        ArrowHeads {
+                            start: if start { new } else { *start_arrow },
+                            end: if start { *end_arrow } else { new },
+                        },
+                    )),
+                    _ => None,
+                })
+            })
+            .collect();
+        if !items.is_empty() {
+            self.push_cmd(Box::new(SetArrowHeads::new_batch(items)));
         }
     }
 

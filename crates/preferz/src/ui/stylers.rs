@@ -179,11 +179,11 @@ fn is_closed(shape: &ShapeData) -> bool {
     !matches!(shape.shape_type, ShapeType::Polyline) || shape.closed
 }
 
-/// 追加起/终点箭头（Arrow = V 形两翼，Dot = 实心圆点）。
+/// 追加起/终点箭头（四样式：Arrow / Triangle / TriangleOutline / Dot，样式表见
+/// [`push_one_arrowhead`]）。
 ///
-/// 尺寸基准：Arrow 的头长 = 线宽 × 4；Dot 的半径 = 线宽 × 1.5（直径 3 倍线宽，
-/// 与 Arrow 的视觉分量相当），圆心沿线段方向内缩一个半径，使圆点**相切于端点**
-/// 而不是盖住它（Excalidraw 同款观感）。
+/// 尺寸基准（[`ArrowHeadStyle::HEAD_LEN_MULT`] / [`ArrowHeadStyle::HALF_ANGLE`]）：
+/// 头长 = 线宽 × 4，半张角 30°（总张开 60°）。
 ///
 /// 本函数画**规整**箭头（`CleanStyler` 用）；`RoughStyler` 走
 /// [`RoughStyler::push_arrow_heads_rough`]——DP3 拍板跟随 Excalidraw：箭头是
@@ -199,67 +199,114 @@ fn push_arrow_heads(
     if pts.len() < 2 {
         return;
     }
-    let half = std::f32::consts::FRAC_PI_2 * (5.0 / 9.0); // ≈50°
 
-    // 起点箭头：尖端指向起点，两翼伸向线段体内（V 开口朝前）。
-    match start_arrow {
-        Some(ArrowHeadStyle::Arrow) => {
-            let dir = pts[1] - pts[0];
-            let len = dir.length();
-            if len > 1e-3 {
-                let dir = dir / len;
-                let head_len = line_width * 4.0;
-                let a1 = rotate_vec2(dir, half);
-                let a2 = rotate_vec2(dir, -half);
-                out.push(Shape::line(
-                    vec![pts[0], pts[0] + a1 * head_len],
-                    egui_stroke,
-                ));
-                out.push(Shape::line(
-                    vec![pts[0], pts[0] + a2 * head_len],
-                    egui_stroke,
-                ));
-            }
-        }
-        Some(ArrowHeadStyle::Dot) => {
-            let dir = pts[1] - pts[0];
-            let len = dir.length();
-            if len > 1e-3 {
-                let dir = dir / len;
-                let radius = (line_width * 1.5).max(1.0);
-                out.push(Shape::circle_filled(
-                    pts[0] + dir * radius,
-                    radius,
-                    egui_stroke.color,
-                ));
-            }
-        }
-        None => {}
+    // 起点箭头：尖端在起点，`inward` 指向线段体内。
+    let start_dir = pts[1] - pts[0];
+    if start_dir.length() > 1e-3 {
+        push_one_arrowhead(
+            out,
+            pts[0],
+            start_dir / start_dir.length(),
+            start_arrow,
+            egui_stroke,
+            line_width,
+        );
     }
 
-    // 终点箭头：尖端指向终点，两翼伸向线段体内（V 开口朝后，箭头朝前）。
+    // 终点箭头：尖端在终点，`inward` = -outward（指向线段体内）。
     let last = pts[pts.len() - 1];
-    let dir = last - pts[pts.len() - 2];
-    let len = dir.length();
-    if len > 1e-3 {
-        let dir = dir / len;
-        match end_arrow {
-            Some(ArrowHeadStyle::Arrow) => {
-                let head_len = line_width * 4.0;
-                let a1 = rotate_vec2(dir, half);
-                let a2 = rotate_vec2(dir, -half);
-                out.push(Shape::line(vec![last, last - a1 * head_len], egui_stroke));
-                out.push(Shape::line(vec![last, last - a2 * head_len], egui_stroke));
-            }
-            Some(ArrowHeadStyle::Dot) => {
-                let radius = (line_width * 1.5).max(1.0);
-                out.push(Shape::circle_filled(
-                    last - dir * radius,
-                    radius,
-                    egui_stroke.color,
-                ));
-            }
-            None => {}
+    let end_dir = last - pts[pts.len() - 2];
+    if end_dir.length() > 1e-3 {
+        push_one_arrowhead(
+            out,
+            last,
+            -(end_dir / end_dir.length()),
+            end_arrow,
+            egui_stroke,
+            line_width,
+        );
+    }
+}
+
+/// 空心三角（TriangleOutline）端头的主线裁剪：线端内收到三角底边中点，
+/// 避免线穿入三角内部（V 箭头尖端锚在线端、实心三角 / 圆点盖住线端，无需裁剪）。
+/// 起点 / 终点按各自端头样式独立处理；裁剪量 = 头长在线方向上的投影
+/// （头长 × cos30°），且不超过该段长度的一半——极短线宁可重叠也不把线裁没了。
+fn trimmed_line_points(
+    pts: &[Pos2],
+    start: Option<ArrowHeadStyle>,
+    end: Option<ArrowHeadStyle>,
+    line_width: f32,
+) -> Vec<Pos2> {
+    let mut out = pts.to_vec();
+    if out.len() < 2 {
+        return out;
+    }
+    let trim = line_width * ArrowHeadStyle::HEAD_LEN_MULT * ArrowHeadStyle::HALF_ANGLE.cos();
+    if start == Some(ArrowHeadStyle::TriangleOutline) {
+        let d = out[1] - out[0];
+        let len = d.length();
+        if len > 1e-3 {
+            out[0] += d / len * trim.min(len * 0.5);
+        }
+    }
+    if end == Some(ArrowHeadStyle::TriangleOutline) {
+        let n = out.len();
+        let d = out[n - 1] - out[n - 2];
+        let len = d.length();
+        if len > 1e-3 {
+            out[n - 1] -= d / len * trim.min(len * 0.5);
+        }
+    }
+    out
+}
+
+/// 单端箭头（四样式）：`inward` 为尖端指向线段体内的单位向量。
+///
+/// - Arrow：V 形两翼，半张角 30°（总张开 60°）
+/// - Triangle：描边色实心三角
+/// - TriangleOutline：空心三角（仅描边不填充；主线经 [`trimmed_line_points`]
+///   裁到三角底边，不穿入三角）
+/// - Dot：实心圆点，半径 = 线宽 × [`ArrowHeadStyle::DOT_RADIUS_MULT`]，
+///   圆心内缩一个半径**相切于端点**
+fn push_one_arrowhead(
+    out: &mut Vec<Shape>,
+    tip: Pos2,
+    inward: egui::Vec2,
+    style: Option<ArrowHeadStyle>,
+    egui_stroke: egui::Stroke,
+    line_width: f32,
+) {
+    let Some(style) = style else { return };
+    let half = ArrowHeadStyle::HALF_ANGLE; // 30°
+    let head_len = line_width * ArrowHeadStyle::HEAD_LEN_MULT;
+    match style {
+        ArrowHeadStyle::Arrow => {
+            let a1 = rotate_vec2(inward, half);
+            let a2 = rotate_vec2(inward, -half);
+            out.push(Shape::line(vec![tip, tip + a1 * head_len], egui_stroke));
+            out.push(Shape::line(vec![tip, tip + a2 * head_len], egui_stroke));
+        }
+        ArrowHeadStyle::Triangle => {
+            let b1 = tip + rotate_vec2(inward, half) * head_len;
+            let b2 = tip + rotate_vec2(inward, -half) * head_len;
+            out.push(closed_filled_path(vec![tip, b1, b2], egui_stroke.color));
+        }
+        ArrowHeadStyle::TriangleOutline => {
+            let b1 = tip + rotate_vec2(inward, half) * head_len;
+            let b2 = tip + rotate_vec2(inward, -half) * head_len;
+            out.push(closed_stroked_path(
+                vec![tip, b1, b2],
+                egui::epaint::PathStroke::new(line_width, egui_stroke.color),
+            ));
+        }
+        ArrowHeadStyle::Dot => {
+            let radius = (line_width * ArrowHeadStyle::DOT_RADIUS_MULT).max(1.0);
+            out.push(Shape::circle_filled(
+                tip + inward * radius,
+                radius,
+                egui_stroke.color,
+            ));
         }
     }
 }
@@ -413,14 +460,17 @@ impl ShapeStyler for CleanStyler {
         let closed = is_closed(shape);
         let fill_width = line_width * 0.5; // Excalidraw fillWeight = strokeWidth / 2
 
-        // 开放折线：直接画线 + 箭头，无填充概念。
+        // 开放折线：直接画线 + 箭头，无填充概念。空心三角端头把主线裁到三角底边
+        //（见 [`trimmed_line_points`]），箭头几何仍用原始端点。
         if !closed {
             let mut out = Vec::new();
+            let line_pts =
+                trimmed_line_points(&pts, shape.start_arrow, shape.end_arrow, line_width);
             match stroke.dash {
-                DashStyle::Solid => out.push(Shape::line(pts.clone(), egui_stroke)),
+                DashStyle::Solid => out.push(Shape::line(line_pts, egui_stroke)),
                 DashStyle::Dashed | DashStyle::Dotted => {
                     let (d, g) = dash_lengths(stroke.dash, zoom, line_width);
-                    out.extend(Shape::dashed_line(&pts, egui_stroke, d, g));
+                    out.extend(Shape::dashed_line(&line_pts, egui_stroke, d, g));
                 }
             }
             push_arrow_heads(
@@ -786,7 +836,7 @@ impl RoughStyler {
             .collect()
     }
 
-    /// 手绘风箭头 V 形两翼：走 [`RoughStyler::sketch_edge`] 完整双线抖动
+    /// 手绘风箭头：走 [`RoughStyler::sketch_edge`] 完整双线抖动
     /// （plan #20 批次4，DP3 拍板跟随 Excalidraw——其箭头是 rough polygon，
     /// roughness 封顶 `min(1, roughness)`，见 `shape.ts:339/422`）。
     /// Dot 端头保持规整实心圆。
@@ -809,12 +859,10 @@ impl RoughStyler {
             line_width: ctx.line_width,
             stroke_color: ctx.stroke_color,
         };
-        let half = std::f32::consts::FRAC_PI_2 * (5.0 / 9.0); // ≈50°
         let path_stroke = egui::epaint::PathStroke::new(ctx.line_width, ctx.stroke_color);
-        let mut push_wing = |out: &mut Vec<Shape>, tip: Pos2, dir: egui::Vec2, angle: f32| {
-            let wing_tip = tip + rotate_vec2(dir, angle) * (ctx.line_width * 4.0);
+        let mut push_seg = |out: &mut Vec<Shape>, a: Pos2, b: Pos2| {
             for _ in 0..Self::PASSES {
-                let bez = Self::sketch_edge(rng, tip, wing_tip, &wing_ctx);
+                let bez = Self::sketch_edge(rng, a, b, &wing_ctx);
                 out.push(Shape::CubicBezier(
                     egui::epaint::CubicBezierShape::from_points_stroke(
                         bez,
@@ -826,51 +874,77 @@ impl RoughStyler {
             }
         };
 
-        // 起点箭头：尖端指向起点，两翼伸向线段体内。
-        match start_arrow {
-            Some(ArrowHeadStyle::Arrow) => {
-                let dir = pts[1] - pts[0];
-                if dir.length() > 1e-3 {
-                    let dir = dir / dir.length();
-                    push_wing(out, pts[0], dir, half);
-                    push_wing(out, pts[0], dir, -half);
-                }
-            }
-            Some(ArrowHeadStyle::Dot) => {
-                let dir = pts[1] - pts[0];
-                let len = dir.length();
-                if len > 1e-3 {
-                    let dir = dir / len;
-                    let radius = (ctx.line_width * 1.5).max(1.0);
-                    out.push(Shape::circle_filled(
-                        pts[0] + dir * radius,
-                        radius,
-                        ctx.stroke_color,
-                    ));
-                }
-            }
-            None => {}
+        // 起点箭头：`inward` 指向线段体内。
+        let start_dir = pts[1] - pts[0];
+        if start_dir.length() > 1e-3 {
+            Self::push_one_arrowhead_rough(
+                &mut push_seg,
+                out,
+                pts[0],
+                start_dir / start_dir.length(),
+                start_arrow,
+                ctx,
+            );
         }
 
-        // 终点箭头：尖端指向终点，两翼伸向线段体内。
+        // 终点箭头：`inward` = -outward。修复：此前翅膀沿 +outward 伸出线外，
+        // 导致 V 尖朝线内、箭头方向反了（CleanStyler 一直是对的）。
         let last = pts[pts.len() - 1];
-        let dir = last - pts[pts.len() - 2];
-        if dir.length() > 1e-3 {
-            let dir = dir / dir.length();
-            match end_arrow {
-                Some(ArrowHeadStyle::Arrow) => {
-                    push_wing(out, last, dir, -half);
-                    push_wing(out, last, dir, half);
-                }
-                Some(ArrowHeadStyle::Dot) => {
-                    let radius = (ctx.line_width * 1.5).max(1.0);
-                    out.push(Shape::circle_filled(
-                        last - dir * radius,
-                        radius,
-                        ctx.stroke_color,
-                    ));
-                }
-                None => {}
+        let end_dir = last - pts[pts.len() - 2];
+        if end_dir.length() > 1e-3 {
+            Self::push_one_arrowhead_rough(
+                &mut push_seg,
+                out,
+                last,
+                -(end_dir / end_dir.length()),
+                end_arrow,
+                ctx,
+            );
+        }
+    }
+
+    /// 单端手绘箭头（四样式），几何与 CleanStyler 的
+    /// [`push_one_arrowhead`] 同源（尖端 + 内向单位向量）。Dot 端头保持规整实心圆。
+    fn push_one_arrowhead_rough(
+        push_seg: &mut dyn FnMut(&mut Vec<Shape>, Pos2, Pos2),
+        out: &mut Vec<Shape>,
+        tip: Pos2,
+        inward: egui::Vec2,
+        style: Option<ArrowHeadStyle>,
+        ctx: &RoughCtx,
+    ) {
+        let Some(style) = style else { return };
+        let half = ArrowHeadStyle::HALF_ANGLE; // 30°
+        let head_len = ctx.line_width * ArrowHeadStyle::HEAD_LEN_MULT;
+        match style {
+            ArrowHeadStyle::Arrow => {
+                push_seg(out, tip, tip + rotate_vec2(inward, half) * head_len);
+                push_seg(out, tip, tip + rotate_vec2(inward, -half) * head_len);
+            }
+            ArrowHeadStyle::Triangle => {
+                let b1 = tip + rotate_vec2(inward, half) * head_len;
+                let b2 = tip + rotate_vec2(inward, -half) * head_len;
+                // 实心三角：描边色填充 + 三条 rough 边
+                out.push(closed_filled_path(vec![tip, b1, b2], ctx.stroke_color));
+                push_seg(out, tip, b1);
+                push_seg(out, tip, b2);
+                push_seg(out, b1, b2);
+            }
+            ArrowHeadStyle::TriangleOutline => {
+                let b1 = tip + rotate_vec2(inward, half) * head_len;
+                let b2 = tip + rotate_vec2(inward, -half) * head_len;
+                // 空心三角：只描三条 rough 边，不填充
+                push_seg(out, tip, b1);
+                push_seg(out, tip, b2);
+                push_seg(out, b1, b2);
+            }
+            ArrowHeadStyle::Dot => {
+                let radius = (ctx.line_width * ArrowHeadStyle::DOT_RADIUS_MULT).max(1.0);
+                out.push(Shape::circle_filled(
+                    tip + inward * radius,
+                    radius,
+                    ctx.stroke_color,
+                ));
             }
         }
     }
@@ -982,22 +1056,34 @@ impl ShapeStyler for RoughStyler {
 
         let mut rng = SeededRng::new(shape.seed);
 
+        // 开放折线：空心三角端头把主线裁到三角底边（见 [`trimmed_line_points`]），
+        // 箭头几何仍用原始端点；闭合图形不裁。
+        let stroke_pts = if closed {
+            pts.clone()
+        } else {
+            trimmed_line_points(&pts, shape.start_arrow, shape.end_arrow, line_width)
+        };
+
         if Self::is_smooth(shape) {
             // 曲线类轮廓（椭圆、Curved 折线）：整圈抖动后连成光滑曲线。
             // 若沿用逐边直线抖动，采样段之间的折角会非常明显。
-            let amp = Self::curve_jitter_amp(&pts, zoom, closed, ctx.amp_scale);
+            let amp = Self::curve_jitter_amp(&stroke_pts, zoom, closed, ctx.amp_scale);
             for _ in 0..passes {
-                let jittered = Self::jitter_points(&mut rng, &pts, closed, amp);
+                let jittered = Self::jitter_points(&mut rng, &stroke_pts, closed, amp);
                 for bez in Self::catmull_rom_beziers(&jittered, closed) {
                     Self::push_edge(&mut out, bez, stroke, line_width, ctx.stroke_color, zoom);
                 }
             }
         } else {
             // 直线类轮廓（矩形 / 菱形 / 折线）：逐边抖动，闭合图形多一条 n-1 → 0 的收尾边。
-            let seg_count = if closed { pts.len() } else { pts.len() - 1 };
+            let seg_count = if closed {
+                stroke_pts.len()
+            } else {
+                stroke_pts.len() - 1
+            };
             for i in 0..seg_count {
-                let a = pts[i];
-                let b = pts[(i + 1) % pts.len()];
+                let a = stroke_pts[i];
+                let b = stroke_pts[(i + 1) % stroke_pts.len()];
                 for _ in 0..passes {
                     let bez = Self::sketch_edge(&mut rng, a, b, &ctx);
                     Self::push_edge(&mut out, bez, stroke, line_width, ctx.stroke_color, zoom);
@@ -1607,6 +1693,136 @@ mod tests {
     }
 
     #[test]
+    fn end_arrow_wings_point_into_the_segment() {
+        // 回归：rough 终点箭头曾沿 +dir 伸出线外（V 尖朝线内、方向反了）。
+        // (0,0)→(100,0)、线宽 2、头长 12（1.5× 后）、半张角 30°：
+        // 翼尖 ≈ (100 - 12·cos30°, ±12·sin30°) = (89.61, ±6)。
+        let stroke = StrokeStyle {
+            width: 2.0,
+            ..StrokeStyle::default()
+        };
+        let mut d = open_line();
+        d.sloppiness = Sloppiness::Artist;
+        let shapes =
+            RoughStyler.build_shapes(&d, &stroke, None, FillStyle::Solid, &identity(), 1.0);
+        let bez = beziers(&shapes);
+        // 边 2 passes 后紧跟终点箭头 2 翼 × 2 passes
+        for wing in &bez[2..6] {
+            assert!(
+                (wing[0].x - 100.0).abs() < 1e-3,
+                "翼根必须锚在终点: {:?}",
+                wing[0]
+            );
+            assert!(
+                wing[3].x < 100.0 && wing[3].x > 85.0,
+                "翼尖必须伸进线段体内（方向不得反）: {:?}",
+                wing[3]
+            );
+            assert!(
+                wing[3].y.abs() > 3.5 && wing[3].y.abs() < 8.5,
+                "翼尖应按 30° 半张角张开约 ±6px: {:?}",
+                wing[3]
+            );
+        }
+    }
+
+    #[test]
+    fn clean_styler_arrow_uses_60_degree_total_opening() {
+        // V 形箭头半张角 30°（总张开 60°）：线宽 2 → head_len 12（1.5× 后），
+        // 翼尖 = (100 - 12·cos30°, ±12·sin30°) = (89.61, ±6.00)。
+        let stroke = StrokeStyle {
+            width: 2.0,
+            ..StrokeStyle::default()
+        };
+        let shapes = CleanStyler.build_shapes(
+            &open_line(),
+            &stroke,
+            None,
+            FillStyle::Solid,
+            &identity(),
+            1.0,
+        );
+        // 1 条主线 + 2 条翼线（Shape::line 生成 Path）
+        assert_eq!(shapes.len(), 3);
+        let paths: Vec<egui::epaint::PathShape> = shapes
+            .iter()
+            .filter_map(|s| match s {
+                Shape::Path(p) => Some(p.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(paths.len(), 3, "主线与两翼都是 Path");
+        for wing in &paths[1..] {
+            assert_eq!(wing.points[0], egui::pos2(100.0, 0.0), "翼根在终点");
+            assert!(
+                (wing.points[1].x - 89.608).abs() < 1e-2,
+                "翼尖 x ≈ 100 - 12·cos30°: {:?}",
+                wing.points[1]
+            );
+            assert!(
+                (wing.points[1].y.abs() - 6.0).abs() < 1e-2,
+                "翼尖 |y| ≈ 6: {:?}",
+                wing.points[1]
+            );
+        }
+    }
+
+    #[test]
+    fn clean_styler_filled_and_hollow_triangle_heads() {
+        // 线宽 2：head_len = 12（1.5× 后），底边两点 ≈ (89.61, ±6.00)。
+        let stroke = StrokeStyle {
+            width: 2.0,
+            ..StrokeStyle::default()
+        };
+        let mut d = open_line();
+        d.end_arrow = Some(ArrowHeadStyle::Triangle);
+        let shapes =
+            CleanStyler.build_shapes(&d, &stroke, None, FillStyle::Solid, &identity(), 1.0);
+        // 1 条线 + 1 个实心三角 Path
+        assert_eq!(shapes.len(), 2);
+        let Shape::Path(tri) = &shapes[1] else {
+            panic!("Triangle 应为 Path 填充: {:?}", shapes[1]);
+        };
+        assert_eq!(tri.points.len(), 3);
+        assert_eq!(tri.points[0], egui::pos2(100.0, 0.0), "尖端在终点");
+        assert!(tri.fill.a() > 0, "三角必须实心填充描边色");
+        for p in &tri.points[1..] {
+            assert!(
+                p.x < 100.0 && p.x > 85.0 && p.y.abs() > 3.0,
+                "底边两点应在终点内侧张开: {p:?}"
+            );
+        }
+        // 实心三角盖住线端，主线不裁——末端仍在 (100, 0)
+        let Shape::Path(main) = &shapes[0] else {
+            panic!("主线应为 Path: {:?}", shapes[0]);
+        };
+        assert_eq!(main.points.last().unwrap(), &egui::pos2(100.0, 0.0));
+
+        let mut d = open_line();
+        d.end_arrow = Some(ArrowHeadStyle::TriangleOutline);
+        let shapes =
+            CleanStyler.build_shapes(&d, &stroke, None, FillStyle::Solid, &identity(), 1.0);
+        // 1 条线 + 1 个空心三角 Path（描边线宽 = 线宽，不填充）
+        assert_eq!(shapes.len(), 2);
+        let Shape::Path(hollow) = &shapes[1] else {
+            panic!("TriangleOutline 应为 Path 描边: {:?}", shapes[1]);
+        };
+        assert_eq!(hollow.points.len(), 3);
+        assert!(hollow.fill.a() == 0, "空心三角不得填充: {:?}", hollow.fill);
+        assert_eq!(hollow.stroke.width, 2.0, "描边线宽应等于主线线宽");
+        assert_eq!(hollow.points[0], egui::pos2(100.0, 0.0), "尖端在终点");
+        // 空心三角：主线末端裁剪到三角底边中点 (100 - 12·cos30°, 0) = (89.61, 0)
+        let Shape::Path(main) = &shapes[0] else {
+            panic!("主线应为 Path: {:?}", shapes[0]);
+        };
+        assert!(
+            ((main.points.last().unwrap().x - 89.608).abs() < 1e-2),
+            "主线末端应裁剪到三角底边: {:?}",
+            main.points.last()
+        );
+    }
+
+    #[test]
     fn dot_arrow_head_emits_a_filled_circle_at_each_end() {
         let mut d = open_line();
         d.start_arrow = Some(ArrowHeadStyle::Dot);
@@ -1631,7 +1847,7 @@ mod tests {
     #[test]
     fn dot_arrow_circle_sits_inside_the_segment() {
         // 圆心沿线段内缩一个半径，故圆点相切于端点而不是盖住它：
-        // 起点 (0,0) → 终点 (100,0)，半径 = 线宽 2 × 1.5 = 3
+        // 起点 (0,0) → 终点 (100,0)，半径 = 线宽 2 × 2.25（1.5× 后）= 4.5
         let mut d = open_line();
         d.start_arrow = Some(ArrowHeadStyle::Dot);
         d.end_arrow = Some(ArrowHeadStyle::Dot);
@@ -1651,14 +1867,65 @@ mod tests {
             .collect();
         assert_eq!(centers.len(), 2);
         assert!(
-            (centers[0].x - 3.0).abs() < 1e-3,
+            (centers[0].x - 4.5).abs() < 1e-3,
             "起点圆心内缩: {:?}",
             centers[0]
         );
         assert!(
-            (centers[1].x - 97.0).abs() < 1e-3,
+            (centers[1].x - 95.5).abs() < 1e-3,
             "终点圆心内缩: {:?}",
             centers[1]
+        );
+    }
+
+    #[test]
+    fn rough_styler_triangle_head_fills_and_sketches_edges() {
+        let mut d = open_line();
+        d.end_arrow = Some(ArrowHeadStyle::Triangle);
+        let shapes = RoughStyler.build_shapes(
+            &d,
+            &StrokeStyle::default(),
+            None,
+            FillStyle::Solid,
+            &identity(),
+            1.0,
+        );
+        // 1 边 × 2 passes + 1 实心三角填充 + 3 条三角边 × 2 passes = 9
+        assert_eq!(shapes.len(), 9);
+        assert!(matches!(shapes[2], Shape::Path(_)), "先填充后描边");
+        assert!(shapes[3..]
+            .iter()
+            .all(|s| matches!(s, Shape::CubicBezier(_))));
+    }
+
+    #[test]
+    fn rough_styler_hollow_triangle_head_sketches_without_fill() {
+        // 用固定 width=2 让裁剪量确定：trim = 12·cos30° ≈ 10.39。
+        let stroke = StrokeStyle {
+            width: 2.0,
+            ..StrokeStyle::default()
+        };
+        let mut d = open_line();
+        d.end_arrow = Some(ArrowHeadStyle::TriangleOutline);
+        let shapes =
+            RoughStyler.build_shapes(&d, &stroke, None, FillStyle::Solid, &identity(), 1.0);
+        // 1 边 × 2 passes + 3 条三角边 × 2 passes = 8，无填充 Path
+        assert_eq!(shapes.len(), 8);
+        assert!(
+            shapes.iter().all(|s| matches!(s, Shape::CubicBezier(_))),
+            "空心三角只描边不填充"
+        );
+        // 主线末端裁剪到三角底边中点（amp=0 时贝塞尔端点即几何点）
+        let bez = beziers(&shapes);
+        assert!(
+            (bez[0][3].x - 89.608).abs() < 1e-2,
+            "主线末端应裁剪到三角底边: {:?}",
+            bez[0][3]
+        );
+        assert!(
+            (bez[1][3].x - 89.608).abs() < 1e-2,
+            "第二笔同样裁剪: {:?}",
+            bez[1][3]
         );
     }
 

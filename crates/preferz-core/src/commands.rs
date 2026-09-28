@@ -2367,7 +2367,7 @@ mod tests {
         let (a, b) = two_shapes(&mut scene);
         let old = ArrowHeads::default();
         let new = ArrowHeads {
-            start: Some(ArrowHeadStyle::Dot),
+            start: Some(ArrowHeadStyle::Triangle),
             end: Some(ArrowHeadStyle::Arrow),
         };
         let mut cmd = SetArrowHeads::new_batch(vec![(a, old, new), (b, old, new)]);

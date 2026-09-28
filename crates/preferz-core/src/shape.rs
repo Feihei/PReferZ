@@ -27,14 +27,49 @@ pub enum CurveType {
     Elbow,
 }
 
-/// 端点箭头样式。`Option<ArrowHeadStyle>` 表示"该端无箭头"。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// 端点箭头样式（四态：V 形箭头 / 实心三角 / 空心三角 / 圆点）。
+/// `Option<ArrowHeadStyle>` 表示"该端无箭头"。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ArrowHeadStyle {
-    /// 标准三角箭头。
+    /// V 形箭头，半张角 30°（总张开 60°）。
     Arrow,
-    /// 圆点（Phase I 新增）。
+    /// 实心三角（描边色填充）。
+    Triangle,
+    /// 空心三角（仅描边不填充）。
+    #[serde(rename = "triangle_outline")]
+    TriangleOutline,
+    /// 实心圆点（相切于端点）。
     Dot,
+}
+
+impl ArrowHeadStyle {
+    /// V 形箭头 / 三角的半张角（弧度）：翼与线方向夹角 30°，总张开 60°。
+    pub const HALF_ANGLE: f32 = std::f32::consts::FRAC_PI_6;
+    /// 端头长 = 描边线宽 × 此乘数（V 翼长 = 三角腰长）。
+    /// 2026-09-28 用户反馈放大 1.5×（原 4.0）。
+    pub const HEAD_LEN_MULT: f32 = 6.0;
+    /// Dot 端头半径 = 描边线宽 × 此乘数（随端头整体放大 1.5×，原 1.5）。
+    pub const DOT_RADIUS_MULT: f32 = 2.25;
+}
+
+/// `ArrowHeadStyle` 的兼容反序列化（端头样式重定义，2026-09-28）。
+/// 旧取值 `bar`（仅存在于未发布的工作版本）与未知值一律降级 `Arrow`
+/// ——同 `deserialize_sloppiness` 的"宁缺勿炸"约定。
+impl<'de> serde::Deserialize<'de> for ArrowHeadStyle {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Ok(match s.as_str() {
+            "triangle" => ArrowHeadStyle::Triangle,
+            "triangle_outline" => ArrowHeadStyle::TriangleOutline,
+            "dot" => ArrowHeadStyle::Dot,
+            // "arrow" 与一切旧/未知取值（含 "bar"）降级 Arrow
+            _ => ArrowHeadStyle::Arrow,
+        })
+    }
 }
 
 /// 描边线型。
@@ -323,10 +358,20 @@ mod tests {
 
     #[test]
     fn arrow_head_style_serde_roundtrip() {
-        for a in [ArrowHeadStyle::Arrow, ArrowHeadStyle::Dot] {
+        for a in [
+            ArrowHeadStyle::Arrow,
+            ArrowHeadStyle::Triangle,
+            ArrowHeadStyle::TriangleOutline,
+            ArrowHeadStyle::Dot,
+        ] {
             let json = serde_json::to_string(&a).unwrap();
             let back: ArrowHeadStyle = serde_json::from_str(&json).unwrap();
             assert_eq!(a, back);
+        }
+        // 旧取值（bar）与未知值一律降级 Arrow（端头样式重定义）
+        for legacy in ["\"bar\"", "\"nonsense\""] {
+            let back: ArrowHeadStyle = serde_json::from_str(legacy).unwrap();
+            assert_eq!(back, ArrowHeadStyle::Arrow);
         }
     }
 
