@@ -1,6 +1,6 @@
 # Plan: egui/eframe 0.29 → 0.36 一步到位升级
 
-- **状态**: ✅ 代码迁移完成、静态门（fmt / clippy `-D warnings` / cargo test / build）全绿并已提交；⚠ §6 的 GUI 全功能手测与视觉回归待人工执行（见 §10）
+- **状态**: ✅ **已结项**（2026-09-28）——代码迁移完成、静态门（fmt / clippy `-D warnings` / cargo test / build）全绿并已提交；§6 的 GUI 全功能手测与视觉回归**已通过**。交付归档见 [`.agents/CHANGELOG.md`](../CHANGELOG.md) §依赖大版本升级 / §人工复验清账（本文档保留作风险清单与回归清单参考）
 - **创建日期**: 2026-09-17
 - **目标版本**: egui 0.36.2 / eframe 0.36.2
 - **当前版本**: egui 0.29.1 / eframe 0.29.1（Cargo.lock 锁定）
@@ -161,7 +161,7 @@ egui 是本项目唯一的 GUI 框架，直接影响渲染质量与交互性能�
 - **D. 计划未列出的额外变更点**（编译器暴露）：`ColorImage` 新增必填 `source_size`；`Frame::none()` → `Frame::new()`；`Ui::close_menu()` → `Ui::close()`；`DroppedFile.path` 字段 → `path()` 方法（去 Option）；`Margin` 由 f32 → i8（3 处 `symmetric`）；`FontDefinitions.font_data` 值类型 → `Arc<FontData>`；palette 的 `popup_below_widget`+`Memory::toggle_popup`（后者已私有）→ `egui::Popup::from_toggle_button_response(..).close_behavior(..).show(..)`。
 - **E. `App::ui` 内 ctx 的保留方式**：未按计划逐行 `ctx.foo()→ui.foo()`（9211 行大函数，风险高），改为在函数体顶 `let ctx = &ui.ctx().clone();`（Arc 克隆得独立所有权、不借 `ui`），使 `ctx.input/clone/…` 与背景线程 `ctx.clone()` 全部零改动即可编译；仅需 `&mut Ui` 的 Panel/popup 调用点直接传 `ui`。等价且改动面最小。
 
-### 10.4 待人工执行（无头环境无法完成，需 `cargo run -p preferz` 实跑）
+### 10.4 人工执行项（无头环境无法完成，需 `cargo run -p preferz` 实跑）—— ✅ 2026-09-28 全部通过
 
 §6 全功能手测 + 视觉回归。高优先验证清单（按风险排序）：
 
@@ -181,4 +181,4 @@ egui 是本项目唯一的 GUI 框架，直接影响渲染质量与交互性能�
 - **Shift+数字 快捷键失效（FitToScreen/ZoomToSelection/Zoom100）**：根因是 egui 0.36 把 `Event::Key.key` 改为「逻辑键」，按 Shift+数字时逻辑键被解析成符号而不再等于 `Key::Num1`，`key_pressed` 只比对逻辑键故失配；`Shift+字母`/`Ctrl+…` 因逻辑键不变仍正常，右键菜单不涉按键也正常。修复：`keymap::pressed_bind` 改为扫描本帧 `events`，命中放宽为「逻辑 key 或 `physical_key` 等于目标」，修饰键仍按 `i.modifiers` 严格全等（裸数字与 Shift+数字仍靠修饰键区分、不误触发），触发沿语义等价。附回归测试 `shift_digit_binding_matches_via_physical_key`。commit `fix: restore Shift+digit shortcuts under egui 0.36`。
 - **透明窗口同值更透（0.1 几乎不可见）**：根因即 §10.3-A 的后端切换——glow 为单层线性 alpha 合成（帧缓冲 alpha == bg_alpha），而 0.29 运行时用 wgpu、同值观感更不透明。我们的 alpha 代码逐字节未变。处置（按用户决定）：把背景透明度与图片不透明度两条滑块的**最低值 0.1 → 0.15**，二者保持一致。注意这只抬升控制下限，此前存到 config 里的更低值在用户再次拖动前仍按旧值渲染。commit `tune: raise background/image alpha slider floor 0.1 -> 0.15`。
 
-其余项用户手测未见异常。§10.4 清单里尚未覆盖到的项（Present 细节、灰度、导出、多语言切换等）可继续抽查；本分支已可正常构建运行。
+其余项用户手测未见异常。§10.4 清单里尚未覆盖到的项（Present 细节、灰度、导出、多语言切换等）可继续抽查；本分支已可正常构建运行。**2026-09-28 补完剩余抽查项，本计划结项**（见 CHANGELOG §人工复验清账）。

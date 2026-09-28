@@ -205,7 +205,7 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 
 ## 多元素对齐与分布（plan #6，2026-09-05，`cad908b`）
 
-> 决策点 2026-09-05 拍板（`67ef930`），同日实现交付。人工验收待 Feihei `cargo run` 确认。
+> 决策点 2026-09-05 拍板（`67ef930`），同日实现交付。✅ 2026-09-28 人工复验通过。
 
 - **core（`preferz-core/src/arrange.rs`）**：
   - 新增 `AlignMode`（Left / HCenter / Right / Top / VCenter / Bottom 六向）、
@@ -234,7 +234,7 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 
 ## 直线/箭头端点吸附图形边缘（plan #5，2026-09-07，`a803bbe`）
 
-> 决策点 2026-09-06 拍板（L1，见 §决策点归档），同日实现交付。人工验收待 Feihei `cargo run` 确认。
+> 决策点 2026-09-06 拍板（L1，见 §决策点归档），同日实现交付。✅ 2026-09-28 人工复验通过。
 > 与 #7 连接符共用绑定模型。
 
 - **吸附**：拖 `LineEndpoint` 时，仅真实端点（`points[0]` / `points[last]`）可吸附；查询点取
@@ -266,7 +266,7 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 
 ## 元素编组 / 解组（plan #13，2026-09-08，`4033726`）
 
-> 决策点 G1–G4 2026-09-08 拍板（全按倾向列，本节即归档）。人工验收待 Feihei `cargo run` 确认。
+> 决策点 G1–G4 2026-09-08 拍板（全按倾向列，本节即归档）。✅ 2026-09-28 人工复验通过。
 
 - **core**：`Item.group_id: Option<Uuid>`（`#[serde(default)]`，旧存档无损）；
   `Scene::group`（≥2 项赋同一新组 id）/ `ungroup`（清空指定项）/ `group_members_of`
@@ -316,7 +316,7 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
   （dark 色板恢复为 Excalidraw 同款亮色五档，+4 回归测试）；曲线抖动去掉 ×0.5 衰减（Sloppiness
   档位差异恢复可感知）；选中图形时绑定文字纳入侧栏文字节；描边色改动经 `MultiCommand` 同步填充 +
   绑定文字；填充改预乘 alpha；绑定文字手写偏移对齐。
-- 质量门全绿（fmt / `clippy -D warnings` / `cargo test --workspace`）。待 `cargo run` 人工验收。
+- 质量门全绿（fmt / `clippy -D warnings` / `cargo test --workspace`）。✅ 2026-09-28 人工复验通过。
 
 ---
 
@@ -435,7 +435,7 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
   英文表无 CJK 回归闸通过）。
 - **取舍**：自定义比例输入本轮不做（留后续）；仅改画框边框几何，框内成员按既有几何归属
   在演示进入时重算（与手柄缩放同口径）。
-- 待 `cargo run` 人工验收（选中画框→属性栏套预设→中心不变地变形→`Ctrl+Z` 一步还原）。
+- ✅ 2026-09-28 人工复验通过（选中画框→属性栏套预设→中心不变地变形→`Ctrl+Z` 一步还原）。
 
 ---
 
@@ -542,8 +542,7 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 
 ## 两列数据粘贴成柱状/折线图（plan #8，2026-09-20，`fafd262`）
 
-> 🔶 代码交付，待 `cargo run` 人工复验。拍板：新 `ItemKind::Chart` 矢量渲染（非 Pixmap）、
-> 单系列、粘贴触发。
+> ✅ 2026-09-28 人工复验通过。拍板：新 `ItemKind::Chart` 矢量渲染（非 Pixmap）、单系列、粘贴触发。
 
 - **数据模型**：`ItemKind::Chart { chart_type(Bar/Line), base_size, labels, values, color,
   stroke_width }`（core `item.rs`，`ChartType` 枚举 + `CHART_DEFAULT_SIZE`(440×300) /
@@ -566,7 +565,7 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 
 ## mermaid 代码转流程图（plan #9，2026-09-20，`edb6a6a`）
 
-> 🔶 代码交付，待 `cargo run` 人工复验。拍板：受限自研 Rust 解析器（零依赖，否决 WASM）。
+> ✅ 2026-09-28 人工复验通过。拍板：受限自研 Rust 解析器（零依赖，否决 WASM）。
 
 - **core（L1，无头可测）** `mermaid.rs`：
   - `parse_mermaid_flowchart`——首行 `flowchart|graph TD|TB|BT|LR|RL`；节点 `id[标签]`(矩形)/
@@ -590,8 +589,8 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 
 ## 自动保存（plan #5，2026-09-20，`96cf8ac`）
 
-> 🔶 代码交付，待 `cargo run` 人工复验。拍板：独立 `.prz.autosave`（不覆盖原文件）+
-> 30s debounce + 打开文件时恢复提示。
+> ✅ 2026-09-28 人工复验通过。拍板：独立 `.prz.autosave`（不覆盖原文件）+ 30s debounce
+> + 打开文件时恢复提示。
 
 - **触发**：`mark_dirty()`（收口 push_cmd / perform_undo / perform_redo 的 dirty 标记）重置
   debounce 计时起点 `autosave_dirty_since`；update 循环 `tick_autosave`——启用 && dirty &&
@@ -890,7 +889,7 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
   bowing 符号跨 seed 随机、跳首线=线表去首、49° 仰角方向、填充半宽；更新
   椭圆段数/箭头翼数/solid 填充抖动上界等既有断言。质量门：fmt / `clippy -D warnings`
   全绿；`cargo test --workspace` 除 `tick_autosave_writes_sidecar_and_keeps_doc_dirty`
-  （经 git stash 验证为先前已存在的无关失败）全绿。待 `cargo run` 人工验收。
+  （经 git stash 验证为先前已存在的无关失败）全绿。✅ 2026-09-28 人工复验通过。
 
 ### 验收反馈批次（2026-09-25 同日，Feihei 实测 4 项）
 
@@ -1085,7 +1084,7 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 
 ## 默认风格总开关（草绘 / 规整，2026-09-28，`69a3b8a` + `1225a31`）
 
-> 对齐 Excalidraw 出厂观感：新建元素默认手绘，而非精确线条。✅ 代码交付，待 `cargo run` 复验。
+> 对齐 Excalidraw 出厂观感：新建元素默认手绘，而非精确线条。✅ 2026-09-28 人工复验通过。
 
 - **设置面板「默认风格」两档总开关**（默认**草绘**，持久化 `config.json` 的 `default_style` 字段，
   `serde default` 兼容老配置）：草绘 = 新建形状 sloppiness **Artist（中档）** + 新建文字字体
@@ -1099,8 +1098,30 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
   点击逻辑与设置面板一致，覆盖新建默认档并持久化。
 - 顺带修 `tick_autosave` 测试读真实 `config.json` 的环境耦合（本机 `autosave_enabled=false` 时
   假失败）。
-- **复验清单**：全新 config 启动显示草绘 → 切规整后重启仍是规整 → 右侧四选一微调仍生效 →
-  mermaid / 流程图分叉随总开关同档 → 旧 config 加载默认草绘且 `.prz` 存档兼容不受影响。
+- **复验清单**（✅ 2026-09-28 逐条通过）：全新 config 启动显示草绘 → 切规整后重启仍是规整 →
+  右侧四选一微调仍生效 → mermaid / 流程图分叉随总开关同档 → 旧 config 加载默认草绘且 `.prz`
+  存档兼容不受影响。
+
+---
+
+## 人工复验清账：plan.md 待复验清单全通过（2026-09-28）
+
+> Excalidraw 打磨批次此前的**全部**待人工复验项由 Feihei `cargo run` 逐条确认通过，plan.md 的
+> 「待人工复验」章节就此清空——至此 plan.md 只剩**未实施**项（#16 E2 / #17 批次 C / #20 剩余
+> 缺口 / #18）与远期。
+
+- **本轮新通过**（此前 🔶）：样式面板批次 #1/#2/#3（含 5 色调色板 / 填充 50% 透明 / sloppiness
+  四档 / 文字对齐 + 手写体）、多边形节点增删 #4（Alt+单击删、Alt+拖延伸、端点拖回自动闭合、
+  重合点视作一点、拖开自动恢复开放）、流程图创建与导航 #7（同源克隆 + 绑定箭头、同向自动上下
+  分叉、Alt+方向导航、箭头默认 elbow）、编组 / 解组 #13、视口缩放套件 #15、画框比例预设 #3、
+  图表粘贴 #8、mermaid 流程图 #9（边标签 / 箭头族 / `&` 多分支 / 特殊形近似）、自动保存 #5、
+  默认风格总开关。
+- **依赖升级手测**：egui 0.29 → 0.36 的 GUI 全功能回归（字体渲染、`Shift+数字`、滚轮手感、
+  侧栏动画）与 rusqlite 0.40 的真实 `.prz` 往返（旧档打开 / 存后重开 / 附件 `sqlar`）均通过，
+  `plans/` 下两份升级计划随之结项。
+- **更早已通过、本次一并清账**（#5 端点吸附 09-08、#14 整线绑定 09-10、#6 对齐分布 09-07、
+  #10 freedraw 09-20、#11/#12 09-03、#16/#20/#21/#22/#23 09-28）。
+- 观感类结论（抖动幅度 / 档位 / 圆角观感）已固化在 §手绘风验收反馈批次实施，**不再挂待验收**。
 
 ---
 
