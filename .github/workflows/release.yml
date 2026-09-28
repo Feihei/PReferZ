@@ -138,9 +138,23 @@ jobs:
     needs: [build-windows, build-linux, build-linux-aarch64, build-macos]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: dist
+      - name: Locate release notes
+        # release note 预先写在 .agents/release-notes/<tag>.md；缺失即失败，
+        # 避免发布空 note 的 Release。约定见 .agents/release-notes/README.md
+        id: notes
+        run: |
+          NOTES=".agents/release-notes/${GITHUB_REF_NAME}.md"
+          if [ ! -f "$NOTES" ]; then
+            echo "::error::missing release notes: $NOTES"
+            echo "::error::请在打 tag 前提交该文件（模板见 .agents/release-notes/TEMPLATE.md）"
+            exit 1
+          fi
+          echo "using $NOTES"
+          echo "path=$NOTES" >> "$GITHUB_OUTPUT"
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -149,4 +163,4 @@ jobs:
             dist/linux-x64/*.tar.gz
             dist/linux-aarch64/*.tar.gz
             dist/macos-universal/*.tar.gz
-          generate_release_notes: true
+          body_path: ${{ steps.notes.outputs.path }}

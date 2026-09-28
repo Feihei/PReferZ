@@ -10,13 +10,16 @@
 # 流程：
 #   1. 确认工作区干净（有未提交改动则中止）
 #   2. 运行 cargo fmt + clippy 检查
-#   3. cargo release 执行版本 bump → 提交 → 打 tag → push
-#   4. push 触发 GitHub Actions release.yml 自动构建并创建 GitHub Release
+#   3. 校验 .agents/release-notes/v<next>.md 已写好（tag 一旦推送，CI 缺文件即失败）
+#   4. cargo release 执行版本 bump → 提交 → 打 tag → push
+#   5. push 触发 GitHub Actions release.yml 自动构建并创建 GitHub Release，
+#      release body 取自 .agents/release-notes/v<next>.md
 #
 # 说明：
 #   - 本地网络无法直连 crates.io，设置 CARGO_NET_OFFLINE=true 跳过版本冲突检查
 #     （本项目 publish=false，不发布到 crates.io，该检查无意义）
 #   - 产物由 GitHub Actions 构建，本地无需编译
+#   - release note 约定见 .agents/release-notes/README.md
 
 param(
     [Parameter(Position = 0)]
@@ -54,7 +57,38 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
-# 3. cargo release
+# 3. 校验 release note 已写好
+# release.yml 读取 .agents/release-notes/<tag>.md，缺失会让 release job 失败；
+# tag-name = "v{{version}}"（见 Cargo.toml [workspace.metadata.release]）
+$current = (Select-String -Path "Cargo.toml" -Pattern '^version = "([^"]+)"' |
+    Select-Object -First 1).Matches[0].Groups[1].Value
+$next = $null
+if ($Level -match '^\d+\.\d+\.\d+$') {
+    $next = $Level
+} else {
+    $p = $current -split '\.'
+    switch ($Level) {
+        "patch" { $next = "$([int]$p[0]).$([int]$p[1]).$([int]$p[2] + 1)" }
+        "minor" { $next = "$([int]$p[0]).$([int]$p[1] + 1).0" }
+        "major" { $next = "$([int]$p[0] + 1).0.0" }
+    }
+}
+
+if ($next) {
+    $notes = ".agents/release-notes/v$next.md"
+    Write-Host "`n--- release notes: $notes ---" -ForegroundColor Yellow
+    if (-not (Test-Path $notes)) {
+        Write-Host "ERROR: 缺少 release note 文件 $notes" -ForegroundColor Red
+        Write-Host "  从 .agents/release-notes/TEMPLATE.md 复制一份，改名为 $notes 后提交，再重新发布" -ForegroundColor Red
+        exit 1
+    }
+} else {
+    Write-Host "`n--- release notes ---" -ForegroundColor Yellow
+    Write-Host "WARN: 无法从 '$Level' 推断目标版本，跳过 release note 校验。" -ForegroundColor Yellow
+    Write-Host "      请确认 .agents/release-notes/ 下已有与即将推送的 tag 同名的 .md 文件。" -ForegroundColor Yellow
+}
+
+# 4. cargo release
 Write-Host "`n--- cargo release ---" -ForegroundColor Yellow
 $env:CARGO_NET_OFFLINE = "true"
 $args = @($Level, "--no-confirm")

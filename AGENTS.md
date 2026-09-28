@@ -130,5 +130,6 @@ Documentation follows the llaia layout, all under `.agents/`:
 | `.agents/CHANGELOG.md` | Delivery archive of completed phases. Completed plan docs are distilled here, then removed. |
 | `.agents/specs/` | Design specs: `preferz-spec.md` (full design spec with phases, data models, API details), `shapes-and-frame-slides-design.md`, `linear-object-design.md` |
 | `.agents/adr/` | Architecture decision records (NNNN-title, one decision each) |
+| `.agents/release-notes/` | Per-version release notes, one file per tag: `v0.1.1.md` ↔ tag `v0.1.1` (`TEMPLATE.md` + `README.md` for the convention). Must be committed **before** tagging — `release.yml` reads `${GITHUB_REF_NAME}.md` as the Release body and fails the build if absent. `release.ps1` checks it up front. |
 
 Read `.agents/specs/preferz-spec.md` before implementing any feature beyond a bug fix. Completed work goes to `.agents/CHANGELOG.md`; upcoming plans live directly in `.agents/plan.md` (no separate plan docs — one plan in flight at a time).
