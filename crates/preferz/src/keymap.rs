@@ -389,6 +389,9 @@ pub enum Action {
     /// （删除走 undo stack）。释放沿绑定，同 Copy。
     Cut,
     DeleteSelected,
+    /// 全选所有元素（Excalidraw 同款 `Ctrl+A`）。绑定文本不参与（随容器联动，
+    /// 同框选语义）。文本编辑中不派发——TextEdit 自身的 Ctrl+A 全选文字。
+    SelectAll,
     // 视图
     FitToScreen,
     /// 缩放到选中元素（Excalidraw 同款 Shift+2）。
@@ -470,6 +473,7 @@ impl Action {
         Action::Copy,
         Action::Cut,
         Action::DeleteSelected,
+        Action::SelectAll,
         Action::FitToScreen,
         Action::ZoomToSelection,
         Action::Zoom100,
@@ -528,6 +532,8 @@ impl Action {
             Copy => vec![KeyBind::new(C).ctrl().on_release()],
             Cut => vec![KeyBind::new(X).ctrl().on_release()],
             DeleteSelected => vec![KeyBind::new(Delete)],
+            // 全选（Excalidraw 同款 Ctrl+A）。裸 A 是箭头工具，严格修饰匹配不冲突
+            SelectAll => vec![KeyBind::new(A).ctrl()],
             // 适应画布 → 对齐 Excalidraw「缩放到适应/Zoom to fit」= Shift+1。
             // 裸 F 让给画框（见下）。
             FitToScreen => vec![KeyBind::new(Num1).shift()],

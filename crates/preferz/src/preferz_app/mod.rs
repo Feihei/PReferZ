@@ -2785,6 +2785,12 @@ impl PReferZApp {
             }
         }
 
+        // 全选（Ctrl+A，Excalidraw 同款）：绑定文本不参与（随容器联动，同框选）。
+        // 文本编辑中已在函数开头提前 return，TextEdit 自身的 Ctrl+A 全选文字不受影响。
+        if self.keymap.pressed(Action::SelectAll, ctx) {
+            self.scene.select_all();
+        }
+
         // 删除选中（走命令栈）
         if self.keymap.pressed(Action::DeleteSelected, ctx) && !self.scene.selection.is_empty() {
             self.delete_selected();

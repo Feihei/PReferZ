@@ -480,6 +480,21 @@ impl Scene {
         self.selection.clear();
     }
 
+    /// 全选（Ctrl+A，Excalidraw 同款）。绑定文本不参与：它随容器联动
+    /// （同框选语义，见 binary 层框选过滤），单独选中只会得到一个
+    /// 移动不了的可视快照选中框。
+    pub fn select_all(&mut self) {
+        let ids: Vec<ItemId> = self
+            .items
+            .iter()
+            .filter(|item| !self.is_bound_text(item))
+            .map(|item| item.id)
+            .collect();
+        for id in ids {
+            self.select(id);
+        }
+    }
+
     pub fn toggle_selection(&mut self, id: ItemId) {
         if self.selection.contains(&id) {
             self.selection.remove(&id);
@@ -615,6 +630,25 @@ mod tests {
         let ids = scene.texts_bound_to(sid);
         assert_eq!(ids.len(), 1);
         assert_eq!(ids[0], t_id);
+    }
+
+    /// 全选（Ctrl+A，Excalidraw 同款）：绑定文字不参与（随容器联动，同框选
+    /// 语义），形状与自由文字都参与。
+    #[test]
+    fn select_all_skips_bound_text() {
+        let s = shape();
+        let t = text(s.id);
+        let free = Item::new_text("free".into(), 0.0, 0.0, 20.0, [255; 4]);
+        let (sid, t_id, free_id) = (s.id, t.id, free.id);
+        let mut scene = Scene::new();
+        scene.add_item(s);
+        scene.add_item(t);
+        scene.add_item(free);
+
+        scene.select_all();
+        assert!(scene.selection_contains(&sid));
+        assert!(scene.selection_contains(&free_id));
+        assert!(!scene.selection_contains(&t_id), "绑定文字不参与全选");
     }
 
     #[test]
