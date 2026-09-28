@@ -485,6 +485,14 @@
          同样适用，只排除贴近对角 ±10px 的窄带）。测试
          `elbow_insert_candidates_rejects_near_diagonal_segments`（近对角 seg 被拒 + 稳定 seg
          保留 + 邻居拖动后锚点仍直线穿越）。
+      6. **辅助点移除 + 离角距离闸门（2026-09-25 六次反馈）**：①多顶点 elbow 选中态仍画
+         "段中点辅助小方块"（与多段线弦中点加点手柄同款式）——被当成"可拖动加点"且与锚点
+         混淆，**渲染移除**（双击带状命中不受影响，hit_test 的 SegmentMid 分支保留）；
+         ②仍有"新顶点长在角点上"——短小段上 `[0.15,0.85]` 投影钳制的 15% 处只有几像素
+         （0.15×段长），新增第四条采样闸门 `MIN_INSERT_CORNER_DIST`（8 局部px）：离**未简化**
+         推导路径任一拐角不足 8px 的采样淘汰（换采样点/换小段）。测试
+         `elbow_insert_candidates_keep_off_corners`（助手直测 + 四组几何 × 多落点的
+         ≥8px 属性断言）。
   - **DP-B｜取向翻转滞回：不加**。确定性规则固有行为，先观察验收反馈再定。
 - **不做**：Excalidraw `fixedSegments` 模型与 A* 避让路由（E2 仍留待未来，见 #16）；`elbow_mid_offset` 推广到多顶点（多顶点的用户意图由顶点位置表达）。
 - **手工验收清单**：
@@ -553,6 +561,9 @@
 - **测试**：core `roundness_radius_matches_rect_semantics` / `round_orthogonal_corners_l_shape_arc_and_clamp`
   （L 形弧心切点 + 短段钳制 + 闭合正方形）/ `elbow_roundness_affects_contains_canvas_point`
   （弧上点命中、直角路径同点不命中）；stylers 既有圆角矩形测试回归。
+- **验收反馈修正（2026-09-25）**：开放链漏推终点 `pts[n-1]`——末角切出后**末段直线整段消失**
+  （首个单测还把该错误行为断言进去了）。修复：开放链循环后补推终点（闭合链由调用方收口不受
+  影响）；断言改为 `out.last() == 终点` + 弧切出点独立校验。
 - **手工验收清单**：
   - [ ] 选中 elbow 线（两点/多顶点）→ 属性栏出现「圆角」节；None/S/M/L/XL 五档切换，拐角变圆弧、弧度随档位增大
   - [ ] XL 档短段不被穿越（相邻两角在段中点相汇，无交叉/毛刺）；拖动顶点 / 拖 bar 时圆角跟随
