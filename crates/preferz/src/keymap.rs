@@ -392,6 +392,9 @@ pub enum Action {
     /// 全选所有元素（Excalidraw 同款 `Ctrl+A`）。绑定文本不参与（随容器联动，
     /// 同框选语义）。文本编辑中不派发——TextEdit 自身的 Ctrl+A 全选文字。
     SelectAll,
+    /// 取消全部选择（默认 `Ctrl+Shift+A`；Excalidraw 没有专用快捷键，其 Esc
+    /// 兼职清空选择——本项目 Esc 已被 `Cancel` 占用，故挂独立组合键）。
+    DeselectAll,
     // 视图
     FitToScreen,
     /// 缩放到选中元素（Excalidraw 同款 Shift+2）。
@@ -474,6 +477,7 @@ impl Action {
         Action::Cut,
         Action::DeleteSelected,
         Action::SelectAll,
+        Action::DeselectAll,
         Action::FitToScreen,
         Action::ZoomToSelection,
         Action::Zoom100,
@@ -534,6 +538,8 @@ impl Action {
             DeleteSelected => vec![KeyBind::new(Delete)],
             // 全选（Excalidraw 同款 Ctrl+A）。裸 A 是箭头工具，严格修饰匹配不冲突
             SelectAll => vec![KeyBind::new(A).ctrl()],
+            // 取消全选：Ctrl+Shift+A（用户习惯；与解组 Ctrl+Shift+G 同型不冲突）
+            DeselectAll => vec![KeyBind::new(A).ctrl().shift()],
             // 适应画布 → 对齐 Excalidraw「缩放到适应/Zoom to fit」= Shift+1。
             // 裸 F 让给画框（见下）。
             FitToScreen => vec![KeyBind::new(Num1).shift()],
@@ -834,6 +840,20 @@ mod tests {
             !binds[0].ctrl && !binds[0].shift && !binds[0].alt,
             "裸 Enter"
         );
+    }
+
+    #[test]
+    fn select_all_and_deselect_all_defaults() {
+        // 全选 Ctrl+A / 取消全选 Ctrl+Shift+A（用户习惯；Excalidraw 无取消全选专用键）
+        let km = Keymap::new();
+        let select = km.bindings(Action::SelectAll);
+        assert_eq!(select.len(), 1);
+        assert!(select[0].ctrl && !select[0].shift && !select[0].alt);
+        assert_eq!(select[0].key, BindKey::A);
+        let deselect = km.bindings(Action::DeselectAll);
+        assert_eq!(deselect.len(), 1);
+        assert!(deselect[0].ctrl && deselect[0].shift && !deselect[0].alt);
+        assert_eq!(deselect[0].key, BindKey::A);
     }
 
     #[test]

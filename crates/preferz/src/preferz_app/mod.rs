@@ -2791,6 +2791,12 @@ impl PReferZApp {
             self.scene.select_all();
         }
 
+        // 取消全选（Ctrl+Shift+A）：Excalidraw 无专用快捷键（其 Esc 兼职清空选择），
+        // 本项目 Esc 已被 Cancel 占用，按用户习惯挂独立组合键。
+        if self.keymap.pressed(Action::DeselectAll, ctx) {
+            self.scene.deselect_all();
+        }
+
         // 删除选中（走命令栈）
         if self.keymap.pressed(Action::DeleteSelected, ctx) && !self.scene.selection.is_empty() {
             self.delete_selected();
