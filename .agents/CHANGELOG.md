@@ -860,6 +860,32 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 
 ---
 
+## 导出选区对话框（Ctrl+Shift+E，2026-09-28）
+
+> 对齐 Excalidraw `Ctrl+Shift+E`：选区导出预览 + 透明背景 + PNG / SVG / 复制到剪贴板。
+
+- **快捷键**：`Action::ExportSelection`（Ctrl+Shift+E，可改绑）；无选区只提示不弹窗；`Esc` / X 关闭。
+- **对话框**（新 `export_dialog.rs`）：实时预览（临时视口复用 `draw_item_visual`，透明底显示
+  棋盘格纹）+ 尺寸信息（导出分辨率 = 画布尺寸 ×2，Excalidraw @2x 同款）+ 透明背景开关（默认开）。
+- **离屏栅格化管线**（新 `offscreen.rs`）：离屏 `egui::Context`（`begin_pass` 初始化字体；
+  复用 `app_font_definitions` 与主窗口主题样式）+ 临时视口收集形状 → `ctx.tessellate` →
+  软件三角光栅化（预乘 alpha over 合成、字体图集采样、近似 top-left 规则防共享边双重混合、
+  逆预乘输出直通 RGBA）。文字字形 / 手绘风曲线 / 图表与屏上渲染同源，补上旧逐像素采样
+  导出「形状不渲染」的质量短板。
+- **SVG 导出**（新 `svg_export.rs`）：zoom=1 收集的形状逐个转 SVG 元素（手绘风抖动、箭头、
+  贝塞尔曲线保真）；Pixmap 按原始字节 base64 内嵌（魔数嗅探 MIME，支持裁剪 / 灰度 / 透明度）；
+  文字逐行 `<text>` 近似（字号取排版段字体定义，字体不嵌入）。
+- **剪贴板**：后台线程光栅化完成后 UI 线程写 arboard（`BackgroundOps` 新增 `clipboard_rx` 通道）。
+- **修复（同源）**：图形绑定文字不进 `scene.selection`（随容器联动），导出直接快照 selection
+  会把文字漏掉——导出集合改为 `expanded_export_ids` 双向联动（形状→绑定文本、绑定文本→容器，
+  同 delete/duplicate 语义），`Ctrl+Shift+E` 与右键菜单「导出选中 PNG/JPG」一并修复。
+- 字体定义构建收口 `lib.rs::app_font_definitions`（main.rs 与离屏 Context 共用，应用内缓存
+  避免重复解压）。
+- 测试：栅格化（白块 / 背景模式 / 预乘 over 混合）、base64 / XML 转义、离屏管线端到端
+  （virgin Context 建 Ui → PaintList → tessellate → 光栅化）、选区联动扩展回归；质量门全绿。
+
+---
+
 ## 决策点归档（D1–D6 / I1–I4）
 
 > 原列于 plan.md，G/I/H/K 交付后蒸馏归档于此，使 CHANGELOG 自包含、plan.md 仅保留前瞻内容。
