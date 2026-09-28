@@ -727,6 +727,12 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 4. **圆角矩形手绘风碎短线**：`is_smooth` 把带圆角矩形并入平滑路线（整圈抖动 + Catmull-Rom，
    与椭圆同策；直边段共线插值后仍直），新增回归测试
    `rough_styler_rounded_rect_is_smooth_not_fragmented`。
+5. **小矩形 + Cartoonist 圆角出乱线 / 小倒角角部打结**（同日二次+三次反馈，附图）：固定密度
+   采样下相邻点距仅几像素，Cartoonist 曲线抖动 ±6px 令相邻点互越、被 Catmull-Rom 放大成
+   自交小环；全局平均间距上限在「直边疏 + 圆弧密」轮廓上失守。修法：`jitter_points` 改
+   **逐点局部上限**——每点幅度 = min(rough 幅度, 0.35 × 较短相邻段)（0.35 ≈ 0.5/√2，
+   x/y 独立抽样下欧氏位移可达 amp×√2），相邻两点位移之和恒小于段长，结构上杜绝互越；
+   新增测试 `smooth_jitter_respects_local_sample_spacing_at_corners`。
 
 ---
 
