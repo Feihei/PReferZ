@@ -425,11 +425,9 @@ impl TransformHandles {
                 if is_two_point_elbow_line(item) {
                     // 两点 elbow：无段中点（仅 bar 手柄，见下）
                 } else if is_elbow_line(item) {
-                    // 多顶点 elbow：双击插入点（plan #21 DP-A，提示双击线上任意处可加点）
-                    for (_, p, _) in elbow_insert_screen_candidates(item, viewport) {
-                        let r = egui::Rect::from_center_size(p, egui::Vec2::splat(6.0));
-                        painter.rect_filled(r, egui::CornerRadius::same(1), mid_fill);
-                    }
+                    // 多顶点 elbow：**不画**候选小方块（2026-09-25 六次验收反馈：
+                    // 与多段线段中点辅助点同款式，被当成"可拖动加点"且与锚点混淆；
+                    // 双击带状命中不受影响，见 hit_test 的 SegmentMid 分支）
                 } else {
                     let seg_count = if closed { n } else { n - 1 };
                     for i in 0..seg_count {

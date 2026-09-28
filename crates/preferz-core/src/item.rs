@@ -1368,6 +1368,10 @@ pub fn round_orthogonal_corners(pts: &[(f32, f32)], closed: bool, radius: f32) -
         }
         out.push(p_out);
     }
+    // 开放链补推终点：末段直线（末角切出点 → 端点）由这最后一跳画出
+    if !closed {
+        out.push(pts[n - 1]);
+    }
     out.dedup();
     out
 }
@@ -1533,6 +1537,18 @@ fn bar_orientation_stable(prev: (f32, f32), next: (f32, f32), delta: f32) -> boo
     stable
 }
 
+/// 双击插入候选离拐角的最小距离（局部 px，2026-09-25 六次验收反馈）。短小段上
+/// `[0.15, 0.85]` 的采样仍可能贴角（0.15 × 段长只有几像素），视觉上"新顶点长在
+/// 角点上"，与锚点/角点混淆——离**未简化**推导路径的任一拐角不足此距离的采样
+/// 直接淘汰（换采样点 / 换小段）。
+const MIN_INSERT_CORNER_DIST: f32 = 8.0;
+
+fn near_derived_corner(corner_set: &[(f32, f32)], p: (f32, f32)) -> bool {
+    corner_set
+        .iter()
+        .any(|c| (c.0 - p.0).hypot(c.1 - p.1) < MIN_INSERT_CORNER_DIST)
+}
+
 /// 两点 elbow 的双击插入候选（plan #21 验收反馈：直线/箭头转 elbow、Ctrl+方向键
 /// 流程图连线都是两点 elbow，此前双击无作用）。靶区 = 展开路径的 bar 段（展开路径中
 /// 唯一与 bar 同向的段；退化直线时即整条线），插入点取落点在 bar 上的投影（钳在小段
@@ -1555,7 +1571,8 @@ fn elbow_two_point_insert_candidates(
     if !bar_orientation_stable(a, b, 5.0) {
         return Vec::new(); // 近对角线：锚点保不住平行取向（见 bar_orientation_stable）
     }
-    let base = orthogonal_simplify(&elbow_polyline_offset(pts, mid_offset));
+    let expanded = elbow_polyline_offset(pts, mid_offset);
+    let base = orthogonal_simplify(&expanded);
     if base.len() < 2 {
         return Vec::new();
     }
@@ -1588,6 +1605,9 @@ fn elbow_two_point_insert_candidates(
     fracs.extend([0.5f32, 0.25, 0.75]);
     for f in fracs {
         let p = (s.0 + dx * f, s.1 + dy * f);
+        if near_derived_corner(&expanded, p) {
+            continue; // 贴角：视觉上像长在角点上（六次反馈）
+        }
         let inserted = vec![a, p, b];
         if !orthogonal_path_eq(
             &orthogonal_simplify(&elbow_vertex_polyline(&inserted, false)),
@@ -1629,6 +1649,8 @@ fn elbow_two_point_insert_candidates(
 /// 3. **取向稳定**（段级，2026-09-25 验收反馈）：段两端角连线接近对角时，微小
 ///    拖动邻居即翻转新顶点的 bar 取向、锚点退化成角点——见
 ///    [`bar_orientation_stable`]，这样的段整段无候选。
+/// 4. **离角距离**（2026-09-25 六次反馈）：采样点离未简化推导路径的任一拐角
+///    ≥ [`MIN_INSERT_CORNER_DIST`]，短小段的 0.15 采样不再"长在角点上"。
 ///
 /// `click`（与 `pts` 同一局部坐标系）是**采样偏好**：小段按离落点的远近排序，优先试
 /// 落点在该小段上的投影（"双击哪儿就长在哪儿"），投影不安全时退回中点 / 偏侧点。
@@ -1655,7 +1677,8 @@ pub fn elbow_insert_candidates(
     if n == 2 {
         return elbow_two_point_insert_candidates(pts, closed, mid_offset, click);
     }
-    let base = orthogonal_simplify(&elbow_vertex_polyline(pts, closed));
+    let derived = elbow_vertex_polyline(pts, closed);
+    let base = orthogonal_simplify(&derived);
     let mut chain: Vec<(f32, f32)> = pts.to_vec();
     if closed {
         chain.push(pts[0]);
@@ -1763,6 +1786,9 @@ pub fn elbow_insert_candidates(
             fracs.extend([0.5f32, 0.25, 0.75]);
             for f in fracs {
                 let p = (a.0 + dx * f, a.1 + dy * f);
+                if near_derived_corner(&derived, p) {
+                    continue; // 贴角：视觉上像长在角点上（六次反馈）
+                }
                 let mut inserted = pts.to_vec();
                 inserted.insert(seg + 1, p);
                 if !orthogonal_path_eq(
@@ -2360,7 +2386,12 @@ mod tests {
         let out = round_orthogonal_corners(&[(0.0, 0.0), (100.0, 0.0), (100.0, 80.0)], false, 10.0);
         assert_eq!(out[0], (0.0, 0.0));
         assert_eq!(out[1], (90.0, 0.0), "切点内缩 r");
-        assert_eq!(*out.last().unwrap(), (100.0, 10.0));
+        assert_eq!(out[9], (100.0, 10.0), "弧切出点");
+        assert_eq!(
+            *out.last().unwrap(),
+            (100.0, 80.0),
+            "末段直线：终点必须保留"
+        );
         let mid = out[1 + ROUNDED_CORNER_SEGMENTS / 2];
         assert!((mid.0 - (90.0 + 10.0 * std::f32::consts::FRAC_1_SQRT_2)).abs() < 1e-3);
         assert!((mid.1 - (10.0 - 10.0 * std::f32::consts::FRAC_1_SQRT_2)).abs() < 1e-3);
@@ -2371,7 +2402,7 @@ mod tests {
             10.0,
         );
         assert_eq!(out[1], (8.0, 0.0));
-        assert_eq!(*out.last().unwrap(), (12.0, 4.0));
+        assert_eq!(*out.last().unwrap(), (20.0, 4.0), "末段直线：终点必须保留");
         assert_eq!(
             out.iter().filter(|p| **p == (10.0, 2.0)).count(),
             1,
@@ -2783,6 +2814,42 @@ mod tests {
                 "候选 {:?} 不在走线上",
                 c.point
             );
+        }
+    }
+
+    #[test]
+    fn elbow_insert_candidates_keep_off_corners() {
+        // 距离闸门直测：拐角 8px 内的采样被拒
+        assert!(near_derived_corner(&[(0.0, 0.0)], (7.9, 0.0)));
+        assert!(!near_derived_corner(&[(0.0, 0.0)], (8.1, 0.0)));
+        // 端到端属性：任何候选都不得落在未简化推导路径的任一拐角 8px 内
+        // （短小段 0.15 采样离角仅几像素，视觉上"长在角点上"，六次反馈）
+        for (pts, closed) in [
+            (vec![(0.0f32, 0.0), (100.0, 40.0), (200.0, 0.0)], false),
+            (vec![(0.0, 0.0), (50.0, 100.0), (100.0, 0.0)], false),
+            (vec![(0.0, 0.0), (100.0, 0.0), (50.0, 80.0)], true),
+            (vec![(0.0, 0.0), (60.0, 40.0), (120.0, 0.0)], false),
+        ] {
+            let derived = elbow_vertex_polyline(&pts, closed);
+            for click in [
+                None,
+                Some((202.0f32, 42.0)),
+                Some((30.0, 80.0)),
+                Some((118.0, 42.0)),
+            ] {
+                for c in elbow_insert_candidates(&pts, closed, 0.0, click) {
+                    for corner in &derived {
+                        assert!(
+                            (corner.0 - c.point.0).hypot(corner.1 - c.point.1)
+                                >= MIN_INSERT_CORNER_DIST,
+                            "pts={pts:?} click={click:?}: 候选 {:?} 距拐角 {:?} 不足 {}px",
+                            c.point,
+                            corner,
+                            MIN_INSERT_CORNER_DIST
+                        );
+                    }
+                }
+            }
         }
     }
 
