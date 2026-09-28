@@ -546,19 +546,27 @@ impl RoughStyler {
 
     /// 该轮廓是否为**曲线类**：抖动后需连成光滑曲线，而非逐边画抖动的直线段。
     ///
-    /// 三类属于曲线：
+    /// 属于曲线的轮廓：
     /// - 椭圆：由采样点近似，直接连段会露出多边形折角（手绘风下尤其刺眼）；
     /// - `Curved` 的 Polyline：Catmull-Rom 采样后本身就是曲线控制点；
-    /// - 圆角矩形：四角是圆弧采样点，逐边抖动会把轮廓碎成大量短线段
+    /// - 带圆角的矩形：四角是圆弧采样点，逐边抖动会把轮廓碎成大量短线段
     ///   （plan #20 验收反馈），改走"整圈抖动 + Catmull-Rom"平滑路线——
-    ///   直边段的采样点共线，插值后仍是直线。
+    ///   直边段的采样点共线，插值后仍是直线；
+    /// - 带倒角的 Elbow：拐角弧采样点同理（plan #23 验收反馈，2026-09-28：
+    ///   逐边路线下 Cartoonist 端点独立抖动使相邻弧段脱开成断线，低档位又因
+    ///   短线衰减 `len/10` 几乎零抖动、不像手绘弧），与圆角矩形同策。
     ///
-    /// 矩形（无圆角）/ 菱形本来就是直边，保持逐边抖动。
+    /// 矩形（无圆角）/ 菱形 / Straight 折线 / 无倒角 elbow 本来就是直边，保持逐边抖动。
     fn is_smooth(shape: &ShapeData) -> bool {
+        let rounded = roundness_radius(shape.base_size, shape.roundness) > 1e-3;
         match shape.shape_type {
             ShapeType::Ellipse => true,
-            ShapeType::Rectangle => roundness_radius(shape.base_size, shape.roundness) > 1e-3,
-            ShapeType::Polyline => matches!(shape.curve_type, CurveType::Curved),
+            ShapeType::Rectangle => rounded,
+            ShapeType::Polyline => match shape.curve_type {
+                CurveType::Curved => true,
+                CurveType::Elbow => rounded,
+                CurveType::Straight => false,
+            },
             ShapeType::Diamond => false,
         }
     }
@@ -1903,6 +1911,45 @@ mod tests {
         let n = rounded_rect_points(100.0, 40.0, roundness_radius((100.0, 40.0), 0.5)).len();
         assert_eq!(shapes.len(), n * RoughStyler::PASSES);
         assert!(shapes.iter().all(|s| matches!(s, Shape::CubicBezier(_))));
+    }
+
+    #[test]
+    fn rough_styler_elbow_roundness_chains_without_gaps() {
+        // plan #23 验收反馈（2026-09-28）：elbow 倒角的弧采样点列若走逐边抖动，
+        // Cartoonist 档端点独立偏移会让相邻弧段脱开（断线）；并入平滑路线后
+        // 每个 pass 内部必须逐段共享端点。与圆角矩形同策（plan #20 反馈 4）。
+        let mut d = open_line();
+        d.points = vec![(0.0, 0.0), (200.0, 100.0)];
+        d.base_size = (200.0, 100.0);
+        d.curve_type = CurveType::Elbow;
+        d.end_arrow = None;
+        d.roundness = 0.5; // 半径 = min(200,100) × 0.5 × 0.5 = 25，拐角有弧采样点
+        d.sloppiness = Sloppiness::Cartoonist; // preserveVertices=false：逐边路线会脱开
+        let shapes = RoughStyler.build_shapes(
+            &d,
+            &StrokeStyle::default(),
+            None,
+            FillStyle::Solid,
+            &identity(),
+            1.0,
+        );
+        assert!(shapes.iter().all(|s| matches!(s, Shape::CubicBezier(_))));
+        let bez = beziers(&shapes);
+        let n = outline_points(&d, 9, 0.0).len();
+        assert_eq!(bez.len(), (n - 1) * RoughStyler::PASSES);
+        // 逐 pass 检查链式连续：段 i 的终点 = 段 i+1 的起点（pass 边界除外）
+        let segs = n - 1;
+        for p in 0..RoughStyler::PASSES {
+            let pass = &bez[p * segs..(p + 1) * segs];
+            for w in pass.windows(2) {
+                assert!(
+                    (w[0][3] - w[1][0]).length() < 1e-4,
+                    "elbow 倒角弧段脱开: {:?} -> {:?}",
+                    w[0][3],
+                    w[1][0]
+                );
+            }
+        }
     }
 
     #[test]
