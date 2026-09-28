@@ -295,6 +295,8 @@ pub enum T {
     PropsSectionText,
     PropsSectionPixmap,
     PropsSectionFrame,
+    /// 分节标题：跨类型多选的公共属性（属性级交集，Excalidraw 同款语义）。
+    PropsSectionCommon,
     /// 画框节：编号字段的标签。
     PropsFrameNumber,
     // ── 对齐 / 分布（plan #6）──
@@ -656,6 +658,7 @@ fn translate_en(key: T) -> &'static str {
         T::PropsSectionText => "Text",
         T::PropsSectionPixmap => "Image",
         T::PropsSectionFrame => "Frame",
+        T::PropsSectionCommon => "Common",
         T::PropsFrameNumber => "Number",
         T::PropsSectionAlign => "Align",
         T::PropsSectionZOrder => "Layer",
@@ -960,6 +963,7 @@ fn translate_zh(key: T) -> &'static str {
         T::PropsSectionText => "文字",
         T::PropsSectionPixmap => "图片",
         T::PropsSectionFrame => "画框",
+        T::PropsSectionCommon => "通用",
         T::PropsFrameNumber => "编号",
         T::PropsSectionAlign => "对齐",
         T::PropsSectionZOrder => "叠放",

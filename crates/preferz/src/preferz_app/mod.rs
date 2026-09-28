@@ -698,10 +698,12 @@ pub(crate) enum PropValue {
 fn prop_cmd(pending: PropEdit, scene: &Scene) -> Option<Box<dyn Command>> {
     match pending.kind {
         PropKind::Stroke => {
-            // 分流：联动快照（填充 / 绑定文字）与描边快照混在同一 pending 里，
+            // 分流：各类样式快照（描边 / 墨迹 / 文字 / 联动填充）混在同一 pending 里，
             // 按值类型拆成各自的批量命令，最后打包成一条 MultiCommand
-            // （改描边色 → 填充色 / 绑定文字色联动，撤销一步到位）。
+            // （改描边色 → 填充色 / 绑定文字色联动；跨类型公共属性编辑同走此路，
+            // 形状+墨迹+文字一次改色整批一条 undo）。
             let mut strokes = Vec::new();
+            let mut freedraws = Vec::new();
             let mut texts = Vec::new();
             let mut fills = Vec::new();
             for (id, old) in &pending.items {
@@ -711,6 +713,23 @@ fn prop_cmd(pending: PropEdit, scene: &Scene) -> Option<Box<dyn Command>> {
                 match (old, &item.kind) {
                     (PropValue::Stroke(old), ItemKind::Shape { stroke, .. }) => {
                         strokes.push((*id, *old, *stroke));
+                    }
+                    (
+                        PropValue::Freedraw(old),
+                        ItemKind::Freedraw {
+                            color,
+                            stroke_width,
+                            ..
+                        },
+                    ) => {
+                        freedraws.push((
+                            *id,
+                            *old,
+                            FreedrawStyle {
+                                color: *color,
+                                stroke_width: *stroke_width,
+                            },
+                        ));
                     }
                     (PropValue::Text(old), ItemKind::Text { .. }) => {
                         if let Some(cur) = item.kind.text_style() {
@@ -743,6 +762,11 @@ fn prop_cmd(pending: PropEdit, scene: &Scene) -> Option<Box<dyn Command>> {
             if !strokes.is_empty() {
                 cmds.push(Box::new(
                     SetStrokeStyle::new_batch(strokes).with_preview_applied(true),
+                ));
+            }
+            if !freedraws.is_empty() {
+                cmds.push(Box::new(
+                    SetFreedrawStyle::new_batch(freedraws).with_preview_applied(true),
                 ));
             }
             if !texts.is_empty() {
@@ -4003,6 +4027,78 @@ mod tests {
 
         app.finish_create_frame(CanvasPoint::new(0.0, 0.0), CanvasPoint::new(200.0, 200.0));
         expect_ascii_flash(&mut app, "创建画框");
+    }
+
+    /// 跨类型公共属性编辑（属性级交集）的 undo 合成：形状 + 墨迹的混合快照在
+    /// prop_cmd 的 Stroke 分支按类型分流（SetStrokeStyle + SetFreedrawStyle），
+    /// 打包成一条 MultiCommand，undo 一次回到改色前。
+    #[test]
+    fn prop_cmd_merges_freedraw_snapshot_for_common_color() {
+        let mut scene = Scene::new();
+        let shape = Item::new_shape(
+            ShapeType::Rectangle,
+            (40.0, 40.0),
+            0.0,
+            0.0,
+            StrokeStyle::default(),
+            None,
+        );
+        let ink = Item::new_freedraw(
+            &[(0.0, 0.0), (10.0, 10.0)],
+            &[1.0, 1.0],
+            2.0,
+            [0, 0, 0, 255],
+        );
+        let (shape_id, ink_id) = (shape.id, ink.id);
+        scene.add_item(shape);
+        scene.add_item(ink);
+
+        let old_stroke = StrokeStyle::default();
+        let old_ink = FreedrawStyle {
+            color: [0, 0, 0, 255],
+            stroke_width: 2.0,
+        };
+
+        // 预览：直接改色（apply_common_color 的预览阶段等价操作）
+        if let Some(item) = scene.get_item_mut(&shape_id) {
+            if let ItemKind::Shape { stroke, .. } = &mut item.kind {
+                stroke.color = [255, 0, 0, 255];
+            }
+        }
+        if let Some(item) = scene.get_item_mut(&ink_id) {
+            if let ItemKind::Freedraw { color, .. } = &mut item.kind {
+                *color = [255, 0, 0, 255];
+            }
+        }
+
+        let pending = PropEdit {
+            kind: PropKind::Stroke,
+            items: vec![
+                (shape_id, PropValue::Stroke(old_stroke)),
+                (ink_id, PropValue::Freedraw(old_ink)),
+            ],
+        };
+        let Some(mut cmd) = prop_cmd(pending, &scene) else {
+            panic!("混合快照应合成一条命令");
+        };
+        assert!(cmd.skip_first_redo(), "预览已改状态，首次 redo 应跳过");
+        cmd.undo(&mut scene);
+        // 两种类型一起回到改色前
+        match &scene.get_item(&shape_id).unwrap().kind {
+            ItemKind::Shape { stroke, .. } => assert_eq!(stroke.color, old_stroke.color),
+            _ => unreachable!(),
+        }
+        match &scene.get_item(&ink_id).unwrap().kind {
+            ItemKind::Freedraw {
+                color,
+                stroke_width,
+                ..
+            } => {
+                assert_eq!(*color, old_ink.color);
+                assert_eq!(*stroke_width, old_ink.stroke_width);
+            }
+            _ => unreachable!(),
+        }
     }
 
     /// 属性栏比例下拉的「跟随全局」项（原「跟随全局比例」勾选框并进下拉而来）：

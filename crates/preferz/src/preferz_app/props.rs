@@ -148,13 +148,18 @@ impl PReferZApp {
             .show(ctx, |ui| {
                 chrome::floating_bar_frame(ui.style()).show(ui, |ui| {
                     ui.set_min_width(chrome::PROPS_BAR_WIDTH);
-                    // 无滚动：bar 高度自适应内容，完整显示所有选项（用户要求 2026-09-22）。
                     ui.label(fill(
                         t(lang, T::PropsSelectedCount),
                         &[ids.len().to_string()],
                     ));
                     ui.separator();
-
+                    // 窗口高度不足时允许竖向滚动（用户要求 2026-09-28，取代此前
+                    // 2026-09-22 的「无滚动完整展开」——选项增多后内容可超出屏幕）。
+                    // 宽度撑满、高度按内容收缩：不超高时外观与原来自适应一致。
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, true])
+                        .max_height(ui.available_height())
+                        .show(ui, |ui| {
                             // 叠放顺序：Frame 不参与，选区含非 Frame item 时显示
                             let has_reorderable = ids.iter().any(|id| {
                                 !self.scene.get_item(id).is_some_and(|i| i.is_frame())
@@ -179,12 +184,6 @@ impl PReferZApp {
                                     matches!(self.scene.get_item(id), Some(item) if matches!(item.kind, ItemKind::Shape { .. }))
                                 })
                                 .collect();
-                            if !shape_ids.is_empty() {
-                                ui.label(t(lang, T::PropsSectionShape));
-                                self.render_shape_props(ui, lang, dark, &shape_ids);
-                                ui.separator();
-                            }
-
                             let freedraw_ids: Vec<ItemId> = ids
                                 .iter()
                                 .copied()
@@ -192,22 +191,47 @@ impl PReferZApp {
                                     matches!(self.scene.get_item(id), Some(item) if matches!(item.kind, ItemKind::Freedraw { .. }))
                                 })
                                 .collect();
-                            if !freedraw_ids.is_empty() {
-                                ui.label(t(lang, T::PropsSectionFreedraw));
-                                self.render_freedraw_props(ui, lang, dark, &freedraw_ids);
-                                ui.separator();
-                            }
-
-                            let mut text_ids: Vec<ItemId> = ids
+                            let text_ids: Vec<ItemId> = ids
                                 .iter()
                                 .copied()
                                 .filter(|id| {
                                     matches!(self.scene.get_item(id), Some(item) if matches!(item.kind, ItemKind::Text { .. }))
                                 })
                                 .collect();
-                            // 选中图形时把其绑定文字纳入文字节（Excalidraw 同款入口）：
-                            // 绑定文字不可独立选中，此前选中图形时侧栏无任何文字样式控件
-                            //（用户反馈"看不到文字对齐选项 / 文字样式不随主体改"）。
+                            let pixmap_ids: Vec<ItemId> = ids
+                                .iter()
+                                .copied()
+                                .filter(|id| {
+                                    matches!(self.scene.get_item(id), Some(item) if matches!(item.kind, ItemKind::Pixmap { .. }))
+                                })
+                                .collect();
+                            let frame_ids: Vec<ItemId> = ids
+                                .iter()
+                                .copied()
+                                .filter(|id| {
+                                    matches!(self.scene.get_item(id), Some(item) if matches!(item.kind, ItemKind::Frame { .. }))
+                                })
+                                .collect();
+
+                            // 属性级交集（用户拍板 2026-09-28，Excalidraw 同款语义）：
+                            // 跨类型多选只显示「公共属性」节，类型专属节全部隐藏。
+                            let families = [
+                                !shape_ids.is_empty(),
+                                !freedraw_ids.is_empty(),
+                                !text_ids.is_empty(),
+                                !pixmap_ids.is_empty(),
+                                !frame_ids.is_empty(),
+                            ];
+                            if families.iter().filter(|present| **present).count() >= 2 {
+                                self.render_common_props(ui, lang, dark, &ids);
+                                return;
+                            }
+
+                            // 单类型多选：沿用各类型节。选中图形时把其绑定文字纳入文字节
+                            // （Excalidraw 同款入口）：绑定文字不可独立选中，此前选中图形时
+                            // 侧栏无任何文字样式控件（用户反馈"看不到文字对齐选项 /
+                            // 文字样式不随主体改"）。绑定文字不参与交集判定。
+                            let mut text_ids = text_ids;
                             for id in &ids {
                                 if matches!(
                                     self.scene.get_item(id),
@@ -226,39 +250,206 @@ impl PReferZApp {
                                     }
                                 }
                             }
+                            if !shape_ids.is_empty() {
+                                ui.label(t(lang, T::PropsSectionShape));
+                                self.render_shape_props(ui, lang, dark, &shape_ids);
+                                ui.separator();
+                            }
+                            if !freedraw_ids.is_empty() {
+                                ui.label(t(lang, T::PropsSectionFreedraw));
+                                self.render_freedraw_props(ui, lang, dark, &freedraw_ids);
+                                ui.separator();
+                            }
                             if !text_ids.is_empty() {
                                 ui.label(t(lang, T::PropsSectionText));
                                 self.render_text_props(ui, lang, dark, &text_ids);
                                 ui.separator();
                             }
-
-                            let pixmap_ids: Vec<ItemId> = ids
-                                .iter()
-                                .copied()
-                                .filter(|id| {
-                                    matches!(self.scene.get_item(id), Some(item) if matches!(item.kind, ItemKind::Pixmap { .. }))
-                                })
-                                .collect();
                             if !pixmap_ids.is_empty() {
                                 ui.label(t(lang, T::PropsSectionPixmap));
                                 self.render_pixmap_props(ui, lang, &pixmap_ids);
                                 ui.separator();
                             }
-
-                            let frame_ids: Vec<ItemId> = ids
-                                .iter()
-                                .copied()
-                                .filter(|id| {
-                                    matches!(self.scene.get_item(id), Some(item) if matches!(item.kind, ItemKind::Frame { .. }))
-                                })
-                                .collect();
                             if !frame_ids.is_empty() {
                                 ui.label(t(lang, T::PropsSectionFrame));
                                 self.render_frame_props(ui, lang, &frame_ids);
                             }
-
+                        });
                 });
             });
+    }
+
+    /// 跨类型多选的「公共属性」节（属性级交集，用户拍板 2026-09-28，Excalidraw 同款
+    /// 语义）：只显示**所有**选中项都支持的属性——
+    /// - 颜色：形状描边色 / 墨迹色 / 文字色统一映射为一个控件；
+    /// - 线宽：形状描边宽 + 墨迹基准笔宽统一映射。
+    ///
+    /// 类型专属控件（填充 / 圆角 / 箭头 / 字号对齐等）不在此出现；选区若含图片或
+    /// 画框导致无任何公共属性，整节不渲染（只剩叠放 / 对齐等通用节）。单类型多选
+    /// 仍走各类型节（保留完整专属控件与 D3 交集语义）。
+    pub(crate) fn render_common_props(
+        &mut self,
+        ui: &mut egui::Ui,
+        lang: Lang,
+        dark: bool,
+        ids: &[ItemId],
+    ) {
+        let all_colorable = ids.iter().all(|id| {
+            matches!(
+                self.scene.get_item(id).map(|it| &it.kind),
+                Some(ItemKind::Shape { .. } | ItemKind::Freedraw { .. } | ItemKind::Text { .. })
+            )
+        });
+        let all_widthable = ids.iter().all(|id| {
+            matches!(
+                self.scene.get_item(id).map(|it| &it.kind),
+                Some(ItemKind::Shape { .. } | ItemKind::Freedraw { .. })
+            )
+        });
+        if !all_colorable && !all_widthable {
+            // 跨类型但无公共样式属性（如 形状+图片 / 含画框）
+            ui.label(
+                egui::RichText::new(t(lang, T::PropsMixedSelection))
+                    .weak()
+                    .small(),
+            );
+            return;
+        }
+        ui.label(t(lang, T::PropsSectionCommon));
+        // 颜色（形状描边 / 墨迹 / 文字统一映射）
+        if all_colorable {
+            if let Some(p) = prop(&self.scene, ids, |it| match &it.kind {
+                ItemKind::Shape { stroke, .. } => Some(stroke.color),
+                ItemKind::Freedraw { color, .. } => Some(*color),
+                ItemKind::Text { color, .. } => Some(*color),
+                _ => None,
+            }) {
+                let mut col = p.value();
+                if palette::color_palette_button(ui, &mut col, dark, lang) {
+                    self.apply_common_color(ids, col);
+                }
+                if p.is_mixed() {
+                    ui.label(t(lang, T::PropsMixedValue));
+                }
+            }
+        }
+        // 线宽（形状描边 + 墨迹基准笔宽统一映射）
+        if all_widthable {
+            if let Some(p) = prop(&self.scene, ids, |it| match &it.kind {
+                ItemKind::Shape { stroke, .. } => Some(stroke.width),
+                ItemKind::Freedraw { stroke_width, .. } => Some(*stroke_width),
+                _ => None,
+            }) {
+                ui.label(t(lang, T::StyleStrokeWidth));
+                let mut w = p.value();
+                if stepper(
+                    ui,
+                    &mut w,
+                    &[1.0, 2.0, 4.0, 8.0, 16.0],
+                    &["XS", "S", "M", "L", "XL"],
+                    1.0..=64.0,
+                    None,
+                ) {
+                    self.apply_common_width(ids, w);
+                }
+                if p.is_mixed() {
+                    ui.label(t(lang, T::PropsMixedValue));
+                }
+            }
+        }
+    }
+
+    /// 公共颜色应用（跨类型，[`Self::render_common_props`] 用）：一次快照 + 直接预览
+    /// 改色 + 形状联动副作用，帧末由 `prop_cmd` 合成**一条** MultiCommand
+    /// （SetStrokeStyle + SetFreedrawStyle + SetTextStyle + 联动的 SetShapeFill）。
+    ///
+    /// 文字改色同时脱离「跟随形状」（与 [`Self::apply_text_color`] 语义一致）；
+    /// 形状仍走 [`Self::sync_stroke_color_side_effects`]（跟随填充 / 绑定文字联动，
+    /// 快照并入同一 pending）。快照混装 PropValue 各变体，Stroke 分支按类型分流。
+    fn apply_common_color(&mut self, ids: &[ItemId], new: [u8; 4]) {
+        let mut items: Vec<(ItemId, PropValue)> = Vec::new();
+        for id in ids {
+            let Some(item) = self.scene.get_item(id) else {
+                continue;
+            };
+            match &item.kind {
+                ItemKind::Shape { stroke, .. } => items.push((*id, PropValue::Stroke(*stroke))),
+                ItemKind::Freedraw {
+                    color,
+                    stroke_width,
+                    ..
+                } => items.push((
+                    *id,
+                    PropValue::Freedraw(FreedrawStyle {
+                        color: *color,
+                        stroke_width: *stroke_width,
+                    }),
+                )),
+                ItemKind::Text { .. } => {
+                    if let Some(style) = item.kind.text_style() {
+                        items.push((*id, PropValue::Text(style)));
+                    }
+                }
+                _ => {}
+            }
+        }
+        self.ensure_prop_edit(PropKind::Stroke, items);
+        // 预览：直接改色（文字同时脱离跟随）
+        for id in ids {
+            if let Some(item) = self.scene.get_item_mut(id) {
+                match &mut item.kind {
+                    ItemKind::Shape { stroke, .. } => stroke.color = new,
+                    ItemKind::Freedraw { color, .. } => *color = new,
+                    ItemKind::Text {
+                        color,
+                        follow_stroke,
+                        ..
+                    } => {
+                        *color = new;
+                        *follow_stroke = false;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        // 形状联动：跟随填充 / 绑定文字随描边变色（快照并入同一 pending）
+        self.sync_stroke_color_side_effects(ids, new);
+    }
+
+    /// 公共线宽应用（跨类型）：形状描边宽 + 墨迹基准笔宽一次快照、直接预览，
+    /// 帧末合成一条 MultiCommand（SetStrokeStyle + SetFreedrawStyle）。
+    fn apply_common_width(&mut self, ids: &[ItemId], w: f32) {
+        let mut items: Vec<(ItemId, PropValue)> = Vec::new();
+        for id in ids {
+            let Some(item) = self.scene.get_item(id) else {
+                continue;
+            };
+            match &item.kind {
+                ItemKind::Shape { stroke, .. } => items.push((*id, PropValue::Stroke(*stroke))),
+                ItemKind::Freedraw {
+                    color,
+                    stroke_width,
+                    ..
+                } => items.push((
+                    *id,
+                    PropValue::Freedraw(FreedrawStyle {
+                        color: *color,
+                        stroke_width: *stroke_width,
+                    }),
+                )),
+                _ => {}
+            }
+        }
+        self.ensure_prop_edit(PropKind::Stroke, items);
+        for id in ids {
+            if let Some(item) = self.scene.get_item_mut(id) {
+                match &mut item.kind {
+                    ItemKind::Shape { stroke, .. } => stroke.width = w,
+                    ItemKind::Freedraw { stroke_width, .. } => *stroke_width = w,
+                    _ => {}
+                }
+            }
+        }
     }
 
     /// 叠放顺序按钮组：上移一层 / 置于顶层 / 下移一层 / 置于底层。
@@ -379,76 +570,86 @@ impl PReferZApp {
             .show(ctx, |ui| {
                 chrome::floating_bar_frame(ui.style()).show(ui, |ui| {
                     ui.set_min_width(chrome::PROPS_BAR_WIDTH);
-                    // 无滚动：bar 高度自适应内容，完整显示所有选项（用户要求 2026-09-22）。
                     ui.label(t(lang, T::PropsDefaultsTitle));
                     ui.separator();
-                    // 描边颜色（Excalidraw 式调色板）
-                    let mut stroke = self.default_stroke.color;
-                    if palette::color_palette_button(ui, &mut stroke, dark, lang) {
-                        self.default_stroke.color = stroke;
-                    }
-                    ui.add_space(4.0);
-                    // 描边宽度
-                    ui.label(t(lang, T::StyleStrokeWidth));
-                    stepper(
-                        ui,
-                        &mut self.default_stroke.width,
-                        &[1.0, 2.0, 4.0, 8.0, 16.0],
-                        &["XS", "S", "M", "L", "XL"],
-                        1.0..=64.0,
-                        None,
-                    );
-                    // 线型
-                    ui.label(t(lang, T::StyleDashLabel));
-                    ui.horizontal(|ui| {
-                        for (dash, label) in [
-                            (DashStyle::Solid, T::StyleDashSolid),
-                            (DashStyle::Dashed, T::StyleDashDashed),
-                            (DashStyle::Dotted, T::StyleDashDotted),
-                        ] {
-                            let active = self.default_stroke.dash == dash;
-                            if ui.selectable_label(active, t(lang, label)).clicked() {
-                                self.default_stroke.dash = dash;
+                    // 窗口高度不足时允许竖向滚动（与属性侧栏同策略，2026-09-28）。
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, true])
+                        .max_height(ui.available_height())
+                        .show(ui, |ui| {
+                            // 描边颜色（Excalidraw 式调色板）
+                            let mut stroke = self.default_stroke.color;
+                            if palette::color_palette_button(ui, &mut stroke, dark, lang) {
+                                self.default_stroke.color = stroke;
                             }
-                        }
-                    });
-                    // 填充（闭合图形类工具）
-                    if show_fill {
-                        ui.add_space(4.0);
-                        ui.label(t(lang, T::StyleFillLabel));
-                        ui.horizontal(|ui| {
-                            if let Some(new_style) =
-                                palette::fill_style_picker(ui, lang, self.default_fill_style)
-                            {
-                                self.default_fill_style = new_style;
+                            ui.add_space(4.0);
+                            // 描边宽度
+                            ui.label(t(lang, T::StyleStrokeWidth));
+                            stepper(
+                                ui,
+                                &mut self.default_stroke.width,
+                                &[1.0, 2.0, 4.0, 8.0, 16.0],
+                                &["XS", "S", "M", "L", "XL"],
+                                1.0..=64.0,
+                                None,
+                            );
+                            // 线型
+                            ui.label(t(lang, T::StyleDashLabel));
+                            ui.horizontal(|ui| {
+                                for (dash, label) in [
+                                    (DashStyle::Solid, T::StyleDashSolid),
+                                    (DashStyle::Dashed, T::StyleDashDashed),
+                                    (DashStyle::Dotted, T::StyleDashDotted),
+                                ] {
+                                    let active = self.default_stroke.dash == dash;
+                                    if ui.selectable_label(active, t(lang, label)).clicked() {
+                                        self.default_stroke.dash = dash;
+                                    }
+                                }
+                            });
+                            // 填充（闭合图形类工具）
+                            if show_fill {
+                                ui.add_space(4.0);
+                                ui.label(t(lang, T::StyleFillLabel));
+                                ui.horizontal(|ui| {
+                                    if let Some(new_style) = palette::fill_style_picker(
+                                        ui,
+                                        lang,
+                                        self.default_fill_style,
+                                    ) {
+                                        self.default_fill_style = new_style;
+                                    }
+                                });
+                                if self.default_fill_style.is_some() {
+                                    // 未显式选过填充色时按钮显示描边色（实际创建时同样跟随描边色）
+                                    let mut fill =
+                                        self.default_fill.unwrap_or(self.default_stroke.color);
+                                    if palette::fill_color_palette_button(ui, &mut fill, dark, lang)
+                                    {
+                                        self.default_fill = Some(fill);
+                                    }
+                                }
                             }
+                            // 手绘风：新建形状的默认档位（plan #3，对齐 Excalidraw sloppiness）
+                            ui.add_space(4.0);
+                            ui.label(t(lang, T::StyleRough));
+                            ui.horizontal(|ui| {
+                                let opts = [
+                                    (Sloppiness::Off, T::SloppinessOff),
+                                    (Sloppiness::Architect, T::SloppinessArchitect),
+                                    (Sloppiness::Artist, T::SloppinessArtist),
+                                    (Sloppiness::Cartoonist, T::SloppinessCartoonist),
+                                ];
+                                for (val, label) in opts {
+                                    let selected = self.default_sloppiness == val;
+                                    if ui.selectable_label(selected, t(lang, label)).clicked()
+                                        && !selected
+                                    {
+                                        self.default_sloppiness = val;
+                                    }
+                                }
+                            });
                         });
-                        if self.default_fill_style.is_some() {
-                            // 未显式选过填充色时按钮显示描边色（实际创建时同样跟随描边色）
-                            let mut fill = self.default_fill.unwrap_or(self.default_stroke.color);
-                            if palette::fill_color_palette_button(ui, &mut fill, dark, lang) {
-                                self.default_fill = Some(fill);
-                            }
-                        }
-                    }
-                    // 手绘风：新建形状的默认档位（plan #3，对齐 Excalidraw sloppiness）
-                    ui.add_space(4.0);
-                    ui.label(t(lang, T::StyleRough));
-                    ui.horizontal(|ui| {
-                        let opts = [
-                            (Sloppiness::Off, T::SloppinessOff),
-                            (Sloppiness::Architect, T::SloppinessArchitect),
-                            (Sloppiness::Artist, T::SloppinessArtist),
-                            (Sloppiness::Cartoonist, T::SloppinessCartoonist),
-                        ];
-                        for (val, label) in opts {
-                            let selected = self.default_sloppiness == val;
-                            if ui.selectable_label(selected, t(lang, label)).clicked() && !selected
-                            {
-                                self.default_sloppiness = val;
-                            }
-                        }
-                    });
                 });
             });
     }
