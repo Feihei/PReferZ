@@ -590,6 +590,14 @@ mermaid 导入节点/边/绑定文字、流程图分叉箭头；新建文本提�
   <1px 不参与）求**全局 cap**，全部拐角统一使用；个别退化段的端点由逐角 min 兜底。测试
   `round_orthogonal_corners_radius_is_uniform`（100/30/100/70 路径 radius=20 → 三角全 15，
   旧算法会给出 15/15/20）。
+- **验收反馈修正（2026-09-28）**：**手绘风倒角弧断线**——`is_smooth` 只把带圆角的矩形并入了
+  平滑路线（#20 反馈 4），elbow 倒角仍走逐边抖动：弧被切成 8 段小贝塞尔，Cartoonist 档
+  （`preserve_vertices=false`）相邻弧段端点各自独立抖动、接缝脱开成断线；低档位弧段又因短线
+  衰减 `len/10` 几乎零抖动，不像手绘弧。修复：`is_smooth` 的 Polyline 分支按 `CurveType`
+  细分——`Elbow` 且 `roundness_radius > 1e-3` 并入平滑路线（整圈抖动 + Catmull-Rom，与
+  圆角矩形同策，兑现本项"与圆角矩形同路线"的原设计）；无倒角 elbow / Straight 仍逐边。
+  新测试 `rough_styler_elbow_roundness_chains_without_gaps`（Cartoonist 档逐 pass 断言相邻
+  段共享端点）。
 - **手工验收清单**：
   - [ ] 选中 elbow 线（两点/多顶点）→ 属性栏出现「圆角」节；None/S/M/L/XL 五档切换，拐角变圆弧、弧度随档位增大
   - [ ] XL 档短段不被穿越（相邻两角在段中点相汇，无交叉/毛刺）；拖动顶点 / 拖 bar 时圆角跟随
