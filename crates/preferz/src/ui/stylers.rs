@@ -575,9 +575,35 @@ impl RoughStyler {
     ///
     /// 与逐边抖动（[`RoughStyler::sketch_edge`]）的区别是——这里先抖动顶点、
     /// 再用光滑曲线穿过它们，因此曲线类轮廓（椭圆）不会出现直线段拼接的折角。
-    fn jitter_points(rng: &mut SeededRng, pts: &[Pos2], amp: f32) -> Vec<Pos2> {
+    ///
+    /// 幅度逐点取 `min(rough_amp, 0.35 × 较短相邻段)`：全局平均间距会在
+    /// "局部密集 + 局部稀疏"的轮廓（圆角矩形：直边点距宽、圆弧点距窄）上失守，
+    /// 圆弧点仍可能被推过邻居打成结（plan #20 验收反馈二次：小尺寸 + 小倒角
+    /// 角部打结）。0.35 ≈ 0.5/√2：x/y 两轴独立抽样时欧氏位移可达 amp×√2，
+    /// 收紧后相邻两点位移之和恒小于段长，结构上不可能互越。
+    fn jitter_points(rng: &mut SeededRng, pts: &[Pos2], closed: bool, rough_amp: f32) -> Vec<Pos2> {
+        let n = pts.len();
         pts.iter()
-            .map(|p| *p + egui::vec2(rng.signed() * amp, rng.signed() * amp))
+            .enumerate()
+            .map(|(i, p)| {
+                let prev = if i > 0 || closed {
+                    Some(pts[(i + n - 1) % n])
+                } else {
+                    None
+                };
+                let next = if i + 1 < n || closed {
+                    Some(pts[(i + 1) % n])
+                } else {
+                    None
+                };
+                let local = match (prev, next) {
+                    (Some(a), Some(b)) => (*p - a).length().min((b - *p).length()) * 0.35,
+                    (Some(a), None) | (None, Some(a)) => (*p - a).length() * 0.35,
+                    (None, None) => rough_amp,
+                };
+                let amp = rough_amp.min(local);
+                *p + egui::vec2(rng.signed() * amp, rng.signed() * amp)
+            })
             .collect()
     }
 
@@ -629,13 +655,26 @@ impl RoughStyler {
         }
     }
 
-    /// 曲线（椭圆 / Curved 折线）采样点的抖动幅度（屏幕像素）。
+    /// 曲线（椭圆 / Curved 折线 / 圆角矩形）采样点的抖动幅度（屏幕像素）。
     ///
-    /// rough.js `curve()` 的逐点偏移 = `_curveWithOffset(points, 1×(1+roughness×0.2))`
-    /// 再经 `_offsetOpt` 乘 roughness——与采样密度/曲线尺寸无关，只随档位变化
-    /// （plan #20 批次1：取代旧"平均采样间距×6%"，修"曲线抖动与尺寸挂钩、档位难辨"）。
-    fn curve_jitter_amp(zoom: f32, amp_scale: f32) -> f32 {
-        (1.0 + amp_scale * 0.2) * amp_scale * zoom
+    /// 基准 = rough.js `curve()` 的逐点偏移 `(1+amp_scale×0.2)×amp_scale × zoom`——
+    /// 与曲线尺寸/采样密度无关。另加**采样间距上限**（≤ 相邻采样点平均间距的一半）：
+    /// 圆角矩形按固定段数采样，小尺寸下相邻点距只有几像素，大幅独立抖动会让
+    /// 相邻点互越、再被 Catmull-Rom 放大成乱线小环（plan #20 验收反馈：
+    /// 小矩形 + Cartoonist 圆角出乱线）；间距上限从结构上杜绝自交。
+    fn curve_jitter_amp(pts: &[Pos2], zoom: f32, closed: bool, amp_scale: f32) -> f32 {
+        let n = pts.len();
+        if n < 2 {
+            return 0.0;
+        }
+        let zoom = zoom.max(1e-3);
+        let seg_count = if closed { n } else { n - 1 };
+        let perimeter: f32 = (0..seg_count)
+            .map(|i| (pts[i] - pts[(i + 1) % n]).length())
+            .sum();
+        let avg_spacing = perimeter / seg_count as f32;
+        let rough = (1.0 + amp_scale * 0.2) * amp_scale * zoom;
+        rough.min(avg_spacing * 0.5)
     }
 
     /// 按 dash 样式把一条抖动贝塞尔落到 egui 形状列表。
@@ -946,9 +985,9 @@ impl ShapeStyler for RoughStyler {
         if Self::is_smooth(shape) {
             // 曲线类轮廓（椭圆、Curved 折线）：整圈抖动后连成光滑曲线。
             // 若沿用逐边直线抖动，采样段之间的折角会非常明显。
-            let amp = Self::curve_jitter_amp(zoom, ctx.amp_scale);
+            let amp = Self::curve_jitter_amp(&pts, zoom, closed, ctx.amp_scale);
             for _ in 0..passes {
-                let jittered = Self::jitter_points(&mut rng, &pts, amp);
+                let jittered = Self::jitter_points(&mut rng, &pts, closed, amp);
                 for bez in Self::catmull_rom_beziers(&jittered, closed) {
                     Self::push_edge(&mut out, bez, stroke, line_width, ctx.stroke_color, zoom);
                 }
@@ -1911,6 +1950,70 @@ mod tests {
         let n = rounded_rect_points(100.0, 40.0, roundness_radius((100.0, 40.0), 0.5)).len();
         assert_eq!(shapes.len(), n * RoughStyler::PASSES);
         assert!(shapes.iter().all(|s| matches!(s, Shape::CubicBezier(_))));
+    }
+
+    #[test]
+    fn curve_jitter_amp_never_exceeds_half_sample_spacing() {
+        // plan #20 验收反馈：小矩形 + Cartoonist 圆角出乱线——固定密度采样下
+        // 相邻点距只有几像素，抖动不得超过间距一半（否则相邻点互越、被
+        // Catmull-Rom 放大成自交小环）。
+        let mut d = rect(3);
+        d.roundness = 0.5;
+        d.base_size = (40.0, 30.0);
+        d.sloppiness = Sloppiness::Cartoonist;
+        let pts = to_screen_points(&outline_points(&d, 12, 0.0), &identity());
+        let amp = RoughStyler::curve_jitter_amp(
+            &pts,
+            1.0,
+            true,
+            d.sloppiness.amp_scale() * RoughStyler::small_size_roughness_scale(&d),
+        );
+        let n = pts.len();
+        let perimeter: f32 = (0..n).map(|i| (pts[i] - pts[(i + 1) % n]).length()).sum();
+        let spacing = perimeter / n as f32;
+        // rough.js 公式本身（Cartoonist ×小图衰减）远大于间距上限，被夹住
+        assert!(
+            (1.0 + 1.8 * 0.2) * 1.8 > spacing * 0.5,
+            "测试前提：rough 公式应超出间距上限才有效"
+        );
+        assert!(
+            amp <= spacing * 0.5 + 1e-3,
+            "amp {amp} 超过间距一半 {spacing}"
+        );
+        assert!(amp > 0.0, "不应衰减到 0");
+    }
+
+    #[test]
+    fn smooth_jitter_respects_local_sample_spacing_at_corners() {
+        // plan #20 验收反馈二次：小尺寸 + 小倒角角部打结——全局平均间距失守，
+        // 逐点幅度必须 ≤ 0.5 × 较短相邻段（闭合 Catmull-Rom 每段起点即抖动后点列）。
+        let mut d = rect(3);
+        d.roundness = 0.25;
+        d.base_size = (80.0, 60.0);
+        d.sloppiness = Sloppiness::Cartoonist;
+        let shapes = RoughStyler.build_shapes(
+            &d,
+            &StrokeStyle::default(),
+            None,
+            FillStyle::Solid,
+            &identity(),
+            1.0,
+        );
+        let orig = to_screen_points(&outline_points(&d, 12, 0.0), &identity());
+        let bez = beziers(&shapes);
+        let n = orig.len();
+        assert!(bez.len() >= n, "应有完整一圈的段");
+        for (i, seg) in bez.iter().take(n).enumerate() {
+            let p = orig[i];
+            let prev = orig[(i + n - 1) % n];
+            let next = orig[(i + 1) % n];
+            let local = (p - prev).length().min((next - p).length()) * 0.35;
+            let disp = (seg[0] - p).length();
+            assert!(
+                disp <= local * std::f32::consts::SQRT_2 + 1e-3,
+                "点 {i} 位移 {disp:.2} 超过局部间距上限 {local:.2}（角部会打结）"
+            );
+        }
     }
 
     #[test]
