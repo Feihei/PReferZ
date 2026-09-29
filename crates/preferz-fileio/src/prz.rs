@@ -273,8 +273,10 @@ impl PrzFile {
                     None => None,
                 };
 
-                // 反序列化 ItemKind，清空运行时字段
-                let mut kind: ItemKind = serde_json::from_slice(&data_blob)?;
+                // 反序列化 ItemKind（先过 plan #24 legacy elbow 迁移 shim），清空运行时字段
+                let mut value: serde_json::Value = serde_json::from_slice(&data_blob)?;
+                migrate_legacy_elbow(&mut value);
+                let mut kind: ItemKind = serde_json::from_value(value)?;
                 if let ItemKind::Text {
                     editing,
                     measured_size,
@@ -363,6 +365,37 @@ fn item_kind_str(kind: &ItemKind) -> &'static str {
     }
 }
 
+/// plan #24 迁移 shim：legacy `CurveType::Elbow`（挂在 Polyline 上的曲线模式，
+/// serde 小写 `"elbow"`）→ 独立 `ShapeType::Elbow`。core 枚举已移除该变体，
+/// 旧 `.prz` 的 kind JSON 在反序列化**之前**于此改写：
+///
+/// - 两点线 → `shape_type: "Elbow"`（`elbow_mid_offset` 原样保留；`curve_type`
+///   归 `straight`、`closed` 归 `false`——对 Elbow 无语义）；
+/// - 多顶点线 → 保持 Polyline、`curve_type` 归 `straight`（顶点原样保留——其
+///   渲染路径本就是正交折线，**视觉无损**，仅顶点从 bar 锚定变自由点）。
+///
+/// 保存后再打开不再出现 legacy 形态（新写入恒为新类型）。
+fn migrate_legacy_elbow(value: &mut serde_json::Value) {
+    let Some(shape) = value.get_mut("Shape") else {
+        return;
+    };
+    if shape.get("curve_type").and_then(|v| v.as_str()) != Some("elbow") {
+        return;
+    }
+    let two_point = shape
+        .get("points")
+        .and_then(|p| p.as_array())
+        .is_some_and(|a| a.len() == 2);
+    if two_point {
+        shape["shape_type"] = serde_json::json!("Elbow");
+        shape["curve_type"] = serde_json::json!("straight");
+        shape["closed"] = serde_json::json!(false);
+    } else {
+        shape["curve_type"] = serde_json::json!("straight");
+        shape["elbow_mid_offset"] = serde_json::json!(0.0);
+    }
+}
+
 /// 文本数据（兼容旧 schema 的序列化结构，保留供未来迁移使用）。
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TextData {
@@ -392,6 +425,156 @@ mod tests {
             suffix
         ));
         p
+    }
+
+    /// plan #24：旧 `.prz` 的 legacy `curve_type:"elbow"`（Polyline 曲线模式）在
+    /// 加载时迁移——两点线 → `ShapeType::Elbow`（偏移保留）；多顶点线 →
+    /// `Polyline + Straight`（顶点原样，视觉无损）。保存重开后恒为新类型。
+    #[test]
+    fn legacy_elbow_items_migrate_on_load() {
+        use rusqlite::params;
+
+        let path = tmp_path("legacy_elbow.prz");
+        let mut scene = Scene::new();
+        // 两点 elbow（带用户拖过的 bar 偏移）
+        let mut two = Item::new_elbow(
+            vec![(0.0, 0.0), (200.0, 100.0)],
+            (200.0, 100.0),
+            None,
+            Some(ArrowHeadStyle::Arrow),
+            10.0,
+            20.0,
+            StrokeStyle::default(),
+        );
+        if let ItemKind::Shape {
+            elbow_mid_offset, ..
+        } = &mut two.kind
+        {
+            *elbow_mid_offset = 30.0;
+        }
+        // 多顶点 elbow（plan #21 时代的顶点锚定形态）
+        let multi = Item::new_polyline(
+            vec![(0.0, 0.0), (50.0, 100.0), (100.0, 0.0)],
+            (100.0, 100.0),
+            None,
+            None,
+            false,
+            5.0,
+            5.0,
+            StrokeStyle::default(),
+        );
+        let two_id = two.id;
+        let multi_id = multi.id;
+        scene.add_item(two);
+        scene.add_item(multi);
+        {
+            let mut prz = PrzFile::create(&path).unwrap();
+            prz.save_scene(&scene, &HashMap::new(), ViewportMeta::default())
+                .unwrap();
+        }
+
+        // 篡改为 legacy 形态：shape_type 改回 Polyline、curve_type 改 "elbow"
+        // （模拟 plan #24 之前版本写入的文件）
+        {
+            let prz = PrzFile::open(&path).unwrap();
+            let rows: Vec<(String, Vec<u8>)> = {
+                let mut stmt = prz
+                    .connection
+                    .prepare("SELECT id, data FROM items")
+                    .unwrap();
+                let rows = stmt
+                    .query_map([], |r| {
+                        Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?))
+                    })
+                    .unwrap()
+                    .collect::<Result<_, _>>()
+                    .unwrap();
+                rows
+            };
+            assert_eq!(rows.len(), 2, "两个 item 都应入库");
+            for (id, blob) in rows {
+                let mut v: serde_json::Value = serde_json::from_slice(&blob).unwrap();
+                if let Some(shape) = v.get_mut("Shape") {
+                    shape["shape_type"] = serde_json::json!("Polyline");
+                    shape["curve_type"] = serde_json::json!("elbow");
+                }
+                let new_blob = serde_json::to_vec(&v).unwrap();
+                prz.connection
+                    .execute(
+                        "UPDATE items SET data = ?1 WHERE id = ?2",
+                        params![new_blob, id],
+                    )
+                    .unwrap();
+            }
+        }
+
+        // 加载：迁移 shim 生效
+        let loaded = {
+            let prz = PrzFile::open(&path).unwrap();
+            prz.load_scene().unwrap()
+        };
+        let scene = loaded.0;
+        let two = scene.get_item(&two_id).unwrap();
+        match &two.kind {
+            ItemKind::Shape {
+                shape_type,
+                points,
+                elbow_mid_offset,
+                curve_type,
+                ..
+            } => {
+                assert_eq!(
+                    *shape_type,
+                    ShapeType::Elbow,
+                    "两点线应迁移为独立 Elbow 类型"
+                );
+                assert_eq!(points.len(), 2);
+                assert!((*elbow_mid_offset - 30.0).abs() < 1e-6, "bar 偏移应保留");
+                assert_eq!(*curve_type, preferz_core::shape::CurveType::Straight);
+            }
+            _ => panic!("应为 Shape"),
+        }
+        let multi = scene.get_item(&multi_id).unwrap();
+        match &multi.kind {
+            ItemKind::Shape {
+                shape_type,
+                points,
+                curve_type,
+                ..
+            } => {
+                assert_eq!(
+                    *shape_type,
+                    ShapeType::Polyline,
+                    "多顶点线应迁移为 Polyline + Straight（视觉无损）"
+                );
+                assert_eq!(points.len(), 3, "顶点原样保留");
+                assert_eq!(*curve_type, preferz_core::shape::CurveType::Straight);
+            }
+            _ => panic!("应为 Shape"),
+        }
+
+        // 保存重开：恒为新类型（kind JSON 不再出现 legacy "elbow" 曲线模式）
+        let path2 = tmp_path("legacy_elbow_resave.prz");
+        {
+            let mut prz = PrzFile::create(&path2).unwrap();
+            prz.save_scene(&scene, &HashMap::new(), ViewportMeta::default())
+                .unwrap();
+        }
+        let prz = PrzFile::open(&path2).unwrap();
+        let mut stmt = prz.connection.prepare("SELECT data FROM items").unwrap();
+        let blobs: Vec<Vec<u8>> = stmt
+            .query_map([], |r| r.get::<_, Vec<u8>>(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(blobs.len(), 2);
+        for blob in blobs {
+            let text = String::from_utf8(blob).unwrap();
+            assert!(
+                !text.contains("\"elbow\""),
+                "重存后不应再有 legacy 曲线模式"
+            );
+        }
     }
 
     #[test]

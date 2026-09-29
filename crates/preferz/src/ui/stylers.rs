@@ -1,7 +1,7 @@
 use eframe::egui::{self, Color32, Pos2, Shape};
 use preferz_core::item::{
-    catmull_rom_polyline, elbow_polyline_offset, elbow_vertex_polyline, round_orthogonal_corners,
-    roundness_radius, ItemKind, ItemLocalSpace, CURVE_SAMPLES, ROUNDED_CORNER_SEGMENTS,
+    catmull_rom_polyline, elbow_polyline_offset, round_orthogonal_corners, roundness_radius,
+    ItemKind, ItemLocalSpace, CURVE_SAMPLES, ROUNDED_CORNER_SEGMENTS,
 };
 use preferz_core::shape::{
     ArrowHeadStyle, CurveType, DashStyle, FillStyle, SeededRng, ShapeType, Sloppiness, StrokeStyle,
@@ -25,8 +25,8 @@ pub struct ShapeData {
     pub closed: bool,
     /// 曲线模式（Phase I）。仅 Polyline 使用；`Curved` 经 Catmull-Rom 插值。
     pub curve_type: CurveType,
-    /// elbow 中间 bar 交叉轴偏移（plan #16 E1）。仅 `curve_type=Elbow` 的两点
-    /// Polyline 消费；与命中/导出经同一 `elbow_polyline_offset` 同源。
+    /// elbow 中间 bar 交叉轴偏移（plan #16 E1 / #24）。仅 `ShapeType::Elbow`
+    /// 消费；与命中/导出经同一 `elbow_polyline_offset` 同源。
     pub elbow_mid_offset: f32,
     /// 矩形族圆角比例 0..1（Phase I）。仅矩形族使用。
     pub roundness: f32,
@@ -141,27 +141,23 @@ fn outline_points(
         ShapeType::Polyline => {
             // Phase I：`Curved` 经 Catmull-Rom 插值成折线（与命中测试同源，
             // 故"看着在曲线上"的点一定点得中）。两点曲线无中间控制点，插值无意义。
-            // `Elbow` 经 `elbow_polyline` 把两端点展开成正交折线（同样与命中测试同源）。
             match shape.curve_type {
                 CurveType::Curved => {
                     catmull_rom_polyline(&shape.points, shape.closed, CURVE_SAMPLES)
                 }
-                CurveType::Elbow => {
-                    let base = if shape.points.len() == 2 {
-                        elbow_polyline_offset(&shape.points, shape.elbow_mid_offset)
-                    } else {
-                        elbow_vertex_polyline(&shape.points, shape.closed)
-                    };
-                    // 倒角（plan #23）：与矩形族共用 roundness 字段与半径语义，
-                    // 派生路径的每个直角拐角换圆弧采样（命中测试同源，见 core）。
-                    let r = roundness_radius(shape.base_size, shape.roundness);
-                    if r > 1e-3 {
-                        round_orthogonal_corners(&base, shape.closed, r)
-                    } else {
-                        base
-                    }
-                }
                 CurveType::Straight => shape.points.clone(),
+            }
+        }
+        // elbow 连接器（plan #24）：路径 = `elbow_polyline_offset` 从两端点 + 偏移
+        // 推导（与命中测试同源）；倒角（plan #23）与矩形族共用 roundness 字段与
+        // 半径语义，派生路径的每个直角拐角换圆弧采样。
+        ShapeType::Elbow => {
+            let base = elbow_polyline_offset(&shape.points, shape.elbow_mid_offset);
+            let r = roundness_radius(shape.base_size, shape.roundness);
+            if r > 1e-3 {
+                round_orthogonal_corners(&base, false, r)
+            } else {
+                base
             }
         }
     }
@@ -174,9 +170,9 @@ fn to_screen_points(pts: &[(f32, f32)], to_screen: &LocalToScreen) -> Vec<Pos2> 
         .collect()
 }
 
-/// 矩形族恒闭合；Polyline 由 `closed` 字段决定。
+/// 矩形族恒闭合；Polyline 由 `closed` 字段决定；Elbow 连接器恒开放。
 fn is_closed(shape: &ShapeData) -> bool {
-    !matches!(shape.shape_type, ShapeType::Polyline) || shape.closed
+    !matches!(shape.shape_type, ShapeType::Polyline | ShapeType::Elbow) || shape.closed
 }
 
 /// 追加起/终点箭头（四样式：Arrow / Triangle / TriangleOutline / Dot，样式表见
@@ -574,7 +570,7 @@ impl RoughStyler {
             matches!(shape.shape_type, ShapeType::Rectangle) && shape.roundness > 0.0;
         if (min_s >= 20.0 && max_s >= 50.0)
             || (min_s >= 15.0 && round_eligible)
-            || (matches!(shape.shape_type, ShapeType::Polyline) && max_s >= 50.0)
+            || (matches!(shape.shape_type, ShapeType::Polyline | ShapeType::Elbow) && max_s >= 50.0)
         {
             return 1.0;
         }
@@ -612,12 +608,10 @@ impl RoughStyler {
         match shape.shape_type {
             ShapeType::Ellipse => true,
             ShapeType::Rectangle => rounded,
-            ShapeType::Polyline => match shape.curve_type {
-                CurveType::Curved => true,
-                CurveType::Elbow => rounded,
-                CurveType::Straight => false,
-            },
+            ShapeType::Polyline => matches!(shape.curve_type, CurveType::Curved),
             ShapeType::Diamond => false,
+            // 带倒角的 elbow：拐角弧采样点与圆角矩形同策（plan #23 验收反馈）。
+            ShapeType::Elbow => rounded,
         }
     }
 
@@ -2289,9 +2283,9 @@ mod tests {
         // Cartoonist 档端点独立偏移会让相邻弧段脱开（断线）；并入平滑路线后
         // 每个 pass 内部必须逐段共享端点。与圆角矩形同策（plan #20 反馈 4）。
         let mut d = open_line();
+        d.shape_type = ShapeType::Elbow;
         d.points = vec![(0.0, 0.0), (200.0, 100.0)];
         d.base_size = (200.0, 100.0);
-        d.curve_type = CurveType::Elbow;
         d.end_arrow = None;
         d.roundness = 0.5; // 半径 = min(200,100) × 0.5 × 0.5 = 25，拐角有弧采样点
         d.sloppiness = Sloppiness::Cartoonist; // preserveVertices=false：逐边路线会脱开

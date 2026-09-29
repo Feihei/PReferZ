@@ -63,117 +63,6 @@ impl PReferZApp {
         self.flash(t(self.lang, T::FlashVertexDeleted));
     }
 
-    /// plan #21 DP-A：elbow「双击段插入顶点」的**释放沿**执行体。
-    /// 由 `ui()` 的双击分支调用（egui 的 `double_clicked()` 在释放沿成形，是
-    /// 唯一可信的双击信号；按下沿拿不到）。命中条件与手柄一致：落点的顶层 item
-    /// 是 elbow 线 + 落点在靶区带内——多顶点看段路径带（`SegmentMid`），两点线看
-    /// bar 带（`ElbowBar`，与拖 bar 同区：单击拖 bar / 双击插入；直线转 elbow、
-    /// Ctrl+方向键流程图连线都是两点 elbow）。取 core 校验过的候选点（插入后走线
-    /// 视觉不变、且新顶点可拖动）。返回 true = 本次双击已消费（调用方据此不再建
-    /// 文本便签）。预览直改 + `EditShapePoints`（恒 skip_first_redo）入 undo 栈，
-    /// 一步可撤。
-    pub(crate) fn insert_elbow_vertex_at(&mut self, screen_pos: egui::Pos2) -> bool {
-        // 不依赖选中态（编组线的双击同样成立）：取落点顶层 item
-        let item_id = match interaction::get_item_at(screen_pos, &self.scene, &self.viewport) {
-            Some(item) => item.id,
-            None => return false,
-        };
-        let seg = {
-            let item = match self.scene.get_item(&item_id) {
-                Some(item) => item,
-                None => return false,
-            };
-            if !is_elbow_line(item) {
-                return false;
-            }
-            let (n, closed) = match &item.kind {
-                ItemKind::Shape { points, closed, .. } => (points.len(), *closed),
-                _ => return false,
-            };
-            let h = self.transform_handles.hit_test(
-                screen_pos,
-                item,
-                &self.viewport,
-                should_show_flip(item),
-                should_show_rotate(item),
-            );
-            match (n, closed, h) {
-                (_, _, Handle::SegmentMid(seg)) if n > 2 => seg,
-                // 两点线：bar 带即插入靶区（seg 0 = 两端点之间的唯一段）
-                (2, false, Handle::ElbowBar) => 0,
-                _ => return false,
-            }
-        };
-        // 两点线双击落在 bar 上时，press 沿已起了 bar 拖拽：还原偏移预览并结束
-        // 拖拽状态，别让随后的 end_drag 把一次误位移固化成 SetElbowOffset。
-        // 候选点也必须按**还原后**的 start_offset 取 bar 线——第二次按下期间指针
-        // 漂几像素仍算双击，若按预览偏移算插入点，落点会带一次跳变。
-        let mut restored_offset = None;
-        if let DragState::ElbowBar {
-            item_id: drag_id,
-            start_offset,
-            ..
-        } = &self.drag
-        {
-            if *drag_id == item_id {
-                let start_offset = *start_offset;
-                if let Some(it) = self.scene.get_item_mut(&item_id) {
-                    if let ItemKind::Shape {
-                        elbow_mid_offset, ..
-                    } = &mut it.kind
-                    {
-                        *elbow_mid_offset = start_offset;
-                    }
-                }
-                self.drag = DragState::Idle;
-                self.transform_handles.end_drag();
-                restored_offset = Some(start_offset);
-            }
-        }
-        // 落点偏好（局部坐标）：候选点尽量贴着用户双击的地方长
-        let click_local = self
-            .scene
-            .get_item(&item_id)
-            .and_then(|it| it.canvas_to_local_point(self.viewport.pos2_to_canvas(screen_pos)));
-        let (old_points, insert_point) = match self.scene.get_item(&item_id) {
-            Some(item) => match &item.kind {
-                ItemKind::Shape {
-                    points,
-                    closed,
-                    elbow_mid_offset,
-                    ..
-                } => {
-                    let mid_offset = restored_offset.unwrap_or(*elbow_mid_offset);
-                    match elbow_insert_candidates(points, *closed, mid_offset, click_local)
-                        .into_iter()
-                        .find(|c| c.seg == seg)
-                    {
-                        Some(cand) => (points.clone(), cand.point),
-                        None => return false,
-                    }
-                }
-                _ => return false,
-            },
-            None => return false,
-        };
-        let insert_idx = if seg + 1 < old_points.len() {
-            seg + 1
-        } else {
-            old_points.len()
-        };
-        let mut new_points = old_points.clone();
-        new_points.insert(insert_idx, insert_point);
-        if let Some(it) = self.scene.get_item_mut(&item_id) {
-            if let ItemKind::Shape { points, .. } = &mut it.kind {
-                *points = new_points.clone();
-            }
-        }
-        self.push_cmd(Box::new(EditShapePoints::new(
-            item_id, old_points, new_points,
-        )));
-        true
-    }
-
     pub(crate) fn begin_drag(
         &mut self,
         screen_pos: egui::Pos2,
@@ -311,14 +200,17 @@ impl PReferZApp {
                     // 线性对象顶点控制点：进入端点拖拽（预览直接改 points）。
                     // plan #4：Alt+单击内部顶点 → 按下即删；Alt+按在真实端点
                     // （0/末点）→ 延伸模式（越阈追加 / 未越阈释放=单击删除）。
+                    // Elbow 连接器（plan #24）恒 2 端点，无内部顶点可删 / 延伸
+                    // （端点增删会破坏两点不变量），Alt 不生效、只可拖。
                     if let Handle::Endpoint(endpoint) = h {
                         let start_points = match &item.kind {
                             ItemKind::Shape { points, .. } => points.clone(),
                             _ => Vec::new(),
                         };
                         let n = start_points.len();
+                        let is_elbow = is_elbow_line(item);
                         let is_real = n > 0 && (endpoint == 0 || endpoint == n - 1);
-                        if alt && !is_real {
+                        if alt && !is_real && !is_elbow {
                             self.try_delete_vertex(item.id, endpoint);
                             return;
                         }
@@ -330,7 +222,7 @@ impl PReferZApp {
                             start_canvas,
                             start_points,
                             base_pos,
-                            alt_extend: alt && is_real,
+                            alt_extend: alt && is_real && !is_elbow,
                         };
                         self.transform_handles.active_handle = h;
                         self.transform_handles.is_dragging = true;
@@ -338,12 +230,8 @@ impl PReferZApp {
                     }
                     // 线性对象段中点：在段中间插入顶点（预览），随即进入端点拖拽。
                     // start_points 保存插入前的点集，undo 一步即可移除新顶点。
-                    // 多顶点 elbow（plan #21 DP-A）：段路径带只是双击靶区，按下沿
-                    // 不做事（插入在释放沿的双击分支做），这里穿透到常规命中。
+                    // （仅 Polyline 会命中 SegmentMid；Elbow 无段中点。）
                     if let Handle::SegmentMid(seg) = h {
-                        if is_multi_vertex_elbow_line(item) {
-                            continue;
-                        }
                         let prep = match &item.kind {
                             ItemKind::Shape { points, .. } => {
                                 let n = points.len();
@@ -523,7 +411,7 @@ impl PReferZApp {
                     let it = self.scene.get_item(id)?;
                     match &it.kind {
                         ItemKind::Shape {
-                            shape_type: ShapeType::Polyline,
+                            shape_type: ShapeType::Polyline | ShapeType::Elbow,
                             points,
                             start_binding,
                             end_binding,
@@ -859,24 +747,8 @@ impl PReferZApp {
                         .inverse()
                         .map(|inv| inv.transform_vector(delta_canvas));
                     if let Some(delta_local) = delta_local {
-                        if let ItemKind::Shape {
-                            points,
-                            closed,
-                            curve_type,
-                            ..
-                        } = &mut item.kind
-                        {
+                        if let ItemKind::Shape { points, .. } = &mut item.kind {
                             let target = (base_pos.0 + delta_local.x, base_pos.1 + delta_local.y);
-                            // elbow 线（plan #21）：顶点是它所锚定 bar 的锚点，只有垂直于
-                            // bar 的分量被推导消费（=平移整根 bar）；不管沿轴分量，手柄会被
-                            // 拖到走线之外看着"离线漂浮"→ 钳回 bar 的绘制区间，锚点只能
-                            // 沿自己的 bar 滑动。
-                            let target =
-                                if matches!(curve_type, CurveType::Elbow) && points.len() > 2 {
-                                    clamp_elbow_vertex_drag(points, *closed, endpoint, target)
-                                } else {
-                                    target
-                                };
                             if let Some(p) = points.get_mut(endpoint) {
                                 match snap_local {
                                     Some((bid, local)) => {

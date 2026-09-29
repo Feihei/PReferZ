@@ -1,7 +1,8 @@
 use crate::item::{CropRect, EndpointBinding, ItemId, ItemKind};
 use crate::scene::{RenumberPlan, Scene};
 use crate::shape::{
-    ArrowHeadStyle, CurveType, FillStyle, PixmapStyle, Sloppiness, StrokeStyle, TextStyle,
+    ArrowHeadStyle, CurveType, FillStyle, PixmapStyle, ShapeType, Sloppiness, StrokeStyle,
+    TextStyle,
 };
 use crate::spaces::CanvasVector;
 use crate::transform::Transform;
@@ -379,7 +380,8 @@ impl Command for SetClosed {
 // ─────────────────────────── Set curve type ───────────────────────────
 
 /// 批量切换线性对象（Polyline）曲线模式（Straight / Curved，Phase I）。
-/// 整批只占一条 undo 记录（D3）；单项用 [`Self::new`]，多选批量用 [`Self::new_batch`]。
+/// 仅 Polyline 生效（Elbow 连接器无曲线语义，命中忽略）；整批只占一条 undo
+/// 记录（D3）；单项用 [`Self::new`]，多选批量用 [`Self::new_batch`]。
 pub struct SetCurveType {
     items: Vec<(ItemId, CurveType, CurveType)>,
     preview_already_applied: bool,
@@ -411,7 +413,12 @@ impl SetCurveType {
         for (id, old, new_curve) in items {
             let value = if new { *new_curve } else { *old };
             if let Some(item) = scene.get_item_mut(id) {
-                if let ItemKind::Shape { curve_type, .. } = &mut item.kind {
+                if let ItemKind::Shape {
+                    shape_type: ShapeType::Polyline,
+                    curve_type,
+                    ..
+                } = &mut item.kind
+                {
                     *curve_type = value;
                 }
             }
@@ -2254,8 +2261,27 @@ mod tests {
 
     #[test]
     fn set_curve_type_batch_applies_and_undoes() {
+        // 仅 Polyline 生效（plan #24：Elbow 连接器无曲线语义），用两条多段线验证
         let mut scene = Scene::new();
-        let (a, b) = two_shapes(&mut scene);
+        let ids: Vec<ItemId> = [0.0f32, 10.0]
+            .iter()
+            .map(|&x| {
+                let item = Item::new_polyline(
+                    vec![(0.0, 0.0), (50.0, 0.0)],
+                    (50.0, 1.0),
+                    None,
+                    None,
+                    false,
+                    x,
+                    0.0,
+                    StrokeStyle::default(),
+                );
+                let id = item.id;
+                scene.add_item(item);
+                id
+            })
+            .collect();
+        let (a, b) = (ids[0], ids[1]);
         let mut cmd = SetCurveType::new_batch(vec![
             (a, CurveType::Straight, CurveType::Curved),
             (b, CurveType::Straight, CurveType::Curved),

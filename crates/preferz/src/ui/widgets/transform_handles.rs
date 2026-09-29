@@ -1,6 +1,6 @@
 use eframe::egui;
-use preferz_core::item::{elbow_insert_candidates, elbow_polyline_offset};
-use preferz_core::shape::{CurveType, ShapeType};
+use preferz_core::item::elbow_polyline_offset;
+use preferz_core::shape::ShapeType;
 use preferz_core::{Item, ItemKind};
 
 use crate::ui::stylers::item_local_to_screen;
@@ -29,92 +29,39 @@ pub enum Handle {
     FlipH,
     /// 垂直翻转手柄（上/下边中点）。
     FlipV,
-    /// 线性对象顶点控制点（Polyline，局部坐标 points 的下标；开放折线/闭合多边形共用）。
+    /// 线性对象顶点控制点（Polyline / Elbow，局部坐标 points 的下标）。
+    /// Polyline 任意顶点可拖；Elbow 恒 2 端点（中间几何由路由推导，不可拖点）。
     Endpoint(usize),
-    /// 线性对象段中点手柄。普通折线：拖拽即在段中间插入顶点并进入端点拖拽；
-    /// 多顶点 elbow（plan #21 DP-A）：仅**双击**在候选点插入顶点。
+    /// 线性对象段中点手柄（仅 Polyline）：拖拽即在段中间插入顶点并进入端点拖拽。
     /// `usize` 为段起始顶点在 points 中的下标：段 i 连接 points[i] → points[i+1]
     /// （闭合多边形的收尾段 i = n-1 连接 points[n-1] → points[0]）。
     SegmentMid(usize),
-    /// elbow 直角折线的中间 bar 手柄（plan #16 E1）：拖拽平移中间正交段，
-    /// 改 `elbow_mid_offset`（交叉轴偏移），不增删顶点。仅 `curve_type=Elbow`
+    /// elbow 连接器的中间 bar 手柄（plan #16 E1 / #24）：拖拽平移中间正交段，
+    /// 改 `elbow_mid_offset`（交叉轴偏移），不增删顶点。仅 `ShapeType::Elbow`
     /// 且展开后 4 点（非退化/非 clamp 贴端点）时存在。
     ElbowBar,
 }
 
-/// 是否为线性对象（Polyline）：选中态用顶点控制点，而非变换边框。
+/// 是否为线性对象（Polyline / Elbow）：选中态用顶点控制点，而非变换边框。
 fn is_line(item: &Item) -> bool {
     matches!(
         item.kind,
         ItemKind::Shape {
-            shape_type: ShapeType::Polyline,
+            shape_type: ShapeType::Polyline | ShapeType::Elbow,
             ..
         }
     )
 }
 
-/// 是否为 elbow 线（任意顶点数，plan #21）。多顶点 elbow 的段中点手柄 =
-/// 双击插入候选（见 [`elbow_insert_screen_candidates`]）；两点线的 bar 带
-/// 兼作双击插入靶区（见 `PReferZApp::insert_elbow_vertex_at`）。
+/// 是否为 elbow 连接器（plan #24 独立类型；恒 2 端点，走线由路由推导）。
 pub(crate) fn is_elbow_line(item: &Item) -> bool {
     matches!(
         item.kind,
         ItemKind::Shape {
-            shape_type: ShapeType::Polyline,
-            curve_type: CurveType::Elbow,
+            shape_type: ShapeType::Elbow,
             ..
         }
     )
-}
-
-/// 是否为两点 elbow 线（bar 手柄仅两点线有意义：`elbow_mid_offset` 只被两点展开消费，
-/// 多顶点走线由顶点锚定 bar 推导）。
-fn is_two_point_elbow_line(item: &Item) -> bool {
-    is_elbow_line(item)
-        && matches!(item.kind, ItemKind::Shape { ref points, .. } if points.len() == 2)
-}
-
-/// 是否为多顶点 elbow 线（plan #21 DP-A：段中点手柄 = 双击插入候选点）。
-pub(crate) fn is_multi_vertex_elbow_line(item: &Item) -> bool {
-    is_elbow_line(item)
-        && matches!(item.kind, ItemKind::Shape { ref points, .. } if points.len() > 2)
-}
-
-/// 多顶点 elbow 的双击插入候选（屏幕坐标）。`seg` 段起始顶点下标、`point` 插入点、
-/// `span` 该段覆盖的推导路径折线（带状命中靶区）。候选由 core
-/// `elbow_insert_candidates` 保证 on-path、插入后视觉不变且可拖动。
-fn elbow_insert_screen_candidates(
-    item: &Item,
-    viewport: &ViewportState,
-) -> Vec<(usize, egui::Pos2, Vec<egui::Pos2>)> {
-    let ItemKind::Shape {
-        points,
-        closed,
-        elbow_mid_offset,
-        ..
-    } = &item.kind
-    else {
-        return Vec::new();
-    };
-    if !is_multi_vertex_elbow_line(item) {
-        return Vec::new();
-    }
-    let to_screen = item_local_to_screen(item, viewport);
-    let to_pt = |p: (f32, f32)| {
-        let s = to_screen.transform_point(euclid::Point2D::new(p.0, p.1));
-        egui::pos2(s.x, s.y)
-    };
-    // 手柄几何与鼠标无关：不传落点偏好（取规范化的中点优先候选）
-    elbow_insert_candidates(points, *closed, *elbow_mid_offset, None)
-        .into_iter()
-        .map(|c| {
-            (
-                c.seg,
-                to_pt(c.point),
-                c.span.iter().map(|p| to_pt(*p)).collect(),
-            )
-        })
-        .collect()
 }
 
 /// elbow bar 手柄命中容差（屏幕像素）。沿中间正交段全长做带状命中，垂直容差取
@@ -129,14 +76,13 @@ fn elbow_bar_screen_segment(
 ) -> Option<(egui::Pos2, egui::Pos2)> {
     let ItemKind::Shape {
         points,
-        curve_type,
         elbow_mid_offset,
         ..
     } = &item.kind
     else {
         return None;
     };
-    if !matches!(curve_type, CurveType::Elbow) || points.len() != 2 {
+    if !is_elbow_line(item) {
         return None;
     }
     let expanded = elbow_polyline_offset(points, *elbow_mid_offset);
@@ -297,7 +243,7 @@ impl TransformHandles {
         show_flip: bool,
         show_rotate: bool,
     ) -> Handle {
-        // 线类：顶点控制点优先，其次段中点（拖拽加点）
+        // 线类：顶点控制点优先，其次段中点（拖拽加点，仅 Polyline）/ elbow bar。
         if is_line(item) {
             let eps = Self::line_endpoint_screen_positions(item, viewport);
             let handle_size = Self::handle_size() * 2.0;
@@ -307,45 +253,25 @@ impl TransformHandles {
                     return Handle::Endpoint(i);
                 }
             }
-            // 段中点：开放折线 n-1 段，闭合多边形含收尾段。两点 elbow 不给
-            // （对角弦中点会破坏两点不变量）；多顶点 elbow 的段中点 = 双击插入
-            // 候选（plan #21 DP-A，整段推导路径带状命中，插入后视觉不变）；
-            // 普通折线 = 弦中点（拖拽加点）。
+            // 段中点（仅 Polyline）：开放折线 n-1 段，闭合多边形含收尾段，
+            // 弦中点（拖拽加点）。Elbow 连接器无段中点（中间几何由路由推导）。
             let n = eps.len();
-            if n >= 2 {
+            if n >= 2 && !is_elbow_line(item) {
                 let closed = matches!(item.kind, ItemKind::Shape { closed: true, .. });
                 let mid_size = Self::handle_size() * 1.4;
-                if is_two_point_elbow_line(item) {
-                    // 两点 elbow：无段中点（仅 bar 手柄，见下）
-                } else if is_elbow_line(item) {
-                    let half = ELBOW_BAR_HIT_PX.max(stroke_screen_width(item, viewport));
-                    let mut best: Option<(f32, usize)> = None;
-                    for (seg, _, span) in elbow_insert_screen_candidates(item, viewport) {
-                        for w in span.windows(2) {
-                            let d = dist_point_segment_screen(screen_pos, w[0], w[1]);
-                            if d <= half && best.is_none_or(|(bd, _)| d < bd) {
-                                best = Some((d, seg));
-                            }
-                        }
-                    }
-                    if let Some((_, seg)) = best {
-                        return Handle::SegmentMid(seg);
-                    }
-                } else {
-                    let seg_count = if closed { n } else { n - 1 };
-                    for i in 0..seg_count {
-                        let a = eps[i];
-                        let b = eps[(i + 1) % n];
-                        let m = (a + b.to_vec2()) * 0.5;
-                        let r = egui::Rect::from_center_size(m, egui::Vec2::splat(mid_size));
-                        if r.contains(screen_pos) {
-                            return Handle::SegmentMid(i);
-                        }
+                let seg_count = if closed { n } else { n - 1 };
+                for i in 0..seg_count {
+                    let a = eps[i];
+                    let b = eps[(i + 1) % n];
+                    let m = (a + b.to_vec2()) * 0.5;
+                    let r = egui::Rect::from_center_size(m, egui::Vec2::splat(mid_size));
+                    if r.contains(screen_pos) {
+                        return Handle::SegmentMid(i);
                     }
                 }
             }
-            // elbow bar：沿中间正交段全长做带状命中（plan #16 E1，仅两点线）。
-            if is_two_point_elbow_line(item) {
+            // elbow bar：沿中间正交段全长做带状命中（plan #16 E1）。
+            if is_elbow_line(item) {
                 if let Some((p1, p2)) = elbow_bar_screen_segment(item, viewport) {
                     let half = ELBOW_BAR_HIT_PX.max(stroke_screen_width(item, viewport));
                     if dist_point_segment_screen(screen_pos, p1, p2) <= half {
@@ -409,7 +335,8 @@ impl TransformHandles {
         show_flip: bool,
         show_rotate: bool,
     ) {
-        // 线类：顶点控制点（黄色方块）+ 段中点手柄（小号浅黄，提示可拖拽加点）
+        // 线类：顶点控制点（黄色方块）+ 段中点手柄（小号浅黄，仅 Polyline）+
+        // elbow bar 手柄（bar 中点小方块）
         if is_line(item) {
             let eps = Self::line_endpoint_screen_positions(item, viewport);
             let handle_size = Self::handle_size();
@@ -419,28 +346,21 @@ impl TransformHandles {
                 painter.rect_filled(r, egui::CornerRadius::same(1), fill);
             }
             let n = eps.len();
-            if n >= 2 {
+            // 段中点（仅 Polyline，提示可拖拽加点）；Elbow 无段中点。
+            if n >= 2 && !is_elbow_line(item) {
                 let closed = matches!(item.kind, ItemKind::Shape { closed: true, .. });
                 let mid_fill = egui::Color32::from_rgb(255, 225, 130);
-                if is_two_point_elbow_line(item) {
-                    // 两点 elbow：无段中点（仅 bar 手柄，见下）
-                } else if is_elbow_line(item) {
-                    // 多顶点 elbow：**不画**候选小方块（2026-09-25 六次验收反馈：
-                    // 与多段线段中点辅助点同款式，被当成"可拖动加点"且与锚点混淆；
-                    // 双击带状命中不受影响，见 hit_test 的 SegmentMid 分支）
-                } else {
-                    let seg_count = if closed { n } else { n - 1 };
-                    for i in 0..seg_count {
-                        let a = eps[i];
-                        let b = eps[(i + 1) % n];
-                        let m = (a + b.to_vec2()) * 0.5;
-                        let r = egui::Rect::from_center_size(m, egui::Vec2::splat(6.0));
-                        painter.rect_filled(r, egui::CornerRadius::same(1), mid_fill);
-                    }
+                let seg_count = if closed { n } else { n - 1 };
+                for i in 0..seg_count {
+                    let a = eps[i];
+                    let b = eps[(i + 1) % n];
+                    let m = (a + b.to_vec2()) * 0.5;
+                    let r = egui::Rect::from_center_size(m, egui::Vec2::splat(6.0));
+                    painter.rect_filled(r, egui::CornerRadius::same(1), mid_fill);
                 }
             }
-            // elbow bar 手柄：bar 中点小方块（plan #16 E1，仅两点线；提示可拖拽平移走线）。
-            if is_two_point_elbow_line(item) {
+            // elbow bar 手柄：bar 中点小方块（plan #16 E1；提示可拖拽平移走线）。
+            if is_elbow_line(item) {
                 if let Some((p1, p2)) = elbow_bar_screen_segment(item, viewport) {
                     let m = egui::pos2((p1.x + p2.x) * 0.5, (p1.y + p2.y) * 0.5);
                     let mid_fill = egui::Color32::from_rgb(255, 225, 130);
@@ -513,7 +433,7 @@ impl TransformHandles {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use preferz_core::shape::{ArrowHeadStyle, StrokeStyle};
+    use preferz_core::shape::{ArrowHeadStyle, CurveType, StrokeStyle};
 
     fn line(curve: CurveType, n: usize) -> Item {
         let pts: Vec<(f32, f32)> = (0..n).map(|i| (i as f32 * 10.0, 0.0)).collect();
@@ -535,26 +455,25 @@ mod tests {
     }
 
     #[test]
-    fn elbow_segment_mid_handles_by_vertex_count() {
-        // 两点 elbow：压制段中点（对角弦中点会破坏两点不变量）、暴露 bar 手柄。
-        let elbow = line(CurveType::Elbow, 2);
+    fn elbow_handles_split_by_shape_type() {
+        // elbow 连接器（plan #24 独立类型）：是线性对象（顶点控制点）、无段中点
+        // （中间几何由路由推导），bar 手柄暴露。
+        let elbow = Item::new_elbow(
+            vec![(0.0, 0.0), (10.0, 0.0)],
+            (10.0, 1.0),
+            None,
+            Some(ArrowHeadStyle::Arrow),
+            0.0,
+            0.0,
+            StrokeStyle::default(),
+        );
         assert!(is_line(&elbow));
         assert!(is_elbow_line(&elbow));
-        assert!(is_two_point_elbow_line(&elbow));
-        assert!(!is_multi_vertex_elbow_line(&elbow));
-        // 多顶点 elbow（plan #21 DP-A）：段中点手柄恢复，位置改用双击插入
-        // 候选点（core 保证 on-path、插入后视觉不变且可拖动）。
-        let multi = line(CurveType::Elbow, 3);
-        assert!(is_line(&multi));
-        assert!(is_elbow_line(&multi));
-        assert!(!is_two_point_elbow_line(&multi));
-        assert!(is_multi_vertex_elbow_line(&multi));
-        // 尖角 / 圆滑折线：仍保留弦中点加点手柄。
+        // 尖角 / 圆滑折线：仍是 Polyline，保留弦中点加点手柄。
         for c in [CurveType::Straight, CurveType::Curved] {
             let l = line(c, 3);
             assert!(is_line(&l));
             assert!(!is_elbow_line(&l));
-            assert!(!is_multi_vertex_elbow_line(&l));
         }
     }
 }

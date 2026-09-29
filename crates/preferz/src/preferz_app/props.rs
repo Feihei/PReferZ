@@ -850,14 +850,14 @@ impl PReferZApp {
             });
         }
         // 填充（Excalidraw 四态：无 / 纯色 / 斜线 / 交叉线）。
-        // 线 / 箭头（未闭合 Polyline）无填充节；闭合折线（多边形）有。
+        // 线 / 箭头（未闭合 Polyline）与 Elbow 连接器无填充节；闭合折线（多边形）有。
         let fill_ids: Vec<ItemId> = ids
             .iter()
             .copied()
             .filter(|id| {
                 matches!(self.scene.get_item(id), Some(item) if match &item.kind {
                     ItemKind::Shape { shape_type, closed, .. } => {
-                        !matches!(shape_type, ShapeType::Polyline) || *closed
+                        !matches!(shape_type, ShapeType::Polyline | ShapeType::Elbow) || *closed
                     }
                     _ => false,
                 })
@@ -1006,14 +1006,14 @@ impl PReferZApp {
                 }
             }
         }
-        // 圆角（矩形族 + elbow 折线，plan #23：共用 roundness 字段与半径语义）
+        // 圆角（矩形族 + Elbow 连接器，plan #23 / #24：共用 roundness 字段与半径语义）
         let roundable_ids: Vec<ItemId> = ids
             .iter()
             .copied()
             .filter(|id| {
                 matches!(self.scene.get_item(id), Some(item) if matches!(&item.kind,
                     ItemKind::Shape { shape_type: ShapeType::Rectangle, .. }
-                    | ItemKind::Shape { shape_type: ShapeType::Polyline, curve_type: CurveType::Elbow, .. })
+                    | ItemKind::Shape { shape_type: ShapeType::Elbow, .. })
                 )
             })
             .collect();
@@ -1087,7 +1087,7 @@ impl PReferZApp {
                 }
             });
         }
-        // 线性对象专用：曲线 / 闭合 / 箭头
+        // 线性对象专用：曲线 / 闭合 / 箭头（Polyline）；箭头 / 倒角（Elbow）
         let poly_ids: Vec<ItemId> = ids
             .iter()
             .copied()
@@ -1095,6 +1095,37 @@ impl PReferZApp {
                 matches!(self.scene.get_item(id), Some(item) if matches!(item.kind, ItemKind::Shape { shape_type: ShapeType::Polyline, .. }))
             })
             .collect();
+        // elbow 连接器（plan #24）：无曲线 / 闭合语义，仅箭头（倒角已在上方 roundness 节）。
+        let elbow_ids: Vec<ItemId> = ids
+            .iter()
+            .copied()
+            .filter(|id| {
+                matches!(self.scene.get_item(id), Some(item) if matches!(item.kind, ItemKind::Shape { shape_type: ShapeType::Elbow, .. }))
+            })
+            .collect();
+        if !elbow_ids.is_empty() {
+            if let Some(p) = prop(&self.scene, &elbow_ids, |it| match &it.kind {
+                ItemKind::Shape {
+                    start_arrow,
+                    end_arrow,
+                    ..
+                } => Some((*start_arrow, *end_arrow)),
+                _ => None,
+            }) {
+                let (start, end) = p.value();
+                if p.is_mixed() {
+                    ui.label(t(lang, T::PropsMixedValue));
+                }
+                ui.label(t(lang, T::StyleArrowStart));
+                if let Some(new) = arrowhead_selector(ui, lang, start) {
+                    self.push_arrowhead(&elbow_ids, true, new);
+                }
+                ui.label(t(lang, T::StyleArrowEnd));
+                if let Some(new) = arrowhead_selector(ui, lang, end) {
+                    self.push_arrowhead(&elbow_ids, false, new);
+                }
+            }
+        }
         if !poly_ids.is_empty() {
             if let Some(p) = prop(&self.scene, &poly_ids, |it| match &it.kind {
                 ItemKind::Shape { curve_type, .. } => Some(*curve_type),
@@ -1106,7 +1137,6 @@ impl PReferZApp {
                     for (variant, label) in [
                         (CurveType::Straight, t(lang, T::StyleCurveStraight)),
                         (CurveType::Curved, t(lang, T::StyleCurveCurved)),
-                        (CurveType::Elbow, t(lang, T::StyleCurveElbow)),
                     ] {
                         if ui.selectable_label(cur == variant, label).clicked() && cur != variant {
                             self.push_poly_curve(&poly_ids, variant);
@@ -1744,13 +1774,18 @@ impl PReferZApp {
         self.flash(fill(t(self.lang, T::FlashFramePresetApplied), &[label]));
     }
 
-    /// 线性对象批量切换曲线模式（离散，整批改命令）。
+    /// 线性对象批量切换曲线模式（离散，整批改命令）。仅 Polyline（Elbow 连接器
+    /// 无曲线语义；plan #24 起 elbow 已是独立 `ShapeType::Elbow`，不再是曲线模式）。
     pub(crate) fn push_poly_curve(&mut self, ids: &[ItemId], new_curve: CurveType) {
         let items: Vec<(ItemId, CurveType, CurveType)> = ids
             .iter()
             .filter_map(|id| {
                 self.scene.get_item(id).and_then(|it| match &it.kind {
-                    ItemKind::Shape { curve_type, .. } => Some((*id, *curve_type, new_curve)),
+                    ItemKind::Shape {
+                        shape_type: ShapeType::Polyline,
+                        curve_type,
+                        ..
+                    } => Some((*id, *curve_type, new_curve)),
                     _ => None,
                 })
             })
@@ -1758,29 +1793,7 @@ impl PReferZApp {
         if items.is_empty() {
             return;
         }
-        // plan #19：切 elbow 时闭合折线转开放（顶点保留 + 末段连回首点视觉闭环），
-        // closed 变更与 curve_type 变更打包成一条 undo。
-        let mut cmds: Vec<Box<dyn Command>> = vec![Box::new(SetCurveType::new_batch(items))];
-        if new_curve == CurveType::Elbow {
-            let closed_changes: Vec<(ItemId, bool, bool)> = ids
-                .iter()
-                .filter_map(|id| {
-                    self.scene.get_item(id).and_then(|it| match &it.kind {
-                        ItemKind::Shape { closed: true, .. } => Some((*id, true, false)),
-                        _ => None,
-                    })
-                })
-                .collect();
-            if !closed_changes.is_empty() {
-                cmds.push(Box::new(SetClosed::new_batch(closed_changes)));
-            }
-        }
-        let cmd: Box<dyn Command> = if cmds.len() == 1 {
-            cmds.into_iter().next().unwrap()
-        } else {
-            Box::new(MultiCommand::new(cmds))
-        };
-        self.push_cmd(cmd);
+        self.push_cmd(Box::new(SetCurveType::new_batch(items)));
     }
 
     /// 应用文字颜色（调色板选色）：写色并脱离"跟随形状"。走连续编辑合并路径（一条 undo）。

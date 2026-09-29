@@ -72,7 +72,7 @@ pub fn outline_segments(item: &Item) -> Vec<(CanvasPoint, CanvasPoint)> {
                 ShapeType::Rectangle => rect_ring(rect),
                 ShapeType::Ellipse => ellipse_ring(rect, 64),
                 ShapeType::Diamond => diamond_ring(rect),
-                ShapeType::Polyline => {
+                ShapeType::Polyline | ShapeType::Elbow => {
                     let to_c = item.local_to_canvas();
                     let pts: Vec<CanvasPoint> = points
                         .iter()

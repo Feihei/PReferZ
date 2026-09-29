@@ -9,8 +9,7 @@ use crate::ui::stylers::{
 use crate::ui::widgets::palette;
 use crate::ui::widgets::stepper::stepper;
 use crate::ui::widgets::transform_handles::{
-    is_elbow_line, is_multi_vertex_elbow_line, should_show_flip, should_show_rotate, Handle,
-    TransformHandles,
+    is_elbow_line, should_show_flip, should_show_rotate, Handle, TransformHandles,
 };
 use crate::viewport::{ViewportEgui, ViewportState};
 use crate::HANDWRITING_FONT_FAMILY;
@@ -29,7 +28,6 @@ use preferz_core::commands::{
     SetSloppiness, SetStrokeStyle, SetTextStyle, TransformItem,
 };
 use preferz_core::flowchart;
-use preferz_core::item::{clamp_elbow_vertex_drag, elbow_insert_candidates};
 use preferz_core::mermaid::{
     layout_flowchart, parse_mermaid_flowchart, MermaidArrow, MermaidShape,
 };
@@ -139,7 +137,7 @@ enum Tool {
     /// 对齐 Excalidraw freedraw（裸 P + 本项目 Num7）。
     Freehand,
     /// 文字（plan #22）：点画布即在落点起一段自由文本，起完即回 Select。
-    /// 取代旧的「双击空白/线 → 新建文本便签」（双击手势留给元素编辑，如 elbow 加点）。
+    /// 取代旧的「双击空白/线 → 新建文本便签」（双击手势留给元素编辑）。
     Text,
 }
 
@@ -1590,8 +1588,10 @@ impl eframe::App for PReferZApp {
                         pts.push(pts[0]); // 闭合路径
                         ui.painter().add(egui::Shape::line(pts, stroke));
                     }
-                    // 线性对象：画 start → current 线段；箭头另画头部（与 CleanStyler 一致）
-                    ShapeType::Polyline => {
+                    // 线性对象：画 start → current 线段；箭头另画头部（与 CleanStyler 一致）。
+                    // elbow 连接器（plan #24）创建预览同款——正交路由在定型后由
+                    // elbow_route 从两端点推导。
+                    ShapeType::Polyline | ShapeType::Elbow => {
                         let s0 = self.viewport.canvas_to_pos2(*start);
                         let s1 = self.viewport.canvas_to_pos2(*current);
                         ui.painter().line_segment([s0, s1], stroke);
@@ -1730,59 +1730,51 @@ impl eframe::App for PReferZApp {
                 }
             }
 
-            // 双击：elbow 线段 → 插入顶点（plan #21 DP-A）；Text item / 封闭 Shape →
-            // 编辑其文本；Pixmap → 视口适应该图片（.issues #2，Excalidraw 同款）。
-            // 「双击空白建文本便签」于 plan #22 移除——新建文本改由文字工具（Num8）承担，
-            // 双击手势整体留给元素编辑。
+            // 双击：Text item / 封闭 Shape → 编辑其文本；Pixmap → 视口适应该图片
+            // （.issues #2，Excalidraw 同款）。「双击空白建文本便签」于 plan #22 移除
+            // ——新建文本改由文字工具（Num8）承担，双击手势整体留给元素编辑。
+            // （elbow 双击段插入顶点已随 plan #24 独立类型化移除——中间几何由路由
+            // 推导，不再有可插入的用户顶点。）
             // response.double_clicked() 已自动考虑上层 Window 遮挡
             if response.double_clicked() && self.editing_text.is_none() {
                 if matches!(self.drag, DragState::CreatingPolygon { .. }) {
                     // 多边形绘制中：双击 = 收尾闭合，优先于文本便签（绘制工具下不该建文本）
                     self.finish_create_polygon();
                 } else if let Some(pos) = ctx.input(|i| i.pointer.latest_pos()) {
-                    // plan #21 DP-A：双击落在多顶点 elbow 的段路径带内 → 插入顶点并
-                    // 消费本次双击（不建文本便签、不重置 drag）。egui 的双击分类在
-                    // 释放沿成形，是双击的唯一可信信号（按下沿拿不到）。
-                    if self.insert_elbow_vertex_at(pos) {
-                        ctx.request_repaint();
-                    } else {
-                        // 一次性取全命中信息（id + 是否图片 + 包围盒），避免借用冲突
-                        let hit = interaction::get_item_at(pos, &self.scene, &self.viewport).map(
-                            |item| {
-                                (
-                                    item.id,
-                                    matches!(item.kind, ItemKind::Pixmap { .. }),
-                                    item.bounding_rect(),
-                                )
-                            },
-                        );
-                        match hit {
-                            // 双击图片：已处于该图片的适配视图 → 回到上一视图；否则适配视口。
-                            Some((_, true, rect)) => {
-                                let (target_zoom, target_pan) = self.compute_fit(rect);
-                                let already_fit = (self.viewport.zoom - target_zoom).abs() < 1e-3
-                                    && (self.viewport.pan - target_pan).length() < 1e-2;
-                                if already_fit {
-                                    if let Some((z, p)) = self.view_fit_prev.take() {
-                                        self.viewport.zoom = z;
-                                        self.viewport.pan = p;
-                                        self.flash(t(self.lang, T::FlashFitRestore).to_string());
-                                    }
-                                } else {
-                                    self.view_fit_prev =
-                                        Some((self.viewport.zoom, self.viewport.pan));
-                                    self.viewport.fit_to_content(rect);
-                                    self.flash(t(self.lang, T::FlashFitToCanvas).to_string());
+                    // 一次性取全命中信息（id + 是否图片 + 包围盒），避免借用冲突
+                    let hit =
+                        interaction::get_item_at(pos, &self.scene, &self.viewport).map(|item| {
+                            (
+                                item.id,
+                                matches!(item.kind, ItemKind::Pixmap { .. }),
+                                item.bounding_rect(),
+                            )
+                        });
+                    match hit {
+                        // 双击图片：已处于该图片的适配视图 → 回到上一视图；否则适配视口。
+                        Some((_, true, rect)) => {
+                            let (target_zoom, target_pan) = self.compute_fit(rect);
+                            let already_fit = (self.viewport.zoom - target_zoom).abs() < 1e-3
+                                && (self.viewport.pan - target_pan).length() < 1e-2;
+                            if already_fit {
+                                if let Some((z, p)) = self.view_fit_prev.take() {
+                                    self.viewport.zoom = z;
+                                    self.viewport.pan = p;
+                                    self.flash(t(self.lang, T::FlashFitRestore).to_string());
                                 }
+                            } else {
+                                self.view_fit_prev = Some((self.viewport.zoom, self.viewport.pan));
+                                self.viewport.fit_to_content(rect);
+                                self.flash(t(self.lang, T::FlashFitToCanvas).to_string());
                             }
-                            // 命中可承载文本的 item → 编辑/新建其绑定文本
-                            Some((id, false, _)) if self.start_text_edit(id) => {}
-                            // 其余（线/箭头/空白）→ 无事发生：plan #22 起双击不再建
-                            // 自由文本（改由文字工具 Num8），双击留给元素编辑
-                            _ => {}
                         }
-                        self.drag = DragState::Idle;
+                        // 命中可承载文本的 item → 编辑/新建其绑定文本
+                        Some((id, false, _)) if self.start_text_edit(id) => {}
+                        // 其余（线/箭头/空白）→ 无事发生：plan #22 起双击不再建
+                        // 自由文本（改由文字工具 Num8），双击留给元素编辑
+                        _ => {}
                     }
+                    self.drag = DragState::Idle;
                 }
             }
 
@@ -2568,13 +2560,17 @@ fn drag_state_name(d: &DragState) -> &'static str {
     }
 }
 
-/// 是否为文本容器（封闭形状）。矩形/椭圆/菱形恒可；多段线仅闭合时可。
+/// 是否为文本容器（封闭形状）。矩形/椭圆/菱形恒可；多段线仅闭合时可；
+/// Elbow 连接器恒不可（开放线，非容器）。
 fn is_text_container(kind: &ItemKind) -> bool {
     if let ItemKind::Shape {
         shape_type, closed, ..
     } = kind
     {
-        !matches!(shape_type, ShapeType::Polyline) || *closed
+        matches!(
+            shape_type,
+            ShapeType::Rectangle | ShapeType::Ellipse | ShapeType::Diamond
+        ) || (matches!(shape_type, ShapeType::Polyline) && *closed)
     } else {
         false
     }
@@ -3398,147 +3394,50 @@ mod tests {
         }
     }
 
-    fn set_curve_type(app: &mut PReferZApp, id: ItemId, curve: CurveType) {
-        if let ItemKind::Shape { curve_type, .. } = &mut app.scene.get_item_mut(&id).unwrap().kind {
-            *curve_type = curve;
-        }
-    }
-
     #[test]
-    fn double_click_on_elbow_segment_band_inserts_vertex() {
-        // plan #21 DP-A：双击（egui 释放沿分类）落在多顶点 elbow 段路径带内
-        // → 在 core 校验过的候选点插入顶点，一条 undo 可撤。
-        let pts = vec![(0.0, 0.0), (50.0, 100.0), (100.0, 0.0)];
-        let (mut app, id) = app_with_polyline(pts.clone(), false);
-        set_curve_type(&mut app, id, CurveType::Elbow);
-        app.scene.select(id);
-        let cand = elbow_insert_candidates(&pts, false, 0.0, None)
-            .into_iter()
-            .next()
-            .expect("V 形 elbow 应有插入候选");
-        // 候选点在推导路径上（item pos=0/scale=1 → 局部 == 画布）
-        let screen = app
-            .viewport
-            .canvas_to_pos2(CanvasPoint::new(cand.point.0, cand.point.1));
-
-        assert!(app.insert_elbow_vertex_at(screen), "带内双击应插入顶点");
-        let after = polyline_points(&app, id);
-        assert_eq!(after.len(), pts.len() + 1);
-        assert_eq!(after[cand.seg + 1], cand.point);
-        assert_eq!(app.undo_stack.undo.len(), 1, "插入占一条 undo");
-        assert!(app.perform_undo());
-        assert_eq!(polyline_points(&app, id), pts, "undo 还原");
-
-        // 按下沿（单击）：不吞、穿透到常规命中（选中/移动）——手柄带只是双击靶区
-        app.transform_handles.hover_handle = Handle::SegmentMid(cand.seg);
-        app.begin_drag(screen, false, false, false);
-        assert_eq!(polyline_points(&app, id), pts, "单击不该加点");
-        assert!(
-            matches!(app.drag, DragState::MoveItems { .. }),
-            "单击应穿透到移动拖拽，实际 {:?}",
-            drag_state_name(&app.drag)
+    fn elbow_bar_drag_updates_offset_and_undo_restores() {
+        // plan #24：独立 ShapeType::Elbow 的 bar 拖拽——预览直改 elbow_mid_offset，
+        // 释放入 SetElbowOffset（skip_first_redo），undo 还原。
+        let mut app = PReferZApp::new();
+        let item = Item::new_elbow(
+            vec![(0.0, 0.0), (200.0, 100.0)],
+            (200.0, 100.0),
+            None,
+            Some(ArrowHeadStyle::Arrow),
+            0.0,
+            0.0,
+            StrokeStyle::default(),
         );
-        app.end_drag();
-        assert!(app.undo_stack.undo.is_empty(), "无位移的移动不入 undo");
-    }
-
-    #[test]
-    fn elbow_vertex_drag_is_clamped_onto_its_bar() {
-        // plan #21：直角模式拖锚点——垂直于 bar 的分量平移整根 bar，沿 bar 轴的分量
-        // 被钳在该 bar 的绘制区间内（锚点不许离线漂浮）。
-        let pts = vec![(0.0, 0.0), (100.0, 40.0), (200.0, 0.0)];
-        let (mut app, id) = app_with_polyline(pts.clone(), false);
-        set_curve_type(&mut app, id, CurveType::Elbow);
-        // 以顶点 1 自身位置作为拖拽起点（局部 == 画布：pos 0 / scale 1）
-        let anchor_screen = app
-            .viewport
-            .canvas_to_pos2(CanvasPoint::new(pts[1].0, pts[1].1));
-        let start_canvas = app.viewport.pos2_to_canvas(anchor_screen);
-        app.drag = DragState::LineEndpoint {
-            item_id: id,
-            endpoint: 1,
-            start_canvas,
-            start_points: pts.clone(),
-            base_pos: pts[1],
-            alt_extend: false,
-        };
-        // 沿 bar 轴（x）甩到走线右端之外 → 钳回 (200, 40)
-        let beyond = app.viewport.canvas_to_pos2(CanvasPoint::new(300.0, 40.0));
-        app.update_drag_preview(beyond, false, false);
-        assert_eq!(
-            polyline_points(&app, id)[1],
-            (200.0, 40.0),
-            "沿 bar 轴拖出应被钳回走线端"
-        );
-        // 垂直分量（y）自由 = 平移整根 bar
-        let across = app.viewport.canvas_to_pos2(CanvasPoint::new(100.0, 120.0));
-        app.update_drag_preview(across, false, false);
-        assert_eq!(
-            polyline_points(&app, id)[1],
-            (100.0, 120.0),
-            "垂直于 bar 的拖拽不该被约束"
-        );
-    }
-
-    #[test]
-    fn double_click_on_two_point_elbow_bar_inserts_vertex() {
-        // plan #21 验收反馈：直线/箭头转的 elbow、Ctrl+方向流程图连线都是两点
-        // elbow——双击 bar 带（与拖 bar 同区）应插入顶点且走线不变；插入同时取消
-        // press 沿误起的 bar 拖拽（偏移还原，不产生 SetElbowOffset）。
-        let pts = vec![(0.0, 0.0), (200.0, 100.0)];
-        let (mut app, id) = app_with_polyline(pts.clone(), false);
-        set_curve_type(&mut app, id, CurveType::Elbow);
-        app.scene.select(id);
-        // bar 中点 (100, 50)（局部 == 画布）——ElbowBar 手柄 / 插入靶区所在
-        let screen = app.viewport.canvas_to_pos2(CanvasPoint::new(100.0, 50.0));
-        // press 沿：双击第一下落在 bar 上会起 bar 拖拽（无位移 → 偏移预览不变）
+        let id = item.id;
+        app.scene.add_item(item);
+        // bar 中点 (100, 50)（局部 == 画布：pos 0 / scale 1）——ElbowBar 手柄所在
         app.drag = DragState::ElbowBar {
             item_id: id,
             start_canvas: CanvasPoint::new(100.0, 50.0),
             start_offset: 0.0,
         };
-        assert!(
-            app.insert_elbow_vertex_at(screen),
-            "两点 elbow bar 双击应插入"
-        );
-        let after = polyline_points(&app, id);
-        assert_eq!(after.len(), 3);
-        // 插入点 = bar 中点，且走线与两点展开一致（视觉 no-op）
-        assert_eq!(after[1], (100.0, 50.0));
-        assert_eq!(
-            preferz_core::item::elbow_vertex_polyline(&after, false),
-            vec![(0.0, 0.0), (0.0, 50.0), (200.0, 50.0), (200.0, 100.0)]
-        );
-        // bar 拖拽被取消：偏移还原为 start_offset、drag 归 Idle
-        assert!(matches!(app.drag, DragState::Idle));
+        // 垂直拖 30（局部 == 画布）：|dx|>|dy| → 偏移走 y 分量
+        let moved = app.viewport.canvas_to_pos2(CanvasPoint::new(100.0, 80.0));
+        app.update_drag_preview(moved, false, false);
         match &app.scene.get_item(&id).unwrap().kind {
             ItemKind::Shape {
                 elbow_mid_offset, ..
-            } => assert_eq!(*elbow_mid_offset, 0.0, "误位移应被还原"),
+            } => {
+                assert!((*elbow_mid_offset - 30.0).abs() < 1e-4, "bar 偏移跟随拖拽")
+            }
             _ => panic!("应为 Shape"),
         }
-        // 一条 undo（插入），undo 还原后回到两点
-        assert_eq!(app.undo_stack.undo.len(), 1);
+        app.end_drag();
+        assert_eq!(app.undo_stack.undo.len(), 1, "释放固化一条 undo");
         assert!(app.perform_undo());
-        assert_eq!(polyline_points(&app, id), pts);
-    }
-
-    #[test]
-    fn insert_elbow_vertex_rejects_non_targets() {
-        let pts = vec![(0.0, 0.0), (50.0, 100.0), (100.0, 0.0)];
-        // 落点远离线：带外 → 不消费（交回「双击建文本」）
-        let (mut app, id) = app_with_polyline(pts.clone(), false);
-        set_curve_type(&mut app, id, CurveType::Elbow);
-        app.scene.select(id);
-        let far = app.viewport.canvas_to_pos2(CanvasPoint::new(500.0, 500.0));
-        assert!(!app.insert_elbow_vertex_at(far));
-        assert_eq!(polyline_points(&app, id), pts);
-        // 两点 elbow 现已支持（见 double_click_on_two_point_elbow_bar_inserts_vertex）
-        // 尖角折线：仍走原段中点拖拽加点手势，不由双击消费
-        let (mut app3, id3) = app_with_polyline(pts.clone(), false);
-        app3.scene.select(id3);
-        let on_line3 = app3.viewport.canvas_to_pos2(CanvasPoint::new(25.0, 50.0));
-        assert!(!app3.insert_elbow_vertex_at(on_line3), "非 elbow 不消费");
+        match &app.scene.get_item(&id).unwrap().kind {
+            ItemKind::Shape {
+                elbow_mid_offset, ..
+            } => {
+                assert_eq!(*elbow_mid_offset, 0.0, "undo 还原偏移")
+            }
+            _ => panic!("应为 Shape"),
+        }
     }
 
     #[test]
@@ -3676,7 +3575,7 @@ mod tests {
                 matches!(
                     i.kind,
                     ItemKind::Shape {
-                        shape_type: ShapeType::Polyline,
+                        shape_type: ShapeType::Elbow,
                         ..
                     }
                 )
@@ -4109,7 +4008,7 @@ mod tests {
                 matches!(
                     i.kind,
                     ItemKind::Shape {
-                        shape_type: ShapeType::Polyline,
+                        shape_type: ShapeType::Elbow,
                         ..
                     }
                 )

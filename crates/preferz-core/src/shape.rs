@@ -1,18 +1,25 @@
 use serde::{Deserialize, Serialize};
 
-/// 图形类型。Polyline 为线性对象：直线 = 2 顶点，未来多段线 / 曲线同用此类。
+/// 图形类型。Polyline 为自由多段线（N 顶点）；Elbow 为正交连接器（恒 2 端点，
+/// 路径由 [`crate::item::elbow_polyline_offset`] 推导，plan #24 独立类型化——
+/// 对齐 Excalidraw elbowArrow「中间几何是派生值」的模型）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ShapeType {
     Rectangle,
     Ellipse,
     Diamond,
     Polyline,
+    Elbow,
 }
 
-/// 曲线模式（Phase I）。
+/// 曲线模式（Phase I）。仅 Polyline 生效，矩形族 / Elbow 忽略。
 ///
 /// `Straight` = 顶点直线相连；`Curved` = Catmull-Rom 插值（开/闭曲线，
-/// 见 [`crate::item`] 的采样辅助函数）。仅 Polyline 生效，矩形族忽略。
+/// 见 [`crate::item`] 的采样辅助函数）。
+///
+/// 历史：曾含 `Elbow` 变体（挂在 Polyline 上的曲线模式），plan #24 拆出独立
+/// `ShapeType::Elbow` 后移除；旧存档由 fileio 加载时的 JSON 迁移 shim 转换
+/// （见 `preferz-fileio` 的 `migrate_legacy_elbow`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum CurveType {
@@ -21,10 +28,6 @@ pub enum CurveType {
     Straight,
     /// 平滑曲线。
     Curved,
-    /// 直角折线（elbow）：两端点间自动走水平/垂直正交路径，正对方向先走一段
-    /// 「沿较小 Δ 轴」的短腿再垂直转折（对齐 Excalidraw elbow arrow 的观感）。
-    /// 仅对两点线性对象有意义；多点或退化时按原折线渲染。
-    Elbow,
 }
 
 /// 端点箭头样式（四态：V 形箭头 / 实心三角 / 空心三角 / 圆点）。
@@ -377,7 +380,7 @@ mod tests {
 
     #[test]
     fn curve_type_serde_roundtrip_and_default() {
-        for c in [CurveType::Straight, CurveType::Curved, CurveType::Elbow] {
+        for c in [CurveType::Straight, CurveType::Curved] {
             let json = serde_json::to_string(&c).unwrap();
             let back: CurveType = serde_json::from_str(&json).unwrap();
             assert_eq!(c, back);

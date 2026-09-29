@@ -117,7 +117,7 @@ impl Scene {
         let mut dead: Vec<(ItemId, usize)> = Vec::new();
         for line in &self.items {
             let ItemKind::Shape {
-                shape_type: ShapeType::Polyline,
+                shape_type: ShapeType::Polyline | ShapeType::Elbow,
                 points,
                 start_binding,
                 end_binding,

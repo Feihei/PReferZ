@@ -277,7 +277,7 @@ impl PReferZApp {
                     base_size,
                     stroke,
                     ..
-                } if !matches!(shape_type, ShapeType::Polyline) => {
+                } if !matches!(shape_type, ShapeType::Polyline | ShapeType::Elbow) => {
                     (base_size.0, base_size.1, *stroke)
                 }
                 _ => return,
@@ -312,13 +312,14 @@ impl PReferZApp {
         };
         let d = dup.local_point_to_canvas(dup_anchor);
         // 箭头：两点局部坐标对齐 AABB 左上角（与 finish_create_shape 同惯例）。
+        // 流程图连接箭头默认走 elbow 连接器（plan #24 独立类型）：分叉时自动正交
+        // 路由，比斜线更接近 Excalidraw elbow arrow 观感；两端共线时退化为直线。
         let min = CanvasPoint::new(s.x.min(d.x), s.y.min(d.y));
-        let mut arrow = Item::new_polyline(
+        let mut arrow = Item::new_elbow(
             vec![(s.x - min.x, s.y - min.y), (d.x - min.x, d.y - min.y)],
             ((d.x - s.x).abs(), (d.y - s.y).abs()),
             None,
             Some(ArrowHeadStyle::Arrow),
-            false,
             min.x,
             min.y,
             stroke,
@@ -328,13 +329,9 @@ impl PReferZApp {
         if let ItemKind::Shape {
             start_binding,
             end_binding,
-            curve_type,
             ..
         } = &mut arrow.kind
         {
-            // 流程图连接箭头默认走直角折线（elbow）：分叉时自动正交路由，比斜线更
-            // 接近 Excalidraw elbow arrow 观感；两端共线时退化为直线，视觉与旧行为一致。
-            *curve_type = CurveType::Elbow;
             *start_binding = Some(EndpointBinding {
                 target: src_id,
                 anchor: Some(src_anchor),
@@ -364,7 +361,7 @@ impl PReferZApp {
         let mut best: Option<(ItemId, f32, CanvasRect)> = None; // (邻居, 主轴距离, rect)
         for item in &self.scene.items {
             let ItemKind::Shape {
-                shape_type: ShapeType::Polyline,
+                shape_type: ShapeType::Polyline | ShapeType::Elbow,
                 start_binding,
                 end_binding,
                 ..
@@ -407,7 +404,7 @@ impl PReferZApp {
         while let Some(cur) = queue.pop() {
             for item in &self.scene.items {
                 let ItemKind::Shape {
-                    shape_type: ShapeType::Polyline,
+                    shape_type: ShapeType::Polyline | ShapeType::Elbow,
                     start_binding,
                     end_binding,
                     ..
