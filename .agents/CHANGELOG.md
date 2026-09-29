@@ -1207,6 +1207,34 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 
 ---
 
+## v0.2.1：内置帮助文档实例（plan #25，2026-09-29，`3022522`）
+
+> 参考 Excalidraw 右下角「?」与 PureData 帮助补丁（帮助文档即原生格式 .pd）。
+> 关键决策：**多窗口走多进程而非 egui viewport**——eframe 单进程只能跑一个事件
+> 循环，viewport（immediate/deferred）平台风险集中；spawn `current_exe --help-doc`
+> 让每个帮助窗口都是完整真实例，viewport 的坑全部绕开。
+
+- **HUD `?` 按钮**：底部缩放条左侧，点击 spawn 独立帮助实例（帮助窗内可递归再点，
+  同 PureData）；窗口标题 `PReferZ Help` 区分
+- **help.prz 内嵌**：`assets/help.prz` 经 build.rs deflate 压缩进二进制（与字体同
+  管线，`rerun-if-changed`）；占位内容由 `cargo run -p preferz --example gen_help_doc`
+  生成，正式内容在 PReferZ 里绘制后「另存为」覆盖该文件、重编译即生效
+- **内存直载**：`PrzFile::from_bytes()`——rusqlite 加 `serialize` feature，
+  `Connection::deserialize_read_exact` 在空内存连接的 main 库原位装载（rusqlite
+  0.40 的 `deserialize` 已改为 `&mut self` 方法，非旧版关联函数）；`open` 的格式
+  校验 + group_id 就地补列抽成 `open_connection(conn, Option<&Path>)` 两路共用
+- **沙箱语义零门禁**：帮助实例 `current_file = None`——修改只活在内存（下次打开
+  还原，醒目提示写在 help.prz 内容本身）、Ctrl+S 经既有 fallthrough 自然落到
+  「另存为」、recent/autosave 天然不触发；config 跨实例 last-writer-wins
+  （2026-09-29 拍板接受，以最后一次写盘为准）
+- **共用收尾**：`finish_load` 的 Pixmap 纹理重映射/上传抽成 `install_loaded_assets()`，
+  文件打开与帮助装载两路共用
+- i18n：`T::OpenHelp` / `T::FlashHelpSpawnFailed`
+- 测试：`from_bytes` 往返（含 path 字段为空断言）+ 嵌入产物 SQLite 魔数回归；
+  全量 fmt / clippy 零告警，112+3+211+10 = 336 通过
+
+---
+
 ## 决策点归档（D1–D6 / I1–I4 / L 系列）
 
 > 原列于 plan.md，G/I/H/K 交付后蒸馏归档于此，使 CHANGELOG 自包含、plan.md 仅保留前瞻内容。
