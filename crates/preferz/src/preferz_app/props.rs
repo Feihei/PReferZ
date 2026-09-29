@@ -349,6 +349,7 @@ impl PReferZApp {
                     &["XS", "S", "M", "L", "XL"],
                     1.0..=64.0,
                     None,
+                    0.1,
                 ) {
                     self.apply_common_width(ids, w);
                 }
@@ -592,6 +593,7 @@ impl PReferZApp {
                                 &["XS", "S", "M", "L", "XL"],
                                 1.0..=64.0,
                                 None,
+                                0.1,
                             );
                             // 线型
                             ui.label(t(lang, T::StyleDashLabel));
@@ -710,6 +712,7 @@ impl PReferZApp {
                 &["XS", "S", "M", "L", "XL"],
                 1.0..=64.0,
                 None,
+                0.1,
             ) {
                 self.apply_continuous(
                     ids,
@@ -789,6 +792,7 @@ impl PReferZApp {
                 &["XS", "S", "M", "L", "XL"],
                 1.0..=64.0,
                 None,
+                0.1,
             ) {
                 self.apply_continuous(
                     ids,
@@ -985,6 +989,7 @@ impl PReferZApp {
                     &op_labels,
                     0.0..=100.0,
                     Some("%"),
+                    0.5,
                 ) {
                     let a = (pct / 100.0 * 255.0).round() as u8;
                     self.apply_continuous(&fill_ids, PropKind::Fill, fill_snap, |k| {
@@ -1020,6 +1025,7 @@ impl PReferZApp {
                     &["None", "S", "M", "L", "XL"],
                     0.0..=1.0,
                     None,
+                    0.005,
                 ) {
                     self.apply_continuous(
                         &roundable_ids,
@@ -1213,6 +1219,7 @@ impl PReferZApp {
                 &["XS", "S", "M", "L", "XL"],
                 6.0..=200.0,
                 None,
+                0.25,
             ) {
                 self.apply_continuous(
                     ids,
@@ -1479,6 +1486,7 @@ impl PReferZApp {
                 &op_labels,
                 15.0..=100.0,
                 Some("%"),
+                0.5,
             ) {
                 let o = pct / 100.0;
                 self.apply_continuous(

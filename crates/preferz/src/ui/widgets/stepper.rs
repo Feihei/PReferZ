@@ -19,6 +19,8 @@ const EPS: f32 = 1e-4;
 /// - `labels`：档位按钮文案，与 `levels` 一一对应（如 `["XS","S","M","L","XL"]`）。
 /// - `input_range`：DragValue 输入框的合法范围。
 /// - `suffix`：DragValue 后缀（如 `"%"`、`"px"`），`None` 则无。
+/// - `speed`：DragValue 拖拽灵敏度，单位 = 每像素值增量（Blender 式按住数字
+///   左右拖连续改值）。量程越大取值越大，经验值：`量程 / 500` 左右。
 ///
 /// 返回 `value` 是否被改变。改变包括点击档位按钮或在 DragValue 中输入新值。
 pub fn stepper(
@@ -28,6 +30,7 @@ pub fn stepper(
     labels: &[&str],
     input_range: RangeInclusive<f32>,
     suffix: Option<&str>,
+    speed: f32,
 ) -> bool {
     debug_assert_eq!(
         levels.len(),
@@ -50,7 +53,9 @@ pub fn stepper(
         }
         // DragValue：精确输入。范围用 input_range，允许超出档位但限制在合法区间。
         let mut dv = *value;
-        let mut widget = egui::DragValue::new(&mut dv).range(input_range).speed(0.1);
+        let mut widget = egui::DragValue::new(&mut dv)
+            .range(input_range)
+            .speed(speed);
         if let Some(s) = suffix {
             widget = widget.suffix(s);
         }

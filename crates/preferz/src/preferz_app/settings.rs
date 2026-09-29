@@ -243,6 +243,7 @@ impl PReferZApp {
                     &op_labels,
                     15.0..=100.0,
                     Some("%"),
+                    0.5,
                 ) {
                     self.bg_alpha = bg_pct / 100.0;
                 }
