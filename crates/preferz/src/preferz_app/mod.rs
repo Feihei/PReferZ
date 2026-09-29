@@ -510,6 +510,12 @@ pub(crate) fn autosave_path_for(path: &Path) -> PathBuf {
     PathBuf::from(s)
 }
 
+/// 手动保存成功后清理过期的 `.autosave` 旁车（plan #5 后续）：原文件已
+/// 落盘，备份不再有意义。文件不存在或删除失败均静默忽略。
+fn remove_stale_autosave(path: &Path) {
+    let _ = std::fs::remove_file(autosave_path_for(path));
+}
+
 /// 找 `path` 的**较新**自动保存备份：`.autosave` 存在且 mtime 晚于原文件时
 /// 返回其路径；原文件 mtime 不可得时只要有备份就提示；否则 None。
 pub(crate) fn newer_autosave_for(path: &Path) -> Option<PathBuf> {
@@ -1136,6 +1142,12 @@ impl PReferZApp {
             if outcome.path.to_string_lossy().ends_with(AUTOSAVE_SUFFIX) {
                 if let Err(e) = outcome.result {
                     self.flash(fill(t(self.lang, T::FlashAutosaveFailed), &[e]));
+                } else if !self.dirty {
+                    // 竞态兜底：备份写盘期间用户已手动保存（dirty 被清）。
+                    // 这份备份内容已过时且 mtime 晚于新存的 .prz，留着会在
+                    // 下次打开该文件时误弹恢复提示 → 直接清掉。
+                    // 注意 outcome.path 本身已是 `.autosave` 路径，直接删。
+                    let _ = std::fs::remove_file(&outcome.path);
                 }
             } else {
                 match outcome.result {
@@ -1147,6 +1159,8 @@ impl PReferZApp {
                         self.current_file = Some(outcome.path.clone());
                         self.dirty = false;
                         self.autosave_dirty_since = None;
+                        // 保存成功，原文件已落盘：清掉过期的 .autosave 旁车
+                        remove_stale_autosave(&outcome.path);
                         // 若有 pending 关闭/新建请求，现在保存完成可以执行了
                         if let Some(action) = self.pending_save_prompt.take() {
                             match action {
@@ -3052,6 +3066,7 @@ impl PReferZApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use background_ops::SaveOutcome;
     use eframe::App;
 
     #[test]
@@ -3910,6 +3925,75 @@ mod tests {
         assert!(p.to_string_lossy().ends_with(AUTOSAVE_SUFFIX));
         let p2 = PathBuf::from("x/y.prz");
         assert!(!p2.to_string_lossy().ends_with(AUTOSAVE_SUFFIX));
+    }
+
+    #[test]
+    fn manual_save_clears_stale_autosave_sidecar() {
+        let dir = std::env::temp_dir().join(format!("pz_as_clean_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let prz = dir.join("doc.prz");
+        let auto = dir.join("doc.prz.autosave");
+        std::fs::write(&auto, b"stale backup").unwrap();
+
+        let mut app = PReferZApp::new();
+        app.current_file = Some(prz.clone());
+        app.mark_dirty();
+        // 模拟手动保存已在后台完成：向通道塞一条成功的保存结果，poll 消费
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(SaveOutcome {
+            path: prz.clone(),
+            result: Ok(()),
+        })
+        .unwrap();
+        app.bg_ops.save_rx = Some(rx);
+        app.bg_ops.pending += 1;
+        let ctx = egui::Context::default();
+        app.poll_background(&ctx);
+
+        assert!(!auto.exists(), "手动保存成功后 .autosave 旁车应被清理");
+        assert_eq!(app.current_file, Some(prz.clone()));
+        assert!(!app.dirty);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn autosave_outcome_race_guard_on_dirty() {
+        // 自动保存完成时：文档已保存干净（dirty=false）→ 备份过时，清掉；
+        // 文档仍有未保存变更（dirty=true）→ 备份仍有意义，保留。
+        let dir = std::env::temp_dir().join(format!("pz_as_race_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let prz = dir.join("doc.prz");
+        let auto = dir.join("doc.prz.autosave");
+        let ctx = egui::Context::default();
+
+        let send_save = |app: &mut PReferZApp| {
+            let (tx, rx) = std::sync::mpsc::channel();
+            tx.send(SaveOutcome {
+                path: autosave_path_for(&prz),
+                result: Ok(()),
+            })
+            .unwrap();
+            app.bg_ops.save_rx = Some(rx);
+            app.bg_ops.pending += 1;
+        };
+
+        // 场景 1：dirty=false（自动保存期间已被手动保存）→ 清理
+        let mut app = PReferZApp::new();
+        app.current_file = Some(prz.clone());
+        app.dirty = false;
+        std::fs::write(&auto, b"outdated backup").unwrap();
+        send_save(&mut app);
+        app.poll_background(&ctx);
+        assert!(!auto.exists(), "文档已保存干净时过时备份应被清理");
+
+        // 场景 2：dirty=true（还有未保存变更）→ 保留
+        std::fs::write(&auto, b"fresh backup").unwrap();
+        app.dirty = true;
+        send_save(&mut app);
+        app.poll_background(&ctx);
+        assert!(auto.exists(), "文档仍有未保存变更时备份应保留");
+        assert!(app.dirty, "自动保存不清除未保存标记");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // ───────── 验收反馈批次（#4-1 / #7-2） ─────────
