@@ -147,18 +147,21 @@ impl PReferZApp {
             .interactable(true)
             .show(ctx, |ui| {
                 chrome::floating_bar_frame(ui.style()).show(ui, |ui| {
+                    // 宽度钳死在 PROPS_BAR_WIDTH：ScrollArea 不收缩宽度时会吃满
+                    // Area 的可用宽度（面板被撑到两倍宽，滑出动画的位移量也对不上，
+                    // 按 N 收不起来）。min+max 同锁。
                     ui.set_min_width(chrome::PROPS_BAR_WIDTH);
+                    ui.set_max_width(chrome::PROPS_BAR_WIDTH);
                     ui.label(fill(
                         t(lang, T::PropsSelectedCount),
                         &[ids.len().to_string()],
                     ));
                     ui.separator();
-                    // 窗口高度不足时允许竖向滚动（用户要求 2026-09-28，取代此前
-                    // 2026-09-22 的「无滚动完整展开」——选项增多后内容可超出屏幕）。
-                    // 宽度撑满、高度按内容收缩：不超高时外观与原来自适应一致。
+                    // 面板高度撑满窗口（用户要求 2026-09-29）：内容不满一屏时
+                    // 完整展示、无滚动条；超出才滚动。auto_shrink 全关 = 两轴都
+                    // 吃满可用空间，宽度已被上面钳死。
                     egui::ScrollArea::vertical()
-                        .auto_shrink([false, true])
-                        .max_height(ui.available_height())
+                        .auto_shrink(false)
                         .show(ui, |ui| {
                             // 叠放顺序：Frame 不参与，选区含非 Frame item 时显示
                             let has_reorderable = ids.iter().any(|id| {
@@ -570,13 +573,16 @@ impl PReferZApp {
             .interactable(true)
             .show(ctx, |ui| {
                 chrome::floating_bar_frame(ui.style()).show(ui, |ui| {
+                    // 宽度钳死在 PROPS_BAR_WIDTH（同 render_props_panel：防止
+                    // ScrollArea 不收缩宽度时吃满 Area 可用宽度把面板撑宽）。
                     ui.set_min_width(chrome::PROPS_BAR_WIDTH);
+                    ui.set_max_width(chrome::PROPS_BAR_WIDTH);
                     ui.label(t(lang, T::PropsDefaultsTitle));
                     ui.separator();
-                    // 窗口高度不足时允许竖向滚动（与属性侧栏同策略，2026-09-28）。
+                    // 面板高度撑满窗口（同属性侧栏，2026-09-29）：内容不满一屏
+                    // 完整展示，超出才滚动。
                     egui::ScrollArea::vertical()
-                        .auto_shrink([false, true])
-                        .max_height(ui.available_height())
+                        .auto_shrink(false)
                         .show(ui, |ui| {
                             // 描边颜色（Excalidraw 式调色板）
                             let mut stroke = self.default_stroke.color;
