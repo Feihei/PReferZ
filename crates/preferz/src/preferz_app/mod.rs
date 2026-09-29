@@ -20,12 +20,12 @@ use preferz_core::arrange::{
     DistributeMode,
 };
 use preferz_core::commands::{
-    AddItem, AddItems, ArrangeItems, ArrowHeads, CropItems, DeleteItems, EditShapePoints,
-    EditTextContent, FillChange, FillState, FlipItems, FrameGeom, FreedrawStyle, MoveItems,
-    MultiCommand, NormalizeItems, RenumberFrame, ReorderItems, ReorderRelative, SetArrowHeads,
-    SetClosed, SetCurveType, SetElbowOffset, SetFrameFollowGlobal, SetFrameNumber, SetFrameSize,
-    SetFreedrawStyle, SetGroup, SetPixmapProps, SetPixmapStyle, SetRoundness, SetShapeFill,
-    SetSloppiness, SetStrokeStyle, SetTextStyle, TransformItem,
+    AddItem, AddItems, ArrangeItems, ArrowHeads, ConvertElbowToPolyline, CropItems, DeleteItems,
+    EditShapePoints, EditTextContent, FillChange, FillState, FlipItems, FrameGeom, FreedrawStyle,
+    MoveItems, MultiCommand, NormalizeItems, RenumberFrame, ReorderItems, ReorderRelative,
+    SetArrowHeads, SetClosed, SetCurveType, SetElbowOffset, SetFrameFollowGlobal, SetFrameNumber,
+    SetFrameSize, SetFreedrawStyle, SetGroup, SetPixmapProps, SetPixmapStyle, SetRoundness,
+    SetShapeFill, SetSloppiness, SetStrokeStyle, SetTextStyle, TransformItem,
 };
 use preferz_core::flowchart;
 use preferz_core::mermaid::{
@@ -124,10 +124,12 @@ impl UndoStack {
 enum Tool {
     Select,
     Shape(ShapeType),
-    /// 线性对象工具：携带默认终点箭头（Line = None，Arrow = Some(Arrow)）。
-    Linear {
-        end_arrow: Option<ArrowHeadStyle>,
-    },
+    /// 直线工具（plan #24 DP-1）：两点式创建 Polyline（多段线）。箭头不再是独立
+    /// 工具——线性对象想要箭头走样式面板起/终点开关（Excalidraw 同款语义分离）。
+    Linear,
+    /// elbow 连接器（plan #24 DP-1，取代旧 Arrow 工具）：两点式创建
+    /// `ShapeType::Elbow`，默认终点箭头；正交路由由 elbow_route 从两端点推导。
+    Elbow,
     /// 幻灯片画框（Phase D）。
     Frame,
     /// 多边形（Phase I）：点击加点、双击/Enter 闭合、Esc 取消。
@@ -2137,7 +2139,7 @@ impl PReferZApp {
                     // 否则走 fallback 渲染，风格/字重与其他图标不一致（可用字形已用脚本核验）。
                     // 第四项为快捷键角标（数字键优先，无数字键的工具显示主字母键），
                     // 对应 keymap.rs 绑定：1=Select 2=Rect 3=Diamond 4=Ellipse
-                    // 5=Arrow 6=Line 7=Freehand；Polygon=Shift+P、Frame=F 无数字键。
+                    // 5=Elbow 6=Line 7=Freehand；Polygon=Shift+P、Frame=F 无数字键。
                     let tools: [(Tool, &str, T, &str); 10] = [
                         (Tool::Select, "↖", T::ToolSelect, "1"),
                         (
@@ -2148,15 +2150,8 @@ impl PReferZApp {
                         ),
                         (Tool::Shape(ShapeType::Ellipse), "◯", T::ToolEllipse, "4"),
                         (Tool::Shape(ShapeType::Diamond), "◇", T::ToolDiamond, "3"),
-                        (Tool::Linear { end_arrow: None }, "╱", T::ToolLine, "6"),
-                        (
-                            Tool::Linear {
-                                end_arrow: Some(ArrowHeadStyle::Arrow),
-                            },
-                            "➡",
-                            T::ToolArrow,
-                            "5",
-                        ),
+                        (Tool::Linear, "╱", T::ToolLine, "6"),
+                        (Tool::Elbow, "↴", T::ToolElbow, "5"),
                         (Tool::Polygon, "△", T::ToolPolygon, "P"),
                         (Tool::Freehand, "〰", T::ToolFreehand, "7"),
                         (Tool::Text, "T", T::ToolText, "8"),
@@ -3024,11 +3019,9 @@ impl PReferZApp {
         } else if pressed(Action::ToolDiamond) {
             Some(Tool::Shape(ShapeType::Diamond))
         } else if pressed(Action::ToolLine) {
-            Some(Tool::Linear { end_arrow: None })
-        } else if pressed(Action::ToolArrow) {
-            Some(Tool::Linear {
-                end_arrow: Some(ArrowHeadStyle::Arrow),
-            })
+            Some(Tool::Linear)
+        } else if pressed(Action::ToolElbow) {
+            Some(Tool::Elbow)
         } else if pressed(Action::ToolPolygon) {
             Some(Tool::Polygon)
         } else if pressed(Action::ToolFrame) {
@@ -3435,6 +3428,53 @@ mod tests {
                 elbow_mid_offset, ..
             } => {
                 assert_eq!(*elbow_mid_offset, 0.0, "undo 还原偏移")
+            }
+            _ => panic!("应为 Shape"),
+        }
+    }
+
+    #[test]
+    fn elbow_tool_creates_connector_with_default_end_arrow() {
+        // plan #24 DP-1：Arrow 工具改为 Elbow 工具——两点式创建 ShapeType::Elbow
+        // （默认终点箭头），创建后回 Select；直线工具（Tool::Linear）仍建 Polyline。
+        let mut app = PReferZApp::new();
+        app.tool = Tool::Elbow;
+        let s = egui::pos2(40.0, 60.0);
+        app.begin_drag(s, false, false, false);
+        assert!(matches!(app.drag, DragState::CreatingShape { .. }));
+        app.update_drag_preview(egui::pos2(140.0, 120.0), false, false);
+        app.end_drag();
+        assert_eq!(app.tool, Tool::Select, "创建后回 Select");
+        assert_eq!(app.scene.items.len(), 1);
+        match &app.scene.items[0].kind {
+            ItemKind::Shape {
+                shape_type,
+                points,
+                end_arrow,
+                ..
+            } => {
+                assert_eq!(*shape_type, ShapeType::Elbow);
+                assert_eq!(points.len(), 2, "恒 2 端点（中间几何由路由推导）");
+                assert_eq!(*end_arrow, Some(ArrowHeadStyle::Arrow), "默认终点箭头");
+            }
+            _ => panic!("应为 Shape"),
+        }
+
+        // 直线工具：仍创建 Polyline（无箭头）
+        let mut app2 = PReferZApp::new();
+        app2.tool = Tool::Linear;
+        app2.begin_drag(egui::pos2(10.0, 10.0), false, false, false);
+        app2.update_drag_preview(egui::pos2(110.0, 60.0), false, false);
+        app2.end_drag();
+        assert_eq!(app2.scene.items.len(), 1);
+        match &app2.scene.items[0].kind {
+            ItemKind::Shape {
+                shape_type,
+                end_arrow,
+                ..
+            } => {
+                assert_eq!(*shape_type, ShapeType::Polyline);
+                assert_eq!(*end_arrow, None);
             }
             _ => panic!("应为 Shape"),
         }

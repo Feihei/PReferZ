@@ -227,7 +227,7 @@ pub enum T {
     ToolEllipse,
     ToolDiamond,
     ToolLine,
-    ToolArrow,
+    ToolElbow,
     #[allow(dead_code)]
     ToolFrame,
     /// 多边形工具（Phase I）。
@@ -350,6 +350,10 @@ pub enum T {
     MenuGroup,
     /// 右键菜单：解组。
     MenuUngroup,
+    /// 右键菜单：elbow 连接器烘焙为多段线（plan #24 DP-3）。
+    MenuConvertToPolyline,
+    /// 烘焙完成的 flash 提示（plan #24 DP-3）。
+    FlashConvertedToPolyline,
     // ── 手绘风（Phase F）──
     StyleRough,
     /// 手绘风档位四选一（plan #3，对齐 Excalidraw sloppiness）。
@@ -612,7 +616,7 @@ fn translate_en(key: T) -> &'static str {
         T::ToolEllipse => "Ellipse",
         T::ToolDiamond => "Diamond",
         T::ToolLine => "Line",
-        T::ToolArrow => "Arrow",
+        T::ToolElbow => "Elbow",
         T::ToolFrame => "Frame",
         T::ToolPolygon => "Polygon",
         T::ToolFreehand => "Freedraw",
@@ -689,6 +693,8 @@ fn translate_en(key: T) -> &'static str {
         T::FlashUngrouped => "Ungrouped",
         T::MenuGroup => "Group",
         T::MenuUngroup => "Ungroup",
+        T::MenuConvertToPolyline => "Convert to polyline",
+        T::FlashConvertedToPolyline => "Converted to polyline (route baked as vertices)",
         T::StyleRough => "Hand-drawn",
         T::SloppinessOff => "Off",
         T::SloppinessArchitect => "Architect",
@@ -918,7 +924,7 @@ fn translate_zh(key: T) -> &'static str {
         T::ToolEllipse => "椭圆",
         T::ToolDiamond => "菱形",
         T::ToolLine => "直线",
-        T::ToolArrow => "箭头",
+        T::ToolElbow => "直角箭头",
         T::ToolFrame => "画框",
         T::ToolPolygon => "多边形",
         T::ToolFreehand => "徒手",
@@ -995,6 +1001,8 @@ fn translate_zh(key: T) -> &'static str {
         T::FlashUngrouped => "已解组",
         T::MenuGroup => "编组",
         T::MenuUngroup => "解组",
+        T::MenuConvertToPolyline => "转为多段线",
+        T::FlashConvertedToPolyline => "已转为多段线（路由固化为顶点）",
         T::StyleRough => "手绘风",
         T::SloppinessOff => "关闭",
         T::SloppinessArchitect => "建筑师",
@@ -1070,7 +1078,7 @@ pub fn action_label(lang: Lang, action: Action) -> &'static str {
             ToolEllipse => "Tool: ellipse",
             ToolDiamond => "Tool: diamond",
             ToolLine => "Tool: line",
-            ToolArrow => "Tool: arrow",
+            ToolElbow => "Tool: elbow connector",
             ToolFrame => "Tool: frame",
             ToolPolygon => "Tool: polygon",
             ToolFreehand => "Tool: freedraw",
@@ -1121,7 +1129,7 @@ pub fn action_label(lang: Lang, action: Action) -> &'static str {
             ToolEllipse => "工具：椭圆",
             ToolDiamond => "工具：菱形",
             ToolLine => "工具：直线",
-            ToolArrow => "工具：箭头",
+            ToolElbow => "工具：直角箭头",
             ToolFrame => "工具：画框",
             ToolPolygon => "工具：多边形",
             ToolFreehand => "工具：徒手绘制",

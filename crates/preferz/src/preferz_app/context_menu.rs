@@ -222,6 +222,19 @@ impl PReferZApp {
                             self.ungroup_selected();
                             self.context_menu_open = false;
                         }
+                        // elbow → 多段线烘焙（plan #24 DP-3）：当前路由固化为自由
+                        // 顶点（视觉不变），此后顶点自由可编辑。仅选区内含 elbow 时显示。
+                        if self.selected_elbow_count() > 0
+                            && ui
+                                .button(format!(
+                                    "\u{2796} {}",
+                                    t(self.lang, T::MenuConvertToPolyline)
+                                ))
+                                .clicked()
+                        {
+                            self.convert_elbows_to_polyline();
+                            self.context_menu_open = false;
+                        }
                         ui.separator();
 
                         // Phase 5：灰度/透明度/裁剪（仅 Pixmap 单选时）

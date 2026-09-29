@@ -408,7 +408,8 @@ pub enum Action {
     ToolEllipse,
     ToolDiamond,
     ToolLine,
-    ToolArrow,
+    /// elbow 连接器（plan #24 DP-1，取代旧 Arrow 工具；键位不变 A/Num5）。
+    ToolElbow,
     ToolFrame,
     ToolPolygon,
     /// 徒手绘制（plan #10，Excalidraw freedraw=裸 P；本项目另绑 Num7 对齐数字工具行）。
@@ -487,7 +488,7 @@ impl Action {
         Action::ToolEllipse,
         Action::ToolDiamond,
         Action::ToolLine,
-        Action::ToolArrow,
+        Action::ToolElbow,
         Action::ToolFrame,
         Action::ToolPolygon,
         Action::ToolFreehand,
@@ -553,7 +554,7 @@ impl Action {
             ToolEllipse => vec![KeyBind::new(O), KeyBind::new(Num4)],
             ToolDiamond => vec![KeyBind::new(D), KeyBind::new(Num3)],
             ToolLine => vec![KeyBind::new(L), KeyBind::new(Num6)],
-            ToolArrow => vec![KeyBind::new(A), KeyBind::new(Num5)],
+            ToolElbow => vec![KeyBind::new(A), KeyBind::new(Num5)],
             // 画框 → 对齐 Excalidraw frame = F（裸 F 从 FitToScreen 让出）。
             ToolFrame => vec![KeyBind::new(F)],
             // 多边形（Phase I）：Excalidraw 没有独立的多边形工具（它是折线的闭合态），

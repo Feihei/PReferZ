@@ -446,8 +446,79 @@ impl Command for SetCurveType {
 
 // ─────────────────────────── Set elbow offset ───────────────────────────
 
-/// 批量设置 elbow 直角折线的中间 bar 交叉轴偏移（plan #16 E1）。仅 `curve_type=Elbow`
-/// 的线性对象消费该值；其它 shape 写入无害（不读）。单项用 [`Self::new`]，
+/// elbow 连接器 → 多段线**烘焙**（plan #24 DP-3）：当前路由（含倒角圆弧采样，
+/// [`preferz_core::item::elbow_baked_points`]）固化为 Polyline 自由顶点，视觉
+/// 精确不变；描边/箭头/绑定/标签/seed 等全部保留，`roundness` / `elbow_mid_offset`
+/// 归零（已消费进烘焙顶点）。反向（Polyline → Elbow）不做（DP-3 拍板）。存
+/// old / new 两份 kind 快照，undo / redo 原样换回。
+pub struct ConvertElbowToPolyline {
+    item_id: ItemId,
+    old_kind: Box<ItemKind>,
+    new_kind: Box<ItemKind>,
+}
+
+impl ConvertElbowToPolyline {
+    /// 从场景现值构造（item 必须是 `ShapeType::Elbow`），否则返回 `None`。
+    pub fn build(scene: &Scene, item_id: ItemId) -> Option<Self> {
+        let item = scene.get_item(&item_id)?;
+        let ItemKind::Shape {
+            shape_type: ShapeType::Elbow,
+            points,
+            elbow_mid_offset,
+            roundness,
+            ..
+        } = &item.kind
+        else {
+            return None;
+        };
+        let old_kind = Box::new(item.kind.clone());
+        let baked = crate::item::elbow_baked_points(points, *elbow_mid_offset, *roundness);
+        let mut new_kind = item.kind.clone();
+        if let ItemKind::Shape {
+            shape_type,
+            points,
+            curve_type,
+            closed,
+            elbow_mid_offset,
+            roundness,
+            ..
+        } = &mut new_kind
+        {
+            *shape_type = ShapeType::Polyline;
+            *points = baked;
+            *curve_type = CurveType::Straight;
+            *closed = false;
+            *elbow_mid_offset = 0.0;
+            *roundness = 0.0;
+        }
+        Some(Self {
+            item_id,
+            old_kind,
+            new_kind: Box::new(new_kind),
+        })
+    }
+}
+
+impl Command for ConvertElbowToPolyline {
+    fn redo(&mut self, scene: &mut Scene) {
+        if let Some(item) = scene.get_item_mut(&self.item_id) {
+            item.kind = (*self.new_kind).clone();
+        }
+    }
+
+    fn undo(&mut self, scene: &mut Scene) {
+        if let Some(item) = scene.get_item_mut(&self.item_id) {
+            item.kind = (*self.old_kind).clone();
+        }
+    }
+
+    fn skip_first_redo(&self) -> bool {
+        false
+    }
+}
+
+/// 批量设置 elbow 连接器中间 bar 的交叉轴偏移（plan #16 E1）。仅
+/// `ShapeType::Elbow` 消费该值；其它 shape 写入无害（不读）。单项用 [`Self::new`]，
 /// 多选批量用 [`Self::new_batch`]。undo / redo 写回原值，redo 不 clamp——
 /// clamp 属几何层职责（[`preferz_core::item::elbow_polyline_offset`]），命令只存
 /// 用户意图原值，端点移动后超界由几何兜底。
@@ -2348,6 +2419,96 @@ mod tests {
         let preview_cmd = SetElbowOffset::new(a, 0.0, 7.0).with_preview_applied(true);
         assert!(preview_cmd.skip_first_redo());
         assert!(!SetElbowOffset::new(a, 0.0, 7.0).skip_first_redo());
+    }
+
+    #[test]
+    fn convert_elbow_to_polyline_bakes_route_and_undoes() {
+        use crate::shape::{ArrowHeadStyle, StrokeStyle};
+        let mut scene = Scene::new();
+        let mut elbow = Item::new_elbow(
+            vec![(0.0, 0.0), (100.0, 40.0)],
+            (100.0, 40.0),
+            None,
+            Some(ArrowHeadStyle::Arrow),
+            0.0,
+            0.0,
+            StrokeStyle::default(),
+        );
+        if let ItemKind::Shape {
+            elbow_mid_offset,
+            roundness,
+            ..
+        } = &mut elbow.kind
+        {
+            *elbow_mid_offset = 10.0; // bar y = 20+10 = 30
+            *roundness = 0.5; // 倒角半径 = min(100,40) × 0.5 × 0.5 = 10 → 圆弧采样点
+        }
+        let id = elbow.id;
+        scene.add_item(elbow);
+        let mut cmd = ConvertElbowToPolyline::build(&scene, id).expect("elbow 应可构造");
+        cmd.redo(&mut scene);
+        match &scene.get_item(&id).unwrap().kind {
+            ItemKind::Shape {
+                shape_type,
+                points,
+                curve_type,
+                closed,
+                elbow_mid_offset,
+                roundness,
+                end_arrow,
+                ..
+            } => {
+                assert_eq!(*shape_type, ShapeType::Polyline);
+                assert_eq!(*curve_type, CurveType::Straight);
+                assert!(!*closed);
+                assert_eq!(*elbow_mid_offset, 0.0, "偏移已消费进烘焙顶点");
+                assert_eq!(*roundness, 0.0, "倒角已消费进烘焙顶点");
+                assert_eq!(*end_arrow, Some(ArrowHeadStyle::Arrow), "箭头保留");
+                // 烘焙顶点 = 偏移路由 + 倒角圆弧采样（首末点 = 两端点）
+                assert_eq!(*points.first().unwrap(), (0.0, 0.0));
+                assert_eq!(*points.last().unwrap(), (100.0, 40.0));
+                assert!(
+                    points.len() > 4,
+                    "倒角路由应含圆弧采样点（4 个直角点 + 弧点）"
+                );
+                // 全部点落在偏移后的走线上（bar y=30 的 Z 形包围盒内）
+                assert!(points
+                    .iter()
+                    .all(|&(_, y)| (-1e-3..=40.0 + 1e-3).contains(&y)));
+            }
+            _ => panic!("应为 Shape"),
+        }
+        // undo：kind 快照原样换回
+        cmd.undo(&mut scene);
+        match &scene.get_item(&id).unwrap().kind {
+            ItemKind::Shape {
+                shape_type,
+                elbow_mid_offset,
+                roundness,
+                points,
+                ..
+            } => {
+                assert_eq!(*shape_type, ShapeType::Elbow);
+                assert!((*elbow_mid_offset - 10.0).abs() < 1e-6);
+                assert!((*roundness - 0.5).abs() < 1e-6);
+                assert_eq!(points.len(), 2, "恢复两点端点");
+            }
+            _ => panic!("应为 Shape"),
+        }
+        // 非 elbow（普通折线）不可构造
+        let plain = Item::new_polyline(
+            vec![(0.0, 0.0), (50.0, 0.0)],
+            (50.0, 1.0),
+            None,
+            None,
+            false,
+            0.0,
+            0.0,
+            StrokeStyle::default(),
+        );
+        let plain_id = plain.id;
+        scene.add_item(plain);
+        assert!(ConvertElbowToPolyline::build(&scene, plain_id).is_none());
     }
 
     #[test]

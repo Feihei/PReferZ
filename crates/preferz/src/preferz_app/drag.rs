@@ -94,11 +94,24 @@ impl PReferZApp {
                 };
                 return;
             }
-            Tool::Linear { end_arrow } => {
+            Tool::Linear => {
                 let start_canvas = self.viewport.pos2_to_canvas(screen_pos);
                 self.drag = DragState::CreatingShape {
                     shape_type: ShapeType::Polyline,
-                    end_arrow,
+                    end_arrow: None,
+                    start: start_canvas,
+                    current: start_canvas,
+                    shift: additive,
+                    ctrl: free_scale,
+                };
+                return;
+            }
+            // elbow 连接器（plan #24 DP-1，取代旧 Arrow 工具）：默认终点箭头
+            Tool::Elbow => {
+                let start_canvas = self.viewport.pos2_to_canvas(screen_pos);
+                self.drag = DragState::CreatingShape {
+                    shape_type: ShapeType::Elbow,
+                    end_arrow: Some(ArrowHeadStyle::Arrow),
                     start: start_canvas,
                     current: start_canvas,
                     shift: additive,
@@ -1324,6 +1337,45 @@ impl PReferZApp {
                 },
             ));
             // 默认回 Select
+            self.tool = Tool::Select;
+            return;
+        }
+
+        // elbow 连接器（plan #24 DP-1）：两点式创建（与直线同款 Shift 锁 45°、最小
+        // 长度守卫），正交路由由 elbow_route 从两端点推导（端点共线时退化为直线）。
+        if shape_type == ShapeType::Elbow {
+            let mut dx = current.x - start.x;
+            let mut dy = current.y - start.y;
+            if shift {
+                let len = (dx * dx + dy * dy).sqrt();
+                if len < 1e-3 {
+                    return;
+                }
+                let angle = (dy.atan2(dx) / std::f32::consts::FRAC_PI_4).round()
+                    * std::f32::consts::FRAC_PI_4;
+                dx = len * angle.cos();
+                dy = len * angle.sin();
+            }
+            if (dx * dx + dy * dy).sqrt() < 3.0 {
+                return;
+            }
+            let min_x = start.x.min(start.x + dx);
+            let min_y = start.y.min(start.y + dy);
+            let item = Item::new_elbow(
+                vec![
+                    (start.x - min_x, start.y - min_y),
+                    (start.x + dx - min_x, start.y + dy - min_y),
+                ],
+                (dx.abs(), dy.abs()),
+                None,
+                end_arrow,
+                min_x,
+                min_y,
+                self.default_stroke,
+            )
+            .with_sloppiness(self.default_sloppiness);
+            self.push_new_item(AddItem::new(item));
+            self.flash(t(self.lang, T::FlashArrowCreated));
             self.tool = Tool::Select;
             return;
         }

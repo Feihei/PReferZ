@@ -546,6 +546,56 @@ impl PReferZApp {
             .count()
     }
 
+    /// 选区内 elbow 连接器数量（右键菜单「转为多段线」的显隐条件，plan #24 DP-3）。
+    pub(crate) fn selected_elbow_count(&self) -> usize {
+        self.scene
+            .selection
+            .iter()
+            .filter_map(|id| self.scene.get_item(id))
+            .filter(|it| {
+                matches!(
+                    it.kind,
+                    ItemKind::Shape {
+                        shape_type: ShapeType::Elbow,
+                        ..
+                    }
+                )
+            })
+            .count()
+    }
+
+    /// 选区内全部 elbow 连接器烘焙为多段线（plan #24 DP-3）：每条一条
+    /// `ConvertElbowToPolyline`（当前路由固化为自由顶点，视觉不变），逐条入 undo 栈。
+    pub(crate) fn convert_elbows_to_polyline(&mut self) {
+        let ids: Vec<ItemId> = self
+            .scene
+            .selection
+            .iter()
+            .copied()
+            .filter(|id| {
+                self.scene.get_item(id).is_some_and(|it| {
+                    matches!(
+                        it.kind,
+                        ItemKind::Shape {
+                            shape_type: ShapeType::Elbow,
+                            ..
+                        }
+                    )
+                })
+            })
+            .collect();
+        let mut converted = 0usize;
+        for id in ids {
+            if let Some(cmd) = ConvertElbowToPolyline::build(&self.scene, id) {
+                self.push_cmd(Box::new(cmd));
+                converted += 1;
+            }
+        }
+        if converted > 0 {
+            self.flash(t(self.lang, T::FlashConvertedToPolyline).to_string());
+        }
+    }
+
     /// 单Pixmap grayscale 状态（用于右键菜单文案）
     pub(crate) fn selected_pixmap_grayscale(&self) -> bool {
         for id in &self.scene.selection {

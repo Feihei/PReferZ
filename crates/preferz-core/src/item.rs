@@ -1522,6 +1522,37 @@ pub fn elbow_polyline(pts: &[(f32, f32)]) -> Vec<(f32, f32)> {
     elbow_polyline_offset(pts, 0.0)
 }
 
+/// elbow 连接器 → 多段线的**烘焙几何**（plan #24 DP-3）：当前路由（含倒角圆弧
+/// 采样，roundness > 0 时）固化为 Polyline 自由顶点——渲染/命中同源推导，视觉
+/// 精确不变；此后顶点自由可编辑（正交性不再是受维护的不变量）。半径语义与
+/// 命中/渲染一致（`min(两端点 AABB) × roundness × 0.5`）。
+pub fn elbow_baked_points(
+    points: &[(f32, f32)],
+    mid_offset: f32,
+    roundness: f32,
+) -> Vec<(f32, f32)> {
+    let base = elbow_polyline_offset(points, mid_offset);
+    let (mut w, mut h) = (1.0f32, 1.0f32);
+    if let Some((min_x, min_y)) = points.iter().fold(None::<(f32, f32)>, |acc, &(x, y)| {
+        Some(match acc {
+            Some((mx, my)) => (mx.min(x), my.min(y)),
+            None => (x, y),
+        })
+    }) {
+        let (max_x, max_y) = points
+            .iter()
+            .fold((min_x, min_y), |(mx, my), &(x, y)| (mx.max(x), my.max(y)));
+        w = (max_x - min_x).max(1.0);
+        h = (max_y - min_y).max(1.0);
+    }
+    let r = roundness_radius((w, h), roundness);
+    if r > 1e-3 {
+        round_orthogonal_corners(&base, false, r)
+    } else {
+        base
+    }
+}
+
 /// **elbow 路由函数**（plan #24 首版 = 确定性 L/Z/S 规则；阶段 C 换 A* 避障）：
 /// 两端点 + bar 偏移 → 正交路径点列，是 `ShapeType::Elbow` 唯一的派生几何源
 /// （命中 / 渲染 / 手柄 / 导出全消费它——两边必须算出同一条路径，否则"看着在
