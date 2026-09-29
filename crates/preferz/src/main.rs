@@ -9,11 +9,17 @@ fn main() -> eframe::Result<()> {
     // 字体定义构建已收口到 lib.rs（导出选区的离屏 egui Context 需要同一份定义）
     let font_definitions = preferz::app_font_definitions();
 
+    // plan #25：`--help-doc` 启动帮助实例——新进程加载内嵌 help.prz（可编辑、
+    // 不回存）。eframe 单进程只能跑一个事件循环，多实例走多进程而非 viewport。
+    let help_doc = std::env::args().any(|a| a == "--help-doc");
+
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1200.0, 800.0])
             .with_min_inner_size([800.0, 600.0])
             .with_transparent(true)
+            // 帮助实例标题区分于主窗口（不随 i18n：创建时 config 尚未加载）。
+            .with_title(if help_doc { "PReferZ Help" } else { "PReferZ" })
             .with_icon(load_icon()),
         ..Default::default()
     };
@@ -26,7 +32,11 @@ fn main() -> eframe::Result<()> {
             // 初始 Visuals 占位；真正的主题（Light/Dark/Auto）在 PReferZApp::ui()
             // 每帧根据 config.json 的 theme 字段重建，故这里只需给个暗色默认值避免首帧闪烁。
             cc.egui_ctx.set_visuals(egui::Visuals::dark());
-            Ok(Box::new(PReferZApp::new()))
+            if help_doc {
+                Ok(Box::new(PReferZApp::new_help_doc(&cc.egui_ctx)))
+            } else {
+                Ok(Box::new(PReferZApp::new()))
+            }
         }),
     )
 }
@@ -77,5 +87,18 @@ mod tests {
             .clone()
             .into_owned();
         assert_eq!(&font[..4], &[0x00, 0x01, 0x00, 0x00], "sfnt 魔数不符");
+    }
+
+    /// 内嵌帮助文档（plan #25）解压产物必须是 SQLite 文件（.prz 的载体格式）。
+    /// 防两类问题：assets/help.prz 被替换后 build.rs 未重跑（产物陈旧）；
+    /// 或压缩/解压链路损坏。
+    #[test]
+    fn decompressed_help_doc_is_sqlite() {
+        let bytes = preferz::help_doc_prz_bytes();
+        assert!(
+            bytes.starts_with(b"SQLite format 3\0"),
+            "help.prz 应为 SQLite 文件，实际头部: {:?}",
+            &bytes[..bytes.len().min(16)]
+        );
     }
 }

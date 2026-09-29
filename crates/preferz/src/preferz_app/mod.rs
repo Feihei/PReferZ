@@ -47,7 +47,7 @@ use preferz_core::{
 use preferz_core::item::{
     constrain_drag_to_ratio, frame_geom_for_ratio, ItemLocalSpace, CHART_DEFAULT_SIZE,
 };
-use preferz_fileio::ViewportMeta;
+use preferz_fileio::{PrzFile, ViewportMeta};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self};
@@ -990,6 +990,59 @@ impl PReferZApp {
             prop_changed_this_frame: false,
             export_dialog: ExportDialogState::default(),
             export_fonts: None,
+        }
+    }
+
+    /// 帮助文档实例构造（plan #25）：`--help-doc` 启动时加载内嵌 help.prz。
+    ///
+    /// 与 [`Self::new`] 唯一差异是初始场景来自内嵌字节，且 `current_file`
+    /// 保持 None——这是沙箱语义的支点：修改只活在内存（下次打开还原），
+    /// Ctrl+S 经既有 fallthrough 自然落到「另存为」，recent/autosave 全部
+    /// 天然不触发，无需任何门禁。加载失败仅记日志并留空画布（不 flash：
+    /// 首帧即弹提示观感差）。
+    pub fn new_help_doc(ctx: &egui::Context) -> Self {
+        let mut app = Self::new();
+        app.load_embedded_help(ctx);
+        app
+    }
+
+    /// 从内嵌字节装载帮助场景：解压 → 内存库直载 → 纹理上传 + 视口还原。
+    fn load_embedded_help(&mut self, ctx: &egui::Context) {
+        let result =
+            PrzFile::from_bytes(crate::help_doc_prz_bytes()).and_then(|prz| prz.load_scene());
+        match result {
+            Ok((mut scene, images, viewport_meta)) => {
+                self.install_loaded_assets(ctx, &mut scene, &images);
+                // 视口元数据防御性还原（与 finish_load 同策）。
+                self.viewport.pan = CanvasVector::new(viewport_meta.pan_x, viewport_meta.pan_y);
+                self.viewport.zoom = if viewport_meta.zoom.is_finite() && viewport_meta.zoom > 0.0 {
+                    viewport_meta.zoom
+                } else {
+                    1.0
+                };
+                self.scene = scene;
+                self.scene.cleanup_orphan_containers();
+            }
+            Err(e) => {
+                log::error!("加载内嵌帮助文档失败: {e}");
+            }
+        }
+    }
+
+    /// spawn 独立帮助实例（plan #25）：新进程运行自身 `--help-doc`。
+    /// 帮助实例里再次点击照常递归（同 PureData 帮助补丁——帮助文件即
+    /// 原生格式，理应能再开帮助）。spawn 是异步的，新窗口稍后弹出。
+    fn spawn_help_instance(&mut self) {
+        let result = (|| -> std::io::Result<()> {
+            let exe = std::env::current_exe()?;
+            std::process::Command::new(exe).arg("--help-doc").spawn()?;
+            Ok(())
+        })();
+        if let Err(e) = result {
+            self.flash(fill(
+                t(self.lang, T::FlashHelpSpawnFailed),
+                &[e.to_string()],
+            ));
         }
     }
 
@@ -2157,6 +2210,16 @@ impl PReferZApp {
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 2.0;
+                            // 帮助文档（plan #25）：spawn 独立实例打开内嵌
+                            // help.prz——真 App 全功能（可编辑），但改动不回存。
+                            if ui
+                                .small_button("?")
+                                .on_hover_text(t(self.lang, T::OpenHelp))
+                                .clicked()
+                            {
+                                self.spawn_help_instance();
+                            }
+                            ui.add_space(4.0);
                             // − 缩小（以视口中心为锚点，乘法步进）
                             if ui
                                 .small_button("-")

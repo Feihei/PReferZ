@@ -56,6 +56,55 @@ impl PReferZApp {
         ctx.request_repaint();
     }
 
+    /// 加载结果的公共收尾（plan #25 从 finish_load 抽出）：为场景里的
+    /// Pixmap 重新分配 texture_id、按 sqlar 图片字节解码上传纹理并填充
+    /// 四张缓存（color/bytes/rgba/size）。文件打开（finish_load）与内嵌
+    /// 帮助文档（load_embedded_help）共用；解码失败的条目留日志跳过。
+    pub(crate) fn install_loaded_assets(
+        &mut self,
+        ctx: &egui::Context,
+        scene: &mut Scene,
+        images: &HashMap<String, Vec<u8>>,
+    ) {
+        let mut id_remap: HashMap<u64, u64> = HashMap::new();
+        for item in &mut scene.items {
+            if let ItemKind::Pixmap { texture_id, .. } = &mut item.kind {
+                let old_id = *texture_id;
+                let new_id = self.next_texture_id;
+                self.next_texture_id += 1;
+                id_remap.insert(old_id, new_id);
+
+                let bytes = images.get(&old_id.to_string());
+                if let Some(bytes) = bytes {
+                    // 解码字节上传纹理
+                    match image::load_from_memory(bytes) {
+                        Ok(img) => {
+                            let (w, h) = img.dimensions();
+                            let rgba = img.to_rgba8().into_vec();
+                            let color_image = egui::ColorImage::from_rgba_unmultiplied(
+                                [w as usize, h as usize],
+                                &rgba,
+                            );
+                            let handle = ctx.load_texture(
+                                format!("img_{}", new_id),
+                                color_image,
+                                Default::default(),
+                            );
+                            self.texture_cache.insert(new_id, handle);
+                            self.image_data_cache.insert(new_id, bytes.clone());
+                            self.rgba_pixel_cache.insert(new_id, rgba);
+                            self.rgba_size_cache.insert(new_id, (w, h));
+                        }
+                        Err(e) => {
+                            log::error!("解码图片 texture_id={} 失败: {}", old_id, e);
+                        }
+                    }
+                }
+                *texture_id = new_id;
+            }
+        }
+    }
+
     /// 后台加载完成：重scene + 上传纹理 + 重新映射 texture_id（由 BackgroundOps::poll 调用）
     pub(crate) fn finish_load(&mut self, ctx: &egui::Context, outcome: LoadOutcome) {
         match outcome.result {
@@ -68,44 +117,8 @@ impl PReferZApp {
                 self.rgba_size_cache.clear();
                 self.undo_stack = UndoStack::new();
 
-                // 为每Pixmap 重新分配 texture_id，解码上传纹理，重映item.texture_id
-                let mut id_remap: HashMap<u64, u64> = HashMap::new();
-                for item in &mut scene.items {
-                    if let ItemKind::Pixmap { texture_id, .. } = &mut item.kind {
-                        let old_id = *texture_id;
-                        let new_id = self.next_texture_id;
-                        self.next_texture_id += 1;
-                        id_remap.insert(old_id, new_id);
-
-                        let bytes = images.get(&old_id.to_string());
-                        if let Some(bytes) = bytes {
-                            // 解码字节上传纹理
-                            match image::load_from_memory(bytes) {
-                                Ok(img) => {
-                                    let (w, h) = img.dimensions();
-                                    let rgba = img.to_rgba8().into_vec();
-                                    let color_image = egui::ColorImage::from_rgba_unmultiplied(
-                                        [w as usize, h as usize],
-                                        &rgba,
-                                    );
-                                    let handle = ctx.load_texture(
-                                        format!("img_{}", new_id),
-                                        color_image,
-                                        Default::default(),
-                                    );
-                                    self.texture_cache.insert(new_id, handle);
-                                    self.image_data_cache.insert(new_id, bytes.clone());
-                                    self.rgba_pixel_cache.insert(new_id, rgba);
-                                    self.rgba_size_cache.insert(new_id, (w, h));
-                                }
-                                Err(e) => {
-                                    log::error!("解码图片 texture_id={} 失败: {}", old_id, e);
-                                }
-                            }
-                        }
-                        *texture_id = new_id;
-                    }
-                }
+                // Pixmap 重分配 texture_id + 解码上传纹理（与内嵌帮助文档共用）
+                self.install_loaded_assets(ctx, &mut scene, &images);
 
                 // 应用视口元数据。zoom 不再按 min/max 钳制：fit 视图（Shift+1）
                 // 可合法低于 min_zoom（内容过大），保存后重开必须忠实还原；且

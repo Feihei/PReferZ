@@ -14,6 +14,13 @@ const HANDWRITING_FONT_SRC: &str = "../../assets/851LakeusNightWriting-Regular.t
 
 const HANDWRITING_FONT_ZLIB: &str = "851LakeusNightWriting-Regular.ttf.zlib";
 
+/// 内嵌帮助文档源文件（plan #25）：`--help-doc` 实例启动时加载。
+/// 正式内容在 PReferZ 里绘制后「另存为」覆盖此文件，重编译即生效；
+/// 占位内容用 `cargo run -p preferz --example gen_help_doc` 生成。
+const HELP_DOC_SRC: &str = "../../assets/help.prz";
+
+const HELP_DOC_ZLIB: &str = "help.prz.zlib";
+
 fn main() {
     // 仅 Windows 目标嵌入 exe 资源图标（Linux/macOS 无需此步骤）。
     // 注意必须用 #[cfg] 条件编译而非运行时 if —— build.rs 编译期若不启用
@@ -34,23 +41,20 @@ fn main() {
         HANDWRITING_FONT_ZLIB,
         "HANDWRITING_FONT_RAW_SIZE",
     );
+    compress_file(HELP_DOC_SRC, HELP_DOC_ZLIB, "HELP_DOC_RAW_SIZE");
 }
 
-/// 把字体 deflate 压缩后写进 OUT_DIR，并把原始字节数经 `cargo:rustc-env`
-/// 暴露给 main.rs（解压时据此预分配缓冲，省掉反复扩容）。
-///
-/// 思源黑体 9.92MB 压缩后约 6.7MB；851远星夜行 28MB 压缩后约 18-22MB。
-/// 这是**不损失字形覆盖面**（子集化会让生僻字变豆腐块）前提下唯一
-/// 零风险的瘦身手段。详见 .issues/issues.md #2。
-fn compress_font(src: &str, zlib_name: &str, env_var: &str) {
+/// 把任意资源文件 deflate 压缩后写进 OUT_DIR，并把原始字节数经
+/// `cargo:rustc-env` 暴给 lib.rs / main.rs（解压时据此预分配缓冲）。
+fn compress_file(src: &str, zlib_name: &str, env_var: &str) {
     println!("cargo:rerun-if-changed={src}");
 
-    let raw = std::fs::read(src).unwrap_or_else(|e| panic!("读取字体 {src} 失败：{e}"));
+    let raw = std::fs::read(src).unwrap_or_else(|e| panic!("读取资源 {src} 失败：{e}"));
 
     let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
     encoder
         .write_all(&raw)
-        .unwrap_or_else(|e| panic!("deflate 压缩字体失败：{e}"));
+        .unwrap_or_else(|e| panic!("deflate 压缩 {src} 失败：{e}"));
     let compressed = encoder
         .finish()
         .unwrap_or_else(|e| panic!("deflate 收尾失败：{e}"));
@@ -59,6 +63,15 @@ fn compress_font(src: &str, zlib_name: &str, env_var: &str) {
     std::fs::write(Path::new(&out_dir).join(zlib_name), &compressed)
         .unwrap_or_else(|e| panic!("写入 {zlib_name} 到 OUT_DIR 失败：{e}"));
 
-    // 解压后应有的字节数，main.rs 用它做 with_capacity + 一致性断言
+    // 解压后应有的字节数，调用方用它做 with_capacity + 一致性断言
     println!("cargo:rustc-env={env_var}={}", raw.len());
+}
+
+/// 字体压缩（compress_file 的字体别名，保留既有调用语义与注释）。
+///
+/// 思源黑体 9.92MB 压缩后约 6.7MB；851远星夜行 28MB 压缩后约 18-22MB。
+/// 这是**不损失字形覆盖面**（子集化会让生僻字变豆腐块）前提下唯一
+/// 零风险的瘦身手段。详见 .issues/issues.md #2。
+fn compress_font(src: &str, zlib_name: &str, env_var: &str) {
+    compress_file(src, zlib_name, env_var);
 }

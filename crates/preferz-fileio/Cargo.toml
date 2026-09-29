@@ -7,7 +7,9 @@ description.workspace = true
 
 [dependencies]
 preferz-core = { path = "../preferz-core" }
-rusqlite = { workspace = true }
+# serialize（plan #25）：sqlite3_serialize/deserialize —— PrzFile::from_bytes
+# 内存直载内嵌帮助文档，免临时文件。bundled SQLite 3.36+ 原生支持。
+rusqlite = { workspace = true, features = ["serialize"] }
 image = "0.25"
 serde = { workspace = true }
 serde_json = { workspace = true }

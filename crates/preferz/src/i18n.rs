@@ -74,6 +74,7 @@ pub enum T {
     ZoomIn,
     ZoomOut,
     ZoomHint,
+    OpenHelp, // plan #25：HUD ? 按钮 hover 提示
     Exit,
     ToggleGrayscale,
     CancelGrayscale,
@@ -142,6 +143,7 @@ pub enum T {
     FlashSaveFailed,      // 保存失败: {0}
     FlashOpened,          // 已打开: {0}
     FlashOpenFailed,      // 打开失败: {0}
+    FlashHelpSpawnFailed, // plan #25：启动帮助窗口失败: {0}
     FlashImported,        // 已导入: {0}
     FlashImportFailed,    // 导入失败 {0}: {1}
     FlashClipboardFailed, // 剪贴板访问失败: {0}
@@ -461,6 +463,7 @@ fn translate_en(key: T) -> &'static str {
         T::ZoomIn => "Zoom in",
         T::ZoomOut => "Zoom out",
         T::ZoomHint => "Type a percentage, press Enter to apply",
+        T::OpenHelp => "Help (opens the built-in help document in a new window)",
         T::Exit => "Exit",
         T::ToggleGrayscale => "Toggle Grayscale",
         T::CancelGrayscale => "Cancel Grayscale",
@@ -527,6 +530,7 @@ fn translate_en(key: T) -> &'static str {
         T::FlashSaveFailed => "Save failed: {0}",
         T::FlashOpened => "Opened {0}",
         T::FlashOpenFailed => "Open failed: {0}",
+        T::FlashHelpSpawnFailed => "Failed to launch help window: {0}",
         T::FlashImported => "Imported {0}",
         T::FlashImportFailed => "Import failed {0}: {1}",
         T::FlashClipboardFailed => "Clipboard access failed: {0}",
@@ -766,6 +770,7 @@ fn translate_zh(key: T) -> &'static str {
         T::ZoomIn => "放大",
         T::ZoomOut => "缩小",
         T::ZoomHint => "输入百分比，回车应用",
+        T::OpenHelp => "帮助（在新窗口打开内置帮助文档）",
         T::Exit => "退出",
         T::ToggleGrayscale => "切换灰度",
         T::CancelGrayscale => "取消灰度",
@@ -832,6 +837,7 @@ fn translate_zh(key: T) -> &'static str {
         T::FlashSaveFailed => "保存失败: {0}",
         T::FlashOpened => "已打开: {0}",
         T::FlashOpenFailed => "打开失败: {0}",
+        T::FlashHelpSpawnFailed => "启动帮助窗口失败: {0}",
         T::FlashImported => "已导入: {0}",
         T::FlashImportFailed => "导入失败 {0}: {1}",
         T::FlashClipboardFailed => "剪贴板访问失败: {0}",

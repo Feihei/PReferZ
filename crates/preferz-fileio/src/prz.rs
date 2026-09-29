@@ -46,6 +46,31 @@ impl PrzFile {
     /// 查询里抛出难懂的 `no such column`。
     pub fn open(path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
         let conn = Connection::open(path)?;
+        Self::open_connection(conn, Some(path))
+    }
+
+    /// 打开内存中的 `.prz` 字节（plan #25：内嵌帮助文档）。
+    ///
+    /// 经 `sqlite3_deserialize` 把字节装入内存库（rusqlite 0.40 的
+    /// `deserialize_read_exact`：在空内存连接的 main 库上原位装载，数据由
+    /// SQLite 接管），随后走与 [`Self::open`] 完全相同的格式校验与就地迁移。
+    /// `path` 字段为空路径（无磁盘文件对应，对嵌入内容本就不应回存）。
+    pub fn from_bytes(bytes: Vec<u8>) -> Result<Self, Box<dyn std::error::Error>> {
+        let mut conn = Connection::open_in_memory()?;
+        conn.deserialize_read_exact("main", &bytes[..], bytes.len(), false)?;
+        Self::open_connection(conn, None)
+    }
+
+    /// open / from_bytes 的公共路径：格式校验（防在后续查询里抛难懂的
+    /// `no such column`）+ 旧文件 group_id 就地补列（plan #13）。
+    fn open_connection(
+        conn: Connection,
+        path: Option<&Path>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        // 错误信息里的标识：磁盘文件用路径，内存库用 <embedded>。
+        let label = path
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "<embedded>".to_string());
         let format: Option<String> = conn
             .query_row(
                 "SELECT value FROM metadata WHERE key = 'format'",
@@ -58,7 +83,7 @@ impl PrzFile {
             other => {
                 return Err(format!(
                     "{} 不是有效的 PReferZ 项目文件（metadata.format = {:?}，期望 \"prz\"）",
-                    path.display(),
+                    label,
                     other.unwrap_or("<缺失>")
                 )
                 .into());
@@ -77,7 +102,7 @@ impl PrzFile {
         }
 
         Ok(Self {
-            path: path.to_path_buf(),
+            path: path.map(Path::to_path_buf).unwrap_or_default(),
             connection: conn,
         })
     }
@@ -616,6 +641,35 @@ mod tests {
             }
             _ => panic!("expected Freedraw kind"),
         }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// from_bytes（plan #25）：save → 读字节 → 内存打开 → load_scene
+    /// 应与磁盘路径等价，且 path 字段为空（嵌入内容无磁盘对应）。
+    #[test]
+    fn prz_from_bytes_roundtrip() {
+        let path = tmp_path("memload.prz");
+        let mut scene = Scene::new();
+        scene.add_item(Item::new_text(
+            "帮助".to_string(),
+            0.0,
+            0.0,
+            20.0,
+            [30, 30, 30, 255],
+        ));
+        {
+            let mut prz = PrzFile::create(&path).unwrap();
+            prz.save_scene(&scene, &HashMap::new(), ViewportMeta::default())
+                .unwrap();
+        }
+        let bytes = std::fs::read(&path).unwrap();
+
+        let prz = PrzFile::from_bytes(bytes).unwrap();
+        let (loaded, _images, vp) = prz.load_scene().unwrap();
+        assert_eq!(loaded.items.len(), 1);
+        assert_eq_float(vp.pan_x, 0.0);
+        assert_eq_float(vp.zoom, 1.0);
+        assert!(prz.path.as_os_str().is_empty(), "内存库的 path 字段应为空");
         let _ = std::fs::remove_file(&path);
     }
 

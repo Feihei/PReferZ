@@ -122,7 +122,7 @@ pub enum CurveType { Straight, Curved }                              // 移除 E
 
 ## #25 帮助文档实例（help.prz 内嵌 + spawn 真实例）
 
-- 拍板日期：2026-09-29；状态：⏳ 已拍板待实施
+- 拍板日期：2026-09-29；状态：🔶 代码已交付，待人工验收
 - 参考：Excalidraw 右下角「?」帮助入口；PureData 帮助补丁（帮助文档即原生格式 .pd）。
 
 ### 设计

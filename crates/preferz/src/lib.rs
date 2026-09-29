@@ -92,3 +92,23 @@ fn load_handwriting_font() -> Vec<u8> {
         .expect("解压手写字体失败");
     buf
 }
+
+/// 加载内嵌帮助文档（plan #25）：`.prz` SQLite 原始字节。
+///
+/// build.rs 编译期 deflate 压缩 `assets/help.prz` 后嵌入，运行时 inflate 还原。
+/// 供 `--help-doc` 帮助实例经 `PrzFile::from_bytes` 内存直载——帮助内容与
+/// 二进制同版本，永远和当前 ItemKind schema 一致。
+/// `HELP_DOC_RAW_SIZE` 由 build.rs 注入，用于预分配缓冲。
+pub fn help_doc_prz_bytes() -> Vec<u8> {
+    use std::io::Read;
+    const COMPRESSED: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/help.prz.zlib"));
+    let mut buf = Vec::with_capacity(
+        env!("HELP_DOC_RAW_SIZE")
+            .parse()
+            .expect("HELP_DOC_RAW_SIZE 应为 usize"),
+    );
+    flate2::read::ZlibDecoder::new(COMPRESSED)
+        .read_to_end(&mut buf)
+        .expect("解压内嵌帮助文档失败");
+    buf
+}
