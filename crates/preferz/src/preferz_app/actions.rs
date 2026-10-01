@@ -77,25 +77,18 @@ impl PReferZApp {
     }
 
     /// 原位复制选中项（plan.md 快赢项 #11，Excalidraw 同款 `Ctrl+D`）。
-    /// 选区带容器联动（封闭形状的绑定文本、画框成员），副本偏移 10px 画布避免完全重叠；
+    /// 选区带容器联动（封闭形状的绑定文本；画框不连带成员），副本偏移 10px 画布避免完全重叠；
     /// 副本已经入场景，push `AddItems(preview_applied=true)`，一次 undo 撤掉整个复制。
     pub(crate) fn duplicate_in_place(&mut self) {
         let selected: Vec<ItemId> = self.scene.selection.iter().cloned().collect();
         if selected.is_empty() {
             return;
         }
-        // 容器联动：与拖拽一致
+        // 容器联动：封闭形状的绑定文本。画框不连带成员（构图工具语义，
+        // 与拖拽一致；整体复制需先与成员编组）。
         let mut collected = selected.clone();
         for sid in &selected {
             collected.extend(self.scene.texts_bound_to(*sid));
-            if self
-                .scene
-                .get_item(sid)
-                .map(|it| it.is_frame())
-                .unwrap_or(false)
-            {
-                collected.extend(self.scene.frame_members(*sid));
-            }
         }
         collected.sort();
         collected.dedup();
@@ -119,7 +112,7 @@ impl PReferZApp {
     }
 
     /// 复制选中项到剪贴板（`Ctrl+C`）。容器联动与 [`Self::duplicate_in_place`]
-    /// 一致（封闭形状的绑定文本、画框成员）。分流：
+    /// 一致（封闭形状的绑定文本；画框不连带成员）。分流：
     /// - 选区恰为**单张图片**时，同时把 RGBA 像素写入系统剪贴板（可粘到外部应用）；
     /// - 其余（多张图 / 形状 / 文字 / 混合）只进应用内缓冲 `clipboard_items`，
     ///   需要图片形式走「导出选区」。
@@ -128,18 +121,10 @@ impl PReferZApp {
         if selected.is_empty() {
             return;
         }
-        // 容器联动：与拖拽 / Ctrl+D 一致
+        // 容器联动与拖拽 / Ctrl+D 一致（封闭形状的绑定文本；画框不连带成员）
         let mut collected = selected.clone();
         for sid in &selected {
             collected.extend(self.scene.texts_bound_to(*sid));
-            if self
-                .scene
-                .get_item(sid)
-                .map(|it| it.is_frame())
-                .unwrap_or(false)
-            {
-                collected.extend(self.scene.frame_members(*sid));
-            }
         }
         collected.sort();
         collected.dedup();

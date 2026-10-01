@@ -358,18 +358,12 @@ impl PReferZApp {
             }
             // 收集所有选中 item transform 快照
             let selected: Vec<ItemId> = self.scene.selection.iter().cloned().collect();
-            // 容器联动：选中封闭形状时连带其绑定文本（Phase C）；选中画框时连带其成员（Phase D）。
+            // 容器联动：选中封闭形状时连带其绑定文本（Phase C）。
+            // 画框**不**连带成员（frame 即构图工具，变换只动框本身）；
+            // 需要整体移动时与成员 Ctrl+G 编组，经 expand_to_groups 自然联动。
             let mut collected: Vec<ItemId> = selected.clone();
             for sid in &selected {
                 collected.extend(self.scene.texts_bound_to(*sid));
-                if self
-                    .scene
-                    .get_item(sid)
-                    .map(|it| it.is_frame())
-                    .unwrap_or(false)
-                {
-                    collected.extend(self.scene.frame_members(*sid));
-                }
             }
             collected.sort();
             collected.dedup();
