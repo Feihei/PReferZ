@@ -6,6 +6,7 @@ use crate::ui::chrome;
 use crate::ui::stylers::{
     build_freedraw_visuals, build_shape_visuals, freedraw_stroke_shapes, item_local_to_screen,
 };
+use crate::ui::tool_icons;
 use crate::ui::widgets::palette;
 use crate::ui::widgets::stepper::stepper;
 use crate::ui::widgets::transform_handles::{
@@ -2135,31 +2136,77 @@ impl PReferZApp {
             .interactable(true)
             .show(ctx, |ui| {
                 chrome::floating_bar_frame(ui.style()).show(ui, |ui| {
-                    // 图标字符必须在内嵌 SourceHanSansCN-Regular.ttf 的 cmap 中有字形，
+                    // 图标必须在内嵌 SourceHanSansCN-Regular.ttf 的 cmap 中有字形，
                     // 否则走 fallback 渲染，风格/字重与其他图标不一致（可用字形已用脚本核验）。
+                    // 无字形图标的工具（Select/Elbow）用 painter 手绘（见 ui/tool_icons.rs）。
                     // 第四项为快捷键角标（数字键优先，无数字键的工具显示主字母键），
                     // 对应 keymap.rs 绑定：1=Select 2=Rect 3=Diamond 4=Ellipse
                     // 5=Elbow 6=Line 7=Freehand；Polygon=Shift+P、Frame=F 无数字键。
-                    let tools: [(Tool, &str, T, &str); 10] = [
-                        (Tool::Select, "↖", T::ToolSelect, "1"),
+                    let tools: [(Tool, tool_icons::ToolIcon, T, &str); 10] = [
+                        (
+                            Tool::Select,
+                            tool_icons::ToolIcon::SelectCursor,
+                            T::ToolSelect,
+                            "1",
+                        ),
                         (
                             Tool::Shape(ShapeType::Rectangle),
-                            "□",
+                            tool_icons::ToolIcon::Glyph("□"),
                             T::ToolRectangle,
                             "2",
                         ),
-                        (Tool::Shape(ShapeType::Ellipse), "◯", T::ToolEllipse, "4"),
-                        (Tool::Shape(ShapeType::Diamond), "◇", T::ToolDiamond, "3"),
-                        (Tool::Linear, "╱", T::ToolLine, "6"),
-                        (Tool::Elbow, "↴", T::ToolElbow, "5"),
-                        (Tool::Polygon, "△", T::ToolPolygon, "P"),
-                        (Tool::Freehand, "〰", T::ToolFreehand, "7"),
-                        (Tool::Text, "T", T::ToolText, "8"),
-                        (Tool::Frame, "⬚", T::ToolFrame, "F"),
+                        (
+                            Tool::Shape(ShapeType::Ellipse),
+                            tool_icons::ToolIcon::Glyph("◯"),
+                            T::ToolEllipse,
+                            "4",
+                        ),
+                        (
+                            Tool::Shape(ShapeType::Diamond),
+                            tool_icons::ToolIcon::Glyph("◇"),
+                            T::ToolDiamond,
+                            "3",
+                        ),
+                        (
+                            Tool::Linear,
+                            tool_icons::ToolIcon::Glyph("╱"),
+                            T::ToolLine,
+                            "6",
+                        ),
+                        (
+                            Tool::Elbow,
+                            tool_icons::ToolIcon::ElbowArrow,
+                            T::ToolElbow,
+                            "5",
+                        ),
+                        (
+                            Tool::Polygon,
+                            tool_icons::ToolIcon::Glyph("△"),
+                            T::ToolPolygon,
+                            "P",
+                        ),
+                        (
+                            Tool::Freehand,
+                            tool_icons::ToolIcon::Glyph("〰"),
+                            T::ToolFreehand,
+                            "7",
+                        ),
+                        (
+                            Tool::Text,
+                            tool_icons::ToolIcon::Glyph("T"),
+                            T::ToolText,
+                            "8",
+                        ),
+                        (
+                            Tool::Frame,
+                            tool_icons::ToolIcon::Glyph("⬚"),
+                            T::ToolFrame,
+                            "F",
+                        ),
                     ];
                     for (tool, icon, key, badge) in tools {
                         let is_active = self.tool == tool;
-                        let btn = egui::Button::new(icon)
+                        let btn = egui::Button::new(icon.label())
                             .min_size(egui::vec2(chrome::TOOL_BTN_SIZE, chrome::TOOL_BTN_SIZE))
                             .fill(if is_active {
                                 ui.visuals().selection.bg_fill
@@ -2167,6 +2214,14 @@ impl PReferZApp {
                                 egui::Color32::TRANSPARENT
                             });
                         let resp = ui.add(btn);
+                        // 手绘图标用 interact 态文字色：hover/active 时随 egui 变色，
+                        // 与字形图标行为一致。
+                        tool_icons::draw(
+                            ui.painter(),
+                            resp.rect,
+                            &icon,
+                            ui.style().interact(&resp).text_color(),
+                        );
                         // 右下角快捷键角标（Excalidraw 风格）：小号淡色数字/字母，
                         // 选中态用 strong text color 保证在实心填充上可读。
                         let badge_color = if is_active {
@@ -2186,6 +2241,20 @@ impl PReferZApp {
                             self.drag = DragState::Idle;
                         }
                         ui.add_space(chrome::TOOL_BTN_GAP);
+                    }
+                    // 帮助按钮（plan #25，自右下角 HUD 移入工具栏最下方）：
+                    // 与工具按钮同风格，分隔线区隔；spawn 独立实例打开内嵌
+                    // help.prz——真 App 全功能（可编辑），但改动不回存。
+                    ui.separator();
+                    let help_resp = ui
+                        .add(
+                            egui::Button::new("?")
+                                .min_size(egui::vec2(chrome::TOOL_BTN_SIZE, chrome::TOOL_BTN_SIZE))
+                                .fill(egui::Color32::TRANSPARENT),
+                        )
+                        .on_hover_text(t(self.lang, T::OpenHelp));
+                    if help_resp.clicked() {
+                        self.spawn_help_instance();
                     }
                 });
             });
@@ -2211,16 +2280,7 @@ impl PReferZApp {
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 2.0;
-                            // 帮助文档（plan #25）：spawn 独立实例打开内嵌
-                            // help.prz——真 App 全功能（可编辑），但改动不回存。
-                            if ui
-                                .small_button("?")
-                                .on_hover_text(t(self.lang, T::OpenHelp))
-                                .clicked()
-                            {
-                                self.spawn_help_instance();
-                            }
-                            ui.add_space(4.0);
+
                             // − 缩小（以视口中心为锚点，乘法步进）
                             if ui
                                 .small_button("-")
