@@ -1371,20 +1371,85 @@ pub fn roundness_radius(base_size: (f32, f32), roundness: f32) -> f32 {
     (short * roundness * 0.5).clamp(0.0, short / 2.0)
 }
 
-/// 正交折线的倒角后处理（plan #23）：每个 90° 拐角按 [`ROUNDED_CORNER_SEGMENTS`]
-/// 段圆弧替换。半径与矩形族同语义——**全部拐角同一个半径**：先按各段的约束
-/// （一端拐角 ≤ 段长、两端拐角 ≤ 段长一半）求全局 cap，再统一使用（2026-09-25
-/// 七次验收反馈：此前逐角独立钳制，多顶点 elbow 派生路径的短小段会把相邻拐角
-/// 压成小半径，同一线上出现大小不一的圆角）。个别退化段（<1px）不参与 cap，
-/// 其相邻拐角由逐角 min 兜底。输入须是横平竖直、无连续重复点的折线（elbow
-/// 派生路径满足）；退化/非正交拐角原样通过。开放链首末点是路径端点、不倒角；
-/// 闭合链环绕取邻。输出未闭合——闭合由调用方按 `is_closed` 处理（与圆角矩形
-/// 轮廓同约定）。命中测试（[`Item::contains_canvas_point`]）与渲染（binary 层
-/// `ui::stylers`）共用此函数，保证"看着圆过的角一定点得中"。
-pub fn round_orthogonal_corners(pts: &[(f32, f32)], closed: bool, radius: f32) -> Vec<(f32, f32)> {
+/// 手绘风轮廓分段（2026-10-01）：直边与圆角分开表达。渲染层（binary
+/// `ui::stylers`）据此对直边与角弧**分别**施加抖动——角弧是单条贝塞尔
+/// （控制点抖、端点钉死），直边走逐边抖动，相邻段共用同一端点坐标，天然无缝。
+///
+/// 此前圆角渲染把弧采样点与直边端点混成一个点环喂给均匀 Catmull-Rom：
+/// 直边仅 1 条长段、弧 `ROUNDED_CORNER_SEGMENTS` 条 ~0.2r 短段，间距极不
+/// 均匀，交界点控制柄 `|p2−p0|/6` 被直边撑到弧段长的数倍，曲线在交界处
+/// 甩出鼓包/回头环（小尺寸尤甚）。rough.js/Excalidraw 从不这样喂曲线——
+/// 其圆角矩形是 `path()` 的 4×L + 4×Q，Q 控制点恰在直角顶点上。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum OutlineSeg {
+    /// 直线段 `a → b`。
+    Line { a: (f32, f32), b: (f32, f32) },
+    /// 圆角：切点 `p_in → p_out`，`vertex` 为直角顶点（二次近似弧的控制点），
+    /// `center` / `radius` 供点列扁平化时重采样圆弧（与命中测试同源）。
+    Corner {
+        p_in: (f32, f32),
+        vertex: (f32, f32),
+        p_out: (f32, f32),
+        center: (f32, f32),
+        radius: f32,
+    },
+}
+
+/// 单个可倒角拐角的切线几何（`orthogonal_outline_segments` 的内部中间结构）。
+struct CornerGeom {
+    p_in: (f32, f32),
+    vertex: (f32, f32),
+    p_out: (f32, f32),
+    center: (f32, f32),
+    radius: f32,
+}
+
+impl CornerGeom {
+    fn to_seg(&self) -> OutlineSeg {
+        OutlineSeg::Corner {
+            p_in: self.p_in,
+            vertex: self.vertex,
+            p_out: self.p_out,
+            center: self.center,
+            radius: self.radius,
+        }
+    }
+}
+
+/// 无倒角轮廓的纯直边分段（退化兜底：`n < 2` 或 `radius ≈ 0`）。
+fn polygon_lines(pts: &[(f32, f32)], closed: bool) -> Vec<OutlineSeg> {
     let n = pts.len();
-    if n < 2 || radius <= 1e-3 {
-        return pts.to_vec();
+    if n < 2 {
+        return Vec::new();
+    }
+    let leg_count = if closed { n } else { n - 1 };
+    (0..leg_count)
+        .map(|j| OutlineSeg::Line {
+            a: pts[j],
+            b: pts[(j + 1) % n],
+        })
+        .collect()
+}
+
+/// [`round_orthogonal_corners`] 的段形式：同样的拐角判定 / 全局半径 cap /
+/// 逐角钳制，但输出"直边 + 圆角"段列表而非采样点环。渲染层用它对手绘风
+/// 圆角做分段抖动；命中测试仍走 [`round_orthogonal_corners`] 的点列扁平化
+/// （两函数共享全部几何推导，保证"看着圆过的角一定点得中"）。
+///
+/// 段按路径顺序排列且首尾相接：`Line.b` / `Corner.p_out` 恒等于下一段起点；
+/// 闭合链的收尾 `Line` 指回首段起点，开放链首末点是路径端点、不倒角。
+pub fn orthogonal_outline_segments(
+    pts: &[(f32, f32)],
+    closed: bool,
+    radius: f32,
+) -> Vec<OutlineSeg> {
+    let n = pts.len();
+    if n < 2 {
+        return Vec::new();
+    }
+    let leg_count = if closed { n } else { n - 1 };
+    if radius <= 1e-3 {
+        return polygon_lines(pts, closed);
     }
     let wrap = |i: i64| -> (f32, f32) { pts[(i.rem_euclid(n as i64)) as usize] };
     let is_corner = |i: usize| closed || (i > 0 && i + 1 < n);
@@ -1407,7 +1472,6 @@ pub fn round_orthogonal_corners(pts: &[(f32, f32)], closed: bool, radius: f32) -
     // 全局半径 cap：段被几个可倒角拐角共用，就除以几（两端共用 ≤ 半段长，
     // 单端 ≤ 全段长）；退化段不参与（其端点拐角由逐角 min 兜底）。
     let mut radius = radius;
-    let leg_count = if closed { n } else { n - 1 };
     for j in 0..leg_count {
         let a = pts[j];
         let b = pts[(j + 1) % n];
@@ -1426,56 +1490,132 @@ pub fn round_orthogonal_corners(pts: &[(f32, f32)], closed: bool, radius: f32) -
             radius = radius.min(len / k as f32);
         }
     }
-    let mut out: Vec<(f32, f32)> = Vec::with_capacity(n * 2);
-    if !closed {
-        out.push(pts[0]);
+    // 逐角切线几何（表达式与旧实现逐字一致，保证扁平化点列逐位不变）
+    let geom: Vec<Option<CornerGeom>> = (0..n)
+        .map(|i| {
+            if !roundable(i) {
+                return None;
+            }
+            let v = pts[i];
+            let (prev, next) = if closed {
+                (wrap(i as i64 - 1), wrap(i as i64 + 1))
+            } else {
+                (pts[i - 1], pts[i + 1])
+            };
+            let (d_in, d_out) = ((v.0 - prev.0, v.1 - prev.1), (next.0 - v.0, next.1 - v.1));
+            let (lin, lout) = (d_in.0.hypot(d_in.1), d_out.0.hypot(d_out.1));
+            let r = radius.min(lin / 2.0).min(lout / 2.0);
+            let u_in = (d_in.0 / lin, d_in.1 / lin);
+            let u_out = (d_out.0 / lout, d_out.1 / lout);
+            Some(CornerGeom {
+                p_in: (v.0 - u_in.0 * r, v.1 - u_in.1 * r),
+                vertex: v,
+                p_out: (v.0 + u_out.0 * r, v.1 + u_out.1 * r),
+                center: (v.0 + (u_out.0 - u_in.0) * r, v.1 + (u_out.1 - u_in.1) * r),
+                radius: r,
+            })
+        })
+        .collect();
+    let mut segs: Vec<OutlineSeg> = Vec::with_capacity(leg_count * 2);
+    if closed {
+        for i in 0..n {
+            if let Some(g) = &geom[i] {
+                segs.push(g.to_seg());
+            }
+            let j = (i + 1) % n;
+            let a = geom[i].as_ref().map(|g| g.p_out).unwrap_or(pts[i]);
+            let b = geom[j].as_ref().map(|g| g.p_in).unwrap_or(pts[j]);
+            segs.push(OutlineSeg::Line { a, b });
+        }
+    } else {
+        for j in 0..n - 1 {
+            // 腿 j 起点侧的拐角先于腿入列（路径顺序）
+            if j >= 1 {
+                if let Some(g) = &geom[j] {
+                    segs.push(g.to_seg());
+                }
+            }
+            let a = if j >= 1 {
+                geom[j].as_ref().map(|g| g.p_out).unwrap_or(pts[j])
+            } else {
+                pts[0]
+            };
+            let b = if j < n - 2 {
+                geom[j + 1].as_ref().map(|g| g.p_in).unwrap_or(pts[j + 1])
+            } else {
+                pts[j + 1]
+            };
+            segs.push(OutlineSeg::Line { a, b });
+        }
     }
-    for i in if closed { 0..n } else { 1..n - 1 } {
-        let v = pts[i];
-        let (prev, next) = if closed {
-            (wrap(i as i64 - 1), wrap(i as i64 + 1))
-        } else {
-            (pts[i - 1], pts[i + 1])
-        };
-        let (d_in, d_out) = ((v.0 - prev.0, v.1 - prev.1), (next.0 - v.0, next.1 - v.1));
-        let (lin, lout) = (d_in.0.hypot(d_in.1), d_out.0.hypot(d_out.1));
-        // 退化段 / 非正交拐角（点积占比不可忽略）不倒角，原样通过
-        if lin < 1e-3
-            || lout < 1e-3
-            || (d_in.0 * d_out.0 + d_in.1 * d_out.1).abs() > 1e-3 * lin * lout
-        {
-            out.push(v);
-            continue;
+    segs
+}
+
+/// 把轮廓段扁平化为采样点列（[`round_orthogonal_corners`] 的实现体）。
+/// 弧段按 [`ROUNDED_CORNER_SEGMENTS`] 段重采样（与旧实现同公式、同起止角，
+/// 输出与重构前的点列逐位一致）；相邻段共享端点按精确相等去重。
+fn flatten_outline_segments(segs: &[OutlineSeg], closed: bool) -> Vec<(f32, f32)> {
+    let mut out: Vec<(f32, f32)> = Vec::new();
+    for seg in segs {
+        match *seg {
+            OutlineSeg::Line { a, b } => {
+                if out.is_empty() {
+                    out.push(a);
+                }
+                if out.last() != Some(&b) {
+                    out.push(b);
+                }
+            }
+            OutlineSeg::Corner {
+                p_in,
+                p_out,
+                center,
+                radius,
+                ..
+            } => {
+                if out.last() != Some(&p_in) {
+                    out.push(p_in);
+                }
+                let a0 = (p_in.1 - center.1).atan2(p_in.0 - center.0);
+                let mut delta = (p_out.1 - center.1).atan2(p_out.0 - center.0) - a0;
+                while delta > std::f32::consts::PI {
+                    delta -= std::f32::consts::TAU;
+                }
+                while delta < -std::f32::consts::PI {
+                    delta += std::f32::consts::TAU;
+                }
+                for s in 1..ROUNDED_CORNER_SEGMENTS {
+                    let a = a0 + delta * (s as f32 / ROUNDED_CORNER_SEGMENTS as f32);
+                    out.push((center.0 + radius * a.cos(), center.1 + radius * a.sin()));
+                }
+                if out.last() != Some(&p_out) {
+                    out.push(p_out);
+                }
+            }
         }
-        let r = radius.min(lin / 2.0).min(lout / 2.0);
-        let u_in = (d_in.0 / lin, d_in.1 / lin);
-        let u_out = (d_out.0 / lout, d_out.1 / lout);
-        let p_in = (v.0 - u_in.0 * r, v.1 - u_in.1 * r);
-        let center = (v.0 + (u_out.0 - u_in.0) * r, v.1 + (u_out.1 - u_in.1) * r);
-        let a0 = (p_in.1 - center.1).atan2(p_in.0 - center.0);
-        let p_out = (v.0 + u_out.0 * r, v.1 + u_out.1 * r);
-        let mut delta = (p_out.1 - center.1).atan2(p_out.0 - center.0) - a0;
-        while delta > std::f32::consts::PI {
-            delta -= std::f32::consts::TAU;
-        }
-        while delta < -std::f32::consts::PI {
-            delta += std::f32::consts::TAU;
-        }
-        // 切点精确推入（三角函数在 0/90° 有 ~1e-8 误差，会让相邻角的相汇点
-        // dedup 失效、命中测试出现零长段）
-        out.push(p_in);
-        for s in 1..ROUNDED_CORNER_SEGMENTS {
-            let a = a0 + delta * (s as f32 / ROUNDED_CORNER_SEGMENTS as f32);
-            out.push((center.0 + r * a.cos(), center.1 + r * a.sin()));
-        }
-        out.push(p_out);
     }
-    // 开放链补推终点：末段直线（末角切出点 → 端点）由这最后一跳画出
-    if !closed {
-        out.push(pts[n - 1]);
+    // 闭合环的收尾线指回首点，去掉重复（与旧实现一致：环不重复首点）
+    if closed && out.len() > 1 && out.last() == out.first() {
+        out.pop();
     }
-    out.dedup();
     out
+}
+
+/// 正交折线的倒角后处理（plan #23）：每个 90° 拐角按 [`ROUNDED_CORNER_SEGMENTS`]
+/// 段圆弧替换。半径与矩形族同语义——**全部拐角同一个半径**：先按各段的约束
+/// （一端拐角 ≤ 段长、两端拐角 ≤ 段长一半）求全局 cap，再统一使用（2026-09-25
+/// 七次验收反馈：此前逐角独立钳制，多顶点 elbow 派生路径的短小段会把相邻拐角
+/// 压成小半径，同一线上出现大小不一的圆角）。个别退化段（<1px）不参与 cap，
+/// 其相邻拐角由逐角 min 兜底。输入须是横平竖直、无连续重复点的折线（elbow
+/// 派生路径满足）；退化/非正交拐角原样通过。开放链首末点是路径端点、不倒角；
+/// 闭合链环绕取邻。输出未闭合——闭合由调用方按 `is_closed` 处理（与圆角矩形
+/// 轮廓同约定）。命中测试（[`Item::contains_canvas_point`]）与渲染（binary 层
+/// `ui::stylers`）共用此函数，保证"看着圆过的角一定点得中"。
+pub fn round_orthogonal_corners(pts: &[(f32, f32)], closed: bool, radius: f32) -> Vec<(f32, f32)> {
+    if pts.len() < 2 || radius <= 1e-3 {
+        return pts.to_vec();
+    }
+    flatten_outline_segments(&orthogonal_outline_segments(pts, closed, radius), closed)
 }
 
 /// 把控制点采样成折线。开曲线端点用 clamp（首/末点复制）；闭曲线用环绕索引。
@@ -2096,6 +2236,38 @@ mod tests {
         assert!(sq
             .iter()
             .all(|(x, y)| (0.0..=10.0).contains(x) && (0.0..=10.0).contains(y)));
+    }
+
+    #[test]
+    fn orthogonal_outline_segments_are_chained() {
+        // 分段契约（渲染层接缝零脱开的依据）：相邻段共享端点坐标、
+        // 闭合环收回首段起点；开放链首末点为路径端点、不倒角。
+        let segs = orthogonal_outline_segments(
+            &[(0.0, 0.0), (100.0, 0.0), (100.0, 60.0), (0.0, 60.0)],
+            true,
+            15.0,
+        );
+        assert_eq!(segs.len(), 8, "4 角 + 4 直边");
+        let start_of = |s: &OutlineSeg| match s {
+            OutlineSeg::Line { a, .. } => *a,
+            OutlineSeg::Corner { p_in, .. } => *p_in,
+        };
+        let end_of = |s: &OutlineSeg| match s {
+            OutlineSeg::Line { b, .. } => *b,
+            OutlineSeg::Corner { p_out, .. } => *p_out,
+        };
+        for i in 0..segs.len() {
+            assert_eq!(
+                end_of(&segs[i]),
+                start_of(&segs[(i + 1) % segs.len()]),
+                "段 {i} 与下一段端点不衔接"
+            );
+        }
+        let open =
+            orthogonal_outline_segments(&[(0.0, 0.0), (100.0, 0.0), (100.0, 80.0)], false, 40.0);
+        assert_eq!(open.len(), 3, "2 直边 + 1 角");
+        assert_eq!(start_of(&open[0]), (0.0, 0.0), "路径端点不倒角");
+        assert_eq!(end_of(&open[open.len() - 1]), (100.0, 80.0));
     }
 
     #[test]

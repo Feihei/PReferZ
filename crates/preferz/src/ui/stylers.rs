@@ -1,7 +1,8 @@
 use eframe::egui::{self, Color32, Pos2, Shape};
 use preferz_core::item::{
-    catmull_rom_polyline, elbow_polyline_offset, round_orthogonal_corners, roundness_radius,
-    ItemKind, ItemLocalSpace, CURVE_SAMPLES, ROUNDED_CORNER_SEGMENTS,
+    catmull_rom_polyline, elbow_polyline_offset, orthogonal_outline_segments,
+    round_orthogonal_corners, roundness_radius, ItemKind, ItemLocalSpace, OutlineSeg,
+    CURVE_SAMPLES, ROUNDED_CORNER_SEGMENTS,
 };
 use preferz_core::shape::{
     ArrowHeadStyle, CurveType, DashStyle, FillStyle, SeededRng, ShapeType, Sloppiness, StrokeStyle,
@@ -533,6 +534,17 @@ impl ShapeStyler for CleanStyler {
 /// 控制点沿边分布并由 bowing 垂直于边撑开，得到"手一抖画歪了"的观感。
 /// 抖动幅度以**画布像素**计量再乘 zoom，故放大画布时抖动同步放大，
 /// 与真实手绘稿被放大的观感一致（也和 `stroke.width * zoom` 的缩放语义一致）。
+/// [`RoughStyler::outline_kind`] 的三路渲染路线。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OutlineKind {
+    /// 采样间距均匀的曲线轮廓（椭圆 / Curved 折线）：整圈抖动 + Catmull-Rom。
+    Smooth,
+    /// 圆角矩形 / 倒角 elbow："直边 + 单条角弧"分段（core `OutlineSeg`）。
+    Segmented,
+    /// 纯直边轮廓：逐边抖动。
+    Edged,
+}
+
 pub struct RoughStyler;
 
 impl RoughStyler {
@@ -590,28 +602,46 @@ impl RoughStyler {
         (Self::CURVE_STEP_COUNT.max(Self::CURVE_STEP_COUNT / 200.0f32.sqrt() * psq)).ceil() as usize
     }
 
-    /// 该轮廓是否为**曲线类**：抖动后需连成光滑曲线，而非逐边画抖动的直线段。
+    /// 轮廓渲染路线（2026-10-01 重构，对齐 rough.js/Excalidraw）：
     ///
-    /// 属于曲线的轮廓：
-    /// - 椭圆：由采样点近似，直接连段会露出多边形折角（手绘风下尤其刺眼）；
-    /// - `Curved` 的 Polyline：Catmull-Rom 采样后本身就是曲线控制点；
-    /// - 带圆角的矩形：四角是圆弧采样点，逐边抖动会把轮廓碎成大量短线段
-    ///   （plan #20 验收反馈），改走"整圈抖动 + Catmull-Rom"平滑路线——
-    ///   直边段的采样点共线，插值后仍是直线；
-    /// - 带倒角的 Elbow：拐角弧采样点同理（plan #23 验收反馈，2026-09-28：
-    ///   逐边路线下 Cartoonist 端点独立抖动使相邻弧段脱开成断线，低档位又因
-    ///   短线衰减 `len/10` 几乎零抖动、不像手绘弧），与圆角矩形同策。
-    ///
-    /// 矩形（无圆角）/ 菱形 / Straight 折线 / 无倒角 elbow 本来就是直边，保持逐边抖动。
-    fn is_smooth(shape: &ShapeData) -> bool {
+    /// - [`OutlineKind::Smooth`]：采样间距均匀的曲线轮廓（椭圆、Curved 折线）——
+    ///   整圈抖动 + Catmull-Rom 平滑连线，采样点等距故控制柄不会过冲；
+    /// - [`OutlineKind::Segmented`]：圆角矩形 / 倒角 elbow——core
+    ///   `orthogonal_outline_segments` 拆成"直边 + 单条角弧"分段渲染（Excalidraw
+    ///   圆角矩形即 `path()` 的 4×L + 4×Q，`shape.ts:776`）。此前圆角也走 Smooth：
+    ///   直边 1 长段 + 弧 8 短段喂均匀 CR，交界点控制柄被直边撑到弧段长的数倍，
+    ///   甩出鼓包/回头环（2026-10-01 验收反馈：断裂/跳动，小尺寸尤甚）；
+    /// - [`OutlineKind::Edged`]：纯直边轮廓（矩形 / 菱形 / Straight 折线 /
+    ///   无倒角 elbow），逐边抖动。
+    fn outline_kind(shape: &ShapeData) -> OutlineKind {
         let rounded = roundness_radius(shape.base_size, shape.roundness) > 1e-3;
         match shape.shape_type {
-            ShapeType::Ellipse => true,
-            ShapeType::Rectangle => rounded,
-            ShapeType::Polyline => matches!(shape.curve_type, CurveType::Curved),
-            ShapeType::Diamond => false,
-            // 带倒角的 elbow：拐角弧采样点与圆角矩形同策（plan #23 验收反馈）。
-            ShapeType::Elbow => rounded,
+            ShapeType::Ellipse => OutlineKind::Smooth,
+            ShapeType::Rectangle if rounded => OutlineKind::Segmented,
+            ShapeType::Polyline if matches!(shape.curve_type, CurveType::Curved) => {
+                OutlineKind::Smooth
+            }
+            ShapeType::Elbow if rounded => OutlineKind::Segmented,
+            _ => OutlineKind::Edged,
+        }
+    }
+
+    /// 分段轮廓的局部坐标段列表（圆角矩形 / 倒角 elbow）。
+    ///
+    /// 与命中测试同源：elbow 的基础折线来自 `elbow_polyline_offset`，圆角半径
+    /// 语义与矩形族一致（`roundness_radius`），拐角推导全部在 core 完成。
+    fn outline_segments(shape: &ShapeData) -> Vec<OutlineSeg> {
+        let (w, h) = shape.base_size;
+        let r = roundness_radius((w, h), shape.roundness);
+        match shape.shape_type {
+            ShapeType::Rectangle => {
+                orthogonal_outline_segments(&[(0.0, 0.0), (w, 0.0), (w, h), (0.0, h)], true, r)
+            }
+            ShapeType::Elbow => {
+                let base = elbow_polyline_offset(&shape.points, shape.elbow_mid_offset);
+                orthogonal_outline_segments(&base, false, r)
+            }
+            _ => Vec::new(),
         }
     }
 
@@ -619,11 +649,13 @@ impl RoughStyler {
     ///
     /// 与逐边抖动（[`RoughStyler::sketch_edge`]）的区别是——这里先抖动顶点、
     /// 再用光滑曲线穿过它们，因此曲线类轮廓（椭圆）不会出现直线段拼接的折角。
+    /// 仅用于**采样间距均匀**的轮廓（椭圆 / Curved 折线）：圆角矩形已于
+    /// 2026-10-01 改走"直边 + 角弧"分段渲染——间距不均的点环会让均匀
+    /// Catmull-Rom 在直边↔弧交界处控制柄过冲甩鼓包。
     ///
     /// 幅度逐点取 `min(rough_amp, 0.35 × 较短相邻段)`：全局平均间距会在
-    /// "局部密集 + 局部稀疏"的轮廓（圆角矩形：直边点距宽、圆弧点距窄）上失守，
-    /// 圆弧点仍可能被推过邻居打成结（plan #20 验收反馈二次：小尺寸 + 小倒角
-    /// 角部打结）。0.35 ≈ 0.5/√2：x/y 两轴独立抽样时欧氏位移可达 amp×√2，
+    /// "局部密集 + 局部稀疏"的轮廓上失守，相邻点仍可能被推过邻居打成结。
+    /// 0.35 ≈ 0.5/√2：x/y 两轴独立抽样时欧氏位移可达 amp×√2，
     /// 收紧后相邻两点位移之和恒小于段长，结构上不可能互越。
     fn jitter_points(rng: &mut SeededRng, pts: &[Pos2], closed: bool, rough_amp: f32) -> Vec<Pos2> {
         let n = pts.len();
@@ -699,13 +731,12 @@ impl RoughStyler {
         }
     }
 
-    /// 曲线（椭圆 / Curved 折线 / 圆角矩形）采样点的抖动幅度（屏幕像素）。
+    /// 曲线（椭圆 / Curved 折线）采样点的抖动幅度（屏幕像素）。
     ///
     /// 基准 = rough.js `curve()` 的逐点偏移 `(1+amp_scale×0.2)×amp_scale × zoom`——
     /// 与曲线尺寸/采样密度无关。另加**采样间距上限**（≤ 相邻采样点平均间距的一半）：
-    /// 圆角矩形按固定段数采样，小尺寸下相邻点距只有几像素，大幅独立抖动会让
-    /// 相邻点互越、再被 Catmull-Rom 放大成乱线小环（plan #20 验收反馈：
-    /// 小矩形 + Cartoonist 圆角出乱线）；间距上限从结构上杜绝自交。
+    /// 相邻点距只有几像素时，大幅独立抖动会让相邻点互越、再被 Catmull-Rom 放大
+    /// 成乱线小环；间距上限从结构上杜绝自交。
     fn curve_jitter_amp(pts: &[Pos2], zoom: f32, closed: bool, amp_scale: f32) -> f32 {
         let n = pts.len();
         if n < 2 {
@@ -809,6 +840,34 @@ impl RoughStyler {
         let c1 = m1 + mid_disp + jitter(rng);
         let c2 = m2 + mid_disp + jitter(rng);
         [p0, c1, c2, p3]
+    }
+
+    /// 圆角的"单条角弧"贝塞尔：二次近似弧（控制点 = 直角顶点 `vertex`）转三次，
+    /// **端点钉死、只抖控制点**——对齐 rough.js `_bezierTo`（Excalidraw 的圆角
+    /// 矩形/倒角 elbow 是连续 path，`preserveVertices` 恒真，`shape.ts:223`）：
+    /// 曲线只在顶点附近轻微鼓出，与相邻直边在切点处共用端点坐标，连接无缝。
+    /// 此前整圈独立抖动 + 均匀 CR 会在此处过冲甩鼓包（2026-10-01 验收反馈）。
+    ///
+    /// 两笔 pass 幅度按 rough.js 取 `maxRandomnessOffset` 与 `+0.3`（overlay 略大）；
+    /// `_bezierTo` 不乘 `roughnessGain`（短弧不衰减——小尺寸由
+    /// `small_size_roughness_scale` 统一兜底）。
+    fn corner_bezier(
+        rng: &mut SeededRng,
+        p_in: Pos2,
+        vertex: Pos2,
+        p_out: Pos2,
+        ctx: &RoughCtx,
+        pass: usize,
+    ) -> [Pos2; 4] {
+        let base = Self::MAX_RANDOMNESS_OFFSET + if pass > 0 { 0.3 } else { 0.0 };
+        let amp = base * ctx.amp_scale * ctx.zoom;
+        let c1 = p_in
+            + (vertex - p_in) * (2.0 / 3.0)
+            + egui::vec2(rng.signed() * amp, rng.signed() * amp);
+        let c2 = p_out
+            + (vertex - p_out) * (2.0 / 3.0)
+            + egui::vec2(rng.signed() * amp, rng.signed() * amp);
+        [p_in, c1, c2, p_out]
     }
 
     /// 三次贝塞尔采样为折线。dash 模式下 `PathStroke` 不支持虚线，
@@ -945,6 +1004,7 @@ impl RoughStyler {
 }
 
 /// `RoughStyler` 单次 build 的共享派生参数（避免逐函数长参数列）。
+#[derive(Clone, Copy)]
 struct RoughCtx {
     zoom: f32,
     /// `amp_scale() × adjustRoughness` 小图衰减（DP4 相乘）。
@@ -1058,29 +1118,69 @@ impl ShapeStyler for RoughStyler {
             trimmed_line_points(&pts, shape.start_arrow, shape.end_arrow, line_width)
         };
 
-        if Self::is_smooth(shape) {
-            // 曲线类轮廓（椭圆、Curved 折线）：整圈抖动后连成光滑曲线。
-            // 若沿用逐边直线抖动，采样段之间的折角会非常明显。
-            let amp = Self::curve_jitter_amp(&stroke_pts, zoom, closed, ctx.amp_scale);
-            for _ in 0..passes {
-                let jittered = Self::jitter_points(&mut rng, &stroke_pts, closed, amp);
-                for bez in Self::catmull_rom_beziers(&jittered, closed) {
-                    Self::push_edge(&mut out, bez, stroke, line_width, ctx.stroke_color, zoom);
+        match Self::outline_kind(shape) {
+            OutlineKind::Smooth => {
+                // 曲线类轮廓（椭圆、Curved 折线）：整圈抖动后连成光滑曲线。
+                // 若沿用逐边直线抖动，采样段之间的折角会非常明显。
+                let amp = Self::curve_jitter_amp(&stroke_pts, zoom, closed, ctx.amp_scale);
+                for _ in 0..passes {
+                    let jittered = Self::jitter_points(&mut rng, &stroke_pts, closed, amp);
+                    for bez in Self::catmull_rom_beziers(&jittered, closed) {
+                        Self::push_edge(&mut out, bez, stroke, line_width, ctx.stroke_color, zoom);
+                    }
                 }
             }
-        } else {
-            // 直线类轮廓（矩形 / 菱形 / 折线）：逐边抖动，闭合图形多一条 n-1 → 0 的收尾边。
-            let seg_count = if closed {
-                stroke_pts.len()
-            } else {
-                stroke_pts.len() - 1
-            };
-            for i in 0..seg_count {
-                let a = stroke_pts[i];
-                let b = stroke_pts[(i + 1) % stroke_pts.len()];
-                for _ in 0..passes {
-                    let bez = Self::sketch_edge(&mut rng, a, b, &ctx);
-                    Self::push_edge(&mut out, bez, stroke, line_width, ctx.stroke_color, zoom);
+            OutlineKind::Segmented => {
+                // 圆角矩形 / 倒角 elbow：直边 + 单条角弧分段渲染（对齐 Excalidraw
+                // 的 `path()` 路线）。连续 path 的端点恒钉死（Excalidraw 对
+                // continuousPath 不分档位，`shape.ts:223`），只有边/弧的控制点抖，
+                // 相邻段共用端点坐标 → 连接处无缝（2026-10-01 验收反馈）。
+                let segs = Self::outline_segments(shape);
+                let seg_ctx = RoughCtx {
+                    preserve_vertices: true,
+                    ..ctx
+                };
+                let scr = |p: (f32, f32)| -> Pos2 {
+                    to_pos2(to_screen.transform_point(euclid::Point2D::new(p.0, p.1)))
+                };
+                for pass in 0..passes {
+                    for seg in &segs {
+                        let bez = match *seg {
+                            OutlineSeg::Line { a, b } => {
+                                Self::sketch_edge(&mut rng, scr(a), scr(b), &seg_ctx)
+                            }
+                            OutlineSeg::Corner {
+                                p_in,
+                                vertex,
+                                p_out,
+                                ..
+                            } => Self::corner_bezier(
+                                &mut rng,
+                                scr(p_in),
+                                scr(vertex),
+                                scr(p_out),
+                                &seg_ctx,
+                                pass,
+                            ),
+                        };
+                        Self::push_edge(&mut out, bez, stroke, line_width, ctx.stroke_color, zoom);
+                    }
+                }
+            }
+            OutlineKind::Edged => {
+                // 直线类轮廓（矩形 / 菱形 / 折线）：逐边抖动，闭合图形多一条 n-1 → 0 的收尾边。
+                let seg_count = if closed {
+                    stroke_pts.len()
+                } else {
+                    stroke_pts.len() - 1
+                };
+                for i in 0..seg_count {
+                    let a = stroke_pts[i];
+                    let b = stroke_pts[(i + 1) % stroke_pts.len()];
+                    for _ in 0..passes {
+                        let bez = Self::sketch_edge(&mut rng, a, b, &ctx);
+                        Self::push_edge(&mut out, bez, stroke, line_width, ctx.stroke_color, zoom);
+                    }
                 }
             }
         }
@@ -1295,6 +1395,123 @@ mod tests {
             RoughStyler.build_shapes(&rect(7), &stroke, None, FillStyle::Solid, &identity(), 1.0);
         assert_eq!(shapes.len(), 8);
         assert!(shapes.iter().all(|s| matches!(s, Shape::CubicBezier(_))));
+    }
+
+    fn rounded_rect(seed: u64, size: (f32, f32), sloppiness: Sloppiness) -> ShapeData {
+        ShapeData {
+            shape_type: ShapeType::Rectangle,
+            base_size: size,
+            points: Vec::new(),
+            start_arrow: None,
+            end_arrow: None,
+            closed: false,
+            curve_type: CurveType::Straight,
+            elbow_mid_offset: 0.0,
+            roundness: 0.5,
+            seed,
+            sloppiness,
+        }
+    }
+
+    #[test]
+    fn rough_styler_rounded_rect_is_segmented_and_seamless() {
+        let stroke = StrokeStyle::default();
+        let d = rounded_rect(7, (100.0, 60.0), Sloppiness::Cartoonist);
+        let shapes =
+            RoughStyler.build_shapes(&d, &stroke, None, FillStyle::Solid, &identity(), 1.0);
+        // 4 直边 + 4 角弧 = 8 段 × 2 passes = 16 条贝塞尔，无多余断段
+        let bez = beziers(&shapes);
+        assert_eq!(bez.len(), 16);
+        // 同一 pass 内相邻段共享端点、环收回首段（接缝处零脱开——此前整圈
+        // 独立抖动 + 均匀 CR 在交界处甩鼓包，2026-10-01 验收反馈）
+        for pass in 0..2 {
+            let segs = &bez[pass * 8..(pass + 1) * 8];
+            for i in 0..8 {
+                let end = segs[i][3];
+                let next_start = segs[(i + 1) % 8][0];
+                assert_eq!(end, next_start, "pass{pass} 段{i} 与下一段在接缝处脱开");
+            }
+        }
+    }
+
+    #[test]
+    fn rough_styler_rounded_rect_junctions_match_ideal_outline() {
+        // 端点钉死（preserveVertices 恒真）：所有段端点必须精确落在理想轮廓的
+        // 8 个切点/顶点上，Cartoonist 也不例外（Excalidraw continuousPath 语义）
+        let stroke = StrokeStyle::default();
+        let d = rounded_rect(99, (100.0, 60.0), Sloppiness::Cartoonist);
+        let shapes =
+            RoughStyler.build_shapes(&d, &stroke, None, FillStyle::Solid, &identity(), 1.0);
+        let r = 15.0_f32; // min(100,60) × 0.5 × 0.5
+        let junctions: Vec<Pos2> = [
+            (r, 0.0),
+            (100.0 - r, 0.0),
+            (100.0, r),
+            (100.0, 60.0 - r),
+            (100.0 - r, 60.0),
+            (r, 60.0),
+            (0.0, 60.0 - r),
+            (0.0, r),
+        ]
+        .iter()
+        .map(|(x, y)| egui::pos2(*x, *y))
+        .collect();
+        for bez in beziers(&shapes) {
+            for p in [bez[0], bez[3]] {
+                assert!(junctions.contains(&p), "段端点 {p:?} 不在理想切点上");
+            }
+        }
+    }
+
+    #[test]
+    fn rough_styler_small_rounded_rect_corner_stays_near_ideal_outline() {
+        // 回归：30×20 r=2 的小圆角矩形（旧方案零抖动下交界鼓包已达角半径 42%）。
+        // 新方案角弧是单条贝塞尔：控制点抖幅 ≤ 2px × amp_scale，曲线偏离理想
+        // 轮廓必须有界（旧方案 CR 控制柄被直边撑到弧段的 11 倍，无此上界）。
+        let stroke = StrokeStyle::default();
+        let d = rounded_rect(3, (30.0, 20.0), Sloppiness::Architect);
+        let shapes =
+            RoughStyler.build_shapes(&d, &stroke, None, FillStyle::Solid, &identity(), 1.0);
+        let r = 5.0_f32; // min(30,20) × 0.5 × 0.5
+        let centers = [(r, r), (30.0 - r, r), (30.0 - r, 20.0 - r), (r, 20.0 - r)];
+        for bez in beziers(&shapes) {
+            // 角弧段（起止端点都在同一角的两条切点上）采样 9 点测径向偏差
+            let start = bez[0];
+            let end = bez[3];
+            let Some(center) = centers
+                .iter()
+                .map(|c| egui::pos2(c.0, c.1))
+                .find(|c| (start - *c).length() - r <= 1e-3 && (end - *c).length() - r <= 1e-3)
+            else {
+                continue; // 直边段不测
+            };
+            for p in RoughStyler::sample_bezier(&bez, 8) {
+                let dev = ((p - center).length() - r).abs();
+                assert!(
+                    dev <= 2.0 * 1.5 + 1.0,
+                    "角弧偏离理想轮廓 {dev:.2}px（r={r}）：{p:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn core_rounded_rect_segments_flatten_to_same_ring() {
+        // 分段与点列扁平化必须一致（命中测试 / CleanStyler 依赖点环）：
+        // 100×60 r=15 的闭合矩形环 = 4 角 × (SEG+1) 点，从角 0 切入点开始，
+        // 相邻采样点间距有限（无跳变）。
+        let ring = round_orthogonal_corners(
+            &[(0.0, 0.0), (100.0, 0.0), (100.0, 60.0), (0.0, 60.0)],
+            true,
+            15.0,
+        );
+        assert_eq!(ring.len(), 4 * (ROUNDED_CORNER_SEGMENTS + 1));
+        assert_eq!(ring[0], (0.0, 15.0), "环从角 0 切入点开始");
+        for w in ring.windows(2) {
+            let d = (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1);
+            // 直边是单段长跳（最长 70px），弧段 ~6px；只要非零即无跳变断裂
+            assert!(d > 0.0 && d < 80.0, "相邻采样点间距异常: {d}");
+        }
     }
 
     #[test]
@@ -2194,11 +2411,12 @@ mod tests {
     }
 
     #[test]
-    fn rough_styler_rounded_rect_is_smooth_not_fragmented() {
-        // plan #20 验收反馈：圆角矩形逐边抖动会碎成大量短线段——
-        // 现在走"整圈抖动 + Catmull-Rom"平滑路线（与椭圆同策）。
+    fn rough_styler_rounded_rect_is_segmented_not_dense_ring() {
+        // plan #20 批次1 曾把圆角矩形并入"整圈抖动 + Catmull-Rom"；2026-10-01
+        // 验收反馈：交界控制柄过冲甩鼓包（小尺寸尤甚），改走"直边 + 单条角弧"
+        // 分段路线（对齐 Excalidraw `path()`）——段数与轮廓采样密度解耦。
         let mut d = rect(3);
-        d.roundness = 0.5; // 半径 = 40 × 0.5 × 0.5 = 10，四角有圆弧采样点
+        d.roundness = 0.5; // 半径 = 40 × 0.5 × 0.5 = 10
         let shapes = RoughStyler.build_shapes(
             &d,
             &StrokeStyle::default(),
@@ -2207,9 +2425,8 @@ mod tests {
             &identity(),
             1.0,
         );
-        // 轮廓点数 = 4 角 × (ROUNDED_CORNER_SEGMENTS + 1)，闭合环每点一段 × 2 passes
-        let n = rounded_rect_points(100.0, 40.0, roundness_radius((100.0, 40.0), 0.5)).len();
-        assert_eq!(shapes.len(), n * RoughStyler::PASSES);
+        // 4 直边 + 4 角弧 = 8 段 × 2 passes；不再随 ROUNDED_CORNER_SEGMENTS 增长
+        assert_eq!(shapes.len(), 8 * RoughStyler::PASSES);
         assert!(shapes.iter().all(|s| matches!(s, Shape::CubicBezier(_))));
     }
 
@@ -2245,50 +2462,49 @@ mod tests {
     }
 
     #[test]
-    fn smooth_jitter_respects_local_sample_spacing_at_corners() {
-        // plan #20 验收反馈二次：小尺寸 + 小倒角角部打结——全局平均间距失守，
-        // 逐点幅度必须 ≤ 0.5 × 较短相邻段（闭合 Catmull-Rom 每段起点即抖动后点列）。
-        let mut d = rect(3);
-        d.roundness = 0.25;
+    fn smooth_jitter_respects_local_sample_spacing_on_ellipse() {
+        // plan #20 验收反馈二次：全局平均间距失守时逐点幅度必须 ≤ 0.35 × 较短
+        // 相邻段，否则相邻点互越、被 Catmull-Rom 放大成自交小环。圆角矩形已于
+        // 2026-10-01 改走分段渲染，整圈抖动只剩椭圆（采样均匀）——直接对
+        // jitter_points 验证逐点钳制性质。
+        let mut d = ellipse(80.0, 3);
         d.base_size = (80.0, 60.0);
         d.sloppiness = Sloppiness::Cartoonist;
-        let shapes = RoughStyler.build_shapes(
-            &d,
-            &StrokeStyle::default(),
-            None,
-            FillStyle::Solid,
-            &identity(),
+        let seg_count = RoughStyler::ellipse_step_count(80.0, 60.0);
+        let pts = to_screen_points(&outline_points(&d, seg_count, 0.0), &identity());
+        let amp = RoughStyler::curve_jitter_amp(
+            &pts,
             1.0,
+            true,
+            d.sloppiness.amp_scale() * RoughStyler::small_size_roughness_scale(&d),
         );
-        let orig = to_screen_points(&outline_points(&d, 12, 0.0), &identity());
-        let bez = beziers(&shapes);
-        let n = orig.len();
-        assert!(bez.len() >= n, "应有完整一圈的段");
-        for (i, seg) in bez.iter().take(n).enumerate() {
-            let p = orig[i];
-            let prev = orig[(i + n - 1) % n];
-            let next = orig[(i + 1) % n];
-            let local = (p - prev).length().min((next - p).length()) * 0.35;
-            let disp = (seg[0] - p).length();
+        let mut rng = SeededRng::new(3);
+        let jittered = RoughStyler::jitter_points(&mut rng, &pts, true, amp);
+        let n = pts.len();
+        for i in 0..n {
+            let prev = pts[(i + n - 1) % n];
+            let next = pts[(i + 1) % n];
+            let local = (pts[i] - prev).length().min((next - pts[i]).length()) * 0.35;
+            let disp = (jittered[i] - pts[i]).length();
             assert!(
                 disp <= local * std::f32::consts::SQRT_2 + 1e-3,
-                "点 {i} 位移 {disp:.2} 超过局部间距上限 {local:.2}（角部会打结）"
+                "点 {i} 位移 {disp:.2} 超过局部间距上限 {local:.2}（会打成结）"
             );
         }
     }
 
     #[test]
     fn rough_styler_elbow_roundness_chains_without_gaps() {
-        // plan #23 验收反馈（2026-09-28）：elbow 倒角的弧采样点列若走逐边抖动，
-        // Cartoonist 档端点独立偏移会让相邻弧段脱开（断线）；并入平滑路线后
-        // 每个 pass 内部必须逐段共享端点。与圆角矩形同策（plan #20 反馈 4）。
+        // plan #23 验收反馈（2026-09-28）：倒角弧段不得脱开断线。2026-10-01 起
+        // elbow 倒角走"直边 + 单条角弧"分段渲染——段端点钉死（preserveVertices
+        // 恒真，Excalidraw continuousPath 语义），每个 pass 内部逐段共享端点。
         let mut d = open_line();
         d.shape_type = ShapeType::Elbow;
         d.points = vec![(0.0, 0.0), (200.0, 100.0)];
         d.base_size = (200.0, 100.0);
         d.end_arrow = None;
-        d.roundness = 0.5; // 半径 = min(200,100) × 0.5 × 0.5 = 25，拐角有弧采样点
-        d.sloppiness = Sloppiness::Cartoonist; // preserveVertices=false：逐边路线会脱开
+        d.roundness = 0.5; // 半径 = min(200,100) × 0.5 × 0.5 = 25，拐角有弧
+        d.sloppiness = Sloppiness::Cartoonist; // 旧逐边路线下此档会脱开
         let shapes = RoughStyler.build_shapes(
             &d,
             &StrokeStyle::default(),
@@ -2299,21 +2515,27 @@ mod tests {
         );
         assert!(shapes.iter().all(|s| matches!(s, Shape::CubicBezier(_))));
         let bez = beziers(&shapes);
-        let n = outline_points(&d, 9, 0.0).len();
-        assert_eq!(bez.len(), (n - 1) * RoughStyler::PASSES);
-        // 逐 pass 检查链式连续：段 i 的终点 = 段 i+1 的起点（pass 边界除外）
-        let segs = n - 1;
+        // 段数与 core 分段同源：elbow 路由派生路径的直边数 + 拐角数
+        let base = elbow_polyline_offset(&d.points, d.elbow_mid_offset);
+        let segs =
+            orthogonal_outline_segments(&base, false, roundness_radius(d.base_size, d.roundness))
+                .len();
+        assert!(segs >= 3, "测试前提：S 形路由至少 3 段");
+        assert_eq!(bez.len(), segs * RoughStyler::PASSES);
+        // 逐 pass 检查链式连续：段 i 的终点 = 段 i+1 的起点
         for p in 0..RoughStyler::PASSES {
             let pass = &bez[p * segs..(p + 1) * segs];
             for w in pass.windows(2) {
-                assert!(
-                    (w[0][3] - w[1][0]).length() < 1e-4,
-                    "elbow 倒角弧段脱开: {:?} -> {:?}",
-                    w[0][3],
-                    w[1][0]
+                assert_eq!(
+                    w[0][3], w[1][0],
+                    "elbow 倒角段脱开: {:?} -> {:?}",
+                    w[0][3], w[1][0]
                 );
             }
         }
+        // 路径两端点是 elbow 端点、不倒角（不抖）
+        assert_eq!(bez[0][0], egui::pos2(0.0, 0.0));
+        assert_eq!(bez[segs - 1][3], egui::pos2(200.0, 100.0));
     }
 
     #[test]
