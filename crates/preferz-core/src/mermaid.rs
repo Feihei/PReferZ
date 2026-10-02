@@ -5,8 +5,11 @@
 //! 变体（详见 [`parse_node_token`]，冷门形按 DP1 近似映射到矩形/椭圆/菱形三类）；
 //! 边支持箭头族 `-->` / `---` / `-.->` / `-.-` / `==>` / `===` / `<-->`，
 //! 两种边标签写法 `-->|文本|`（pipe）与 `-- 文本 -->`（inline，仅实线），
-//! 一行多分支 `&`（`a --> b & c`、`a & b --> c & d` 交叉积），以及引号标签
-//! `["含 空格"]`。`subgraph` / `direction` / `style` / `classDef` 等分组与
+//! 一行多分支 `&`（`a --> b & c`、`a & b --> c & d` 交叉积）、引号标签
+//! `["含 空格"]`；标签内 HTML `<br>` 变体（`<br>` / `<br/>` / `<br />`，
+//! 大小写不敏感）按 mermaid 官方语义转 `\n` 换行（LLM 生成高频），其余
+//! HTML 标签 egui 无富文本渲染能力，原样保留。`subgraph` / `direction` /
+//! `style` / `classDef` 等分组与
 //! 样式语句、以及 sequence/class/state 等**非 flowchart 图种均不支持**（报错
 //! 并指出行号，DP 见 `.agents/plan.md` §17）。布局 = 分层（层级 = 最长路径深度），
 //! 层间距 / 同层间距 100px（对齐 plan #7 `FLOWCHART_GAP` 语义）。
@@ -312,7 +315,7 @@ fn scan_link(s: &str, i: usize) -> Option<(MermaidArrow, Option<String>, usize)>
                 return None;
             }
             let j = after + k + 3;
-            return Some((MermaidArrow::Arrow, Some(text.trim().to_string()), j));
+            return Some((MermaidArrow::Arrow, Some(decode_br(text.trim())), j));
         }
         return None;
     };
@@ -326,7 +329,7 @@ fn scan_pipe_label(s: &str, i: usize) -> (Option<String>, usize) {
     if i < b.len() && b[i] == b'|' {
         if let Some(rel) = s[i + 1..].find('|') {
             let text = s[i + 1..i + 1 + rel].trim();
-            return (Some(text.to_string()), i + 1 + rel + 1);
+            return (Some(decode_br(text)), i + 1 + rel + 1);
         }
     }
     (None, i)
@@ -380,7 +383,11 @@ fn parse_shape_body(s: &str, i: usize) -> Option<(String, MermaidShape, usize)> 
             let inner_start = i + open.len();
             let rel = s[inner_start..].find(close)?;
             let inner = s[inner_start..inner_start + rel].trim();
-            Some((unquote(inner), shape, inner_start + rel + close.len()))
+            Some((
+                decode_br(&unquote(inner)),
+                shape,
+                inner_start + rel + close.len(),
+            ))
         };
     // 双括号 / 特殊形在前（DP1：冷门形近似收敛）。
     close_after("((", "))", MermaidShape::Ellipse) // 圆
@@ -409,6 +416,39 @@ fn unquote(inner: &str) -> String {
         }
     }
     inner.to_string()
+}
+
+/// 标签内 HTML `<br>` 变体（`<br>` / `<br/>` / `<br />` 等，大小写不敏感）→ `\n`。
+/// mermaid 官方支持标签内 HTML，`<br>` 是官方换行写法且 LLM 生成高频；`<br` 后
+/// 允许任意空格/斜杠组合直到 `>`（裸 `<brX>` 不转换），其余 HTML 标签原样保留。
+fn decode_br(s: &str) -> String {
+    let b = s.as_bytes();
+    if !b.windows(3).any(|w| w.eq_ignore_ascii_case(b"<br")) {
+        return s.to_string();
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'<'
+            && i + 3 <= b.len()
+            && b[i + 1].eq_ignore_ascii_case(&b'b')
+            && b[i + 2].eq_ignore_ascii_case(&b'r')
+        {
+            let mut k = i + 3;
+            while k < b.len() && (b[k] == b' ' || b[k] == b'/') {
+                k += 1;
+            }
+            if k < b.len() && b[k] == b'>' {
+                out.push('\n');
+                i = k + 1;
+                continue;
+            }
+        }
+        let ch = s[i..].chars().next().expect("i 是 char boundary");
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
 }
 
 /// id 清洗：非法字符替换为 `_`，空则兜底 `node`。
@@ -446,18 +486,23 @@ pub struct MermaidLayoutNode {
     pub h: f32,
 }
 
-/// 估算节点尺寸：CJK 字符 14px、ASCII 8px 宽；高 60（菱形 90），
+/// 估算节点尺寸：CJK 字符 14px、ASCII 8px 宽，按 `\n` 分行取最大行宽；
+/// 高 60（菱形 90）+ 每多一行加一行高（18px 字号实际 galley 行高 ≈ 24px），
 /// 菱形左右各多留 40px（斜边内收，避免文字出界）。
+const MERMAID_LINE_H: f32 = 24.0;
+
 fn estimate_size(node: &MermaidNode) -> (f32, f32) {
-    let text_w: f32 = node
-        .label
-        .chars()
-        .map(|c| if c.is_ascii() { 8.0 } else { 14.0 })
-        .sum();
+    let line_w = |l: &str| -> f32 {
+        l.chars()
+            .map(|c| if c.is_ascii() { 8.0 } else { 14.0 })
+            .sum()
+    };
+    let text_w = node.label.split('\n').map(line_w).fold(0.0_f32, f32::max);
+    let extra_h = node.label.matches('\n').count() as f32 * MERMAID_LINE_H;
     match node.shape {
-        MermaidShape::Diamond => ((text_w + 120.0).max(140.0), 90.0),
-        MermaidShape::Ellipse => ((text_w + 60.0).max(120.0), 60.0),
-        MermaidShape::Rectangle => ((text_w + 40.0).max(100.0), 60.0),
+        MermaidShape::Diamond => ((text_w + 120.0).max(140.0), 90.0 + extra_h),
+        MermaidShape::Ellipse => ((text_w + 60.0).max(120.0), 60.0 + extra_h),
+        MermaidShape::Rectangle => ((text_w + 40.0).max(100.0), 60.0 + extra_h),
     }
 }
 
@@ -661,6 +706,39 @@ mod tests {
             parse_mermaid_flowchart("flowchart TD\n a[\"含 空格 标题\"] --> b['单引号']").unwrap();
         assert_eq!(fc.nodes[0].label, "含 空格 标题");
         assert_eq!(fc.nodes[1].label, "单引号");
+    }
+
+    #[test]
+    fn parses_br_variants_as_line_break() {
+        // 大小写不敏感 + 空格/斜杠变体（LLM 生成高频，mermaid 官方语义 = 换行）。
+        let fc =
+            parse_mermaid_flowchart("flowchart TD\n a[\"上<br/>下<br>左右<BR />四\"] --> b[<brx>]")
+                .unwrap();
+        assert_eq!(fc.nodes[0].label, "上\n下\n左右\n四");
+        // 裸 `<brx>` 非 br 闭合 → 原样保留，不转换行。
+        assert_eq!(fc.nodes[1].label, "<brx>");
+    }
+
+    #[test]
+    fn parses_br_in_edge_labels() {
+        let fc =
+            parse_mermaid_flowchart("flowchart TD\n a -->|是<br>肯定| b\n c -- 不<br/>否 --> d")
+                .unwrap();
+        assert_eq!(fc.edges[0].label.as_deref(), Some("是\n肯定"));
+        assert_eq!(fc.edges[1].label.as_deref(), Some("不\n否"));
+    }
+
+    #[test]
+    fn layout_heights_follow_multiline_label() {
+        let fc = parse_mermaid_flowchart("flowchart TD\n a[\"第一<br>第二\"] --> b[单行]").unwrap();
+        let layout = layout_flowchart(&fc);
+        let by_idx = |i: usize| layout.iter().find(|n| n.index == i).unwrap();
+        assert!(
+            by_idx(0).h > by_idx(1).h,
+            "两行标签节点应高于单行（{} vs {}）",
+            by_idx(0).h,
+            by_idx(1).h
+        );
     }
 
     #[test]

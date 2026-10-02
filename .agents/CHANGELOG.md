@@ -586,6 +586,11 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
   `FlashMermaidParseFailed`/`FlashMermaidCreated`。
 - 测试：core 解析 5 + 布局 3；bin 生成（8 item = 3 形状+3 绑定文字+2 箭头、两端绑定、
   一条 undo 一步撤回/redo 恢复）+ 解析失败保留输入 2。
+- **后续补充（2026-10-02）**：标签内 HTML `<br>` 变体（`<br>` / `<br/>` / `<br />`，
+  大小写不敏感——mermaid 官方语义 = 换行、LLM 生成高频）在解析期转 `\n`，节点 / pipe 边 /
+  inline 边三条标签路径全覆盖（`decode_br`）；`estimate_size` 按 `\n` 分行取最大行宽 +
+  每多一行加 `MERMAID_LINE_H=24`（18px 字号实际 galley 行高）。其余 HTML 富文本标签
+  （`<b>`/`<i>` 等）egui 无富文本渲染能力，原样保留。测试 core 18 + bin 3 全过。
 
 ## 自动保存（plan #5，2026-09-20，`96cf8ac`）
 

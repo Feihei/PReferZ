@@ -3826,6 +3826,46 @@ mod tests {
         assert_eq!(app.mermaid_buf, "a --> b", "输入保留供修改");
     }
 
+    #[test]
+    fn generate_mermaid_flowchart_decodes_br_to_line_break() {
+        let mut app = PReferZApp::new();
+        app.mermaid_buf = "flowchart TD\n a[\"上<br/>下\"] --> b".to_string();
+        let ctx = egui::Context::default();
+        app.generate_mermaid_flowchart(&ctx);
+
+        let texts: Vec<&String> = app
+            .scene
+            .items
+            .iter()
+            .filter_map(|i| match &i.kind {
+                ItemKind::Text { content, .. } => Some(content),
+                _ => None,
+            })
+            .collect();
+        // 节点 a 两行标签 + 裸引用节点 b 的默认标签 "b"
+        assert_eq!(texts.len(), 2);
+        assert!(
+            texts.iter().any(|c| c.as_str() == "上\n下"),
+            "<br/> 应解码为换行，实际 {:?}",
+            texts
+        );
+
+        // 两行标签的节点形状应高于单行基线高 60
+        let node_h = app
+            .scene
+            .items
+            .iter()
+            .find_map(|i| match &i.kind {
+                ItemKind::Shape {
+                    shape_type: ShapeType::Rectangle,
+                    ..
+                } => Some(i.bounding_rect().height()),
+                _ => None,
+            })
+            .unwrap();
+        assert!(node_h > 60.0, "两行标签节点高应 > 60（实际 {}）", node_h);
+    }
+
     // ───────── 自动保存（plan #5） ─────────
 
     #[test]
