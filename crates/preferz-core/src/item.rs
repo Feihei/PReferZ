@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::shape::{
-    ArrowHeadStyle, CurveType, FillStyle, FontFamily, ShapeType, Sloppiness, StrokeStyle,
-    TextAlignH, TextAlignV, TextStyle,
+    ArrowHeadStyle, CurveType, ElbowAxis, FillStyle, FontFamily, ShapeType, Sloppiness,
+    StrokeStyle, TextAlignH, TextAlignV, TextStyle,
 };
 use crate::spaces::{CanvasPoint, CanvasRect, CanvasVector};
 use crate::transform::Transform;
@@ -159,6 +159,21 @@ pub enum ItemKind {
         /// clamp 兜底。`#[serde(default)]`：旧存档无此字段按 0（居中）加载。
         #[serde(default)]
         elbow_mid_offset: f32,
+        /// elbow 取向滞回状态（plan #21 DP-B 落地 / #24 阶段 C 前过渡）。仅
+        /// `ShapeType::Elbow` 消费：`Some(axis)` = 上次解析的路由取向，对角线
+        /// 附近由滞回（[`elbow_axis_effective`]）避免 `|dx|`/`|dy|` 关系翻转时
+        /// 路径 90° 跳变；`None` = 旧存档（按几何即时推断，行为不变）。解析与
+        /// 写回只发生在端点变化的变更点（端点拖拽 / `Scene::resolve_bindings`），
+        /// 渲染 / 命中 / 手柄 / 导出只读本字段派生路径（同源不变量）。
+        /// `#[serde(default)]`：旧存档无此字段按 `None` 加载。
+        #[serde(default)]
+        elbow_axis: Option<ElbowAxis>,
+        /// elbow 固定段（plan #24 阶段 D，DP-5）：用户拖动中间段后固化的走线，
+        /// item 局部坐标、坐标锚定（不存 index）。仅 `ShapeType::Elbow` 消费；
+        /// 非空时路由以固定段为锚点缝合（A\* / 确定性），空 = 全自动路由。
+        /// `#[serde(default)]`：旧存档无此字段按空加载，`.prz` 零迁移。
+        #[serde(default)]
+        fixed_segments: Vec<crate::routing::ElbowFixedSegment>,
         /// 圆角比例 0..1（Phase I / plan #23）。矩形族与 Elbow 连接器（倒角，
         /// `radius = min(w,h) * roundness`）使用；Polyline 忽略。
         /// `#[serde(default)]`：旧存档无此字段按 0.0（直角）加载。
@@ -660,6 +675,8 @@ impl Item {
                 closed: false,
                 curve_type: CurveType::Straight,
                 elbow_mid_offset: 0.0,
+                elbow_axis: None,
+                fixed_segments: Vec::new(),
                 roundness: 0.0,
                 seed: 0,
                 sloppiness: Sloppiness::Off,
@@ -703,6 +720,8 @@ impl Item {
                 closed,
                 curve_type: CurveType::Straight,
                 elbow_mid_offset: 0.0,
+                elbow_axis: None,
+                fixed_segments: Vec::new(),
                 roundness: 0.0,
                 seed: 0,
                 sloppiness: Sloppiness::Off,
@@ -745,6 +764,8 @@ impl Item {
                 closed: false,
                 curve_type: CurveType::Straight,
                 elbow_mid_offset: 0.0,
+                elbow_axis: None,
+                fixed_segments: Vec::new(),
                 roundness: 0.0,
                 seed: 0,
                 sloppiness: Sloppiness::Off,
@@ -1039,6 +1060,18 @@ impl Item {
     /// 画布点是否落在 item 内（OBB 命中，正确处理旋转/翻转/缩放；
     /// 线类改为点到线段距离命中）。
     pub fn contains_canvas_point(&self, canvas_pos: CanvasPoint) -> bool {
+        self.contains_canvas_point_with_route(canvas_pos, None)
+    }
+
+    /// 同 [`Self::contains_canvas_point`]，但 elbow 项可注入 **Scene 感知的完整
+    /// 路由**（含障碍避让，`Scene::elbow_route_local` 产物）。命中与渲染必须走
+    /// 同一条路径（同源不变量）——`interaction.rs` 的场景命中入口恒注入；无注入
+    /// （边缘路径）时退化为无障碍 fallback 路由，仅在无障碍时与渲染逐点一致。
+    pub fn contains_canvas_point_with_route(
+        &self,
+        canvas_pos: CanvasPoint,
+        elbow_route: Option<&[(f32, f32)]>,
+    ) -> bool {
         // 画框不参与内容命中：仅边框命中（见 [`Item::frame_border_hit`]），内容穿透到下层。
         if self.is_frame() {
             return false;
@@ -1086,6 +1119,8 @@ impl Item {
             closed,
             curve_type,
             elbow_mid_offset,
+            elbow_axis,
+            fixed_segments,
             roundness,
             ..
         } = &self.kind
@@ -1097,10 +1132,18 @@ impl Item {
                 if points.len() >= 2 {
                     let pts = match shape_type {
                         ShapeType::Elbow => {
-                            // elbow 路由（plan #24 首版 = 确定性 L/Z/S，阶段 C 换
-                            // A*）：两端点 + 偏移推导；倒角与渲染同源（plan #23），
-                            // 圆过的角也要点得中。
-                            let base = elbow_polyline_offset(points, *elbow_mid_offset);
+                            // elbow 路由（plan #24 阶段 C）：优先注入的 Scene 完整
+                            // 路由（含障碍避让），否则无障碍 fallback；倒角与渲染
+                            // 同源（plan #23），圆过的角也要点得中。
+                            let base = match elbow_route {
+                                Some(r) if r.len() >= 2 => r.to_vec(),
+                                _ => elbow_route_fallback(
+                                    points,
+                                    *elbow_mid_offset,
+                                    elbow_axis_effective(points, *elbow_axis),
+                                    fixed_segments,
+                                ),
+                            };
                             let size = self.base_size();
                             let r = roundness_radius((size.x, size.y), *roundness);
                             if r > 1e-3 {
@@ -1657,53 +1700,24 @@ pub fn catmull_rom_polyline(pts: &[(f32, f32)], closed: bool, samples: usize) ->
     out
 }
 
-/// elbow 直角折线展开（居中）：`elbow_polyline_offset` 偏移为 0 的薄封装。
+/// elbow 直角折线展开（居中）：`elbow_polyline_offset` 偏移为 0、取向按几何推断
+/// 的薄封装（测试便捷入口；生产路径一律经 `elbow_axis_effective` 显式取向）。
 pub fn elbow_polyline(pts: &[(f32, f32)]) -> Vec<(f32, f32)> {
-    elbow_polyline_offset(pts, 0.0)
-}
-
-/// elbow 连接器 → 多段线的**烘焙几何**（plan #24 DP-3）：当前路由（含倒角圆弧
-/// 采样，roundness > 0 时）固化为 Polyline 自由顶点——渲染/命中同源推导，视觉
-/// 精确不变；此后顶点自由可编辑（正交性不再是受维护的不变量）。半径语义与
-/// 命中/渲染一致（`min(两端点 AABB) × roundness × 0.5`）。
-pub fn elbow_baked_points(
-    points: &[(f32, f32)],
-    mid_offset: f32,
-    roundness: f32,
-) -> Vec<(f32, f32)> {
-    let base = elbow_polyline_offset(points, mid_offset);
-    let (mut w, mut h) = (1.0f32, 1.0f32);
-    if let Some((min_x, min_y)) = points.iter().fold(None::<(f32, f32)>, |acc, &(x, y)| {
-        Some(match acc {
-            Some((mx, my)) => (mx.min(x), my.min(y)),
-            None => (x, y),
-        })
-    }) {
-        let (max_x, max_y) = points
-            .iter()
-            .fold((min_x, min_y), |(mx, my), &(x, y)| (mx.max(x), my.max(y)));
-        w = (max_x - min_x).max(1.0);
-        h = (max_y - min_y).max(1.0);
-    }
-    let r = roundness_radius((w, h), roundness);
-    if r > 1e-3 {
-        round_orthogonal_corners(&base, false, r)
-    } else {
-        base
-    }
+    elbow_polyline_offset(pts, 0.0, elbow_axis_infer(pts))
 }
 
 /// **elbow 路由函数**（plan #24 首版 = 确定性 L/Z/S 规则；阶段 C 换 A* 避障）：
-/// 两端点 + bar 偏移 → 正交路径点列，是 `ShapeType::Elbow` 唯一的派生几何源
+/// 两端点 + bar 偏移 + 取向 → 正交路径点列，是 `ShapeType::Elbow` 唯一的派生几何源
 /// （命中 / 渲染 / 手柄 / 导出全消费它——两边必须算出同一条路径，否则"看着在
 /// 线上"却点不中）。把两端点展开成「短腿 → 中间正交 bar → 短腿」的 3 段正交折线，
-/// bar 沿**短轴**（垂直于两端点主导轴的方向）从连线中点平移 `offset`（局部坐标，
-/// 有符号）。
+/// bar 垂直于取向轴，从连线中点平移 `offset`（局部坐标，有符号）。
 ///
-/// 启发式：先沿较小 Δ 的那条轴走一段"短腿"，再垂直转折，末段与首段平行进入另一端。
-/// 对流程图绑定连线恒正确：主轴间距固定为 gap、交叉轴间距总是 ≥ 一节点宽 + gap（更大），
-/// 故"较小 Δ 轴"= 主轴 = 两端朝向彼此的那条边界法线，首末段正好沿法线离开/进入
-/// （右/左连线→水平先走、上/下连线→垂直先走）。对任意手动画也是一条干净的对称 Z。
+/// 取向 `axis` 由 [`elbow_axis_effective`] 解析（绑定锚点优先 / 无绑定滞回）后传入：
+/// `HorizontalFirst` = 首段水平（bar 为垂直段）；`VerticalFirst` = 首段垂直（bar 为
+/// 水平段）。取向在端点变化的变更点解析并写回存储字段，本函数**只消费不解析**——
+/// 这是 plan #21 DP-B 的核心：历史上按 `|dx| <= |dy|` 即时选轴，两端点连线跨过
+/// 对角线时整条路径 90° 跳变，绑定连线被拖动的图形时会破坏流程图结构；改为显式
+/// 取向后，对角线附近的路径由滞回状态钉住。
 ///
 /// `offset` 是拖 bar 的用户意图（存储原值不 clamp）：端点移动 / 绑定重算后 bar 相对
 /// 位置保持；仅当 bar 越过任一端点时由 clamp 收到两端点之间，走线恒为干净 Z 形、
@@ -1711,7 +1725,7 @@ pub fn elbow_baked_points(
 ///
 /// 仅两点线性对象有意义（其余长度原样返回）；首/末点保持与输入一致，退化（近水平/
 /// 垂直）时直接返回直线，避免零长段干扰箭头方向与命中。
-pub fn elbow_polyline_offset(pts: &[(f32, f32)], offset: f32) -> Vec<(f32, f32)> {
+pub fn elbow_polyline_offset(pts: &[(f32, f32)], offset: f32, axis: ElbowAxis) -> Vec<(f32, f32)> {
     if pts.len() != 2 {
         return pts.to_vec();
     }
@@ -1722,19 +1736,130 @@ pub fn elbow_polyline_offset(pts: &[(f32, f32)], offset: f32) -> Vec<(f32, f32)>
     if dx.abs() < EPS || dy.abs() < EPS {
         return vec![a, b];
     }
-    if dx.abs() <= dy.abs() {
-        // 水平先走：bar 为垂直段（x = 中点 x + offset），clamp 在两端点 x 之间。
-        let mx = bar_axis((a.0 + b.0) * 0.5, offset, a.0, b.0);
-        let mut out = vec![a, (mx, a.1), (mx, b.1), b];
-        out.dedup(); // clamp 贴端点时可能产生重合点，去零长段（防箭头方向 NaN）
-        out
-    } else {
-        // 垂直先走：bar 为水平段（y = 中点 y + offset），clamp 在两端点 y 之间。
-        let my = bar_axis((a.1 + b.1) * 0.5, offset, a.1, b.1);
-        let mut out = vec![a, (a.0, my), (b.0, my), b];
-        out.dedup();
-        out
+    match axis {
+        ElbowAxis::HorizontalFirst => {
+            // 水平先走：bar 为垂直段（x = 中点 x + offset），clamp 在两端点 x 之间。
+            let mx = bar_axis((a.0 + b.0) * 0.5, offset, a.0, b.0);
+            let mut out = vec![a, (mx, a.1), (mx, b.1), b];
+            out.dedup(); // clamp 贴端点时可能产生重合点，去零长段（防箭头方向 NaN）
+            out
+        }
+        ElbowAxis::VerticalFirst => {
+            // 垂直先走：bar 为水平段（y = 中点 y + offset），clamp 在两端点 y 之间。
+            let my = bar_axis((a.1 + b.1) * 0.5, offset, a.1, b.1);
+            let mut out = vec![a, (a.0, my), (b.0, my), b];
+            out.dedup();
+            out
+        }
     }
+}
+
+/// 滞回翻转系数（plan #21 DP-B）：仅当**另一轴**的 Δ 超出当前轴此倍数时才翻转
+/// 取向。1.3 意味着对角线两侧各留 ±30% 的稳定带——拖动端点 / 绑定图形在对角线
+/// 附近来回移动时取向不再振荡，也不再有"跨线即 90° 跳变"。
+const ELBOW_FLIP_FACTOR: f32 = 1.3;
+
+/// 按两端点几何即时推断取向（历史规则）：`|dx| <= |dy|` → 水平先走。
+/// 仅作 `elbow_axis = None`（旧存档）的回退与新取向滞回的初始值。
+pub fn elbow_axis_infer(pts: &[(f32, f32)]) -> ElbowAxis {
+    if pts.len() == 2 {
+        let dx = (pts[1].0 - pts[0].0).abs();
+        let dy = (pts[1].1 - pts[0].1).abs();
+        if dx > dy {
+            return ElbowAxis::VerticalFirst;
+        }
+    }
+    ElbowAxis::HorizontalFirst
+}
+
+/// elbow 消费方取向解析：直接读存储值，`None`（旧存档）按几何即时推断（历史
+/// 规则，行为不变）。**不做任何翻转**——渲染 / 命中 / 手柄 / 导出对同一存储值
+/// 必须得到同一路径；滞回翻转只发生在端点变化的变更点
+/// （[`elbow_axis_hysteresis`]，由 `Scene::resolve_elbow_axis` 调用并写回）。
+pub fn elbow_axis_effective(pts: &[(f32, f32)], stored: Option<ElbowAxis>) -> ElbowAxis {
+    stored.unwrap_or_else(|| elbow_axis_infer(pts))
+}
+
+/// elbow 取向滞回解析（变更点专用）：`None`（旧档）按几何即时推断；`Some(current)`
+/// 只有当**另一轴**的 Δ 超出当前轴 [`ELBOW_FLIP_FACTOR`] 倍时才翻转，对角线附近
+/// 取向被当前状态钉住（拖动端点 / 绑定图形来回移动不振荡、不跨线跳变）。
+///
+/// 绑定锚点驱动的取向优先级更高（[`elbow_axis_from_anchor`]），不经本函数——
+/// 锚点所在边决定走向，与两端点相对位置解耦。
+pub fn elbow_axis_hysteresis(pts: &[(f32, f32)], stored: Option<ElbowAxis>) -> ElbowAxis {
+    let Some(current) = stored else {
+        return elbow_axis_infer(pts);
+    };
+    if pts.len() != 2 {
+        return current;
+    }
+    let dx = (pts[1].0 - pts[0].0).abs();
+    let dy = (pts[1].1 - pts[0].1).abs();
+    match current {
+        ElbowAxis::HorizontalFirst => {
+            if dy > dx * ELBOW_FLIP_FACTOR {
+                ElbowAxis::VerticalFirst
+            } else {
+                ElbowAxis::HorizontalFirst
+            }
+        }
+        ElbowAxis::VerticalFirst => {
+            if dx > dy * ELBOW_FLIP_FACTOR {
+                ElbowAxis::HorizontalFirst
+            } else {
+                ElbowAxis::VerticalFirst
+            }
+        }
+    }
+}
+
+/// 绑定锚点 → 取向（plan #21 DP-B）：锚点钉在目标形状局部包围盒（`size` 为
+/// w×h）的哪条边上，连线就沿该边法线进/出——左/右边缘（法线水平）→
+/// `HorizontalFirst`，上/下边缘（法线垂直）→ `VerticalFirst`。判定取锚点到四边
+/// 的最近距离，对矩形 / 椭圆 / 菱形 / 文字容器等局部 AABB 语义统一成立。
+///
+/// 由此**结构走向与两端点相对位置解耦**：流程图连线拖动被绑图形无论拖到什么
+/// 相对位置（Δ 关系如何翻转），首/末段始终垂直离开/进入边界，不再跳变。
+pub fn elbow_axis_from_anchor(size: (f32, f32), anchor: (f32, f32)) -> ElbowAxis {
+    let (w, h) = size;
+    let (ax, ay) = anchor;
+    let dist = (ax, w - ax, ay, h - ay); // 到左/右/上/下边的距离
+    if dist.0.min(dist.1) <= dist.2.min(dist.3) {
+        ElbowAxis::HorizontalFirst
+    } else {
+        ElbowAxis::VerticalFirst
+    }
+}
+
+/// elbow 无障碍回退路由（`Scene` 不可达的消费方——命中测试兜底、导出边缘
+/// 路径——用）：heading 由存储取向推导（末段与首段同轴同向，Z 拓扑），无障碍
+/// 时与现行确定性 L/Z/S 逐点一致。Scene 感知的完整路由（含障碍避让、绑定锚点
+/// heading）见 `Scene::elbow_route_local`。
+pub fn elbow_route_fallback(
+    points: &[(f32, f32)],
+    offset: f32,
+    axis: ElbowAxis,
+    fixed_segments: &[crate::routing::ElbowFixedSegment],
+) -> Vec<(f32, f32)> {
+    if points.len() != 2 {
+        return points.to_vec();
+    }
+    let (a, b) = (points[0], points[1]);
+    let heading = match axis {
+        ElbowAxis::HorizontalFirst => ((b.0 - a.0).signum(), 0.0),
+        ElbowAxis::VerticalFirst => (0.0, (b.1 - a.1).signum()),
+    };
+    crate::routing::elbow_route(&crate::routing::ElbowRouteInput {
+        start: a,
+        end: b,
+        start_heading: heading,
+        end_heading: heading,
+        start_bound: false,
+        end_bound: false,
+        offset,
+        fixed_segments,
+        obstacles: &[],
+    })
 }
 
 /// bar 轴坐标 = 中点 + 偏移，clamp 在两端点（`p`/`q`）之间——bar 恒落在端点内侧，
@@ -2097,15 +2222,17 @@ mod tests {
     fn elbow_offset_shifts_bar_on_short_axis() {
         // dx>dy → 垂直先走、bar 为水平段 y = 中点 + offset；offset=0 与居中版一致。
         let pts = [(0.0, 0.0), (100.0, 40.0)];
-        assert_eq!(elbow_polyline_offset(&pts, 0.0), elbow_polyline(&pts));
+        let v = ElbowAxis::VerticalFirst;
+        let h = ElbowAxis::HorizontalFirst;
+        assert_eq!(elbow_polyline_offset(&pts, 0.0, v), elbow_polyline(&pts));
         assert_eq!(
-            elbow_polyline_offset(&pts, 10.0),
+            elbow_polyline_offset(&pts, 10.0, v),
             vec![(0.0, 0.0), (0.0, 30.0), (100.0, 30.0), (100.0, 40.0)]
         );
         // dx<dy → bar 为垂直段 x = 中点 + offset，负偏移向 x-。
         let pts = [(0.0, 0.0), (40.0, 100.0)];
         assert_eq!(
-            elbow_polyline_offset(&pts, -8.0),
+            elbow_polyline_offset(&pts, -8.0, h),
             vec![(0.0, 0.0), (12.0, 0.0), (12.0, 100.0), (40.0, 100.0)]
         );
     }
@@ -2114,20 +2241,111 @@ mod tests {
     fn elbow_offset_clamped_between_endpoints_no_hook() {
         // 偏移存原值；几何层把 bar 收在两端点之间（不出回钩），贴端点时去零长段。
         let pts = [(0.0, 0.0), (100.0, 40.0)];
+        let v = ElbowAxis::VerticalFirst;
         // 越界 +500 → bar 贴 b.y=40，末段与端点重合被去掉（3 点）。
         assert_eq!(
-            elbow_polyline_offset(&pts, 500.0),
+            elbow_polyline_offset(&pts, 500.0, v),
             vec![(0.0, 0.0), (0.0, 40.0), (100.0, 40.0)]
         );
         // 越界 -500 → bar 贴 a.y=0。
         assert_eq!(
-            elbow_polyline_offset(&pts, -500.0),
+            elbow_polyline_offset(&pts, -500.0, v),
             vec![(0.0, 0.0), (100.0, 0.0), (100.0, 40.0)]
         );
         // 仍保持正交 + 端点不变量。
-        let out = elbow_polyline_offset(&pts, 500.0);
+        let out = elbow_polyline_offset(&pts, 500.0, v);
         assert_eq!(out.first().unwrap(), &pts[0]);
         assert_eq!(out.last().unwrap(), &pts[1]);
+    }
+
+    #[test]
+    fn elbow_axis_infer_matches_historic_rule() {
+        // 历史 |dx| <= |dy| 规则：dx<dy 水平先走，dx>dy 垂直先走。
+        assert_eq!(
+            elbow_axis_infer(&[(0.0, 0.0), (40.0, 100.0)]),
+            ElbowAxis::HorizontalFirst
+        );
+        assert_eq!(
+            elbow_axis_infer(&[(0.0, 0.0), (100.0, 40.0)]),
+            ElbowAxis::VerticalFirst
+        );
+        // 恰在对角线上 → 水平先走（<=）。
+        assert_eq!(
+            elbow_axis_infer(&[(0.0, 0.0), (100.0, 100.0)]),
+            ElbowAxis::HorizontalFirst
+        );
+    }
+
+    #[test]
+    fn elbow_axis_none_stored_infers_geometry() {
+        // 旧存档（stored=None）：与即时推断一致（行为不变承诺）。
+        let pts = [(0.0, 0.0), (40.0, 100.0)];
+        assert_eq!(elbow_axis_effective(&pts, None), elbow_axis_infer(&pts));
+        assert_eq!(
+            elbow_axis_effective(&pts, Some(ElbowAxis::VerticalFirst)),
+            ElbowAxis::VerticalFirst,
+            "消费方直读存储值，不做翻转"
+        );
+        // 滞回解析（变更点专用）同样以推断为 None 回退。
+        assert_eq!(elbow_axis_hysteresis(&pts, None), elbow_axis_infer(&pts));
+    }
+
+    #[test]
+    fn elbow_axis_hysteresis_holds_near_diagonal() {
+        let h = ElbowAxis::HorizontalFirst;
+        let v = ElbowAxis::VerticalFirst;
+        // stored=HorizontalFirst：|dy| 在 1.3|dx| 以内（含旧翻转线 |dy|=|dx| 附近）
+        // 不翻转——这正是跳变修复点：历史规则在 dy 越过 dx 一刻 90° 翻转。
+        assert_eq!(
+            elbow_axis_hysteresis(&[(0.0, 0.0), (100.0, 90.0)], Some(h)),
+            h,
+            "dy 略小于 dx 不翻转"
+        );
+        assert_eq!(
+            elbow_axis_hysteresis(&[(0.0, 0.0), (100.0, 110.0)], Some(h)),
+            h,
+            "dy 略大于 dx（1.1×）不翻转"
+        );
+        assert_eq!(
+            elbow_axis_hysteresis(&[(0.0, 0.0), (100.0, 140.0)], Some(h)),
+            v,
+            "dy 越过 1.3× 阈值才翻转"
+        );
+        // stored=VerticalFirst：对称方向，|dx| 略大于 |dy| 同样钉住。
+        assert_eq!(
+            elbow_axis_hysteresis(&[(0.0, 0.0), (110.0, 100.0)], Some(v)),
+            v,
+            "dx 略大于 dy 不翻转"
+        );
+        assert_eq!(
+            elbow_axis_hysteresis(&[(0.0, 0.0), (140.0, 100.0)], Some(v)),
+            h,
+            "dx 越过 1.3× 阈值才翻转"
+        );
+    }
+
+    #[test]
+    fn elbow_axis_from_anchor_edge_sides() {
+        // 目标局部 AABB 100×80；锚点在右边缘中点 → 法线水平 → 水平先走。
+        assert_eq!(
+            elbow_axis_from_anchor((100.0, 80.0), (100.0, 40.0)),
+            ElbowAxis::HorizontalFirst
+        );
+        // 左边缘。
+        assert_eq!(
+            elbow_axis_from_anchor((100.0, 80.0), (0.0, 40.0)),
+            ElbowAxis::HorizontalFirst
+        );
+        // 上边缘 → 法线垂直 → 垂直先走。
+        assert_eq!(
+            elbow_axis_from_anchor((100.0, 80.0), (50.0, 0.0)),
+            ElbowAxis::VerticalFirst
+        );
+        // 下边缘。
+        assert_eq!(
+            elbow_axis_from_anchor((100.0, 80.0), (50.0, 80.0)),
+            ElbowAxis::VerticalFirst
+        );
     }
 
     #[test]
@@ -2162,6 +2380,39 @@ mod tests {
             ItemKind::Shape {
                 elbow_mid_offset, ..
             } => assert_eq!(*elbow_mid_offset, 0.0),
+            _ => panic!("kind 往返变形"),
+        }
+    }
+
+    #[test]
+    fn elbow_axis_serde_roundtrip_and_legacy_default() {
+        let mut item = make_line(vec![(0.0, 0.0), (80.0, 40.0)], 10.0, 20.0);
+        if let ItemKind::Shape {
+            shape_type,
+            elbow_axis,
+            ..
+        } = &mut item.kind
+        {
+            *shape_type = ShapeType::Elbow;
+            *elbow_axis = Some(ElbowAxis::VerticalFirst);
+        }
+        let json = serde_json::to_string(&item).unwrap();
+        let back: Item = serde_json::from_str(&json).unwrap();
+        match &back.kind {
+            ItemKind::Shape { elbow_axis, .. } => {
+                assert_eq!(*elbow_axis, Some(ElbowAxis::VerticalFirst))
+            }
+            _ => panic!("kind 往返变形"),
+        }
+        // 旧存档兼容：kind JSON 无该字段 → None（按几何即时推断，行为不变）。
+        let mut v: serde_json::Value = serde_json::to_value(&item).unwrap();
+        v["kind"]["Shape"]
+            .as_object_mut()
+            .unwrap()
+            .remove("elbow_axis");
+        let legacy: Item = serde_json::from_value(v).unwrap();
+        match &legacy.kind {
+            ItemKind::Shape { elbow_axis, .. } => assert_eq!(*elbow_axis, None),
             _ => panic!("kind 往返变形"),
         }
     }

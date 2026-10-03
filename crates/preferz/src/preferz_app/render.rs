@@ -194,7 +194,10 @@ impl PReferZApp {
             // 风格器分发（CleanStyler / RoughStyler）在 build_shape_visuals 内按 sloppiness 档位决定。
             ItemKind::Shape { .. } => {
                 let to_screen = item_local_to_screen(item, &self.viewport);
-                let shapes = build_shape_visuals(&item.kind, &to_screen, self.viewport.zoom);
+                // elbow 路由由 Scene 派生（阶段 C 同源；非 elbow 返回空）。
+                let route = self.scene.elbow_route_local(item);
+                let shapes =
+                    build_shape_visuals(&item.kind, &route, &to_screen, self.viewport.zoom);
                 ui.painter().extend(shapes);
                 self.draw_edge_label(ui, item);
             }
@@ -515,7 +518,10 @@ impl PReferZApp {
                 // Shape：风格器分发同 render_scene，sloppiness 档位决定 Clean 或手绘。
                 ItemKind::Shape { .. } => {
                     let to_screen = item_local_to_screen(item, &self.viewport);
-                    let shapes = build_shape_visuals(&item.kind, &to_screen, self.viewport.zoom);
+                    // elbow 路由由 Scene 派生（阶段 C 同源；非 elbow 返回空）。
+                    let route = self.scene.elbow_route_local(item);
+                    let shapes =
+                        build_shape_visuals(&item.kind, &route, &to_screen, self.viewport.zoom);
                     ui.painter().extend(shapes);
                     self.draw_edge_label(ui, item);
                 }
@@ -586,8 +592,10 @@ impl PReferZApp {
             if is_selected && selection_count == 1 && crop_item_id != Some(item.id) {
                 let show_flip = should_show_flip(item);
                 let show_rotate = should_show_rotate(item);
+                let route = self.scene.elbow_route_local(item);
                 self.transform_handles.render(
                     item,
+                    &route,
                     ui.painter(),
                     &self.viewport,
                     show_flip,

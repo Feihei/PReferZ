@@ -24,27 +24,28 @@ use preferz_core::commands::{
     AddItem, AddItems, ArrangeItems, ArrowHeads, ConvertElbowToPolyline, CropItems, DeleteItems,
     EditShapePoints, EditTextContent, FillChange, FillState, FlipItems, FrameGeom, FreedrawStyle,
     MoveItems, MultiCommand, NormalizeItems, RenumberFrame, ReorderItems, ReorderRelative,
-    SetArrowHeads, SetClosed, SetCurveType, SetElbowOffset, SetFrameFollowGlobal, SetFrameNumber,
-    SetFrameSize, SetFreedrawStyle, SetGroup, SetPixmapProps, SetPixmapStyle, SetRoundness,
-    SetShapeFill, SetSloppiness, SetStrokeStyle, SetTextStyle, TransformItem,
+    SetArrowHeads, SetClosed, SetCurveType, SetElbowFixedSegments, SetFrameFollowGlobal,
+    SetFrameNumber, SetFrameSize, SetFreedrawStyle, SetGroup, SetPixmapProps, SetPixmapStyle,
+    SetRoundness, SetShapeFill, SetSloppiness, SetStrokeStyle, SetTextStyle, TransformItem,
 };
 use preferz_core::flowchart;
 use preferz_core::mermaid::{
     layout_flowchart, parse_mermaid_flowchart, MermaidArrow, MermaidShape,
 };
 use preferz_core::shape::{
-    ArrowHeadStyle, CurveType, DashStyle, FillStyle, FontFamily, PixmapStyle, ShapeType,
+    ArrowHeadStyle, CurveType, DashStyle, ElbowAxis, FillStyle, FontFamily, PixmapStyle, ShapeType,
     Sloppiness, StrokeStyle, TextAlignH, TextAlignV, TextStyle,
 };
 use preferz_core::snap;
 use preferz_core::spaces::{CanvasPoint, CanvasRect, CanvasSize, CanvasVector};
 use preferz_core::{
-    parse_two_column_data, BoxSelectMode, ChartType, Command, CropRect, EndpointBinding, Item,
-    ItemId, ItemKind, Scene,
+    parse_two_column_data, BoxSelectMode, ChartType, Command, CropRect, ElbowFixedSegment,
+    EndpointBinding, Item, ItemId, ItemKind, Scene,
 };
 // draw_chart_item 的局部坐标变换与图表默认尺寸常量（core 仅在 item 模块导出）。
 use preferz_core::item::{
-    constrain_drag_to_ratio, frame_geom_for_ratio, ItemLocalSpace, CHART_DEFAULT_SIZE,
+    constrain_drag_to_ratio, elbow_axis_from_anchor, frame_geom_for_ratio, ItemLocalSpace,
+    CHART_DEFAULT_SIZE,
 };
 use preferz_fileio::{PrzFile, ViewportMeta};
 use std::collections::HashMap;
@@ -283,14 +284,26 @@ enum DragState {
         /// 触发阈值时在该端外侧插入一个复制顶点（原端点变成中间顶点），随后拖的
         /// 是新点；未越阈值就释放 = Alt+单击 → 删除所点顶点。
         alt_extend: bool,
+        /// elbow 取向滞回状态的拖拽前快照（plan #21 DP-B）：仅 `ShapeType::Elbow`
+        /// 端点拖拽预览会解析并写回新取向，释放时经
+        /// `EditShapePoints::with_elbow_axis_change` 随点集同占一条 undo；非
+        /// elbow 拖拽恒 `None`（无变更）。
+        start_axis: Option<ElbowAxis>,
     },
-    /// 拖拽 elbow 直角折线的中间 bar（plan #16 E1）：预览直接改 `elbow_mid_offset`，
-    /// 释放入 `SetElbowOffset`（skip_first_redo）。bar 沿短轴平移，端点不动、
-    /// 绑定不涉；`resolve_bindings` 重算端点后偏移保持（用户意图）。
-    ElbowBar {
+    /// 拖拽 elbow 中间段（plan #24 阶段 D）：预览把该段临时固化进
+    /// `fixed_segments`（路由绕其重算），释放入 `SetElbowFixedSegments`
+    /// （skip_first_redo）。拖已固定段 = 更新其坐标；拖自由段 = 新增固定；
+    /// 位移过小释放 = 还原无操作。段沿自身轴平移（垂直滑移），端点不动。
+    ElbowSegment {
         item_id: ItemId,
         start_canvas: CanvasPoint,
-        start_offset: f32,
+        /// 被拖段拖拽开始时的两端点（item 局部坐标）。
+        orig_start: (f32, f32),
+        orig_end: (f32, f32),
+        /// 该段拖拽开始时是否已是固定段。
+        was_fixed: bool,
+        /// 拖拽前完整固定段列表（undo old / 预览复位基准）。
+        orig_fixed: Vec<ElbowFixedSegment>,
     },
     /// 用 Frame 工具拖拽创建画框（两点式：start → current）。
     CreatingFrame {
@@ -543,12 +556,14 @@ type SnapHitLocal = (ItemId, (f32, f32));
 
 /// 移动整条线时的吸附快照（plan #14）：begin_drag 时对移动组内的每条
 /// Polyline 记下初始 points 与绑定，供预览复位与释放时生成 EditShapePoints。
+/// elbow 另记取向快照（plan #21 DP-B）：预览刷新取向后随点集入同一条 undo。
 #[derive(Clone)]
 struct LineSnapState {
     line_id: ItemId,
     start_points: Vec<(f32, f32)>,
     start_start_binding: Option<EndpointBinding>,
     start_end_binding: Option<EndpointBinding>,
+    start_axis: Option<ElbowAxis>,
 }
 
 /// 裁剪模式状态（spec §2.2 裁剪）。
@@ -1794,8 +1809,12 @@ impl eframe::App for PReferZApp {
                     let selected = self.selected_items_snapshot();
                     // 多选时只支持统一移动，不检测单独手柄（手柄不可见却有 hover 会造成混乱）
                     if selected.len() == 1 {
-                        self.transform_handles
-                            .update_hover(pos, &selected, &self.viewport);
+                        self.transform_handles.update_hover(
+                            pos,
+                            &self.scene,
+                            &selected,
+                            &self.viewport,
+                        );
                     } else {
                         self.transform_handles.hover_handle = Handle::None;
                     }
@@ -1808,7 +1827,7 @@ impl eframe::App for PReferZApp {
                         }
                         Handle::Rotate => egui::CursorIcon::Grab,
                         Handle::Endpoint(_) | Handle::SegmentMid(_) => egui::CursorIcon::Grab,
-                        Handle::ElbowBar => egui::CursorIcon::Grab,
+                        Handle::ElbowSegment(_) => egui::CursorIcon::Grab,
                         Handle::FlipH => egui::CursorIcon::ResizeHorizontal,
                         Handle::FlipV => egui::CursorIcon::ResizeVertical,
                         Handle::None => {
@@ -2608,7 +2627,7 @@ fn drag_state_name(d: &DragState) -> &'static str {
         DragState::BoxSelect { .. } => "BoxSelect",
         DragState::CreatingShape { .. } => "CreatingShape",
         DragState::LineEndpoint { .. } => "LineEndpoint",
-        DragState::ElbowBar { .. } => "ElbowBar",
+        DragState::ElbowSegment { .. } => "ElbowSegment",
         DragState::CreatingFrame { .. } => "CreatingFrame",
         DragState::CreatingPolygon { .. } => "CreatingPolygon",
         DragState::Drawing { .. } => "Drawing",
@@ -3448,9 +3467,9 @@ mod tests {
     }
 
     #[test]
-    fn elbow_bar_drag_updates_offset_and_undo_restores() {
-        // plan #24：独立 ShapeType::Elbow 的 bar 拖拽——预览直改 elbow_mid_offset，
-        // 释放入 SetElbowOffset（skip_first_redo），undo 还原。
+    fn elbow_segment_drag_fixes_segment_and_undo_restores() {
+        // plan #24 阶段 D：拖 elbow 中间段——预览直改 fixed_segments（该段临时
+        // 固化，路由绕其重算），释放入 SetElbowFixedSegments，undo 还原。
         let mut app = PReferZApp::new();
         let item = Item::new_elbow(
             vec![(0.0, 0.0), (200.0, 100.0)],
@@ -3463,20 +3482,26 @@ mod tests {
         );
         let id = item.id;
         app.scene.add_item(item);
-        // bar 中点 (100, 50)（局部 == 画布：pos 0 / scale 1）——ElbowBar 手柄所在
-        app.drag = DragState::ElbowBar {
+        // 中间 bar 段（Z 路由 4 点：段 1 = (0,0)→(0,100)? 按路由取实际段）：
+        // dx=200 > dy=100 → 垂直先走，bar 为水平段 y=50；拖拽手柄命中该段。
+        app.drag = DragState::ElbowSegment {
             item_id: id,
             start_canvas: CanvasPoint::new(100.0, 50.0),
-            start_offset: 0.0,
+            orig_start: (0.0, 50.0),
+            orig_end: (200.0, 50.0),
+            was_fixed: false,
+            orig_fixed: Vec::new(),
         };
-        // 垂直拖 30（局部 == 画布）：|dx|>|dy| → 偏移走 y 分量
+        // 垂直拖 30（局部 == 画布）：水平段沿 y 滑移
         let moved = app.viewport.canvas_to_pos2(CanvasPoint::new(100.0, 80.0));
         app.update_drag_preview(moved, false, false);
         match &app.scene.get_item(&id).unwrap().kind {
-            ItemKind::Shape {
-                elbow_mid_offset, ..
-            } => {
-                assert!((*elbow_mid_offset - 30.0).abs() < 1e-4, "bar 偏移跟随拖拽")
+            ItemKind::Shape { fixed_segments, .. } => {
+                assert_eq!(fixed_segments.len(), 1, "拖拽预览即固化该段");
+                assert!(
+                    (fixed_segments[0].start.1 - 80.0).abs() < 1e-3,
+                    "段平移到 y=80"
+                );
             }
             _ => panic!("应为 Shape"),
         }
@@ -3484,10 +3509,8 @@ mod tests {
         assert_eq!(app.undo_stack.undo.len(), 1, "释放固化一条 undo");
         assert!(app.perform_undo());
         match &app.scene.get_item(&id).unwrap().kind {
-            ItemKind::Shape {
-                elbow_mid_offset, ..
-            } => {
-                assert_eq!(*elbow_mid_offset, 0.0, "undo 还原偏移")
+            ItemKind::Shape { fixed_segments, .. } => {
+                assert!(fixed_segments.is_empty(), "undo 还原固定段列表")
             }
             _ => panic!("应为 Shape"),
         }
@@ -4052,6 +4075,7 @@ mod tests {
             start_points,
             base_pos,
             alt_extend: false,
+            start_axis: None,
         };
         app.end_drag();
     }

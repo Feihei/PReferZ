@@ -1,8 +1,8 @@
 use crate::item::{CropRect, EndpointBinding, ItemId, ItemKind};
 use crate::scene::{RenumberPlan, Scene};
 use crate::shape::{
-    ArrowHeadStyle, CurveType, FillStyle, PixmapStyle, ShapeType, Sloppiness, StrokeStyle,
-    TextStyle,
+    ArrowHeadStyle, CurveType, ElbowAxis, FillStyle, PixmapStyle, ShapeType, Sloppiness,
+    StrokeStyle, TextStyle,
 };
 use crate::spaces::CanvasVector;
 use crate::transform::Transform;
@@ -127,6 +127,11 @@ pub struct EditShapePoints {
     new_end_binding: Option<Option<EndpointBinding>>,
     old_closed: Option<bool>,
     new_closed: Option<bool>,
+    /// elbow 取向滞回状态变更（plan #21 DP-B）：`Some((old, new))` = 本次端点
+    /// 拖拽解析出的取向与拖拽前存储值；`None` = 无变更（非 elbow / 取向未翻）。
+    /// 与绑定同理由 UI 预览直改、随点集同占一条 undo——否则 undo 还原端点后
+    /// 残留新取向，路由与拖拽前不一致（视觉跳变）。
+    axis_change: Option<(Option<ElbowAxis>, Option<ElbowAxis>)>,
 }
 
 impl EditShapePoints {
@@ -141,6 +146,7 @@ impl EditShapePoints {
             new_end_binding: None,
             old_closed: None,
             new_closed: None,
+            axis_change: None,
         }
     }
 
@@ -167,6 +173,17 @@ impl EditShapePoints {
         self.new_closed = Some(new_closed);
         self
     }
+
+    /// 记录 elbow 取向变更（plan #21 DP-B）。`(old, new)` 均为 `Option<ElbowAxis>`
+    /// 存储值（`None` = 旧档未锁定态）；仅取向确实变化时调用。
+    pub fn with_elbow_axis_change(
+        mut self,
+        old: Option<ElbowAxis>,
+        new: Option<ElbowAxis>,
+    ) -> Self {
+        self.axis_change = Some((old, new));
+        self
+    }
 }
 
 impl Command for EditShapePoints {
@@ -177,6 +194,7 @@ impl Command for EditShapePoints {
                 start_binding,
                 end_binding,
                 closed,
+                elbow_axis,
                 ..
             } = &mut item.kind
             {
@@ -189,6 +207,9 @@ impl Command for EditShapePoints {
                 if let Some(c) = self.new_closed {
                     *closed = c;
                 }
+                if let Some((_, new)) = self.axis_change {
+                    *elbow_axis = new;
+                }
             }
         }
     }
@@ -200,6 +221,7 @@ impl Command for EditShapePoints {
                 start_binding,
                 end_binding,
                 closed,
+                elbow_axis,
                 ..
             } = &mut item.kind
             {
@@ -211,6 +233,9 @@ impl Command for EditShapePoints {
                 }
                 if let Some(c) = self.old_closed {
                     *closed = c;
+                }
+                if let Some((old, _)) = self.axis_change {
+                    *elbow_axis = old;
                 }
             }
         }
@@ -447,7 +472,7 @@ impl Command for SetCurveType {
 // ─────────────────────────── Set elbow offset ───────────────────────────
 
 /// elbow 连接器 → 多段线**烘焙**（plan #24 DP-3）：当前路由（含倒角圆弧采样，
-/// [`preferz_core::item::elbow_baked_points`]）固化为 Polyline 自由顶点，视觉
+/// `Scene::elbow_route_local`）固化为 Polyline 自由顶点，视觉
 /// 精确不变；描边/箭头/绑定/标签/seed 等全部保留，`roundness` / `elbow_mid_offset`
 /// 归零（已消费进烘焙顶点）。反向（Polyline → Elbow）不做（DP-3 拍板）。存
 /// old / new 两份 kind 快照，undo / redo 原样换回。
@@ -463,8 +488,6 @@ impl ConvertElbowToPolyline {
         let item = scene.get_item(&item_id)?;
         let ItemKind::Shape {
             shape_type: ShapeType::Elbow,
-            points,
-            elbow_mid_offset,
             roundness,
             ..
         } = &item.kind
@@ -472,7 +495,16 @@ impl ConvertElbowToPolyline {
             return None;
         };
         let old_kind = Box::new(item.kind.clone());
-        let baked = crate::item::elbow_baked_points(points, *elbow_mid_offset, *roundness);
+        // 烘焙 Scene 感知的**完整路由**（含障碍避让/固定段），与渲染/命中同源
+        // （plan #24 阶段 C）；倒角随 roundness 一并固化进自由顶点。
+        let route = scene.elbow_route_local(item);
+        let size = item.base_size();
+        let r = crate::item::roundness_radius((size.x, size.y), *roundness);
+        let baked = if r > 1e-3 {
+            crate::item::round_orthogonal_corners(&route, false, r)
+        } else {
+            route
+        };
         let mut new_kind = item.kind.clone();
         if let ItemKind::Shape {
             shape_type,
@@ -517,28 +549,27 @@ impl Command for ConvertElbowToPolyline {
     }
 }
 
-/// 批量设置 elbow 连接器中间 bar 的交叉轴偏移（plan #16 E1）。仅
-/// `ShapeType::Elbow` 消费该值；其它 shape 写入无害（不读）。单项用 [`Self::new`]，
-/// 多选批量用 [`Self::new_batch`]。undo / redo 写回原值，redo 不 clamp——
-/// clamp 属几何层职责（[`preferz_core::item::elbow_polyline_offset`]），命令只存
-/// 用户意图原值，端点移动后超界由几何兜底。
-pub struct SetElbowOffset {
-    items: Vec<(ItemId, f32, f32)>,
+/// 设置 elbow 固定段列表（plan #24 阶段 D，DP-5：`SetElbowOffset` 泛化）。
+/// 拖中间段固化 / 拖已固定段改位 / 释放还原均以**整表快照**描述：整表替换免
+/// 去段级 index 漂移问题（DP-5），一次拖拽只占一条 undo。预览已直改 item，
+/// push 后跳过首次 redo。
+pub struct SetElbowFixedSegments {
+    item_id: ItemId,
+    old: Vec<crate::routing::ElbowFixedSegment>,
+    new: Vec<crate::routing::ElbowFixedSegment>,
     preview_already_applied: bool,
 }
 
-impl SetElbowOffset {
-    pub fn new(item_id: ItemId, old_offset: f32, new_offset: f32) -> Self {
+impl SetElbowFixedSegments {
+    pub fn new(
+        item_id: ItemId,
+        old: Vec<crate::routing::ElbowFixedSegment>,
+        new: Vec<crate::routing::ElbowFixedSegment>,
+    ) -> Self {
         Self {
-            items: vec![(item_id, old_offset, new_offset)],
-            preview_already_applied: false,
-        }
-    }
-
-    /// 批量构造：`(item_id, old, new)` 三元组列表。
-    pub fn new_batch(items: Vec<(ItemId, f32, f32)>) -> Self {
-        Self {
-            items,
+            item_id,
+            old,
+            new,
             preview_already_applied: false,
         }
     }
@@ -549,32 +580,27 @@ impl SetElbowOffset {
         self
     }
 
-    fn apply(scene: &mut Scene, items: &[(ItemId, f32, f32)], new: bool) {
-        for (id, old, new_offset) in items {
-            let value = if new { *new_offset } else { *old };
-            if let Some(item) = scene.get_item_mut(id) {
-                if let ItemKind::Shape {
-                    elbow_mid_offset, ..
-                } = &mut item.kind
-                {
-                    *elbow_mid_offset = value;
-                }
+    fn apply(&self, scene: &mut Scene, segments: &[crate::routing::ElbowFixedSegment]) {
+        if let Some(item) = scene.get_item_mut(&self.item_id) {
+            if let ItemKind::Shape {
+                shape_type: ShapeType::Elbow,
+                fixed_segments,
+                ..
+            } = &mut item.kind
+            {
+                *fixed_segments = segments.to_vec();
             }
         }
     }
 }
 
-impl Command for SetElbowOffset {
+impl Command for SetElbowFixedSegments {
     fn redo(&mut self, scene: &mut Scene) {
-        let items = std::mem::take(&mut self.items);
-        Self::apply(scene, &items, true);
-        self.items = items;
+        self.apply(scene, &self.new.clone());
     }
 
     fn undo(&mut self, scene: &mut Scene) {
-        let items = std::mem::take(&mut self.items);
-        Self::apply(scene, &items, false);
-        self.items = items;
+        self.apply(scene, &self.old.clone());
     }
 
     fn skip_first_redo(&self) -> bool {
@@ -2378,47 +2404,42 @@ mod tests {
         assert!(!closed_of(&scene, b));
     }
 
-    fn elbow_offset_of(scene: &Scene, id: ItemId) -> f32 {
-        match &scene.get_item(&id).unwrap().kind {
-            ItemKind::Shape {
-                elbow_mid_offset, ..
-            } => *elbow_mid_offset,
-            _ => panic!("非 Shape"),
-        }
-    }
-
     #[test]
-    fn set_elbow_offset_batch_applies_undoes_and_keeps_each_old_value() {
-        use crate::shape::{ArrowHeadStyle, StrokeStyle};
+    fn set_elbow_fixed_segments_applies_undoes() {
+        use crate::routing::ElbowFixedSegment;
+        use crate::shape::StrokeStyle;
         let mut scene = Scene::new();
-        let mk = |scene: &mut Scene, x: f32| {
-            let it = Item::new_polyline(
-                vec![(0.0, 0.0), (100.0, 40.0)],
-                (100.0, 40.0),
-                None,
-                Some(ArrowHeadStyle::Arrow),
-                false,
-                x,
-                0.0,
-                StrokeStyle::default(),
-            );
-            let id = it.id;
-            scene.add_item(it);
-            id
-        };
-        let (a, b) = (mk(&mut scene, 0.0), mk(&mut scene, 200.0));
-        // 两个 item 旧值不同（0 与 -12），undo 必须各回各的
-        let mut cmd = SetElbowOffset::new_batch(vec![(a, 0.0, 25.0), (b, -12.0, 40.0)]);
+        let elbow = Item::new_elbow(
+            vec![(0.0, 0.0), (100.0, 40.0)],
+            (100.0, 40.0),
+            None,
+            None,
+            0.0,
+            0.0,
+            StrokeStyle::default(),
+        );
+        let id = elbow.id;
+        scene.add_item(elbow);
+        let old: Vec<ElbowFixedSegment> = Vec::new();
+        let new = vec![ElbowFixedSegment {
+            start: (0.0, 20.0),
+            end: (50.0, 20.0),
+        }];
+        let mut cmd = SetElbowFixedSegments::new(id, old.clone(), new.clone());
         cmd.redo(&mut scene);
-        assert!((elbow_offset_of(&scene, a) - 25.0).abs() < 1e-6);
-        assert!((elbow_offset_of(&scene, b) - 40.0).abs() < 1e-6);
+        match &scene.get_item(&id).unwrap().kind {
+            ItemKind::Shape { fixed_segments, .. } => assert_eq!(*fixed_segments, new),
+            _ => panic!("应为 Shape"),
+        }
         cmd.undo(&mut scene);
-        assert_eq!(elbow_offset_of(&scene, a), 0.0);
-        assert!((elbow_offset_of(&scene, b) + 12.0).abs() < 1e-6);
-        // skip_first_redo 语义：预览已应用 → push_cmd 首次 redo 跳过（标志由 UndoStack 读）。
-        let preview_cmd = SetElbowOffset::new(a, 0.0, 7.0).with_preview_applied(true);
-        assert!(preview_cmd.skip_first_redo());
-        assert!(!SetElbowOffset::new(a, 0.0, 7.0).skip_first_redo());
+        match &scene.get_item(&id).unwrap().kind {
+            ItemKind::Shape { fixed_segments, .. } => assert_eq!(*fixed_segments, old),
+            _ => panic!("应为 Shape"),
+        }
+        // skip_first_redo 语义：预览已应用 → push 后首次 redo 跳过。
+        assert!(SetElbowFixedSegments::new(id, old, new)
+            .with_preview_applied(true)
+            .skip_first_redo());
     }
 
     #[test]

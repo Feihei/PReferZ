@@ -1,11 +1,11 @@
 use eframe::egui::{self, Color32, Pos2, Shape};
 use preferz_core::item::{
-    catmull_rom_polyline, elbow_polyline_offset, orthogonal_outline_segments,
-    round_orthogonal_corners, roundness_radius, ItemKind, ItemLocalSpace, OutlineSeg,
-    CURVE_SAMPLES, ROUNDED_CORNER_SEGMENTS,
+    catmull_rom_polyline, orthogonal_outline_segments, round_orthogonal_corners, roundness_radius,
+    ItemKind, ItemLocalSpace, OutlineSeg, CURVE_SAMPLES, ROUNDED_CORNER_SEGMENTS,
 };
 use preferz_core::shape::{
-    ArrowHeadStyle, CurveType, DashStyle, FillStyle, SeededRng, ShapeType, Sloppiness, StrokeStyle,
+    ArrowHeadStyle, CurveType, DashStyle, ElbowAxis, FillStyle, SeededRng, ShapeType, Sloppiness,
+    StrokeStyle,
 };
 use preferz_core::spaces::ScreenSpace;
 
@@ -29,6 +29,13 @@ pub struct ShapeData {
     /// elbow 中间 bar 交叉轴偏移（plan #16 E1 / #24）。仅 `ShapeType::Elbow`
     /// 消费；与命中/导出经同一 `elbow_polyline_offset` 同源。
     pub elbow_mid_offset: f32,
+    /// elbow 取向滞回状态（plan #21 DP-B）。`None` = 旧档按几何推断；
+    /// 与命中经同一 `elbow_axis_effective` 解析。
+    pub elbow_axis: Option<ElbowAxis>,
+    /// elbow 完整派生路由（局部坐标，`Scene::elbow_route_local` 产物）。仅
+    /// `ShapeType::Elbow` 消费；非 elbow 恒空。渲染与命中/手柄/导出同源
+    /// （plan #24 阶段 C：调用方注入，本模块不再自行派生）。
+    pub elbow_route: Vec<(f32, f32)>,
     /// 矩形族圆角比例 0..1（Phase I）。仅矩形族使用。
     pub roundness: f32,
     /// 手绘风描边抖动种子（Phase F）。同一 seed 恒得同一抖动；`CleanStyler` 忽略此字段。
@@ -150,10 +157,12 @@ fn outline_points(
             }
         }
         // elbow 连接器（plan #24）：路径 = `elbow_polyline_offset` 从两端点 + 偏移
-        // 推导（与命中测试同源）；倒角（plan #23）与矩形族共用 roundness 字段与
-        // 半径语义，派生路径的每个直角拐角换圆弧采样。
+        // + 有效取向（滞回解析，plan #21 DP-B）推导（与命中测试同源）；倒角
+        // （plan #23）与矩形族共用 roundness 字段与半径语义，派生路径的每个直角
+        // 拐角换圆弧采样。
         ShapeType::Elbow => {
-            let base = elbow_polyline_offset(&shape.points, shape.elbow_mid_offset);
+            // 路由 = 调用方注入的完整派生路径（plan #24 阶段 C 同源不变量）。
+            let base = shape.elbow_route.clone();
             let r = roundness_radius(shape.base_size, shape.roundness);
             if r > 1e-3 {
                 round_orthogonal_corners(&base, false, r)
@@ -637,10 +646,7 @@ impl RoughStyler {
             ShapeType::Rectangle => {
                 orthogonal_outline_segments(&[(0.0, 0.0), (w, 0.0), (w, h), (0.0, h)], true, r)
             }
-            ShapeType::Elbow => {
-                let base = elbow_polyline_offset(&shape.points, shape.elbow_mid_offset);
-                orthogonal_outline_segments(&base, false, r)
-            }
+            ShapeType::Elbow => orthogonal_outline_segments(&shape.elbow_route, false, r),
             _ => Vec::new(),
         }
     }
@@ -1204,7 +1210,12 @@ impl ShapeStyler for RoughStyler {
 /// 依据 Shape 的 `sloppiness` 档位选择风格器，构建 egui 形状列表。
 ///
 /// `render_scene` 与 Present 模式共用，避免两处各组装一遍 `ShapeData`。
-pub fn build_shape_visuals(kind: &ItemKind, to_screen: &LocalToScreen, zoom: f32) -> Vec<Shape> {
+pub fn build_shape_visuals(
+    kind: &ItemKind,
+    elbow_route: &[(f32, f32)],
+    to_screen: &LocalToScreen,
+    zoom: f32,
+) -> Vec<Shape> {
     let ItemKind::Shape {
         shape_type,
         base_size,
@@ -1217,6 +1228,7 @@ pub fn build_shape_visuals(kind: &ItemKind, to_screen: &LocalToScreen, zoom: f32
         closed,
         curve_type,
         elbow_mid_offset,
+        elbow_axis,
         roundness,
         seed,
         sloppiness,
@@ -1243,6 +1255,8 @@ pub fn build_shape_visuals(kind: &ItemKind, to_screen: &LocalToScreen, zoom: f32
         closed: *closed,
         curve_type: *curve_type,
         elbow_mid_offset: *elbow_mid_offset,
+        elbow_axis: *elbow_axis,
+        elbow_route: elbow_route.to_vec(),
         roundness: *roundness,
         seed: *seed,
         sloppiness: *sloppiness,
@@ -1342,6 +1356,8 @@ mod tests {
             closed: false,
             curve_type: CurveType::Straight,
             elbow_mid_offset: 0.0,
+            elbow_axis: None,
+            elbow_route: Vec::new(),
             roundness: 0.0,
             seed,
             sloppiness: Sloppiness::Off,
@@ -1358,6 +1374,8 @@ mod tests {
             closed: false,
             curve_type: CurveType::Straight,
             elbow_mid_offset: 0.0,
+            elbow_axis: None,
+            elbow_route: Vec::new(),
             roundness: 0.0,
             seed: 42,
             sloppiness: Sloppiness::Off,
@@ -1407,6 +1425,8 @@ mod tests {
             closed: false,
             curve_type: CurveType::Straight,
             elbow_mid_offset: 0.0,
+            elbow_axis: None,
+            elbow_route: Vec::new(),
             roundness: 0.5,
             seed,
             sloppiness,
@@ -1594,6 +1614,8 @@ mod tests {
             closed: false,
             curve_type: CurveType::Straight,
             elbow_mid_offset: 0.0,
+            elbow_axis: None,
+            elbow_route: Vec::new(),
             roundness: 0.0,
             seed,
             sloppiness: Sloppiness::Artist,
@@ -1755,6 +1777,8 @@ mod tests {
             closed: false,
             curve_type: CurveType::Straight,
             elbow_mid_offset: 0.0,
+            elbow_axis: None,
+            elbow_route: Vec::new(),
             roundness: 0.0,
             seed: 5,
             sloppiness: Sloppiness::Artist,
@@ -1802,6 +1826,8 @@ mod tests {
             closed: false,
             curve_type: CurveType::Curved,
             elbow_mid_offset: 0.0,
+            elbow_axis: None,
+            elbow_route: Vec::new(),
             roundness: 0.0,
             seed: 42,
             sloppiness: Sloppiness::Off,
@@ -2188,18 +2214,18 @@ mod tests {
             StrokeStyle::default(),
             None,
         );
-        let clean = build_shape_visuals(&base.kind, &identity(), 1.0);
+        let clean = build_shape_visuals(&base.kind, &[], &identity(), 1.0);
         assert_eq!(clean.len(), 1, "未开启手绘 → CleanStyler 单多边形");
 
         let rough = base.with_sloppiness(Sloppiness::Artist);
-        let sketched = build_shape_visuals(&rough.kind, &identity(), 1.0);
+        let sketched = build_shape_visuals(&rough.kind, &[], &identity(), 1.0);
         assert_eq!(sketched.len(), 8, "开启手绘 → RoughStyler 抖动边");
     }
 
     #[test]
     fn build_shape_visuals_returns_empty_for_non_shape() {
         let txt = Item::new_text("x".to_string(), 0.0, 0.0, 16.0, [255; 4]);
-        assert!(build_shape_visuals(&txt.kind, &identity(), 1.0).is_empty());
+        assert!(build_shape_visuals(&txt.kind, &[], &identity(), 1.0).is_empty());
     }
 
     #[test]
@@ -2254,6 +2280,8 @@ mod tests {
             closed: false,
             curve_type: CurveType::Straight,
             elbow_mid_offset: 0.0,
+            elbow_axis: None,
+            elbow_route: Vec::new(),
             roundness: 0.0,
             seed: 42,
             sloppiness,
@@ -2505,6 +2533,13 @@ mod tests {
         d.end_arrow = None;
         d.roundness = 0.5; // 半径 = min(200,100) × 0.5 × 0.5 = 25，拐角有弧
         d.sloppiness = Sloppiness::Cartoonist; // 旧逐边路线下此档会脱开
+                                               // 阶段 C 起渲染消费注入路由（同源）：这里用 fallback 路由等价构造。
+        d.elbow_route = preferz_core::item::elbow_route_fallback(
+            &d.points,
+            d.elbow_mid_offset,
+            preferz_core::item::elbow_axis_infer(&d.points),
+            &[],
+        );
         let shapes = RoughStyler.build_shapes(
             &d,
             &StrokeStyle::default(),
@@ -2515,11 +2550,13 @@ mod tests {
         );
         assert!(shapes.iter().all(|s| matches!(s, Shape::CubicBezier(_))));
         let bez = beziers(&shapes);
-        // 段数与 core 分段同源：elbow 路由派生路径的直边数 + 拐角数
-        let base = elbow_polyline_offset(&d.points, d.elbow_mid_offset);
-        let segs =
-            orthogonal_outline_segments(&base, false, roundness_radius(d.base_size, d.roundness))
-                .len();
+        // 段数与 core 分段同源：注入路由（fallback 构造）的直边数 + 拐角数
+        let segs = orthogonal_outline_segments(
+            &d.elbow_route,
+            false,
+            roundness_radius(d.base_size, d.roundness),
+        )
+        .len();
         assert!(segs >= 3, "测试前提：S 形路由至少 3 段");
         assert_eq!(bez.len(), segs * RoughStyler::PASSES);
         // 逐 pass 检查链式连续：段 i 的终点 = 段 i+1 的起点

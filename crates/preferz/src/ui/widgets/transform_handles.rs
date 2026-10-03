@@ -1,5 +1,5 @@
 use eframe::egui;
-use preferz_core::item::elbow_polyline_offset;
+
 use preferz_core::shape::ShapeType;
 use preferz_core::{Item, ItemKind};
 
@@ -39,7 +39,9 @@ pub enum Handle {
     /// elbow 连接器的中间 bar 手柄（plan #16 E1 / #24）：拖拽平移中间正交段，
     /// 改 `elbow_mid_offset`（交叉轴偏移），不增删顶点。仅 `ShapeType::Elbow`
     /// 且展开后 4 点（非退化/非 clamp 贴端点）时存在。
-    ElbowBar,
+    /// elbow 中间段拖拽手柄（plan #24 阶段 D）：`usize` = 路由段下标
+    /// （`route[i] → route[i+1]`，中间段不含首末段）。
+    ElbowSegment(usize),
 }
 
 /// 是否为线性对象（Polyline / Elbow）：选中态用顶点控制点，而非变换边框。
@@ -68,31 +70,26 @@ pub(crate) fn is_elbow_line(item: &Item) -> bool {
 /// `max(本常量, 屏幕线宽)`——细线时 8px 保证点得中，粗线时不小于线宽。
 const ELBOW_BAR_HIT_PX: f32 = 8.0;
 
-/// elbow 线展开后中间 bar 段的屏幕两端点。仅 4 点正常情形返回；退化（直线）或
-/// clamp 贴端点去重为 3 点时无独立 bar → None（此时无可拖 bar）。
-fn elbow_bar_screen_segment(
+/// elbow 路由的**全部中间段**（不含首末段——绑定端恒垂直进出边界，不可拖）
+/// 的屏幕端点：`(路由段下标, 端点1, 端点2)`。`route` 为 `Scene::elbow_route_local`
+/// 产物（与渲染/命中同源，plan #24 阶段 C）；段下标供 `Handle::ElbowSegment`。
+fn elbow_middle_segments_screen(
     item: &Item,
+    route: &[(f32, f32)],
     viewport: &ViewportState,
-) -> Option<(egui::Pos2, egui::Pos2)> {
-    let ItemKind::Shape {
-        points,
-        elbow_mid_offset,
-        ..
-    } = &item.kind
-    else {
-        return None;
-    };
-    if !is_elbow_line(item) {
-        return None;
-    }
-    let expanded = elbow_polyline_offset(points, *elbow_mid_offset);
-    if expanded.len() != 4 {
-        return None;
+) -> Vec<(usize, egui::Pos2, egui::Pos2)> {
+    if !is_elbow_line(item) || route.len() < 3 {
+        return Vec::new();
     }
     let to_screen = item_local_to_screen(item, viewport);
-    let p1 = to_screen.transform_point(euclid::Point2D::new(expanded[1].0, expanded[1].1));
-    let p2 = to_screen.transform_point(euclid::Point2D::new(expanded[2].0, expanded[2].1));
-    Some((egui::pos2(p1.x, p1.y), egui::pos2(p2.x, p2.y)))
+    let to_pos = |p: (f32, f32)| {
+        let sp = to_screen.transform_point(euclid::Point2D::new(p.0, p.1));
+        egui::pos2(sp.x, sp.y)
+    };
+    // 段 i = route[i] → route[i+1]；中间段 = 1..n-2（首末段不可固定，DP-5）。
+    (1..route.len() - 2)
+        .map(|i| (i, to_pos(route[i]), to_pos(route[i + 1])))
+        .collect()
 }
 
 /// 屏幕空间点到线段距离（命中容差判定用）。
@@ -216,6 +213,7 @@ impl TransformHandles {
     pub fn update_hover(
         &mut self,
         screen_pos: egui::Pos2,
+        scene: &preferz_core::Scene,
         selected_items: &[Item],
         viewport: &ViewportState,
     ) {
@@ -225,7 +223,9 @@ impl TransformHandles {
             let show_flip = should_show_flip(item);
             // 文字元素不需要旋转，去掉旋转手柄
             let show_rotate = should_show_rotate(item);
-            let h = self.hit_test(screen_pos, item, viewport, show_flip, show_rotate);
+            // elbow 路由与渲染/命中同源（非 elbow 返回空）。
+            let route = scene.elbow_route_local(item);
+            let h = self.hit_test(screen_pos, item, &route, viewport, show_flip, show_rotate);
             if h != Handle::None {
                 found = h;
                 break;
@@ -239,6 +239,7 @@ impl TransformHandles {
         &self,
         screen_pos: egui::Pos2,
         item: &Item,
+        elbow_route: &[(f32, f32)],
         viewport: &ViewportState,
         show_flip: bool,
         show_rotate: bool,
@@ -270,12 +271,13 @@ impl TransformHandles {
                     }
                 }
             }
-            // elbow bar：沿中间正交段全长做带状命中（plan #16 E1）。
+            // elbow 中间段：沿每段全长做带状命中（阶段 D 泛化原 bar 手柄；
+            // 拖动即固定该段，Excalidraw 同款交互）。
             if is_elbow_line(item) {
-                if let Some((p1, p2)) = elbow_bar_screen_segment(item, viewport) {
-                    let half = ELBOW_BAR_HIT_PX.max(stroke_screen_width(item, viewport));
+                let half = ELBOW_BAR_HIT_PX.max(stroke_screen_width(item, viewport));
+                for (i, p1, p2) in elbow_middle_segments_screen(item, elbow_route, viewport) {
                     if dist_point_segment_screen(screen_pos, p1, p2) <= half {
-                        return Handle::ElbowBar;
+                        return Handle::ElbowSegment(i);
                     }
                 }
             }
@@ -330,13 +332,14 @@ impl TransformHandles {
     pub fn render(
         &self,
         item: &Item,
+        elbow_route: &[(f32, f32)],
         painter: &egui::Painter,
         viewport: &ViewportState,
         show_flip: bool,
         show_rotate: bool,
     ) {
         // 线类：顶点控制点（黄色方块）+ 段中点手柄（小号浅黄，仅 Polyline）+
-        // elbow bar 手柄（bar 中点小方块）
+        // elbow 段手柄（各中间段中点小方块）
         if is_line(item) {
             let eps = Self::line_endpoint_screen_positions(item, viewport);
             let handle_size = Self::handle_size();
@@ -359,11 +362,11 @@ impl TransformHandles {
                     painter.rect_filled(r, egui::CornerRadius::same(1), mid_fill);
                 }
             }
-            // elbow bar 手柄：bar 中点小方块（plan #16 E1；提示可拖拽平移走线）。
+            // elbow 段手柄：各中间段中点小方块（阶段 D；提示可拖拽固定该段）。
             if is_elbow_line(item) {
-                if let Some((p1, p2)) = elbow_bar_screen_segment(item, viewport) {
+                let mid_fill = egui::Color32::from_rgb(255, 225, 130);
+                for (_, p1, p2) in elbow_middle_segments_screen(item, elbow_route, viewport) {
                     let m = egui::pos2((p1.x + p2.x) * 0.5, (p1.y + p2.y) * 0.5);
-                    let mid_fill = egui::Color32::from_rgb(255, 225, 130);
                     let r = egui::Rect::from_center_size(m, egui::Vec2::splat(6.0));
                     painter.rect_filled(r, egui::CornerRadius::same(1), mid_fill);
                 }

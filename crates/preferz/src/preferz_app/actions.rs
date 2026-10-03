@@ -314,6 +314,7 @@ impl PReferZApp {
         if let ItemKind::Shape {
             start_binding,
             end_binding,
+            elbow_axis,
             ..
         } = &mut arrow.kind
         {
@@ -325,6 +326,9 @@ impl PReferZApp {
                 target: new_id,
                 anchor: Some(dup_anchor),
             });
+            // 创建即锁定取向（plan #21 DP-B）：锚点在源节点 dir 侧边缘，连线沿
+            // 该边法线进出；后续拖动节点无论 Δ 关系如何翻转走向不变。
+            *elbow_axis = Some(elbow_axis_from_anchor((w, h), src_anchor));
         }
         let added = vec![dup.clone(), arrow.clone()];
         self.scene.add_item(dup);

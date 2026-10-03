@@ -202,9 +202,12 @@ impl PReferZApp {
             for item in selected.iter().rev() {
                 let show_flip = should_show_flip(item);
                 let show_rotate = should_show_rotate(item);
+                // elbow 路由与渲染/命中同源（非 elbow 返回空）。
+                let route = self.scene.elbow_route_local(item);
                 let h = self.transform_handles.hit_test(
                     screen_pos,
                     item,
+                    &route,
                     &self.viewport,
                     show_flip,
                     show_rotate,
@@ -229,6 +232,16 @@ impl PReferZApp {
                         }
                         let base_pos = start_points.get(endpoint).copied().unwrap_or((0.0, 0.0));
                         let start_canvas = self.viewport.pos2_to_canvas(screen_pos);
+                        // elbow 取向拖拽前快照（plan #21 DP-B）：释放时随点集入同
+                        // 一条 undo，undo 后取向与拖拽前一致（不残留翻转）。
+                        let start_axis = if is_elbow {
+                            match &item.kind {
+                                ItemKind::Shape { elbow_axis, .. } => *elbow_axis,
+                                _ => None,
+                            }
+                        } else {
+                            None
+                        };
                         self.drag = DragState::LineEndpoint {
                             item_id: item.id,
                             endpoint,
@@ -236,6 +249,7 @@ impl PReferZApp {
                             start_points,
                             base_pos,
                             alt_extend: alt && is_real && !is_elbow,
+                            start_axis,
                         };
                         self.transform_handles.active_handle = h;
                         self.transform_handles.is_dragging = true;
@@ -274,25 +288,43 @@ impl PReferZApp {
                                 start_points,
                                 base_pos: mid,
                                 alt_extend: false,
+                                // 段中点插入仅 Polyline 会命中，无取向变更。
+                                start_axis: None,
                             };
                             self.transform_handles.active_handle = h;
                             self.transform_handles.is_dragging = true;
                         }
                         return;
                     }
-                    // elbow bar：进入 bar 拖拽（预览直接改 elbow_mid_offset）。
-                    if let Handle::ElbowBar = h {
-                        let start_offset = match &item.kind {
-                            ItemKind::Shape {
-                                elbow_mid_offset, ..
-                            } => *elbow_mid_offset,
-                            _ => 0.0,
+                    // elbow 中间段：进入段拖拽（plan #24 阶段 D）——预览把该段
+                    // 临时固化为固定段（路由绕其重算），释放入 SetElbowFixedSegments。
+                    if let Handle::ElbowSegment(seg_index) = h {
+                        let prep = self.scene.get_item(&item.id).and_then(|item| {
+                            let route = self.scene.elbow_route_local(item);
+                            let ItemKind::Shape { fixed_segments, .. } = &item.kind else {
+                                return None;
+                            };
+                            let i = seg_index;
+                            if i + 1 >= route.len() {
+                                return None;
+                            }
+                            let (s, e) = (route[i], route[i + 1]);
+                            let was_fixed = fixed_segments.iter().any(|fs| {
+                                (fs.start == s && fs.end == e) || (fs.start == e && fs.end == s)
+                            });
+                            Some((s, e, was_fixed, fixed_segments.clone()))
+                        });
+                        let Some((orig_start, orig_end, was_fixed, orig_fixed)) = prep else {
+                            return;
                         };
                         let start_canvas = self.viewport.pos2_to_canvas(screen_pos);
-                        self.drag = DragState::ElbowBar {
+                        self.drag = DragState::ElbowSegment {
                             item_id: item.id,
                             start_canvas,
-                            start_offset,
+                            orig_start,
+                            orig_end,
+                            was_fixed,
+                            orig_fixed,
                         };
                         self.transform_handles.active_handle = h;
                         self.transform_handles.is_dragging = true;
@@ -422,12 +454,14 @@ impl PReferZApp {
                             points,
                             start_binding,
                             end_binding,
+                            elbow_axis,
                             ..
                         } if points.len() > 1 => Some(LineSnapState {
                             line_id: *id,
                             start_points: points.clone(),
                             start_start_binding: *start_binding,
                             start_end_binding: *end_binding,
+                            start_axis: *elbow_axis,
                         }),
                         _ => None,
                     }
@@ -560,8 +594,8 @@ impl PReferZApp {
                         Handle::FlipH | Handle::FlipV | Handle::None => {}
                         // 线类顶点/段中点begin_drag 中已进入 LineEndpoint 拖拽，不会到达这里
                         Handle::Endpoint(_) | Handle::SegmentMid(_) => {}
-                        // elbow barbegin_drag 中已进入 ElbowBar 拖拽，不会到达这里
-                        Handle::ElbowBar => {}
+                        // elbow 段拖拽 begin_drag 中已进入 ElbowSegment，不会到达这里
+                        Handle::ElbowSegment(_) => {}
                     }
                 }
                 // plan #5：缩放/旋转形状时，实时联动重算绑定到它的线端点
@@ -670,6 +704,12 @@ impl PReferZApp {
                 }
                 // plan #5：移动形状时，实时联动重算绑定到它的线端点
                 self.scene.resolve_bindings(&ids);
+                // elbow 取向刷新（plan #21 DP-B）：移动组内的 elbow 端点随组移动 /
+                // 重新吸附（预览直改 points 与绑定），取向随之解析写回；释放时经
+                // LineSnapState.start_axis 快照随点集入同一条 undo。
+                for ls in line_snaps {
+                    self.scene.refresh_elbow_axis(ls.line_id);
+                }
             }
             DragState::CreatingShape { current, .. } => {
                 let _ = current; // 由 match 后更新（需单独 &mut self.drag）
@@ -775,48 +815,135 @@ impl PReferZApp {
                         }
                     }
                 }
+
+                // elbow 取向预览刷新（plan #21 DP-B）：端点变化即解析并直写
+                // `elbow_axis`（Some = 锁定），渲染/命中当帧即按新取向派生路径
+                // （同源）。被拖端的「生效绑定」取预览态——吸附中为 pending
+                // （锚点驱动取向），拖离为无绑定；另一端读存储字段。释放时
+                // `start_axis` 快照经 `EditShapePoints::with_elbow_axis_change`
+                // 随点集入同一条 undo（undo 后取向与拖拽前一致）。
+                let elbow_info = self.scene.get_item(&item_id).and_then(|it| match &it.kind {
+                    ItemKind::Shape {
+                        shape_type: ShapeType::Elbow,
+                        points,
+                        elbow_axis,
+                        start_binding,
+                        end_binding,
+                        ..
+                    } => Some((points.clone(), *elbow_axis, *start_binding, *end_binding)),
+                    _ => None,
+                });
+                if let Some((pts, stored, sb, eb)) = elbow_info {
+                    let last = pts.len().saturating_sub(1);
+                    if endpoint == 0 || endpoint == last {
+                        let dragged = self
+                            .pending_endpoint_binding
+                            .filter(|(idx, _, _)| *idx == endpoint)
+                            .map(|(_, bid, anchor)| EndpointBinding {
+                                target: bid,
+                                anchor,
+                            });
+                        let (start_eff, end_eff) = if endpoint == 0 {
+                            (dragged.as_ref(), eb.as_ref())
+                        } else {
+                            (sb.as_ref(), dragged.as_ref())
+                        };
+                        let axis = self
+                            .scene
+                            .resolve_elbow_axis(&pts, stored, start_eff, end_eff);
+                        if let Some(item) = self.scene.get_item_mut(&item_id) {
+                            if let ItemKind::Shape {
+                                shape_type: ShapeType::Elbow,
+                                elbow_axis,
+                                ..
+                            } = &mut item.kind
+                            {
+                                *elbow_axis = Some(axis);
+                            }
+                        }
+                    }
+                }
             }
-            DragState::ElbowBar {
+            DragState::ElbowSegment {
                 item_id,
                 start_canvas,
-                start_offset,
+                orig_start,
+                orig_end,
+                was_fixed,
+                orig_fixed,
+                ..
             } => {
                 let item_id = *item_id;
                 let start_canvas = *start_canvas;
-                let start_offset = *start_offset;
+                let orig_start = *orig_start;
+                let orig_end = *orig_end;
+                let was_fixed = *was_fixed;
+                let orig_fixed = orig_fixed.clone();
                 let current_canvas = self.viewport.pos2_to_canvas(screen_pos);
                 let delta_canvas = current_canvas - start_canvas;
-                // bar 沿局部短轴偏移：elbow_polyline_offset 按 |dx|<=|dy| 选轴，
-                // 拖拽位移逆变换到局部后取对应分量叠加到 start_offset。
-                let new_offset = self.scene.get_item(&item_id).and_then(|item| {
-                    let pts = match &item.kind {
-                        ItemKind::Shape { points, .. } => points.clone(),
-                        _ => return None,
-                    };
-                    if pts.len() != 2 {
-                        return None;
-                    }
-                    let dx = pts[1].0 - pts[0].0;
-                    let dy = pts[1].1 - pts[0].1;
+                // 段沿自身轴滑移：位移逆变换到局部后取**垂直于段轴**的分量
+                // （水平段平移 y、垂直段平移 x），轴向跨度保持原样。
+                let seg_horizontal =
+                    (orig_end.0 - orig_start.0).abs() >= (orig_end.1 - orig_start.1).abs();
+                let new_seg = self.scene.get_item(&item_id).and_then(|item| {
                     let delta_local = item
                         .local_to_canvas()
                         .inverse()
                         .map(|inv| inv.transform_vector(delta_canvas))?;
-                    let d = if dx.abs() <= dy.abs() {
-                        delta_local.x
-                    } else {
+                    let d = if seg_horizontal {
                         delta_local.y
+                    } else {
+                        delta_local.x
                     };
-                    Some(start_offset + d)
-                });
-                if let Some(new_offset) = new_offset {
-                    if let Some(item) = self.scene.get_item_mut(&item_id) {
-                        if let ItemKind::Shape {
-                            elbow_mid_offset, ..
-                        } = &mut item.kind
-                        {
-                            *elbow_mid_offset = new_offset;
+                    let (ns, ne) = if seg_horizontal {
+                        (orig_start.1 + d, orig_end.1 + d)
+                    } else {
+                        (orig_start.0 + d, orig_end.0 + d)
+                    };
+                    Some(if seg_horizontal {
+                        ElbowFixedSegment {
+                            start: (orig_start.0, ns),
+                            end: (orig_end.0, ne),
                         }
+                    } else {
+                        ElbowFixedSegment {
+                            start: (ns, orig_start.1),
+                            end: (ne, orig_end.1),
+                        }
+                    })
+                });
+                let Some(new_seg) = new_seg else {
+                    return;
+                };
+                // 微动守卫：自由段拖拽未离手（<1px 局部）不固化，避免误点成固定段。
+                if !was_fixed {
+                    let d = if seg_horizontal {
+                        new_seg.start.1 - orig_start.1
+                    } else {
+                        new_seg.start.0 - orig_start.0
+                    };
+                    if d.abs() < 1.0 {
+                        return;
+                    }
+                }
+                // 预览直改 fixed_segments：路由/渲染当帧绕新段重算（同源）。
+                if let Some(item) = self.scene.get_item_mut(&item_id) {
+                    if let ItemKind::Shape {
+                        shape_type: ShapeType::Elbow,
+                        fixed_segments,
+                        ..
+                    } = &mut item.kind
+                    {
+                        let mut list: Vec<ElbowFixedSegment> = orig_fixed
+                            .iter()
+                            .copied()
+                            .filter(|fs| {
+                                !((fs.start == orig_start && fs.end == orig_end)
+                                    || (fs.start == orig_end && fs.end == orig_start))
+                            })
+                            .collect();
+                        list.push(new_seg);
+                        *fixed_segments = list;
                     }
                 }
             }
@@ -975,6 +1102,7 @@ impl PReferZApp {
                                     points,
                                     start_binding,
                                     end_binding,
+                                    elbow_axis,
                                     ..
                                 } = &item.kind
                                 else {
@@ -982,23 +1110,27 @@ impl PReferZApp {
                                 };
                                 let changed = points != &ls.start_points
                                     || start_binding != &ls.start_start_binding
-                                    || end_binding != &ls.start_end_binding;
+                                    || end_binding != &ls.start_end_binding
+                                    || elbow_axis != &ls.start_axis;
                                 if !changed {
                                     continue;
                                 }
-                                line_cmds.push(Box::new(
-                                    EditShapePoints::new(
-                                        ls.line_id,
-                                        ls.start_points.clone(),
-                                        points.clone(),
-                                    )
-                                    .with_binding_change(
-                                        ls.start_start_binding,
-                                        *start_binding,
-                                        ls.start_end_binding,
-                                        *end_binding,
-                                    ),
-                                ));
+                                let mut cmd = EditShapePoints::new(
+                                    ls.line_id,
+                                    ls.start_points.clone(),
+                                    points.clone(),
+                                )
+                                .with_binding_change(
+                                    ls.start_start_binding,
+                                    *start_binding,
+                                    ls.start_end_binding,
+                                    *end_binding,
+                                );
+                                // 取向确有翻转（含旧档 None → 首次锁定）才记录变更。
+                                if elbow_axis != &ls.start_axis {
+                                    cmd = cmd.with_elbow_axis_change(ls.start_axis, *elbow_axis);
+                                }
+                                line_cmds.push(Box::new(cmd));
                             }
                             let cmd: Box<dyn Command> = if line_cmds.is_empty() {
                                 Box::new(move_cmd)
@@ -1081,6 +1213,7 @@ impl PReferZApp {
                 start_points,
                 base_pos,
                 alt_extend,
+                start_axis,
             } => {
                 // 预览已直接改 points；释放时若有变化则固化到 undo 栈
                 let mut new_points = match self.scene.get_item(&item_id) {
@@ -1223,6 +1356,24 @@ impl PReferZApp {
                         }
                         let cmd = EditShapePoints::new(item_id, start_points, new_points)
                             .with_binding_change(start_old, start_new, end_old, end_new);
+                        // elbow 取向变更随本条 undo 固化（plan #21 DP-B）：预览已
+                        // 每帧直写 `elbow_axis`，这里把「拖拽前快照 → 最终值」记进
+                        // 命令，undo 还原端点时取向一并还原（不残留翻转）。非
+                        // elbow 或取向未变（新旧相等）不记录。
+                        let cmd = {
+                            let cur_axis = self
+                                .scene
+                                .get_item(&item_id)
+                                .and_then(|it| match &it.kind {
+                                    ItemKind::Shape { elbow_axis, .. } => Some(*elbow_axis),
+                                    _ => None,
+                                })
+                                .flatten();
+                            match (start_axis, cur_axis) {
+                                (old, new) if old != new => cmd.with_elbow_axis_change(old, new),
+                                _ => cmd,
+                            }
+                        };
                         let cmd = if will_close {
                             cmd.with_closed(false, true)
                         } else if will_open {
@@ -1246,26 +1397,40 @@ impl PReferZApp {
             }
             // 多边形在函数开头已提前 return（多拍工具不在释放时收尾），这里只为穷尽匹配
             DragState::CreatingPolygon { .. } => {}
-            DragState::ElbowBar {
+            DragState::ElbowSegment {
                 item_id,
-                start_offset,
+                orig_fixed,
+                was_fixed,
                 ..
             } => {
-                // 预览已直改 elbow_mid_offset；释放时若有变化则固化到 undo 栈
-                let cur_offset = self
+                // 预览已直改 fixed_segments；释放时若有变化则固化到 undo 栈。
+                let orig_fixed = orig_fixed.clone();
+                let cur_fixed = self
                     .scene
                     .get_item(&item_id)
                     .and_then(|item| match &item.kind {
-                        ItemKind::Shape {
-                            elbow_mid_offset, ..
-                        } => Some(*elbow_mid_offset),
+                        ItemKind::Shape { fixed_segments, .. } => Some(fixed_segments.clone()),
                         _ => None,
                     })
-                    .unwrap_or(start_offset);
-                if (cur_offset - start_offset).abs() > 1e-4 {
-                    let cmd = SetElbowOffset::new(item_id, start_offset, cur_offset)
+                    .unwrap_or(orig_fixed.clone());
+                // 微动守卫补充：自由段未拖离原位（预览未越过 1px 阈值时列表
+                // 仍会多出一段）→ 还原快照，不产生命令。
+                let changed = cur_fixed != orig_fixed;
+                if changed {
+                    let cmd = SetElbowFixedSegments::new(item_id, orig_fixed, cur_fixed)
                         .with_preview_applied(true);
                     self.push_cmd(Box::new(cmd));
+                } else if !was_fixed {
+                    if let Some(item) = self.scene.get_item_mut(&item_id) {
+                        if let ItemKind::Shape {
+                            shape_type: ShapeType::Elbow,
+                            fixed_segments,
+                            ..
+                        } = &mut item.kind
+                        {
+                            *fixed_segments = orig_fixed;
+                        }
+                    }
                 }
                 self.transform_handles.end_drag();
             }

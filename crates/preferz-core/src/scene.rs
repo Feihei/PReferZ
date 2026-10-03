@@ -2,8 +2,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use uuid::Uuid;
 
-use crate::item::{Item, ItemId, ItemKind};
-use crate::shape::ShapeType;
+use crate::item::{
+    elbow_axis_effective, elbow_axis_from_anchor, elbow_axis_hysteresis, Item, ItemId, ItemKind,
+};
+use crate::shape::{ElbowAxis, ShapeType};
 use crate::snap;
 use crate::spaces::{CanvasPoint, CanvasRect, CanvasVector};
 
@@ -115,6 +117,8 @@ impl Scene {
         // 第一遍：只读地计算需要更新的端点（避免同时借用 self.items 读写）。
         let mut updates: Vec<(ItemId, usize, (f32, f32))> = Vec::new();
         let mut dead: Vec<(ItemId, usize)> = Vec::new();
+        // 端点被重算的 elbow 连接器（第三遍刷新取向用）。
+        let mut elbow_touched: HashSet<ItemId> = HashSet::new();
         for line in &self.items {
             let ItemKind::Shape {
                 shape_type: ShapeType::Polyline | ShapeType::Elbow,
@@ -126,6 +130,13 @@ impl Scene {
             else {
                 continue;
             };
+            let is_elbow = matches!(
+                &line.kind,
+                ItemKind::Shape {
+                    shape_type: ShapeType::Elbow,
+                    ..
+                }
+            );
             let last = points.len().saturating_sub(1);
             if last == 0 {
                 continue; // 退化（单点），无端点可言
@@ -157,6 +168,9 @@ impl Scene {
                         };
                         if let Some(local) = line.canvas_to_local_point(np) {
                             updates.push((line.id, 0, local));
+                            if is_elbow {
+                                elbow_touched.insert(line.id);
+                            }
                         }
                     }
                     // 绑定目标已不存在（被删除）→ 清除悬空绑定
@@ -188,6 +202,9 @@ impl Scene {
                         };
                         if let Some(local) = line.canvas_to_local_point(np) {
                             updates.push((line.id, last, local));
+                            if is_elbow {
+                                elbow_touched.insert(line.id);
+                            }
                         }
                     }
                     None => dead.push((line.id, last)),
@@ -210,6 +227,14 @@ impl Scene {
                 }
             }
         }
+        // 第三遍：elbow 取向刷新（plan #21 DP-B 落地）。端点重算后解析新取向并
+        // 写回 `elbow_axis`——绑定锚点优先（锚点所在边法线 = 首/末段走向，与两端
+        // 点相对位置解耦，拖动被绑图形不再因 Δ 关系翻转而 90° 跳变），无绑定回退
+        // 滞回。重路由是派生结果不进 undo 栈；undo 还原端点后再走
+        // resolve_bindings 会解析出同一取向，可自愈。
+        for id in elbow_touched {
+            self.refresh_elbow_axis(id);
+        }
         // 清除悬空绑定
         for (id, idx) in dead {
             if let Some(line) = self.get_item_mut(&id) {
@@ -227,6 +252,185 @@ impl Scene {
                 }
             }
         }
+    }
+
+    /// elbow 取向解析（只读，plan #21 DP-B 落地）：**绑定锚点优先**——起点绑定
+    /// （次选终点绑定）的锚点钉在目标形状哪条边上，首/末段就沿该边法线走
+    /// （[`elbow_axis_from_anchor`]），结构性走向与两端点相对位置解耦；两端均无
+    /// 锚点绑定（自由 elbow / 旧档 anchor=None）时回退**滞回**
+    /// （`elbow_axis_hysteresis`，对角线附近 ±30% 稳定带不振荡）。
+    ///
+    /// `start`/`end` 是**生效绑定**：通常传 item 的存储绑定；端点拖拽预览中
+    /// 被拖端的绑定尚未落盘（吸附 pending / 拖离即解绑），调用方应传预览值。
+    pub fn resolve_elbow_axis(
+        &self,
+        pts: &[(f32, f32)],
+        stored: Option<ElbowAxis>,
+        start: Option<&crate::item::EndpointBinding>,
+        end: Option<&crate::item::EndpointBinding>,
+    ) -> ElbowAxis {
+        // 起点绑定优先（Z 拓扑下首/末段走向一致，冲突时起点语义占先）；
+        // 锚点为 None（旧存档迁移）视同无绑定，落到滞回。
+        let anchor = start
+            .and_then(|b| b.anchor.map(|a| (b.target, a)))
+            .or_else(|| end.and_then(|b| b.anchor.map(|a| (b.target, a))));
+        match anchor {
+            Some((target_id, a)) => self
+                .get_item(&target_id)
+                .map(|t| {
+                    let size = t.base_size();
+                    elbow_axis_from_anchor((size.x, size.y), a)
+                })
+                .unwrap_or_else(|| elbow_axis_hysteresis(pts, stored)),
+            None => elbow_axis_hysteresis(pts, stored),
+        }
+    }
+
+    /// elbow 取向解析并写回 `elbow_axis = Some(axis)`（plan #21 DP-B 落地）。
+    /// 在端点变化的变更点调用（[`Self::resolve_bindings`] 等）；渲染 / 命中 /
+    /// 手柄 / 导出只读该字段派生路径（同源不变量）。非 elbow 或 item 不存在时
+    /// 无副作用。
+    pub fn refresh_elbow_axis(&mut self, id: ItemId) {
+        let axis = {
+            let Some(item) = self.get_item(&id) else {
+                return;
+            };
+            let ItemKind::Shape {
+                shape_type: ShapeType::Elbow,
+                points,
+                start_binding,
+                end_binding,
+                elbow_axis,
+                ..
+            } = &item.kind
+            else {
+                return;
+            };
+            self.resolve_elbow_axis(
+                points,
+                *elbow_axis,
+                start_binding.as_ref(),
+                end_binding.as_ref(),
+            )
+        };
+        if let Some(item) = self.get_item_mut(&id) {
+            if let ItemKind::Shape {
+                shape_type: ShapeType::Elbow,
+                elbow_axis,
+                ..
+            } = &mut item.kind
+            {
+                *elbow_axis = Some(axis);
+            }
+        }
+    }
+
+    /// elbow 的完整派生路由（**局部坐标**；plan #24 阶段 C，DP-6 分层模型）：
+    /// 任一端绑定 → A\* 避障（障碍 = 绑定目标旋转 AABB 四边膨胀
+    /// [`crate::routing::ELBOW_PADDING`]，插座腿沿锚点边法线）；两端自由 →
+    /// 确定性 L/Z/S（`elbow_mid_offset` bar 语义，旧档视觉不变）；固定段
+    /// （阶段 D）按坐标锚定缝合；A\* 失败回退确定性规则。
+    ///
+    /// **同源不变量**：命中（`interaction.rs` 注入 `contains_canvas_point_with_route`）
+    /// / 渲染（`ShapeData::elbow_route`）/ 手柄（段拖拽）/ 导出全部经本函数取
+    /// 路径。纯函数、每帧重算、不缓存（非均匀网格 O(k²)，DP-6 拍板）。
+    pub fn elbow_route_local(&self, item: &Item) -> Vec<(f32, f32)> {
+        let ItemKind::Shape {
+            shape_type: ShapeType::Elbow,
+            points,
+            elbow_mid_offset,
+            elbow_axis,
+            fixed_segments,
+            start_binding,
+            end_binding,
+            ..
+        } = &item.kind
+        else {
+            return Vec::new();
+        };
+        if points.len() != 2 {
+            return points.clone();
+        }
+        let a_c = item.local_point_to_canvas(points[0]);
+        let b_c = item.local_point_to_canvas(points[1]);
+        let axis = elbow_axis_effective(points, *elbow_axis);
+        // 自由端 heading（画布空间）：沿存储取向朝另一端。
+        let unbound_heading = |self_pt: (f32, f32), other_pt: (f32, f32)| match axis {
+            crate::shape::ElbowAxis::HorizontalFirst => ((other_pt.0 - self_pt.0).signum(), 0.0),
+            crate::shape::ElbowAxis::VerticalFirst => (0.0, (other_pt.1 - self_pt.1).signum()),
+        };
+        // 绑定端解析：锚点边**外法线**（4 向，与旋转无关）→ 障碍收集。
+        // multiplier：起点 +1（heading = 外法线 = 离开方向）；终点 -1（heading
+        // = 内法线 = 进入方向）。
+        let resolve_bound = |binding: Option<&crate::item::EndpointBinding>,
+                             fallback: (f32, f32),
+                             multiplier: f32,
+                             obstacles: &mut Vec<(f32, f32, f32, f32)>|
+         -> ((f32, f32), bool) {
+            let Some(b) = binding else {
+                return (fallback, false);
+            };
+            let Some(anchor) = b.anchor else {
+                return (fallback, false);
+            };
+            let Some(target) = self.get_item(&b.target) else {
+                return (fallback, false);
+            };
+            // 障碍 = 目标旋转 AABB 膨胀（仅矩形族可碰撞节点；线类/文字不作障碍）。
+            if matches!(
+                &target.kind,
+                ItemKind::Shape {
+                    shape_type: ShapeType::Rectangle | ShapeType::Ellipse | ShapeType::Diamond,
+                    ..
+                }
+            ) {
+                let r = target.bounding_rect();
+                let rect = (
+                    r.min().x - crate::routing::ELBOW_PADDING,
+                    r.min().y - crate::routing::ELBOW_PADDING,
+                    r.max().x + crate::routing::ELBOW_PADDING,
+                    r.max().y + crate::routing::ELBOW_PADDING,
+                );
+                if !obstacles.contains(&rect) {
+                    obstacles.push(rect);
+                }
+            }
+            let size = target.base_size();
+            let outward = crate::routing::elbow_heading_from_anchor((size.x, size.y), anchor);
+            ((outward.0 * multiplier, outward.1 * multiplier), true)
+        };
+        let mut obstacles: Vec<(f32, f32, f32, f32)> = Vec::with_capacity(2);
+        let (start_heading, start_bound) = resolve_bound(
+            start_binding.as_ref(),
+            unbound_heading(a_c.into(), b_c.into()),
+            1.0,
+            &mut obstacles,
+        );
+        let (end_outward, end_bound) = resolve_bound(
+            end_binding.as_ref(),
+            unbound_heading(b_c.into(), a_c.into()),
+            -1.0,
+            &mut obstacles,
+        );
+        let route_canvas = crate::routing::elbow_route(&crate::routing::ElbowRouteInput {
+            start: a_c.into(),
+            end: b_c.into(),
+            start_heading,
+            end_heading: (-end_outward.0, -end_outward.1),
+            start_bound,
+            end_bound,
+            offset: *elbow_mid_offset,
+            fixed_segments,
+            obstacles: &obstacles,
+        });
+        // 画布 → 局部（逆变换奇异时兜底回退 fallback 路由）。
+        let local: Option<Vec<(f32, f32)>> = route_canvas
+            .iter()
+            .map(|&p| item.canvas_to_local_point(CanvasPoint::new(p.0, p.1)))
+            .collect();
+        local.unwrap_or_else(|| {
+            crate::item::elbow_route_fallback(points, *elbow_mid_offset, axis, fixed_segments)
+        })
     }
 
     // ─────────────────────────── 编组 / 解组（plan #13） ───────────────────────────
@@ -971,6 +1175,80 @@ mod tests {
         assert!((pts[0].1 - 40.0).abs() < 1e-3, "y = {}", pts[0].1);
         // 另一端不受影响
         assert!((pts[1].0 - 400.0).abs() < 1e-3 && (pts[1].1 - 200.0).abs() < 1e-3);
+    }
+
+    /// plan #21 DP-B 集成：绑定 elbow 的取向由锚点边驱动——被绑图形拖到 Δ 关系
+    /// 翻转的位置（dy 从 < dx 变为 > dx）取向不变，路由不再 90° 跳变。
+    #[test]
+    fn resolve_bindings_elbow_axis_follows_anchor_not_delta() {
+        use crate::item::elbow_axis_effective;
+        use crate::shape::ElbowAxis;
+
+        // 矩形 [0,100]×[0,60]；elbow 起点 = 右边缘锚点 (100,30)、终点 (400,80)。
+        // 初始 dy=50 < dx=300；把矩形拖到让终点几何 dy ≫ dx 时，起点锚点仍在
+        // 右边缘（法线水平）→ 取向应保持 HorizontalFirst 而非翻转为 VerticalFirst。
+        let rect = Item::new_shape(
+            ShapeType::Rectangle,
+            (100.0, 60.0),
+            0.0,
+            0.0,
+            StrokeStyle::default(),
+            None,
+        );
+        let rect_id = rect.id;
+        let mut elbow = Item::new_elbow(
+            vec![(100.0, 30.0), (400.0, 80.0)],
+            (300.0, 50.0),
+            None,
+            None,
+            0.0,
+            0.0,
+            StrokeStyle::default(),
+        );
+        if let ItemKind::Shape {
+            shape_type,
+            start_binding,
+            end_binding,
+            ..
+        } = &mut elbow.kind
+        {
+            *shape_type = ShapeType::Elbow;
+            *start_binding = Some(crate::item::EndpointBinding {
+                target: rect_id,
+                anchor: Some((100.0, 30.0)),
+            });
+            *end_binding = Some(crate::item::EndpointBinding {
+                target: ItemId::new_v4(),
+                anchor: Some((0.0, 0.0)),
+            });
+        }
+        let elbow_id = elbow.id;
+
+        let mut scene = Scene::new();
+        scene.add_item(rect);
+        scene.add_item(elbow);
+
+        // 拖动矩形到终点上方远处：锚点画布位置 (300, -400)，端点重算后
+        // dx = 100、dy = -430 → 几何关系已翻转（dy ≫ dx）。
+        scene.get_item_mut(&rect_id).unwrap().transform.pos += CanvasVector::new(200.0, -430.0);
+        scene.resolve_bindings(&[rect_id]);
+
+        let (pts, axis) = match &scene.get_item(&elbow_id).unwrap().kind {
+            ItemKind::Shape {
+                points, elbow_axis, ..
+            } => (points.clone(), *elbow_axis),
+            _ => panic!("expected Elbow"),
+        };
+        assert!(
+            (pts[0].0 - 300.0).abs() < 1e-3 && (pts[0].1 + 400.0).abs() < 1e-3,
+            "起点应钉在锚点新画布位置 (300,-400)：{:?}",
+            pts[0]
+        );
+        assert_eq!(
+            elbow_axis_effective(&pts, axis),
+            ElbowAxis::HorizontalFirst,
+            "锚点在右边缘 → 取向恒水平先走，Δ 翻转不跳变"
+        );
     }
 
     /// 旧存档兼容：`start_binding` 为纯 uuid 字符串时迁移为无锚点绑定。

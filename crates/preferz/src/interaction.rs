@@ -29,7 +29,17 @@ pub fn get_item_at<'a>(
                 // 画框仅边框点选，内容区域穿透到下层
                 item.frame_border_hit(canvas_pos, frame_threshold)
             } else {
-                item.contains_canvas_point(canvas_pos)
+                // elbow：注入 Scene 感知的完整路由（含障碍避让），与渲染/手柄同源
+                // （plan #24 阶段 C）；非 elbow 传 None 走常规命中。
+                let route = matches!(
+                    &item.kind,
+                    ItemKind::Shape {
+                        shape_type: preferz_core::shape::ShapeType::Elbow,
+                        ..
+                    }
+                )
+                .then(|| scene.elbow_route_local(item));
+                item.contains_canvas_point_with_route(canvas_pos, route.as_deref())
             }
         })
         .map(|v| v as _)

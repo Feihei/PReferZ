@@ -12,6 +12,20 @@ pub enum ShapeType {
     Elbow,
 }
 
+/// elbow 连接器取向（plan #21 DP-B 落地）：路由首/末段的走向——
+/// `HorizontalFirst` = 首段水平（bar 为垂直段）；`VerticalFirst` = 首段垂直
+/// （bar 为水平段）。
+///
+/// 存储语义见 `ItemKind::Shape::elbow_axis`（`Option<ElbowAxis>`：`None` =
+/// 旧存档按 `|dx| <= |dy|` 即时推断，行为与历史一致）；解析规则
+/// （绑定锚点优先、无绑定滞回）见 [`crate::item::elbow_axis_effective`]。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ElbowAxis {
+    HorizontalFirst,
+    VerticalFirst,
+}
+
 /// 曲线模式（Phase I）。仅 Polyline 生效，矩形族 / Elbow 忽略。
 ///
 /// `Straight` = 顶点直线相连；`Curved` = Catmull-Rom 插值（开/闭曲线，

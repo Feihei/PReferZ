@@ -1289,6 +1289,57 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 
 ---
 
+## elbow 取向稳定化：滞回 + 绑定锚点驱动（plan #21 DP-B / #24 阶段 C 前置过渡，2026-10-02）
+
+> 验收反馈：移动吸附的图形时，elbow 连线在两端点 Δ 关系翻转（`x>y` ↔ `x<y`）
+> 一刻整条路径 90° 跳变，破坏流程图结构——正是 L9「观察验收反馈再定」约定的
+> 反馈，据此**推翻 L9**（归档 L22）落地。
+
+- **根因**：`elbow_polyline_offset` 按 `|dx| <= |dy|` 无状态选轴，对角线是不连续
+  开关；且 `elbow_mid_offset` 语义随轴切换，跳变同时丢失用户 bar 意图
+- **存储**：`ItemKind::Shape` 新增 `elbow_axis: Option<ElbowAxis>`（serde default
+  `None` = 旧档按几何即时推断，行为不变，`.prz` 零迁移）。取向在**端点变化的
+  变更点**解析写回（Some 锁定），渲染 / 命中 / 手柄 / 导出只读该字段派生路径
+  （同源不变量保持）
+- **解析规则**（`Scene::resolve_elbow_axis`，两级）：
+  1. **绑定锚点优先**（`elbow_axis_from_anchor`）：锚点钉在目标形状哪条边，首/末
+     段就沿该边法线走（左/右缘→水平先走、上/下缘→垂直先走）——结构性走向与两端
+     点相对位置**解耦**，绑定图形无论拖到什么相对位置不再跳变；起点绑定优先
+  2. **无绑定回退滞回**（`elbow_axis_hysteresis`）：仅当另一轴 Δ 超出当前轴
+     **1.3×**（`ELBOW_FLIP_FACTOR`，对角线两侧 ±30% 稳定带）才翻转，来回拖不振荡
+- **变更点接入**：端点拖拽预览（`LineEndpoint` 每帧，被拖端用 pending 吸附的
+  生效绑定）、`resolve_bindings` 第三遍（绑定图形移动/缩放/旋转，undo/redo 同路
+  径自愈）、MoveItems 组内线随组移动、流程图连线创建即按源节点锚点锁定取向、
+  拖 bar（`ElbowBar`）偏移轴向与路由同源解析
+- **undo 一致性**：`EditShapePoints` 新增 `with_elbow_axis_change(old, new)`
+  （`LineEndpoint` 与 MoveItems 的 line_snaps 快照均带取向），取向变更与点集
+  同占一条 undo——否则撤销端点拖拽后残留新取向，路由与拖拽前不一致
+- 测试：滞回不振荡 / 阈值翻转、锚点四边映射、`resolve_bindings` Δ 翻转取向
+  不变（集成）、`elbow_axis` serde 往返 + 旧档缺字段默认 `None`；全量
+  fmt / clippy 零告警，334 通过
+- 后续：阶段 C 换 A\* 时，`elbow_route` 的起点出发 / 终点进入方向约束直接取自
+  本机制的锚点法线（A\* 网格路由不解决对角翻转，仍需该状态）
+
+---
+
+## elbow A* 避障路由 + 固定段（plan #24 阶段 C/D，DP-5/DP-6 拍板落地，2026-10-02）
+
+> 通读 Excalidraw `elbowArrow.ts` master + [mtolmacs 算法博客](https://plus.excalidraw.com/blog/building-elbow-arrows-part-one)后拍板 DP-5/DP-6 并同日实现 C/D 两期。关键发现：Excalidraw 的 A* 障碍**只有两端绑定形状**（绕开其它元素至今未实现，issue #8635 开放中），网格是**非均匀网格**（障碍边线交点，O(k²) 节点）——这两点直接决定了本实现不走"全场景绕行 + 均匀网格 + 缓存"的重路线。
+
+- **阶段 C（A* 避障）**：core 新增 `routing.rs`（L1 纯函数，headless 可测）——
+  - 网格坐标 = 两端虚拟节点 + 障碍 AABB 边线 + union 外扩一档；障碍边恒在网格线上 → 段中点落障判据**精确**
+  - 转弯罚 = 曼哈顿距离³（对齐 Excalidraw bendPenalty：最少转弯优先、路程次之）；禁止立即反向；首/末步受 heading 约束（绑定端 = 锚点边法线，复用 #21 DP-B 的取向语义）
+  - 绑定端"插座腿"（dongle）= 沿法线 `ELBOW_PADDING = 40`（对齐 Excalidraw `BASE_PADDING`）
+  - **每帧重算、不缓存**：非均匀网格典型 <150 节点，同源不变量（命中/渲染/手柄/导出同一 `Scene::elbow_route_local`）免费保持
+  - 分层：任一端绑定 → A*；两端自由 → 确定性 L/Z/S（旧档视觉不变）；A* 失败/退化 → 回退确定性规则
+- **阶段 D（fixedSegments，DP-5）**：`fixed_segments: Vec<ElbowFixedSegment {start, end}>`（局部坐标、`#[serde(default)]` 零迁移）——与 Excalidraw 的 `{index,…}` 刻意不同：index 重路由后漂移，坐标锚定 + 贪心最近锚点链接自洽，无需 renormalize；首/末段不可固定（绑定端恒垂直进出边界）
+- **交互**：`Handle::ElbowBar` → `Handle::ElbowSegment(i)`——选中 elbow 后**任意中间段**带拖拽手柄，拖动即固定该段（预览直改 `fixed_segments`、路由绕其重算），拖已固定段 = 改位，微动释放还原；undo 走新命令 `SetElbowFixedSegments`（整表快照，`SetElbowOffset` 移除——`elbow_mid_offset` 字段保留为未绑定档 bar 偏移语义，旧档兼容）
+- **命中同源**：`Item::contains_canvas_point_with_route` 接受注入路由，`interaction.rs` 恒注入 `Scene::elbow_route_local` 产物——有障碍时"看着在线上"必点得中
+- **烘焙对齐**：`ConvertElbowToPolyline` 改烘 `Scene::elbow_route_local` 完整路由（含避障/固定段/倒角）
+- 测试：A* 绕障（正交/端点/避障/贴 padding 边界）、确定性输出、失败回退、固定段缝合与贪心链接、对齐端点短路边界、`SetElbowFixedSegments` undo、拖段集成（预览固化 + undo 还原）、serde 往返；全量 fmt / clippy 零告警，342 通过
+
+---
+
 ## 决策点归档（D1–D6 / I1–I4 / L 系列）
 
 > 原列于 plan.md，G/I/H/K 交付后蒸馏归档于此，使 CHANGELOG 自包含、plan.md 仅保留前瞻内容。
@@ -1329,7 +1380,7 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 | L6 | 同向已有邻居的落位 | ⛔ 原「邻居旁外推」**根除不了重叠**（`find_connected_neighbor` 恒返回同一最近邻居）→ 移植 Excalidraw `placeCluster` 到 core `flowchart::place_node`：主轴恒相对源、交叉轴滑到最近空位成**上下分叉** |
 | L7 | elbow 多顶点模型 | ⛔ **不跟随 Excalidraw 的 line/arrow 类型分裂**（`elbowed` 仅 arrow、切 elbow 丢中间点）→ 保持统一 Polyline + `CurveType` 三态 |
 | L8 | elbow 加顶点手势 | 双击段插入顶点（`elbow_insert_candidates` 纯函数给候选，须过「视觉不变」+「可拖动」双校验）；**2026-09-25 扩展到两点线**（靶区=bar 段，单击拖 bar / 双击插入同区）——重新推导发现两点线的排除是多余的，插入后走线视觉 no-op |
-| L9 | elbow 取向翻转滞回 | **不加**：确定性规则固有行为，先观察验收反馈再定 |
+| L9 | elbow 取向翻转滞回 | **不加**：确定性规则固有行为，先观察验收反馈再定（⛔ 2026-10-02 由 [L22](#elbow-取向稳定化滞回--绑定锚点驱动plan-21-dp-b--24-阶段-c-前置过渡2026-10-02) 推翻落地） |
 | L10 | mermaid 额外节点外形 | 解析期**近似收敛**到既有 3 类（`((…))`/`([…])`→Ellipse，其余冷门形→Rectangle，`{…}`→Diamond）——零 `ShapeType` 改动、`.prz` 零迁移；忠实渲染（Stadium/Cylinder/Hexagon）留待验收反馈后再评估 |
 | L11 | mermaid 边标签形态 | 给线性对象加 `label: Option<String>`（`#[serde(default)]`，零迁移），**渲染期画在线段中点**，端点重路由自动跟随（零 `.prz` 迁移） |
 | L12 | mermaid `()` 语义 | ⛔ 校正：`()` 圆角矩形 → Rectangle、`((…))` 圆 → Ellipse，与 mermaid 文档一致（原实现与文档冲突） |
@@ -1342,3 +1393,4 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 | L19 | 相乘叠合模式 | **先不做**：egui 0.36.2 无 per-shape blend（epaint 无 BlendMode、glow 固定预乘 alpha），屏幕实时真 multiply 需 `Shape::Callback` + GL 状态 hack；导出侧需先重写为正向合成。评估已存档，重启可直接沿用 |
 | L20 | 两点 elbow 保持 Z 形 | 用户确认实用、保留；多顶点**不**改回「每两顶点独立居中 Z」——那正是已废弃的 plan #19（相邻 bar 不对齐、顶点一多碎乱、锚点漂离走线） |
 | L21 | elbow 自动避障路由（原 plan #16 E2） | ⛔ **取消**（2026-09-28）：原拟移植 Excalidraw `elbowArrow.ts` 的 grid + A\* 让连线自动绕开节点，但 #21 的多顶点「顶点锚定 bar」模型已交付——**双击插入顶点 + 拖顶点即手动绕行**，用户可控且无存储代价。A\* 的边际价值覆盖不了成本（core 新增 `elbow.rs` 600–1000 行；单 `elbow_mid_offset` 不够用，需升级为存完整路由结果或「用户固定段列表」派生）。**若将来仍要自动避障**，先确认痛点是"用户不愿手动"而非"手动做不到" |
+| L22 | elbow 取向跳变（Δ 关系翻转即 90° 翻转） | **滞回 + 绑定锚点驱动**（2026-10-02 落地，⛔ 推翻 L9）：绑定端取向由锚点所在边法线决定（与 Δ 解耦），自由端滞回 1.3× 稳定带；取向存 `elbow_axis: Option<ElbowAxis>`（旧档 None 推断，零迁移），变更随 `EditShapePoints` 同条 undo。实现要点见上文「elbow 取向稳定化」节 |
