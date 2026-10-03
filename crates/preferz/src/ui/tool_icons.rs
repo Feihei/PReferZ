@@ -4,6 +4,10 @@
 use egui::epaint::{PathShape, PathStroke};
 use egui::{vec2, Color32, Painter, Pos2, Rect, Shape, Stroke};
 
+/// 工具栏手绘图标的统一描边粗细（px）：对齐直线字形图标 "╱"（思源黑体
+/// Regular，默认字号）的笔画粗细，避免手绘图标偏粗。
+const ICON_STROKE: f32 = 1.0;
+
 /// 工具栏按钮图标：字形字符或手绘形状。
 pub enum ToolIcon {
     /// 字形字符（须在内嵌字体 cmap 中有字形，见 render_toolbar 注释）。
@@ -65,7 +69,7 @@ fn elbow_arrow(painter: &Painter, rect: Rect, color: Color32) {
     let start = Pos2::new(c.x - 8.0, c.y - 7.0);
     let corner = Pos2::new(c.x + 4.0, c.y - 7.0);
     let tip = Pos2::new(c.x + 4.0, c.y + 7.0);
-    let stroke = Stroke::new(1.8, color);
+    let stroke = Stroke::new(ICON_STROKE, color);
     painter.line_segment([start, corner], stroke);
     painter.line_segment([corner, tip], stroke);
     let head_len = 6.0;

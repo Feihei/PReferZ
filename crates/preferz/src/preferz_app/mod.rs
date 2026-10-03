@@ -2160,8 +2160,9 @@ impl PReferZApp {
                     // 无字形图标的工具（Select/Elbow）用 painter 手绘（见 ui/tool_icons.rs）。
                     // 第四项为快捷键角标（数字键优先，无数字键的工具显示主字母键），
                     // 对应 keymap.rs 绑定：1=Select 2=Rect 3=Diamond 4=Ellipse
-                    // 5=Elbow 6=Line 7=Freehand；Polygon=Shift+P、Frame=F 无数字键。
-                    let tools: [(Tool, tool_icons::ToolIcon, T, &str); 10] = [
+                    // 5=Elbow 6=Line 7=Freehand；Frame=F 无数字键。多边形工具
+                    // 不在工具栏（直线可转多边形，Shift+P 键位仍有效）。
+                    let tools: [(Tool, tool_icons::ToolIcon, T, &str); 9] = [
                         (
                             Tool::Select,
                             tool_icons::ToolIcon::SelectCursor,
@@ -2197,12 +2198,6 @@ impl PReferZApp {
                             tool_icons::ToolIcon::ElbowArrow,
                             T::ToolElbow,
                             "5",
-                        ),
-                        (
-                            Tool::Polygon,
-                            tool_icons::ToolIcon::Glyph("△"),
-                            T::ToolPolygon,
-                            "P",
                         ),
                         (
                             Tool::Freehand,
@@ -2264,14 +2259,24 @@ impl PReferZApp {
                     // 帮助按钮（plan #25，自右下角 HUD 移入工具栏最下方）：
                     // 与工具按钮同风格，分隔线区隔；spawn 独立实例打开内嵌
                     // help.prz——真 App 全功能（可编辑），但改动不回存。
+                    // 问号用 painter 画在按钮正中：egui Button 的文本布局对
+                    // "?" 这类单字符会偏上/偏右，CENTER_CENTER 强制居中；
+                    // 字号取 Body 与字形图标一致。
                     ui.separator();
                     let help_resp = ui
                         .add(
-                            egui::Button::new("?")
+                            egui::Button::new("")
                                 .min_size(egui::vec2(chrome::TOOL_BTN_SIZE, chrome::TOOL_BTN_SIZE))
                                 .fill(egui::Color32::TRANSPARENT),
                         )
                         .on_hover_text(t(self.lang, T::OpenHelp));
+                    ui.painter().text(
+                        help_resp.rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        "?",
+                        egui::TextStyle::Body.resolve(ui.style()),
+                        ui.style().interact(&help_resp).text_color(),
+                    );
                     if help_resp.clicked() {
                         self.spawn_help_instance();
                     }
