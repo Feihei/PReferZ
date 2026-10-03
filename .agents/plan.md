@@ -35,7 +35,7 @@
 | 20 | RoughStyler 剩余缺口 | ⏳ 四批已交付且人工验收通过。剩余划出的项：zigzag / dots 填充（[ADR-0005](adr/0005-shape-styler-rough-seeded.md) 注明后续自移植）、圆角矩形 `_bezierTo` 平滑抖动、椭圆 `overlap` 收笔重叠段 | 均属 rough.js 已有能力自移植，零新依赖 |
 | 21 DP-B | elbow 取向翻转滞回 | 🔶 **已落地**（2026-10-02，⛔ 推翻 L9，归档 L22 / CHANGELOG「elbow 取向稳定化」节）：滞回（1.3× 稳定带）+ **绑定锚点驱动取向**（锚点所在边法线决定首/末段走向，与 Δ 关系解耦）。#24 阶段 C 的 `elbow_route` 直接复用其取向输入语义 | `elbow_axis: Option<ElbowAxis>`（serde default None = 旧档推断，行为不变）；取向变更随 `EditShapePoints` 同条 undo |
 | 18 | 相乘叠合模式（Multiply / 荧光马克笔） | ⏳ **先不做**（L19），评估已存档。重启前提：egui 0.36.2 无 per-shape blend（epaint 无 `BlendMode`、glow 固定预乘 alpha），屏幕实时真 multiply 是唯一硬点（需 `Shape::Callback` + GL 状态 hack）；导出侧需先重写为正向合成。分 M1（荧光色板 + 低透明填充，近似）/ M2（真 multiply） | 导出管线重写本身是独立大项（顺带解决矢量元素导出缺失），M2 排其后 |
-| 24 | elbow 连接器独立类型化 + A\* 自动路由（对齐 Excalidraw） | 🔶 阶段 A（类型拆分+迁移）/ B（Elbow 工具+烘焙）已交付待人工验收；C（A\* 避障）/ D（fixedSegments）未开始。详见下方 #24 专节 | **推翻 L21**；取代 #21 多顶点机制与 #23 中 elbow 专属部分；工具栏 elbow 图标 `↴` 需人工确认内嵌字体有字形 |
+| 24 | elbow 连接器独立类型化 + A\* 自动路由（对齐 Excalidraw） | 🔶 阶段 A/B/C/D 全部代码已交付待人工验收（A/B 2026-09-29；C/D + DP-5/DP-6 拍板 2026-10-02；10-03 验收修复 heading 双重取反）。详见下方 #24 专节 | **推翻 L21**；取代 #21 多顶点机制与 #23 中 elbow 专属部分；工具栏 elbow 图标 `↴` 需人工确认内嵌字体有字形 |
 
 ---
 
