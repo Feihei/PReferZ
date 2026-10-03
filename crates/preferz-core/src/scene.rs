@@ -400,15 +400,20 @@ impl Scene {
             ((outward.0 * multiplier, outward.1 * multiplier), true)
         };
         let mut obstacles: Vec<(f32, f32, f32, f32)> = Vec::with_capacity(2);
+        // 自由端 heading 两端同向（朝 b）：起点 = 离开方向，终点 = 进入方向
+        // （Z 拓扑下首末段平行且同向，进入方向 = 从 a 侧指向 b）。
         let (start_heading, start_bound) = resolve_bound(
             start_binding.as_ref(),
             unbound_heading(a_c.into(), b_c.into()),
             1.0,
             &mut obstacles,
         );
-        let (end_outward, end_bound) = resolve_bound(
+        // 终点：multiplier = -1 把外法线翻成**内法线（进入方向）**——返回值即
+        // end_heading，调用方不得再取反（曾在此双重取反，ev 落进形状内部令
+        // A\* 必败回退穿越路由，2026-10-03 验收修复）。
+        let (end_inward, end_bound) = resolve_bound(
             end_binding.as_ref(),
-            unbound_heading(b_c.into(), a_c.into()),
+            unbound_heading(a_c.into(), b_c.into()),
             -1.0,
             &mut obstacles,
         );
@@ -416,7 +421,7 @@ impl Scene {
             start: a_c.into(),
             end: b_c.into(),
             start_heading,
-            end_heading: (-end_outward.0, -end_outward.1),
+            end_heading: end_inward,
             start_bound,
             end_bound,
             offset: *elbow_mid_offset,
@@ -1249,6 +1254,177 @@ mod tests {
             ElbowAxis::HorizontalFirst,
             "锚点在右边缘 → 取向恒水平先走，Δ 翻转不跳变"
         );
+    }
+
+    /// 验收反馈（2026-10-03）回归：两端都锚在**上边缘**、形状左右并列——路由
+    /// 应从上边缘向上离开、从上方进入，绝不穿过形状内部（曾因 end_heading
+    /// 双重取反令 A\* 必败、回退 Z 直接穿越）。
+    #[test]
+    fn elbow_route_top_anchors_side_by_side_avoids_shapes() {
+        use crate::shape::ElbowAxis;
+        let rect_a = Item::new_shape(
+            ShapeType::Rectangle,
+            (100.0, 60.0),
+            0.0,
+            0.0,
+            StrokeStyle::default(),
+            None,
+        );
+        let rect_b = Item::new_shape(
+            ShapeType::Rectangle,
+            (100.0, 60.0),
+            300.0,
+            0.0,
+            StrokeStyle::default(),
+            None,
+        );
+        let (a_id, b_id) = (rect_a.id, rect_b.id);
+        // elbow：起点锚 A 上边缘 (50,0)，终点锚 B 上边缘 (50,0)（画布 350,0）。
+        let mut elbow = Item::new_elbow(
+            vec![(50.0, 0.0), (350.0, 0.0)],
+            (300.0, 0.0),
+            None,
+            None,
+            0.0,
+            0.0,
+            StrokeStyle::default(),
+        );
+        if let ItemKind::Shape {
+            shape_type,
+            start_binding,
+            end_binding,
+            elbow_axis,
+            ..
+        } = &mut elbow.kind
+        {
+            *shape_type = ShapeType::Elbow;
+            *start_binding = Some(crate::item::EndpointBinding {
+                target: a_id,
+                anchor: Some((50.0, 0.0)),
+            });
+            *end_binding = Some(crate::item::EndpointBinding {
+                target: b_id,
+                anchor: Some((50.0, 0.0)),
+            });
+            *elbow_axis = Some(ElbowAxis::VerticalFirst);
+        }
+        let mut scene = Scene::new();
+        scene.add_item(rect_a);
+        scene.add_item(rect_b);
+        scene.add_item(elbow);
+        let item = scene.get_item(&elbow_id_of(&scene)).unwrap();
+        let route = scene.elbow_route_local(item);
+        // 画布空间断言（item 无变换：局部 == 画布）。
+        assert_eq!(route.first(), Some(&(50.0, 0.0)));
+        assert_eq!(route.last(), Some(&(350.0, 0.0)));
+        // 首段向上离开上边缘（插座腿方向）。
+        assert!(route[1].1 < 0.0, "首段应向上离开：{:?}", route[1]);
+        // 任何分段中点都不得落入两个形状的**未膨胀** AABB（真避障）。
+        for w in route.windows(2) {
+            let m = ((w[0].0 + w[1].0) * 0.5, (w[0].1 + w[1].1) * 0.5);
+            for (x0, y0, x1, y1) in [(0.0, 0.0, 100.0, 60.0), (300.0, 0.0, 400.0, 60.0)] {
+                assert!(
+                    !(m.0 > x0 && m.0 < x1 && m.1 > y0 && m.1 < y1),
+                    "段 {:?}→{:?} 中点 {:?} 穿过形状",
+                    w[0],
+                    w[1],
+                    m
+                );
+            }
+        }
+    }
+
+    /// 验收反馈（2026-10-03）回归：起于右边缘、止于上边缘（目标更低）——
+    /// 最少转弯路由应为 **L 形**（1 个拐点），而非 Z 形穿障碍。
+    #[test]
+    fn elbow_route_right_edge_to_top_edge_is_l_shaped() {
+        use crate::shape::ElbowAxis;
+        let rect_a = Item::new_shape(
+            ShapeType::Rectangle,
+            (100.0, 60.0),
+            0.0,
+            0.0,
+            StrokeStyle::default(),
+            None,
+        );
+        // B 在 A 右下方：右缘锚点 (100,30)，B 上边缘锚点画布 (350,120)。
+        let rect_b = Item::new_shape(
+            ShapeType::Rectangle,
+            (100.0, 60.0),
+            300.0,
+            120.0,
+            StrokeStyle::default(),
+            None,
+        );
+        let (a_id, b_id) = (rect_a.id, rect_b.id);
+        let mut elbow = Item::new_elbow(
+            vec![(100.0, 30.0), (350.0, 120.0)],
+            (250.0, 90.0),
+            None,
+            None,
+            0.0,
+            0.0,
+            StrokeStyle::default(),
+        );
+        if let ItemKind::Shape {
+            shape_type,
+            start_binding,
+            end_binding,
+            elbow_axis,
+            ..
+        } = &mut elbow.kind
+        {
+            *shape_type = ShapeType::Elbow;
+            *start_binding = Some(crate::item::EndpointBinding {
+                target: a_id,
+                anchor: Some((100.0, 30.0)),
+            });
+            *end_binding = Some(crate::item::EndpointBinding {
+                target: b_id,
+                anchor: Some((50.0, 0.0)),
+            });
+            *elbow_axis = Some(ElbowAxis::HorizontalFirst);
+        }
+        let mut scene = Scene::new();
+        scene.add_item(rect_a);
+        scene.add_item(rect_b);
+        scene.add_item(elbow);
+        let item = scene.get_item(&elbow_id_of(&scene)).unwrap();
+        let route = scene.elbow_route_local(item);
+        // L 形：[起点, 拐点, 终点]，拐点 = (350, 30)（先右行至目标 x，再下行进入上边缘）。
+        assert_eq!(route.len(), 3, "应为 L 形（1 拐点）：{:?}", route);
+        assert_eq!(route[1], (350.0, 30.0), "拐点应在目标 x 与源 y 的交点");
+        // 分段不穿形状。
+        for w in route.windows(2) {
+            let m = ((w[0].0 + w[1].0) * 0.5, (w[0].1 + w[1].1) * 0.5);
+            for (x0, y0, x1, y1) in [(0.0, 0.0, 100.0, 60.0), (300.0, 120.0, 400.0, 180.0)] {
+                assert!(
+                    !(m.0 > x0 && m.0 < x1 && m.1 > y0 && m.1 < y1),
+                    "段 {:?}→{:?} 中点 {:?} 穿过形状",
+                    w[0],
+                    w[1],
+                    m
+                );
+            }
+        }
+    }
+
+    /// 辅助：取场景中唯一 elbow 的 id（测试用）。
+    fn elbow_id_of(scene: &Scene) -> ItemId {
+        scene
+            .items
+            .iter()
+            .find(|it| {
+                matches!(
+                    it.kind,
+                    ItemKind::Shape {
+                        shape_type: ShapeType::Elbow,
+                        ..
+                    }
+                )
+            })
+            .unwrap()
+            .id
     }
 
     /// 旧存档兼容：`start_binding` 为纯 uuid 字符串时迁移为无锚点绑定。

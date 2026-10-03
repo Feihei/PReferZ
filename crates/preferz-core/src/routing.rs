@@ -347,11 +347,12 @@ fn merge_collinear(pts: Vec<(f32, f32)>) -> Vec<(f32, f32)> {
 // ─────────────────────────── A\*（非均匀网格） ───────────────────────────
 
 /// 非均匀网格 A\*：网格坐标 = 两端点 + 障碍边线 + union 外扩一档（保证能绕到
-/// 外侧）；障碍边恒在网格线上 → 相邻节点段的中点落障判据**精确**。首步限
-/// `start_heading`、末步限 `end_heading`（Some）；禁止立即反向；转弯罚 =
-/// 曼哈顿距离³（对齐 Excalidraw bendPenalty 量级：最少转弯优先、路程次之）。
-/// 确定性：邻居固定顺序展开、堆并列按插入序破平。节点数 >4096 视为异常放弃
-/// （上层回退确定性规则）。
+/// 外侧）；障碍边恒在网格线上 → 相邻节点段的中点落障判据**精确**。首步/末步
+/// **禁止与 heading 相反**（直行延续与垂直转折均合法——插座腿关节处的拐弯是
+/// 正常路径形状；180° 掉头非法）；途中禁止立即反向；转弯罚 = 曼哈顿距离³
+/// （对齐 Excalidraw bendPenalty 量级：最少转弯优先、路程次之）。确定性：
+/// 邻居固定顺序展开、堆并列按插入序破平。节点数 >4096 视为异常放弃（上层
+/// 回退确定性规则）。
 fn astar(
     start: (f32, f32),
     end: (f32, f32),
@@ -476,7 +477,11 @@ fn astar(
             continue; // 陈旧堆条目（惰性删除）
         }
         done[key] = true;
-        if (i, j) == (ei, ej) && (end_dir.is_none() || end_dir == Some(dir)) {
+        // 末步约束：进入方向不得与 end_heading 相反（垂直转折 = 关节处拐弯
+        // 合法；180° 掉头会与端点腿 ev→end 重叠成尖刺，非法）。
+        if (i, j) == (ei, ej)
+            && (end_dir.is_none() || dir == 0 || !is_reverse(dir, end_dir.unwrap()))
+        {
             let mut pts = Vec::new();
             let mut cur = (dir, i, j);
             loop {
@@ -502,8 +507,8 @@ fn astar(
             }
             let d = dir_code((xs[ni] - xs[i], ys[nj] - ys[j]));
             if dir == 0 {
-                if d != start_dir {
-                    continue; // 首步必须沿出发 heading
+                if is_reverse(d, start_dir) {
+                    continue; // 首步不得与出发 heading 相反（掉头回穿过端点腿）
                 }
             } else if is_reverse(d, dir) {
                 continue; // 禁止立即反向

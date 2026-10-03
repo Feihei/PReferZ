@@ -1337,6 +1337,7 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 - **命中同源**：`Item::contains_canvas_point_with_route` 接受注入路由，`interaction.rs` 恒注入 `Scene::elbow_route_local` 产物——有障碍时"看着在线上"必点得中
 - **烘焙对齐**：`ConvertElbowToPolyline` 改烘 `Scene::elbow_route_local` 完整路由（含避障/固定段/倒角）
 - 测试：A* 绕障（正交/端点/避障/贴 padding 边界）、确定性输出、失败回退、固定段缝合与贪心链接、对齐端点短路边界、`SetElbowFixedSegments` undo、拖段集成（预览固化 + undo 还原）、serde 往返；全量 fmt / clippy 零告警，342 通过
+- **验收修复（2026-10-03，344 测试）**：① `end_heading` 双重取反——`resolve_bound(multiplier=-1)` 已返回内法线、调用方再取反一次，终点虚拟节点落入形状内部令 A\* 必败、永远走回退 Z 直接穿越元素（"上边缘锚点 + 左右并列从下方穿越"即此）；② 无绑定终点 heading 符号反（进入方向应为朝 b）；③ A\* 首步/末步约束从"必须等于 heading"放宽为"禁止反向"——插座腿关节处的垂直转折（并列上边缘锚点的 `上→右→下` 路径、右缘→上缘的 L 形）由此成为合法最短路径。回归测试：场景级 `elbow_route_top_anchors_side_by_side_avoids_shapes` / `elbow_route_right_edge_to_top_edge_is_l_shaped`
 
 ---
 
