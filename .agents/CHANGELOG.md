@@ -1293,7 +1293,7 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 
 > 验收反馈：移动吸附的图形时，elbow 连线在两端点 Δ 关系翻转（`x>y` ↔ `x<y`）
 > 一刻整条路径 90° 跳变，破坏流程图结构——正是 L9「观察验收反馈再定」约定的
-> 反馈，据此**推翻 L9**（归档 L22）落地。
+> 反馈，据此**推翻 L9**（归档 L22）落地。✅ 2026-10-04 人工复验通过（随 #24 一并验收）。
 
 - **根因**：`elbow_polyline_offset` 按 `|dx| <= |dy|` 无状态选轴，对角线是不连续
   开关；且 `elbow_mid_offset` 语义随轴切换，跳变同时丢失用户 bar 意图
@@ -1324,7 +1324,7 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 
 ## elbow A* 避障路由 + 固定段（plan #24 阶段 C/D，DP-5/DP-6 拍板落地，2026-10-02）
 
-> 通读 Excalidraw `elbowArrow.ts` master + [mtolmacs 算法博客](https://plus.excalidraw.com/blog/building-elbow-arrows-part-one)后拍板 DP-5/DP-6 并同日实现 C/D 两期。关键发现：Excalidraw 的 A* 障碍**只有两端绑定形状**（绕开其它元素至今未实现，issue #8635 开放中），网格是**非均匀网格**（障碍边线交点，O(k²) 节点）——这两点直接决定了本实现不走"全场景绕行 + 均匀网格 + 缓存"的重路线。
+> 通读 Excalidraw `elbowArrow.ts` master + [mtolmacs 算法博客](https://plus.excalidraw.com/blog/building-elbow-arrows-part-one)后拍板 DP-5/DP-6 并同日实现 C/D 两期。✅ 2026-10-04 人工复验通过（#24 全项关闭：A/B/C/D 四期 + 手工验收清单全过）。关键发现：Excalidraw 的 A* 障碍**只有两端绑定形状**（绕开其它元素至今未实现，issue #8635 开放中），网格是**非均匀网格**（障碍边线交点，O(k²) 节点）——这两点直接决定了本实现不走"全场景绕行 + 均匀网格 + 缓存"的重路线。
 
 - **阶段 C（A* 避障）**：core 新增 `routing.rs`（L1 纯函数，headless 可测）——
   - 网格坐标 = 两端虚拟节点 + 障碍 AABB 边线 + union 外扩一档；障碍边恒在网格线上 → 段中点落障判据**精确**
