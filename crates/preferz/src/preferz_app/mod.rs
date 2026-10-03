@@ -3794,7 +3794,7 @@ mod tests {
         let ctx = egui::Context::default();
         app.generate_mermaid_flowchart(&ctx);
 
-        // 3 节点形状 + 3 绑定文字 + 2 箭头
+        // 3 节点形状 + 3 绑定文字 + 2 elbow 边（#17 C：边默认 Elbow 连接器）
         assert_eq!(app.scene.items.len(), 8);
         let arrows: Vec<Item> = app
             .scene
@@ -3804,7 +3804,7 @@ mod tests {
                 matches!(
                     i.kind,
                     ItemKind::Shape {
-                        shape_type: ShapeType::Polyline,
+                        shape_type: ShapeType::Elbow,
                         ..
                     }
                 )

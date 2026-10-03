@@ -11,7 +11,8 @@
 //! HTML 标签 egui 无富文本渲染能力，原样保留。`subgraph` / `direction` /
 //! `style` / `classDef` 等分组与
 //! 样式语句、以及 sequence/class/state 等**非 flowchart 图种均不支持**（报错
-//! 并指出行号，DP 见 `.agents/plan.md` §17）。布局 = 分层（层级 = 最长路径深度），
+//! 并指出行号，DP 见 `.agents/plan.md` §17）。布局 = 分层（层级 = 最长路径深度）+
+//! 层内重心排序（barycenter，plan #17 C，减 `&` 展开后同层的边交叉），
 //! 层间距 / 同层间距 100px（对齐 plan #7 `FLOWCHART_GAP` 语义）。
 
 /// 节点形状。DP1「全部近似映射」：mermaid 的多种括号外形在解析期即收敛到这三类
@@ -506,8 +507,13 @@ fn estimate_size(node: &MermaidNode) -> (f32, f32) {
     }
 }
 
+/// 重心排序扫掠次数：down/up 交替 2 轮 + 收尾 1 次 down（Sugiyama 单层排序的
+/// 简化版，plan #17 C）。收益 O(轮 × E)，超过 5 次基本不再降交叉。
+const BARYCENTER_SWEEPS: usize = 5;
+
 /// 分层布局：层级 = 最长路径深度（边松弛至多 n 轮，环自然有界收敛）；
-/// 同层按出现顺序排布、整行在交叉轴居中。主轴 = 层方向（TD: y / LR: x）。
+/// 层内先按出现顺序、再做重心排序（barycenter，plan #17 C）减边交叉，
+/// 整行在交叉轴居中。主轴 = 层方向（TD: y / LR: x）。
 pub fn layout_flowchart(fc: &MermaidFlowchart) -> Vec<MermaidLayoutNode> {
     let n = fc.nodes.len();
     if n == 0 {
@@ -530,15 +536,58 @@ pub fn layout_flowchart(fc: &MermaidFlowchart) -> Vec<MermaidLayoutNode> {
 
     let sizes: Vec<(f32, f32)> = fc.nodes.iter().map(estimate_size).collect();
 
-    // 分层（BTreeMap 保层序；层内按下标序 = 出现顺序）
-    let mut layers: std::collections::BTreeMap<usize, Vec<usize>> = Default::default();
+    // 分层（层级松弛保证 0..=max 每层非空：level L>0 必由 L-1 层松弛而来）。
+    // 层内初始序 = 出现顺序（下标序）。
+    let max_level = level.iter().copied().max().unwrap_or(0);
+    let mut order: Vec<Vec<usize>> = vec![Vec::new(); max_level + 1];
     for (i, &l) in level.iter().enumerate() {
-        layers.entry(l).or_default().push(i);
+        order[l].push(i);
     }
-    let max_level = match layers.keys().next_back() {
-        Some(&l) => l,
-        None => return Vec::new(),
+
+    // 重心排序（plan #17 C）：down 扫按前驱排位均值重排本层，up 扫按后继；
+    // 跨层长边一并计入（取其当前排位）。稳定排序（并列保原排位）→ 确定性。
+    let mut preds: Vec<Vec<usize>> = vec![Vec::new(); n];
+    let mut succs: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for e in &fc.edges {
+        succs[e.from].push(e.to);
+        preds[e.to].push(e.from);
+    }
+    let ranks = |order: &[Vec<usize>]| -> Vec<f32> {
+        let mut pos = vec![0.0_f32; n];
+        for layer in order {
+            for (r, &node) in layer.iter().enumerate() {
+                pos[node] = r as f32;
+            }
+        }
+        pos
     };
+    for sweep in 0..BARYCENTER_SWEEPS {
+        // down, up, down, up, down——收尾 down 保证末层与前驱对齐。
+        let down = sweep % 2 == 0;
+        let neighbors: &[Vec<usize>] = if down { &preds } else { &succs };
+        let seq: Vec<usize> = if down {
+            (1..=max_level).collect()
+        } else {
+            (0..max_level).rev().collect()
+        };
+        for l in seq {
+            let pos = ranks(&order);
+            let mut keyed: Vec<(f32, usize, usize)> = order[l]
+                .iter()
+                .map(|&node| {
+                    let nb = &neighbors[node];
+                    let bc = if nb.is_empty() {
+                        pos[node]
+                    } else {
+                        nb.iter().map(|&m| pos[m]).sum::<f32>() / nb.len() as f32
+                    };
+                    (bc, pos[node] as usize, node)
+                })
+                .collect();
+            keyed.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+            order[l] = keyed.into_iter().map(|(_, _, node)| node).collect();
+        }
+    }
 
     // 第一遍：逐层交叉轴排布，记录每层行宽与主轴起点
     // （行元素 = (节点下标, 交叉轴位置)；行记录 = (行, 层高, 主轴起点)）
@@ -547,10 +596,10 @@ pub fn layout_flowchart(fc: &MermaidFlowchart) -> Vec<MermaidLayoutNode> {
     let mut rows: Vec<LayoutRowRecord> = Vec::new();
     let mut row_widths: Vec<f32> = Vec::new();
     let mut main_cursor = 0.0_f32;
-    for li in 0..=max_level {
-        let Some(members) = layers.get(&li) else {
+    for members in &order {
+        if members.is_empty() {
             continue;
-        };
+        }
         let layer_h = members.iter().map(|&i| sizes[i].1).fold(0.0_f32, f32::max);
         let mut cross_cursor = 0.0_f32;
         let mut row: Vec<(usize, f32)> = Vec::with_capacity(members.len());
@@ -794,5 +843,33 @@ mod tests {
         let fc = parse_mermaid_flowchart("flowchart TD\n a --> b\n b --> c\n c --> a").unwrap();
         let layout = layout_flowchart(&fc);
         assert_eq!(layout.len(), 3);
+    }
+
+    #[test]
+    fn layout_barycenter_removes_crossing() {
+        // 初始（出现顺序）L1=[p,q]、L2=[x,y]：q→x (1→0) 与 p→y (0→1) 交叉。
+        // 重心排序应把 L2 重排为 [y,x]（y 的前驱 p 排位靠前），消除交叉。
+        let fc = parse_mermaid_flowchart("flowchart TD\n s --> p\n s --> q\n q --> x\n p --> y")
+            .unwrap();
+        let layout = layout_flowchart(&fc);
+        let by_idx = |i: usize| layout.iter().find(|n| n.index == i).unwrap();
+        // 节点 intern 序：s=0, p=1, q=2, x=3, y=4。重排后 y 在 x 左侧。
+        assert!(
+            by_idx(4).x < by_idx(3).x,
+            "y(x={}) 应在 x(x={}) 左侧（重心排序消除 q→x 与 p→y 的交叉）",
+            by_idx(4).x,
+            by_idx(3).x
+        );
+        // 主轴分层不受排序影响
+        assert_eq!(by_idx(3).y, by_idx(4).y);
+    }
+
+    #[test]
+    fn layout_barycenter_keeps_order_without_edges() {
+        // 无边图：无邻居 → 重心 = 自身原排位，出现顺序保持（确定性兜底）。
+        let fc = parse_mermaid_flowchart("flowchart TD\n c\n a\n b").unwrap();
+        let layout = layout_flowchart(&fc);
+        let by_idx = |i: usize| layout.iter().find(|n| n.index == i).unwrap();
+        assert!(by_idx(0).x < by_idx(1).x && by_idx(1).x < by_idx(2).x);
     }
 }

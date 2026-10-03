@@ -372,8 +372,8 @@ impl PReferZApp {
 
     /// 线性对象边标签（plan #17 DP2）：把 mermaid `-->|文本|` / `-- 文本 -->` 生成的
     /// 连线文字画在当前线段中点的屏幕位置，随端点重路由自动跟随。带 `label` 的
-    /// Polyline / Elbow 生效（mermaid 恒生成两点直边，故中点 = 包围盒中心；路由
-    /// 改道后标签仍落在原包围盒中心，属可接受的小偏差）。
+    /// Polyline / Elbow 生效（mermaid 边为两点 Elbow 连接器，故中点 = 包围盒中心；
+    /// 路由改道后标签仍落在原包围盒中心，属可接受的小偏差）。
     fn draw_edge_label(&self, ui: &egui::Ui, item: &Item) {
         let ItemKind::Shape {
             shape_type, label, ..

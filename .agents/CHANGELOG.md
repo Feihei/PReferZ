@@ -1341,6 +1341,27 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 
 ---
 
+## mermaid 布局质量：重心排序 + 边默认 Elbow（plan #17 批次 C，2026-10-04）
+
+> 批次 A（解析）/ B（映射）2026-09-28 交付并复验通过；批次 C 在 #24 elbow 独立类型化
+> + A\* 路由落地后实施（plan 预告的映射目标 `ShapeType::Elbow`）。🔶 待人工验收。
+
+- **重心排序（barycenter）**：core `layout_flowchart` 层级松弛后、落位前插入 5 次
+  down/up 交替扫掠（down 按前驱排位均值、up 按后继；跨层长边一并计入邻居均值），
+  收尾 down 保证末层与前驱对齐。稳定排序（并列保原排位）+ 无邻居节点取自身排位 →
+  确定性、无边图序不变。`&` 展开后同层变宽时「按出现顺序」易交叉的问题由此消除。
+- **边默认 Elbow**：`generate_mermaid_flowchart` 的边从两点 `new_polyline` 改
+  `new_elbow`（`ShapeType::Elbow`）——两端 `EndpointBinding` 绑定与锚点（相对边中点）
+  不变，正交路径改由 `Scene::elbow_route_local` 派生（绑定期走 A\* 避障、取向随锚点
+  边法线），节点拖动自动重路由，更贴 mermaid 正交观感；箭头族 / 虚线 / 粗细 / 边标签
+  映射逻辑不变（均为 `ItemKind::Shape` 通用字段）。
+- 测试：core 新增 `layout_barycenter_removes_crossing`（q→x 与 p→y 初始排位交叉 →
+  重排消除）与 `layout_barycenter_keeps_order_without_edges`（无边图保持出现顺序）；
+  app 层 mermaid 集成测试断言边类型为 Elbow。全量 fmt / clippy -D warnings 零告警，
+  346 测试通过。
+
+---
+
 ## 决策点归档（D1–D6 / I1–I4 / L 系列）
 
 > 原列于 plan.md，G/I/H/K 交付后蒸馏归档于此，使 CHANGELOG 自包含、plan.md 仅保留前瞻内容。

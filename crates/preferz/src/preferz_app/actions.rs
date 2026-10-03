@@ -637,9 +637,10 @@ impl PReferZApp {
         }
     }
 
-    /// 解析 mermaid 文本并生成分层布局的流程图（plan #9）：节点=矩形/椭圆/
-    /// 菱形 + 绑定文字；边=两端 `EndpointBinding` 绑定的直箭头（复用 plan #7
-    /// `edge_anchor_local`，锚点=双方相对的边中点）；整批 `AddItems` 一条
+    /// 解析 mermaid 文本并生成分层布局的流程图（plan #9；#17 C 起边改 Elbow）：
+    /// 节点=矩形/椭圆/菱形 + 绑定文字；边=两端 `EndpointBinding` 绑定的
+    /// Elbow 连接器（`Scene::elbow_route_local` 派生正交路由，锚点=双方相对的
+    /// 边中点）；整批 `AddItems` 一条
     /// undo，生成后全选。落点=视口中心（整体包围盒居中，同图片导入惯例）。
     pub(crate) fn generate_mermaid_flowchart(&mut self, ctx: &egui::Context) {
         let src = std::mem::take(&mut self.mermaid_buf);
@@ -744,12 +745,15 @@ impl PReferZApp {
             let s = CanvasPoint::new(from.min().x + src_anchor.0, from.min().y + src_anchor.1);
             let d = CanvasPoint::new(to.min().x + dst_anchor.0, to.min().y + dst_anchor.1);
             let min = CanvasPoint::new(s.x.min(d.x), s.y.min(d.y));
-            let mut arrow = Item::new_polyline(
+            // 边 = Elbow 连接器（plan #17 C，#24 落地后的映射目标）：两端
+            // `EndpointBinding` 绑定节点，路由由 `Scene::elbow_route_local` 派生
+            // （绑定期 A\* 正交避障 / 朝向随锚点边法线），比直箭头更贴 mermaid
+            // 正交观感；节点移动时自动重路由。
+            let mut arrow = Item::new_elbow(
                 vec![(s.x - min.x, s.y - min.y), (d.x - min.x, d.y - min.y)],
                 ((d.x - s.x).abs(), (d.y - s.y).abs()),
                 start_arrow,
                 end_arrow,
-                false,
                 min.x,
                 min.y,
                 edge_stroke,
