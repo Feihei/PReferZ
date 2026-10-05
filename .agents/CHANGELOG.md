@@ -1362,6 +1362,48 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 
 ---
 
+## RoughStyler 收尾三缺口：zigzag/dots 填充 + 椭圆 overlap 收笔（plan #20，2026-10-05）
+
+> plan #20 剩余缺口全部交付（「圆角矩形 `_bezierTo` 平滑抖动」一项经调研确认
+> 已随 2026-10-01 的 Segmented 路线交付——`corner_bezier` 即 Excalidraw 圆角
+> 路径 `Q` 命令的 rough.js `_bezierTo` 等价实现，plan.md 当时未清账）。🔶 待人工验收。
+
+- **zigzag 填充**（rough.js `zigzag-filler.ts` 自移植）：`FillStyle::Zigzag`——
+  hachure 扫描线基础上，每条线**起点**沿原始 hachureAngle 方向（= 有效角 −90°，
+  垂直于扫描线）拆成 ±gap/2 两条、共享终点，人字纹两两成对；起点偏移允许溢出
+  多边形边界（rough.js 同款行为）。RoughStyler 走 `sketch_edge` 双笔抖动，
+  CleanStyler 直线段。
+- **dots 填充**（rough.js `dot-filler.ts` 自移植）：`FillStyle::Dots`——竖向
+  扫描线（hachureAngle=0 → 有效角 90°）按 gap 均匀布点，首点余量
+  `length − count·gap`，位置 ±gap/4 抖动（rough.js 用 `Math.random()` 无种子，
+  此处改种子 rng 保持 ADR-0005 确定性）。点径取 `0.75 × fillWeight`
+  （rough.js 的 dot 是宽 fillWeight 的 rough 椭圆再以 fillWeight 描边，可见
+  覆盖半径 ≈ 0.75×fillWeight）；RoughStyler 以抖动圆心实心圆近似逐点 rough
+  椭圆（原实现每点 ≥18 条贝塞尔，观感等价、开销 1 shape/点），CleanStyler
+  规整圆点。两风格器共用 `dot_radius` 公式，切换 sloppiness 观感连续。
+- **椭圆 overlap 收笔**（rough.js `ellipseWithParams`）：椭圆从「闭合点环 +
+  封闭 CR」重构为 rough.js 的**开放点环**——0.9r 前导点 + 整圈 + 收笔尾段，
+  主 pass 在整圈后按 `overlap = increment × [0.1..inner] × amp_scale`
+  （`_offset(0.1, _offset(0.4, 1, o), o)`）继续画过起点，半径 1.0→0.98→0.9
+  内旋（"笔未抬起、画过起点再收"）；overlay pass overlap=0 环回起点。
+  曲线走 open Catmull-Rom（rough.js `_curve`，curveTightness=0）、从 ring
+  起点起画（跳过前导点段）；逐点抖动幅度改 rough.js 椭圆专用
+  `offset(1 / 1.5) × amp_scale × zoom`（原沿用 `curve()` API 的
+  `(1+0.2r)·r` 公式），仍受相邻段上限保护。`OutlineKind` 拆出 `Ellipse`
+  独立路线（`Smooth` 仅剩 Curved 折线）。
+- **UI**：填充样式四态 → 六态选择器（palette），新增之字线（↯）/ 圆点（2×2）
+  图标；i18n `StyleFillZigzag` / `StyleFillDots`（EN: Zigzag/Dots，ZH: 之字线/
+  圆点）。core `FillStyle` 新增两变体，serde lowercase（`zigzag` / `dots`），
+  旧存档零迁移（I4）。
+- 测试：stylers 54 项全绿（原 48 + 新 6：zigzag 人字对共享终点/起点相距 gap、
+  dot 布局同线等距与越界检查、Clean 两态几何、Rough dots 抖动圆确定性、
+  Rough zigzag 双笔计数含 skip_first 同种子推导）；椭圆 `is_smooth_curve`
+  重写为开放点环结构断言（段数 (segs+2)×2、open CR 的 C1、收笔点 0.9r、
+  起画点全半径）。质量门：fmt / `clippy -D warnings` 零告警，
+  `cargo test --workspace` 351 项全绿。
+
+---
+
 ## 决策点归档（D1–D6 / I1–I4 / L 系列）
 
 > 原列于 plan.md，G/I/H/K 交付后蒸馏归档于此，使 CHANGELOG 自包含、plan.md 仅保留前瞻内容。
