@@ -262,10 +262,12 @@ pub enum T {
     OpMed,
     OpHigh,
     OpMax,
-    /// 填充样式三态（无填充复用 StyleFillNone）。
+    /// 填充样式五态（无填充复用 StyleFillNone）。
     StyleFillSolid,
     StyleFillHachure,
     StyleFillCrossHatch,
+    StyleFillZigzag,
+    StyleFillDots,
     /// 绘制工具激活时的默认样式侧栏标题。
     PropsDefaultsTitle,
     StyleClosed,
@@ -643,6 +645,8 @@ fn translate_en(key: T) -> &'static str {
         T::StyleFillSolid => "Solid",
         T::StyleFillHachure => "Hachure",
         T::StyleFillCrossHatch => "Cross-hatch",
+        T::StyleFillZigzag => "Zigzag",
+        T::StyleFillDots => "Dots",
         T::PropsDefaultsTitle => "Default style for new elements",
         T::StyleClosed => "Closed",
         T::StyleArrowStart => "Start arrow",
@@ -951,6 +955,8 @@ fn translate_zh(key: T) -> &'static str {
         T::StyleFillSolid => "纯色",
         T::StyleFillHachure => "斜线",
         T::StyleFillCrossHatch => "交叉线",
+        T::StyleFillZigzag => "之字线",
+        T::StyleFillDots => "圆点",
         T::PropsDefaultsTitle => "新建元素默认样式",
         T::StyleClosed => "闭合",
         T::StyleArrowStart => "起点箭头",

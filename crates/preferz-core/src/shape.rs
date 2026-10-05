@@ -160,7 +160,7 @@ where
     })
 }
 
-/// 填充样式（Excalidraw 同款四态中的三种有填充样式；"无填充"由
+/// 填充样式（Excalidraw 三种 + rough.js 另两态 zigzag/dots；"无填充"由
 /// `fill: None` 表达）。仅闭合图形生效。
 ///
 /// serde 默认值为 `Solid`：旧存档只有 `fill`（Some = 纯色填充）没有本字段，
@@ -176,6 +176,12 @@ pub enum FillStyle {
     Hachure,
     /// 交叉线填充（斜线两遍，第二遍旋转 90°）。
     CrossHatch,
+    /// 之字线填充（plan #20 自移植 rough.js `zigzag-filler`：每条斜线在起点
+    /// 拆成 ±gap/2 垂直偏移的两条、共享终点，形成连续人字纹）。
+    Zigzag,
+    /// 圆点填充（plan #20 自移植 rough.js `dot-filler`：竖向扫描线上按 gap
+    /// 均匀布点，点径 = fillWeight，位置 ±gap/4 抖动）。
+    Dots,
 }
 
 /// 描边样式（画布空间像素；颜色 RGBA）。
@@ -405,7 +411,13 @@ mod tests {
 
     #[test]
     fn fill_style_serde_roundtrip_and_default() {
-        for f in [FillStyle::Solid, FillStyle::Hachure, FillStyle::CrossHatch] {
+        for f in [
+            FillStyle::Solid,
+            FillStyle::Hachure,
+            FillStyle::CrossHatch,
+            FillStyle::Zigzag,
+            FillStyle::Dots,
+        ] {
             let json = serde_json::to_string(&f).unwrap();
             let back: FillStyle = serde_json::from_str(&json).unwrap();
             assert_eq!(f, back);

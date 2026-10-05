@@ -558,10 +558,11 @@ pub fn fill_color_palette_button_follow(
     )
 }
 
-/// 填充样式四态选择器（无 / 纯色 / 斜线 / 交叉线），Excalidraw 同款图标。
+/// 填充样式六态选择器（无 / 纯色 / 斜线 / 交叉线 / 之字线 / 圆点；前三态为
+/// Excalidraw 同款，后两态自移植 rough.js，plan #20）。
 ///
 /// 返回 `Some(new_style)` 表示用户点了新的样式：`new_style` 为 `None` 即
-/// 选中"无填充"。`current` 为 `None` 时代表当前无填充（四态中的"无"）。
+/// 选中"无填充"。`current` 为 `None` 时代表当前无填充（"无"态）。
 pub fn fill_style_picker(
     ui: &mut egui::Ui,
     lang: Lang,
@@ -572,6 +573,8 @@ pub fn fill_style_picker(
         (Some(FillStyle::Solid), T::StyleFillSolid),
         (Some(FillStyle::Hachure), T::StyleFillHachure),
         (Some(FillStyle::CrossHatch), T::StyleFillCrossHatch),
+        (Some(FillStyle::Zigzag), T::StyleFillZigzag),
+        (Some(FillStyle::Dots), T::StyleFillDots),
     ];
     ui.horizontal(|ui| {
         let mut result: Option<Option<FillStyle>> = None;
@@ -631,6 +634,25 @@ fn draw_fill_icon(
             let c = egui::pos2(inner.left() + 2.0, inner.top() + 2.0);
             let d = egui::pos2(inner.right() - 2.0, inner.bottom() - 2.0);
             painter.line_segment([c, d], stroke);
+        }
+        Some(FillStyle::Zigzag) => {
+            // 三折人字线（↯ 观感）
+            let x0 = inner.left() + 2.0;
+            let x1 = inner.right() - 2.0;
+            let y_top = inner.top() + 2.5;
+            let y_bot = inner.bottom() - 2.5;
+            let xm = (x0 + x1) * 0.5;
+            let ym = (y_top + y_bot) * 0.5;
+            painter.line_segment([egui::pos2(x0, y_bot), egui::pos2(xm, y_top)], stroke);
+            painter.line_segment([egui::pos2(xm, y_top), egui::pos2(xm + 1.0, ym)], stroke);
+            painter.line_segment([egui::pos2(xm + 1.0, ym), egui::pos2(x1, y_bot)], stroke);
+        }
+        Some(FillStyle::Dots) => {
+            // 2×2 圆点
+            let r = 1.1;
+            for (dx, dy) in [(4.5, 4.5), (12.0, 4.5), (4.5, 12.0), (12.0, 12.0)] {
+                painter.circle_filled(egui::pos2(inner.left() + dx, inner.top() + dy), r, fg);
+            }
         }
     }
 }

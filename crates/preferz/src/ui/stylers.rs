@@ -422,6 +422,62 @@ fn closed_filled_path(pts: Vec<Pos2>, fill: Color32) -> Shape {
     })
 }
 
+/// 之字线段（rough.js `zigzag-filler.ts` 自移植，plan #20）：在 hachure 扫描线
+/// 基础上，每条线把**起点**沿原始 hachureAngle 方向（= 有效角 − 90°，即垂直于
+/// 扫描线）拆成 ±gap/2 偏移的两条、共享终点——渲染后两两成对组成连续人字纹。
+/// 返回值语义同 [`hachure_segments`]。
+fn zigzag_segments(
+    pts: &[Pos2],
+    angle_deg: f32,
+    gap: f32,
+    skip_first_line: bool,
+) -> Vec<[Pos2; 2]> {
+    let lines = hachure_segments(pts, angle_deg, gap, skip_first_line);
+    let raw = (angle_deg - 90.0).to_radians();
+    let (dgx, dgy) = (gap * 0.5 * raw.cos(), gap * 0.5 * raw.sin());
+    let mut out = Vec::with_capacity(lines.len() * 2);
+    for [p1, p2] in lines {
+        if (p2 - p1).length_sq() > 1e-6 {
+            out.push([egui::pos2(p1.x - dgx, p1.y + dgy), p2]);
+            out.push([egui::pos2(p1.x + dgx, p1.y - dgy), p2]);
+        }
+    }
+    out
+}
+
+/// 圆点布局（rough.js `dot-filler.ts` 自移植，plan #20）：竖向扫描线
+/// （hachureAngle=0 的有效角 90°）上按 gap 均匀布点，首点留 `length - count·gap`
+/// 的随机化余量。返回 `(基准圆心, 抖动半径 ro = gap/4)`：CleanStyler 直接用
+/// 基准点；RoughStyler 加 ±ro 位置抖动（rough.js 用 `Math.random()` 无种子，
+/// 此处改调用方种子 rng，保持 ADR-0005 的确定性）。
+fn dot_layout(pts: &[Pos2], gap: f32, skip_first_line: bool) -> Vec<(Pos2, f32)> {
+    if pts.len() < 3 || gap <= 1e-3 {
+        return Vec::new();
+    }
+    let ro = gap * 0.25;
+    let mut out = Vec::new();
+    for [p1, p2] in hachure_segments(pts, 90.0, gap, skip_first_line) {
+        let length = (p2 - p1).length();
+        // rough.js `Math.ceil(length/gap) - 1`；length=0 时 ceil(0)-1 < 0 → 无点
+        let count = (length / gap).ceil();
+        let count = if count >= 1.0 { count as usize - 1 } else { 0 };
+        let offset = length - count as f32 * gap;
+        let x = (p1.x + p2.x) * 0.5 - ro;
+        let min_y = p1.y.min(p2.y);
+        for i in 0..count {
+            out.push((egui::pos2(x, min_y + offset + i as f32 * gap), ro));
+        }
+    }
+    out
+}
+
+/// 圆点半径：rough.js 的 dot 是"宽 fillWeight 的 rough 椭圆再以 fillWeight 描边"，
+/// 抖动后的可见覆盖半径 ≈ 0.75 × fillWeight（几何半径 fillWeight/2 + 半边
+/// 描边 fillWeight/2，扣除 wobble 留空）；两个风格器共用同一公式保持观感连续。
+fn dot_radius(fill_weight: f32) -> f32 {
+    (fill_weight * 0.75).max(0.5)
+}
+
 /// 闭合多边形描边（不填充）。
 fn closed_stroked_path(pts: Vec<Pos2>, stroke: egui::epaint::PathStroke) -> Shape {
     Shape::Path(egui::epaint::PathShape {
@@ -515,6 +571,27 @@ impl ShapeStyler for CleanStyler {
                         ));
                     }
                 }
+                FillStyle::Zigzag => {
+                    let s = egui::Stroke::new(fill_width, fill_color);
+                    out.extend(
+                        zigzag_segments(
+                            &pts,
+                            HACHURE_ANGLE_DEG,
+                            hachure_gap(stroke.width, zoom),
+                            false,
+                        )
+                        .into_iter()
+                        .map(|seg| Shape::line_segment(seg, s)),
+                    );
+                }
+                FillStyle::Dots => {
+                    let r = dot_radius(fill_width);
+                    out.extend(
+                        dot_layout(&pts, hachure_gap(stroke.width, zoom), false)
+                            .into_iter()
+                            .map(|(p, _)| Shape::circle_filled(p, r, fill_color)),
+                    );
+                }
             }
         }
 
@@ -546,8 +623,12 @@ impl ShapeStyler for CleanStyler {
 /// [`RoughStyler::outline_kind`] 的三路渲染路线。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OutlineKind {
-    /// 采样间距均匀的曲线轮廓（椭圆 / Curved 折线）：整圈抖动 + Catmull-Rom。
+    /// 采样间距均匀的曲线轮廓（Curved 折线）：整圈抖动 + Catmull-Rom。
     Smooth,
+    /// 椭圆（plan #20）：rough.js `ellipseWithParams` 路线——开放点环
+    /// （0.9r 前导点 + 整圈 + overlap 收笔尾段），主 pass 带
+    /// overlap 收笔重叠段（半径 1.0→0.98→0.9 内旋），overlay pass 环回起点。
+    Ellipse,
     /// 圆角矩形 / 倒角 elbow："直边 + 单条角弧"分段（core `OutlineSeg`）。
     Segmented,
     /// 纯直边轮廓：逐边抖动。
@@ -613,8 +694,10 @@ impl RoughStyler {
 
     /// 轮廓渲染路线（2026-10-01 重构，对齐 rough.js/Excalidraw）：
     ///
-    /// - [`OutlineKind::Smooth`]：采样间距均匀的曲线轮廓（椭圆、Curved 折线）——
+    /// - [`OutlineKind::Smooth`]：采样间距均匀的曲线轮廓（Curved 折线）——
     ///   整圈抖动 + Catmull-Rom 平滑连线，采样点等距故控制柄不会过冲；
+    /// - [`OutlineKind::Ellipse`]：椭圆——rough.js `ellipseWithParams` 开放点环
+    ///   + overlap 收笔重叠段（plan #20）；
     /// - [`OutlineKind::Segmented`]：圆角矩形 / 倒角 elbow——core
     ///   `orthogonal_outline_segments` 拆成"直边 + 单条角弧"分段渲染（Excalidraw
     ///   圆角矩形即 `path()` 的 4×L + 4×Q，`shape.ts:776`）。此前圆角也走 Smooth：
@@ -625,7 +708,7 @@ impl RoughStyler {
     fn outline_kind(shape: &ShapeData) -> OutlineKind {
         let rounded = roundness_radius(shape.base_size, shape.roundness) > 1e-3;
         match shape.shape_type {
-            ShapeType::Ellipse => OutlineKind::Smooth,
+            ShapeType::Ellipse => OutlineKind::Ellipse,
             ShapeType::Rectangle if rounded => OutlineKind::Segmented,
             ShapeType::Polyline if matches!(shape.curve_type, CurveType::Curved) => {
                 OutlineKind::Smooth
@@ -654,9 +737,9 @@ impl RoughStyler {
     /// 整圈抖动：给每个采样点加独立偏移，得到"手抖画歪"的轮廓点环。
     ///
     /// 与逐边抖动（[`RoughStyler::sketch_edge`]）的区别是——这里先抖动顶点、
-    /// 再用光滑曲线穿过它们，因此曲线类轮廓（椭圆）不会出现直线段拼接的折角。
-    /// 仅用于**采样间距均匀**的轮廓（椭圆 / Curved 折线）：圆角矩形已于
-    /// 2026-10-01 改走"直边 + 角弧"分段渲染——间距不均的点环会让均匀
+    /// 再用光滑曲线穿过它们，因此曲线类轮廓不会出现直线段拼接的折角。
+    /// 仅用于**采样间距均匀**的轮廓（椭圆开放点环 / Curved 折线）：圆角矩形
+    /// 已于 2026-10-01 改走"直边 + 角弧"分段渲染——间距不均的点环会让均匀
     /// Catmull-Rom 在直边↔弧交界处控制柄过冲甩鼓包。
     ///
     /// 幅度逐点取 `min(rough_amp, 0.35 × 较短相邻段)`：全局平均间距会在
@@ -1084,7 +1167,7 @@ impl ShapeStyler for RoughStyler {
                             .collect();
                         out.push(closed_filled_path(jittered, f));
                     }
-                    FillStyle::Hachure | FillStyle::CrossHatch => {
+                    FillStyle::Hachure | FillStyle::CrossHatch | FillStyle::Zigzag => {
                         let angles: &[f32] = match fill_style {
                             FillStyle::CrossHatch => &[HACHURE_ANGLE_DEG, HACHURE_ANGLE_DEG + 90.0],
                             _ => &[HACHURE_ANGLE_DEG],
@@ -1094,7 +1177,11 @@ impl ShapeStyler for RoughStyler {
                         let gap = hachure_gap(stroke.width, zoom);
                         let path_stroke = egui::epaint::PathStroke::new(line_width * 0.5, f);
                         for angle in angles {
-                            let segs = hachure_segments(&pts, *angle, gap, skip_first);
+                            let segs = if fill_style == FillStyle::Zigzag {
+                                zigzag_segments(&pts, *angle, gap, skip_first)
+                            } else {
+                                hachure_segments(&pts, *angle, gap, skip_first)
+                            };
                             for [a, b] in segs {
                                 for _ in 0..Self::PASSES {
                                     let bez = Self::sketch_edge(&mut fill_rng, a, b, &ctx);
@@ -1108,6 +1195,20 @@ impl ShapeStyler for RoughStyler {
                                     ));
                                 }
                             }
+                        }
+                    }
+                    FillStyle::Dots => {
+                        // rough.js dot-filler：竖向扫描线均匀布点 ±gap/4 抖动。
+                        // 原实现逐点画"宽 fillWeight 的 rough 椭圆"（每点 ≥18 条
+                        // 贝塞尔），此处以抖动圆心 + 共享半径的实心圆近似——
+                        // 观感等价、开销 1 shape/点（plan #20）。
+                        let mut fill_rng = SeededRng::new(shape.seed ^ 0x6841_4355_4C4C_5F53);
+                        let skip_first = ctx.amp_scale >= 1.0 && fill_rng.next_f32() > 0.7;
+                        let gap = hachure_gap(stroke.width, zoom);
+                        let r = dot_radius(line_width * 0.5);
+                        for (p, ro) in dot_layout(&pts, gap, skip_first) {
+                            let c = p + egui::vec2(fill_rng.signed() * ro, fill_rng.signed() * ro);
+                            out.push(Shape::circle_filled(c, r, f));
                         }
                     }
                 }
@@ -1126,12 +1227,56 @@ impl ShapeStyler for RoughStyler {
 
         match Self::outline_kind(shape) {
             OutlineKind::Smooth => {
-                // 曲线类轮廓（椭圆、Curved 折线）：整圈抖动后连成光滑曲线。
+                // 曲线类轮廓（Curved 折线）：整圈抖动后连成光滑曲线。
                 // 若沿用逐边直线抖动，采样段之间的折角会非常明显。
                 let amp = Self::curve_jitter_amp(&stroke_pts, zoom, closed, ctx.amp_scale);
                 for _ in 0..passes {
                     let jittered = Self::jitter_points(&mut rng, &stroke_pts, closed, amp);
                     for bez in Self::catmull_rom_beziers(&jittered, closed) {
+                        Self::push_edge(&mut out, bez, stroke, line_width, ctx.stroke_color, zoom);
+                    }
+                }
+            }
+            OutlineKind::Ellipse => {
+                // rough.js ellipseWithParams（plan #20）：开放点环 = 0.9r 前导点 +
+                // 整圈 + 收笔尾段。主 pass 的 overlap = increment × [0.1..inner] ×
+                // amp_scale（`_offset(0.1, _offset(0.4, 1, o), o)`），尾段半径
+                // 1.0→0.98→0.9 内旋——"笔未抬起、画过起点再收"的手绘收笔重叠段；
+                // overlay pass overlap=0，环绕回起点。曲线走 open Catmull-Rom
+                // （rough.js `_curve`，curveTightness=0），从 ring 起点起画
+                // （跳过前导点段）。逐点抖动幅度 = offset(1 / 1.5) × amp_scale ×
+                // zoom（rough.js `_offsetOpt(offset, o)`），仍受 jitter_points 的
+                // 相邻段上限保护。
+                let inc = std::f32::consts::TAU / ellipse_segments as f32;
+                let mut ov_rng = SeededRng::new(shape.seed ^ 0x0AF1_FA11);
+                let overlap = {
+                    let inner = (ctx.amp_scale * (ov_rng.next_f32() * 0.6 + 0.4)).max(0.1);
+                    ctx.amp_scale * (ov_rng.next_f32() * (inner - 0.1) + 0.1)
+                } * inc;
+                let (w, h) = shape.base_size;
+                let (cx, cy, rx, ry) = (w * 0.5, h * 0.5, w * 0.5, h * 0.5);
+                let ell = |a: f32, s: f32| (cx + rx * s * a.cos(), cy + ry * s * a.sin());
+                let rad_offset = ellipse_phase;
+                let ring = outline_points(shape, ellipse_segments, rad_offset);
+                for pass in 0..passes {
+                    let (offset, overlap_pass) = if pass == 0 {
+                        (1.0, overlap)
+                    } else {
+                        (1.5, 0.0)
+                    };
+                    let mut local: Vec<(f32, f32)> = Vec::with_capacity(ellipse_segments + 4);
+                    local.push(ell(rad_offset - inc, 0.9));
+                    local.extend(ring.iter().copied());
+                    local.push(ell(
+                        rad_offset + std::f32::consts::TAU + overlap_pass * 0.5,
+                        1.0,
+                    ));
+                    local.push(ell(rad_offset + overlap_pass, 0.98));
+                    local.push(ell(rad_offset + overlap_pass * 0.5, 0.9));
+                    let scr = to_screen_points(&local, to_screen);
+                    let amp = offset * ctx.amp_scale * zoom;
+                    let jittered = Self::jitter_points(&mut rng, &scr, false, amp);
+                    for bez in Self::open_catmull_rom(&jittered).into_iter().skip(1) {
                         Self::push_edge(&mut out, bez, stroke, line_width, ctx.stroke_color, zoom);
                     }
                 }
@@ -1634,6 +1779,167 @@ mod tests {
     }
 
     #[test]
+    fn zigzag_segments_pairs_share_endpoints_gap_apart() {
+        // rough.js zigzag-filler：每条 hachure 线拆成两条、共享终点，起点沿
+        // 垂直于扫描线方向相距恰一个 gap（±gap/2 对称偏移）
+        let pts = vec![
+            egui::pos2(0.0, 0.0),
+            egui::pos2(100.0, 0.0),
+            egui::pos2(100.0, 60.0),
+            egui::pos2(0.0, 60.0),
+        ];
+        let gap = 16.0;
+        let segs = zigzag_segments(&pts, HACHURE_ANGLE_DEG, gap, false);
+        assert!(!segs.is_empty());
+        assert_eq!(segs.len() % 2, 0, "人字对必须成对出现");
+        for pair in segs.chunks(2) {
+            assert_eq!(pair[0][1], pair[1][1], "人字对共享终点");
+            let d = (pair[0][0] - pair[1][0]).length();
+            assert!((d - gap).abs() < 1e-3, "对起点相距 gap: {d}");
+        }
+    }
+
+    #[test]
+    fn dot_layout_distributes_evenly_along_scan_lines() {
+        let pts = vec![
+            egui::pos2(0.0, 0.0),
+            egui::pos2(100.0, 0.0),
+            egui::pos2(100.0, 80.0),
+            egui::pos2(0.0, 80.0),
+        ];
+        let gap = 20.0;
+        let dots = dot_layout(&pts, gap, false);
+        assert!(!dots.is_empty());
+        for (p, ro) in &dots {
+            assert!((-1e-3..=100.0 + 1e-3).contains(&p.x), "x 越界: {p:?}");
+            assert!((-1e-3..=80.0 + 1e-3).contains(&p.y), "y 越界: {p:?}");
+            assert!((ro - gap * 0.25).abs() < 1e-4, "抖动半径 = gap/4");
+        }
+        // 同一条竖线（x 相同）上相邻点 y 间距恒等于 gap
+        let mut by_line: std::collections::BTreeMap<u32, Vec<f32>> = Default::default();
+        for (p, _) in &dots {
+            by_line.entry(p.x.to_bits()).or_default().push(p.y);
+        }
+        for (_, mut ys) in by_line {
+            ys.sort_by(f32::total_cmp);
+            for w in ys.windows(2) {
+                assert!((w[1] - w[0] - gap).abs() < 1e-3, "同线点距应= gap");
+            }
+        }
+    }
+
+    #[test]
+    fn clean_styler_zigzag_and_dots_fill_geometry() {
+        let stroke = StrokeStyle::default();
+        let fill = Color32::from_rgb(10, 20, 30);
+        let zig = CleanStyler.build_shapes(
+            &rect(0),
+            &stroke,
+            Some(fill),
+            FillStyle::Zigzag,
+            &identity(),
+            1.0,
+        );
+        assert!(!zig.is_empty());
+        // 填充层全为独立线段，另有 1 个闭合轮廓 Path
+        let seg_count = zig
+            .iter()
+            .filter(|s| matches!(s, Shape::LineSegment { .. }))
+            .count();
+        assert_eq!(seg_count, zig.len() - 1, "除轮廓外应全为线段");
+        let dots = CleanStyler.build_shapes(
+            &rect(0),
+            &stroke,
+            Some(fill),
+            FillStyle::Dots,
+            &identity(),
+            1.0,
+        );
+        assert!(!dots.is_empty());
+        // 填充层全为实心圆点，另有 1 个闭合轮廓 Path
+        let circle_count = dots
+            .iter()
+            .filter(|s| matches!(s, Shape::Circle(_)))
+            .count();
+        assert_eq!(circle_count, dots.len() - 1, "除轮廓外应全为圆点");
+        // 点径 = 0.75 × fillWeight（fillWeight = strokeWidth/2）
+        for s in &dots {
+            if let Shape::Circle(c) = s {
+                assert!((c.radius - dot_radius(stroke.width * 0.5)).abs() < 1e-4);
+            }
+        }
+    }
+
+    #[test]
+    fn rough_styler_dots_fill_emits_jittered_circles() {
+        let stroke = StrokeStyle::default();
+        let mut d = rect(7);
+        d.sloppiness = Sloppiness::Artist;
+        let shapes = RoughStyler.build_shapes(
+            &d,
+            &stroke,
+            Some(Color32::from_rgb(1, 2, 3)),
+            FillStyle::Dots,
+            &identity(),
+            1.0,
+        );
+        // 轮廓 8 条贝塞尔 + ≥1 个抖动圆点，无其他类型
+        let bez = shapes
+            .iter()
+            .filter(|s| matches!(s, Shape::CubicBezier(_)))
+            .count();
+        assert_eq!(bez, 8);
+        let circles: Vec<egui::epaint::CircleShape> = shapes
+            .iter()
+            .filter_map(|s| match s {
+                Shape::Circle(c) => Some(*c),
+                _ => None,
+            })
+            .collect();
+        assert!(!circles.is_empty());
+        assert_eq!(bez + circles.len(), shapes.len());
+        // 确定性：同 seed 两次构建结果一致
+        let again = RoughStyler.build_shapes(
+            &d,
+            &stroke,
+            Some(Color32::from_rgb(1, 2, 3)),
+            FillStyle::Dots,
+            &identity(),
+            1.0,
+        );
+        assert_eq!(debug(&shapes), debug(&again));
+    }
+
+    #[test]
+    fn rough_styler_zigzag_fill_is_double_sketched() {
+        let stroke = StrokeStyle::default();
+        let mut d = rect(7);
+        d.sloppiness = Sloppiness::Artist;
+        let shapes = RoughStyler.build_shapes(
+            &d,
+            &stroke,
+            Some(Color32::from_rgb(4, 5, 6)),
+            FillStyle::Zigzag,
+            &identity(),
+            1.0,
+        );
+        // 全部为抖动贝塞尔（sketch_edge 双笔），数量为人字线数 × 2 passes + 轮廓 8×2。
+        // skip_first 与 build 同种子推导（Artist amp_scale=2 ≥ 1，首线可能被跳）。
+        assert!(shapes.iter().all(|s| matches!(s, Shape::CubicBezier(_))));
+        let gap = hachure_gap(stroke.width, 1.0);
+        let pts = vec![
+            egui::pos2(0.0, 0.0),
+            egui::pos2(100.0, 0.0),
+            egui::pos2(100.0, 60.0),
+            egui::pos2(0.0, 60.0),
+        ];
+        let mut fill_rng = SeededRng::new(7 ^ 0x6841_4355_4C4C_5F53);
+        let skip_first = fill_rng.next_f32() > 0.7;
+        let zig_lines = zigzag_segments(&pts, HACHURE_ANGLE_DEG, gap, skip_first).len();
+        assert_eq!(shapes.len(), zig_lines * 2 + 8);
+    }
+
+    #[test]
     fn rough_styler_ellipse_is_smooth_curve() {
         let stroke = StrokeStyle::default();
         let shapes = RoughStyler.build_shapes(
@@ -1644,18 +1950,21 @@ mod tests {
             &identity(),
             1.0,
         );
-        // 自适应段数（rough.js generateEllipseParams）× 2 passes；曲线轮廓不得退化成直线段拼接
+        // rough.js ellipseWithParams（plan #20）：开放点环（前导点 + 整圈 +
+        // 收笔尾段 3 点）→ open CR 共 (segments+3) 段、跳过前导段 →
+        // (segments+2) 段/pass × 2 passes
         let segs = RoughStyler::ellipse_step_count(100.0, 100.0);
         assert_eq!(segs, 12);
-        assert_eq!(shapes.len(), segs * 2);
+        assert_eq!(shapes.len(), (segs + 2) * 2);
         assert!(shapes.iter().all(|s| matches!(s, Shape::CubicBezier(_))));
 
-        // 每条 pass 内部：相邻两段首尾重合且切线共线（C1 连续），否则会看到折角
+        // 每条 pass 内部：相邻段首尾重合且切线共线（open CR 的 C1 连续，
+        // 无环绕闭合），否则会看到折角
         let bez = beziers(&shapes);
-        for pass in bez.chunks(segs) {
-            for i in 0..pass.len() {
+        for pass in bez.chunks(segs + 2) {
+            for i in 0..pass.len() - 1 {
                 let cur = pass[i];
-                let next = pass[(i + 1) % pass.len()];
+                let next = pass[i + 1];
                 assert_eq!(cur[3], next[0], "相邻段必须在端点处相接");
                 let in_tangent = cur[3] - cur[2];
                 let out_tangent = next[1] - next[0];
@@ -1666,6 +1975,15 @@ mod tests {
                     "接缝处切线长度应相等"
                 );
             }
+            // 收笔重叠段：pass 末点落在 0.9r 内旋收笔点附近
+            // （Ø100：r=50、Artist amp_scale=2 → 抖幅 ≤3px；0.9·50=45±3）
+            let end = pass[pass.len() - 1][3];
+            let d = (end - egui::pos2(50.0, 50.0)).length();
+            assert!((42.0..=48.0).contains(&d), "收笔点应落在 0.9r 处: d={d}");
+            // 起画点 = ring 起点（全半径，跳过 0.9r 前导点段）
+            let start = pass[0][0];
+            let ds = (start - egui::pos2(50.0, 50.0)).length();
+            assert!((40.0..=60.0).contains(&ds), "起画点应在圆周上: d={ds}");
         }
     }
 
