@@ -40,7 +40,34 @@
 ## 功能性待办（尚未实施）
 
 > 源自 `.issues`（本地目录，gitignore 排除）。#1–#5 均已交付（#4 由 `Action::FitToScreen` 覆盖，
-> union 全部 item AABB，等价"显示所有元素"）。**当前无未实施项。**
+> union 全部 item AABB，等价"显示所有元素"）。
+
+### #6 元素超链接（Element Link）
+
+参考 Excalidraw 的 element link（元素根级 `link: string | null` + hover 右上角图标点击打开），
+给 item 增加超链接能力：**web URL（http/https）** 与 **本地 `.prz` 文件**。决策点 H1–H4
+（2026-10-06 拍板，均为倾向列）：
+
+| # | 决策 | 拍板 |
+|---|---|---|
+| H1 | 数据模型 | `Item` 顶层新增 `link: Option<String>`（`#[serde(default)]`）；`.prz` items 表加 `link` 列（照 `group_id` 先例：`pragma_table_info` 检测 + `ALTER TABLE` 就地迁移，不动 USER_VERSION） |
+| H2 | 本地 .prz 打开方式 | **spawn 新窗口**（自身 exe + 路径参数，照 `spawn_help_instance` 先例）；`main.rs` 增加位置参数解析为待打开路径 |
+| H3 | 路径存储 | 存用户输入**原文**；打开时相对路径优先（相对当前 `.prz` 所在目录），不存在再按绝对路径解析；无当前文件时按工作目录 |
+| H4 | 编辑入口 | 精简版 + Ctrl+K：① props 面板通用 section（恰选中 1 项时，链接输入框 + 清除按钮）；② 右键菜单 Add/Edit link + Remove link；③ keymap 新增 `Action::EditLink`（Ctrl+K，聚焦链接输入框） |
+
+交互对齐 Excalidraw：未选中 + hover 含链接 item 时右上角显示链接 badge（照 frame badge
+先例，`ui.interact(Sense::click())` 可点击），点击打开；**不用 Ctrl+Click**（Ctrl 按下语义
+已被 free_scale 占用）。协议校验：仅放行 `http://` / `https://` 作为 web URL（拒绝
+`javascript:` 等）；其余输入一律视为本地路径（以 `.prz` 结尾或存在的路径），目标不存在时
+状态栏报错、不打开。所有写入经 `SetLink` undo 命令（`push_cmd`），UI 层不直改。
+
+实施拆分（checkbox 跟踪）：
+
+- [ ] A core：`Item.link` 字段 + `SetLink` 命令 + 链接分类/路径解析纯函数（headless 测试）
+- [ ] B fileio：save/load 加 `link` 列 + 旧库迁移 + roundtrip/迁移测试
+- [ ] C 启动：`main.rs` 位置参数 → 启动时加载指定 `.prz`
+- [ ] D UI：hover badge 打开 + props 面板 section + 右键菜单 + Ctrl+K + i18n 词条
+- [ ] E 质量门全绿（fmt/clippy/test）+ 人工 `cargo run` 复验后归档 CHANGELOG
 
 ---
 
