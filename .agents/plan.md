@@ -55,19 +55,22 @@
 | H3 | 路径存储 | 存用户输入**原文**；打开时相对路径优先（相对当前 `.prz` 所在目录），不存在再按绝对路径解析；无当前文件时按工作目录 |
 | H4 | 编辑入口 | 精简版 + Ctrl+K：① props 面板通用 section（恰选中 1 项时，链接输入框 + 清除按钮）；② 右键菜单 Add/Edit link + Remove link；③ keymap 新增 `Action::EditLink`（Ctrl+K，聚焦链接输入框） |
 
-交互对齐 Excalidraw：未选中 + hover 含链接 item 时右上角显示链接 badge（照 frame badge
-先例，`ui.interact(Sense::click())` 可点击），点击打开；**不用 Ctrl+Click**（Ctrl 按下语义
-已被 free_scale 占用）。协议校验：仅放行 `http://` / `https://` 作为 web URL（拒绝
-`javascript:` 等）；其余输入一律视为本地路径（以 `.prz` 结尾或存在的路径），目标不存在时
-状态栏报错、不打开。所有写入经 `SetLink` undo 命令（`push_cmd`），UI 层不直改。
+> 🔶 **代码已交付（2026-10-06）**：A–D 全部落地——`Item.link` + `SetLink` 命令 +
+> `sanitize_link`/`classify_link`（含协议注入拒绝，headless 测试 5 个）；
+> `prz` v4 加 `link` 列（group_id 同款迁移，roundtrip/迁移测试覆盖）；
+> `main.rs` 位置参数启动加载（复用 pending_open_recent 流程）；hover badge（↗ U+2197，
+> 内嵌字体 cmap 已核验）+ 按下守卫不启拖拽 + props 链接节（Enter/失焦提交，持焦屏蔽
+> 快捷键派发）+ 右键菜单两入口 + Ctrl+K 聚焦。质量门 fmt/clippy/test 全绿
+> （357 测试）。web 打开零新依赖（explorer/open/xdg-open 三平台 cfg）。
+> 待人工 `cargo run` 验收后清空归档 CHANGELOG。
 
 实施拆分（checkbox 跟踪）：
 
-- [ ] A core：`Item.link` 字段 + `SetLink` 命令 + 链接分类/路径解析纯函数（headless 测试）
-- [ ] B fileio：save/load 加 `link` 列 + 旧库迁移 + roundtrip/迁移测试
-- [ ] C 启动：`main.rs` 位置参数 → 启动时加载指定 `.prz`
-- [ ] D UI：hover badge 打开 + props 面板 section + 右键菜单 + Ctrl+K + i18n 词条
-- [ ] E 质量门全绿（fmt/clippy/test）+ 人工 `cargo run` 复验后归档 CHANGELOG
+- [x] A core：`Item.link` 字段 + `SetLink` 命令 + 链接分类/路径解析纯函数（headless 测试）
+- [x] B fileio：save/load 加 `link` 列 + 旧库迁移 + roundtrip/迁移测试
+- [x] C 启动：`main.rs` 位置参数 → 启动时加载指定 `.prz`
+- [x] D UI：hover badge 打开 + props 面板 section + 右键菜单 + Ctrl+K + i18n 词条
+- [ ] E 人工 `cargo run` 复验后归档 CHANGELOG
 
 ---
 
