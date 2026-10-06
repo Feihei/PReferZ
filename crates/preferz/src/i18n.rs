@@ -174,6 +174,15 @@ pub enum T {
     MermaidGenerate,         // 生成
     FlashMermaidParseFailed, // 解析失败：{0}
     FlashMermaidCreated,     // 已生成流程图：{0} 个节点、{1} 条边
+    // ── 元素超链接（plan #6）──
+    MenuEditLink,       // 右键菜单：添加/编辑链接（恰选中 1 项时显示）
+    MenuRemoveLink,     // 右键菜单：移除链接（选中项已有链接时显示）
+    PropsSectionLink,   // 属性面板节标题
+    LinkPlaceholder,    // 链接输入框 placeholder
+    FlashLinkBrowser,   // 已在浏览器打开: {0}
+    FlashLinkNewWindow, // 已在新窗口打开: {0}
+    FlashLinkInvalid,   // 链接无效或目标不存在: {0}
+    FlashLinkRemoved,   // 已移除链接
     // ── 自动保存（plan #5）──
     SettingsAutosave,         // 设置面板节标题
     SettingsAutosaveEnabled,  // 启用自动保存（checkbox）
@@ -566,6 +575,14 @@ fn translate_en(key: T) -> &'static str {
         T::MermaidGenerate => "Generate",
         T::FlashMermaidParseFailed => "Parse failed: {0}",
         T::FlashMermaidCreated => "Flowchart created: {0} nodes, {1} edges",
+        T::MenuEditLink => "Add/Edit Link…",
+        T::MenuRemoveLink => "Remove Link",
+        T::PropsSectionLink => "Link",
+        T::LinkPlaceholder => "https://… or path/to/file.prz",
+        T::FlashLinkBrowser => "Opened in browser: {0}",
+        T::FlashLinkNewWindow => "Opened in new window: {0}",
+        T::FlashLinkInvalid => "Invalid or missing link: {0}",
+        T::FlashLinkRemoved => "Link removed",
         T::SettingsAutosave => "Autosave",
         T::SettingsAutosaveEnabled => "Enable autosave",
         T::SettingsAutosaveInterval => "Idle seconds",
@@ -876,6 +893,14 @@ fn translate_zh(key: T) -> &'static str {
         T::MermaidGenerate => "生成",
         T::FlashMermaidParseFailed => "解析失败：{0}",
         T::FlashMermaidCreated => "已生成流程图：{0} 个节点、{1} 条边",
+        T::MenuEditLink => "添加/编辑链接…",
+        T::MenuRemoveLink => "移除链接",
+        T::PropsSectionLink => "链接",
+        T::LinkPlaceholder => "https://… 或本地 .prz 路径",
+        T::FlashLinkBrowser => "已在浏览器打开: {0}",
+        T::FlashLinkNewWindow => "已在新窗口打开: {0}",
+        T::FlashLinkInvalid => "链接无效或目标不存在: {0}",
+        T::FlashLinkRemoved => "已移除链接",
         T::SettingsAutosave => "自动保存",
         T::SettingsAutosaveEnabled => "启用自动保存",
         T::SettingsAutosaveInterval => "无操作秒数",
@@ -1110,6 +1135,7 @@ pub fn action_label(lang: Lang, action: Action) -> &'static str {
             MoveBackward => "Move backward one layer",
             ToggleToolbar => "Toggle toolbar",
             TogglePropsPanel => "Toggle properties panel",
+            EditLink => "Add/edit element link",
         },
         Lang::Zh => match action {
             NewCanvas => "新建画布",
@@ -1161,6 +1187,7 @@ pub fn action_label(lang: Lang, action: Action) -> &'static str {
             MoveBackward => "下移一层",
             ToggleToolbar => "切换工具栏显隐",
             TogglePropsPanel => "切换属性栏显隐",
+            EditLink => "添加/编辑元素链接",
         },
     }
 }

@@ -460,6 +460,9 @@ pub enum Action {
     ToggleToolbar,
     /// 切换右侧属性栏显隐（Blender 同款 `N`）。
     TogglePropsPanel,
+    /// 编辑选中项的超链接（plan #6，Excalidraw 同款 `Ctrl+K`）：打开右侧
+    /// 属性栏并聚焦链接输入框。需恰选中 1 项。
+    EditLink,
 }
 
 impl Action {
@@ -514,6 +517,7 @@ impl Action {
         Action::MoveBackward,
         Action::ToggleToolbar,
         Action::TogglePropsPanel,
+        Action::EditLink,
     ];
 
     /// 出厂默认绑定。一个动作可有多个绑定（如翻页的三组键）。
@@ -612,6 +616,8 @@ impl Action {
             // 面板显隐（Blender 同款）：T = 工具栏，N = 属性栏。裸键，无修饰。
             ToggleToolbar => vec![KeyBind::new(T)],
             TogglePropsPanel => vec![KeyBind::new(N)],
+            // 编辑链接（plan #6）：Excalidraw 同款 Ctrl+K
+            EditLink => vec![KeyBind::new(K).ctrl()],
         }
     }
 }
@@ -919,8 +925,10 @@ mod tests {
     #[test]
     fn rebind_same_action_does_not_self_evict() {
         let mut km = Keymap::new();
-        // Redo 有两个绑定，改其中一个不应把另一个挤掉
-        let evicted = km.rebind(Action::Redo, 0, KeyBind::new(BindKey::K).ctrl());
+        // Redo 有两个绑定，改其中一个不应把另一个挤掉。
+        // 用无默认归属的 Ctrl+J：Ctrl+K 已被 EditLink（plan #6）占用，
+        // 再用它会让 rebind 正确挤出 EditLink、断言语义漂移。
+        let evicted = km.rebind(Action::Redo, 0, KeyBind::new(BindKey::J).ctrl());
         assert!(evicted.is_empty());
         assert_eq!(km.bindings(Action::Redo).len(), 2);
     }

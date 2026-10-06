@@ -1773,6 +1773,51 @@ impl Command for EditTextContent {
     }
 }
 
+// ─────────────────────────── Set link ───────────────────────────
+
+/// 批量设置元素超链接（plan #6 / H1）。每项自带 old/new（`None` = 无链接），
+/// 整批只占一条 undo 记录（D3）；单项用 [`Self::new`]。
+/// 链接编辑是离散提交（输入框 Enter / 失焦 / 菜单清除），无预览态。
+pub struct SetLink {
+    items: Vec<(ItemId, Option<String>, Option<String>)>,
+}
+
+impl SetLink {
+    pub fn new(item_id: ItemId, old: Option<String>, new: Option<String>) -> Self {
+        Self {
+            items: vec![(item_id, old, new)],
+        }
+    }
+
+    /// 批量构造：`(item_id, old, new)` 三元组列表。
+    pub fn new_batch(items: Vec<(ItemId, Option<String>, Option<String>)>) -> Self {
+        Self { items }
+    }
+
+    fn apply(scene: &mut Scene, items: &[(ItemId, Option<String>, Option<String>)], new: bool) {
+        for (id, old, new_link) in items {
+            let value = if new { new_link } else { old };
+            if let Some(item) = scene.get_item_mut(id) {
+                item.link = value.clone();
+            }
+        }
+    }
+}
+
+impl Command for SetLink {
+    fn redo(&mut self, scene: &mut Scene) {
+        let items = std::mem::take(&mut self.items);
+        Self::apply(scene, &items, true);
+        self.items = items;
+    }
+
+    fn undo(&mut self, scene: &mut Scene) {
+        let items = std::mem::take(&mut self.items);
+        Self::apply(scene, &items, false);
+        self.items = items;
+    }
+}
+
 // ─────────────────────────── SetPixmapProps ───────────────────────────
 
 /// 修改 Pixmap item 的 opacity / grayscale / crop 任意组合（spec §2.2 灰度/透明度/裁剪）。

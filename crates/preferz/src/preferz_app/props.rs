@@ -173,6 +173,14 @@ impl PReferZApp {
                                 ui.separator();
                             }
 
+                            // 元素超链接（plan #6 / H4）：恰选中 1 项时显示编辑框
+                            // （Excalidraw 同款谓词；多选不给编辑入口）。
+                            if ids.len() == 1 {
+                                ui.label(t(lang, T::PropsSectionLink));
+                                self.render_link_section(ui, lang, ids[0]);
+                                ui.separator();
+                            }
+
                             // 对齐 / 分布（plan #6）：≥2 项才有意义，放在各类型节之前（对所有类型通用）
                             if ids.len() >= 2 {
                                 ui.label(t(lang, T::PropsSectionAlign));
@@ -453,6 +461,39 @@ impl PReferZApp {
                     _ => {}
                 }
             }
+        }
+    }
+
+    /// 元素超链接编辑节（plan #6 / H4，恰选中 1 项时显示）：链接输入框 +
+    /// 清除按钮。输入经 [`sanitize_link`] 清洗（去空白，空值 = 删除链接），
+    /// Enter / 失焦时若值有变化则提交一条 [`SetLink`] undo。输入框 Id 固定为
+    /// `link_input`，供 Ctrl+K / 右键菜单 `focus_link_input` 跨帧认领焦点。
+    /// 持焦状态写入 `self.link_input_focused`，屏蔽场景快捷键派发（同
+    /// zoom_hud_focused：字母键不能切工具、Enter 用于提交链接）。
+    fn render_link_section(&mut self, ui: &mut egui::Ui, lang: Lang, id: ItemId) {
+        let Some(item) = self.scene.get_item(&id) else {
+            return;
+        };
+        let current = item.link.clone().unwrap_or_default();
+        let mut buf = current.clone();
+        let resp = ui.add(
+            egui::TextEdit::singleline(&mut buf)
+                .id(egui::Id::new("link_input"))
+                .hint_text(t(lang, T::LinkPlaceholder))
+                .desired_width(f32::INFINITY),
+        );
+        self.link_input_focused = resp.has_focus();
+        let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
+        if (resp.changed() && enter) || (resp.lost_focus() && buf != current) {
+            let new = sanitize_link(&buf);
+            let old = sanitize_link(&current);
+            if new != old {
+                self.push_cmd(Box::new(SetLink::new(id, old, new)));
+            }
+        }
+        if !current.is_empty() && ui.button(t(lang, T::MenuRemoveLink)).clicked() {
+            self.push_cmd(Box::new(SetLink::new(id, Some(current.clone()), None)));
+            self.flash(t(lang, T::FlashLinkRemoved).to_string());
         }
     }
 

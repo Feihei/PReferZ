@@ -12,6 +12,10 @@ fn main() -> eframe::Result<()> {
     // plan #25：`--help-doc` 启动帮助实例——新进程加载内嵌 help.prz（可编辑、
     // 不回存）。eframe 单进程只能跑一个事件循环，多实例走多进程而非 viewport。
     let help_doc = std::env::args().any(|a| a == "--help-doc");
+    // plan #6 / H2：位置参数视为待打开的 .prz 路径（链接 badge 在新窗口 spawn
+    // 自身 exe + 路径参数）。首个非 `--` 开头的参数即路径；加载交给首帧的
+    // pending_open_recent 流程（后台加载 + recent + 失败提示全复用）。
+    let open_path = std::env::args().skip(1).find(|a| !a.starts_with("--"));
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -34,6 +38,8 @@ fn main() -> eframe::Result<()> {
             cc.egui_ctx.set_visuals(egui::Visuals::dark());
             if help_doc {
                 Ok(Box::new(PReferZApp::new_help_doc(&cc.egui_ctx)))
+            } else if let Some(path) = open_path {
+                Ok(Box::new(PReferZApp::new_with_file(path.into())))
             } else {
                 Ok(Box::new(PReferZApp::new()))
             }

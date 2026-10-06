@@ -405,6 +405,11 @@ pub struct Item {
     /// `#[serde(default)]`：旧存档无此字段按未编组加载。
     #[serde(default)]
     pub group_id: Option<Uuid>,
+    /// 元素超链接（plan #6，决策 H1）：web URL（http/https）或本地 `.prz`
+    /// 项目文件路径。`None` = 无链接。
+    /// `#[serde(default)]`：旧存档无此字段按无链接加载。
+    #[serde(default)]
+    pub link: Option<String>,
 }
 
 impl Item {
@@ -430,6 +435,7 @@ impl Item {
             transform: Transform::new(pos_x, pos_y, scale_x, scale_y),
             z: 0,
             group_id: None,
+            link: None,
         }
     }
 
@@ -459,6 +465,7 @@ impl Item {
             transform: Transform::new(pos_x, pos_y, 1.0, 1.0),
             z: 0,
             group_id: None,
+            link: None,
         }
     }
 
@@ -484,6 +491,7 @@ impl Item {
             transform: Transform::new(pos_x, pos_y, 1.0, 1.0),
             z: 0,
             group_id: None,
+            link: None,
         }
     }
 
@@ -516,6 +524,7 @@ impl Item {
             transform: Transform::new(pos_x, pos_y, 1.0, 1.0),
             z: 0,
             group_id: None,
+            link: None,
         }
     }
 
@@ -569,6 +578,7 @@ impl Item {
             transform: Transform::new(pos_x, pos_y, 1.0, 1.0),
             z: 0,
             group_id: None,
+            link: None,
         }
     }
 
@@ -687,6 +697,7 @@ impl Item {
             transform: Transform::new(pos_x, pos_y, 1.0, 1.0),
             z: 0,
             group_id: None,
+            link: None,
         }
     }
 
@@ -732,6 +743,7 @@ impl Item {
             transform: Transform::new(pos_x, pos_y, 1.0, 1.0),
             z: 0,
             group_id: None,
+            link: None,
         }
     }
 
@@ -776,6 +788,7 @@ impl Item {
             transform: Transform::new(pos_x, pos_y, 1.0, 1.0),
             z: 0,
             group_id: None,
+            link: None,
         }
     }
 
@@ -829,6 +842,7 @@ impl Item {
             transform: Transform::new(min_x, min_y, 1.0, 1.0),
             z: 0,
             group_id: None,
+            link: None,
         }
     }
 
@@ -1948,6 +1962,70 @@ pub fn constrain_drag_to_ratio(
     CanvasPoint::new(start.x + dx, start.y + dy)
 }
 
+// ─────────────────────────── 元素超链接（plan #6） ───────────────────────────
+
+/// 链接分类结果（[`classify_link`] 的产出）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LinkTarget {
+    /// web URL（http/https），交系统默认浏览器打开。
+    Web(String),
+    /// 本地 `.prz` 项目文件（已解析为绝对路径），spawn 新窗口打开（H2）。
+    LocalPrz(std::path::PathBuf),
+    /// 无法识别或目标不存在（空串 / 非 http(s) 协议的 URL 形态 / 路径不存在 /
+    /// 存在但不是 `.prz`），UI 层提示后放弃。
+    Invalid,
+}
+
+/// 清洗用户输入的链接文本（Excalidraw `normalizeLink` 的极简对应物）：
+/// 去首尾空白；空串归 `None`。不做协议改写——协议合法性由
+/// [`classify_link`] 按「http(s) = web，其余 = 本地路径」二元判定。
+pub fn sanitize_link(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+/// 链接分类（决策 H3：web URL 走浏览器；其余视为本地路径，相对路径优先按
+/// `base_dir` 解析，不存在再按绝对路径——已绝对则直接判定）。
+///
+/// - `http://` / `https://` 前缀（大小写不敏感）→ [`LinkTarget::Web`]；
+///   其它协议形态（`javascript:`、`file://` 等）一律不识别为 web，落入本地
+///   路径分支后因不存在而 `Invalid`——天然拒绝协议注入。
+/// - 本地路径：相对输入经 `base_dir.join()` 解析；要求目标存在且扩展名为
+///   `prz`，否则 `Invalid`。
+pub fn classify_link(link: &str, base_dir: Option<&std::path::Path>) -> LinkTarget {
+    let Some(link) = sanitize_link(link) else {
+        return LinkTarget::Invalid;
+    };
+    let lower = link.to_ascii_lowercase();
+    if lower.starts_with("http://") || lower.starts_with("https://") {
+        return LinkTarget::Web(link);
+    }
+    // 本地路径：拒绝 URL 形态里可能被 shell 消费的协议头（file: 等）。
+    if link.contains(':') && !std::path::Path::new(&link).is_absolute() {
+        // 形如 "file://..." / "javascript:..." 的带协议串（Windows 盘符
+        // "C:\..." 是绝对路径，已在 is_absolute 分支放行）。
+        return LinkTarget::Invalid;
+    }
+    let path = std::path::Path::new(&link);
+    let resolved = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        match base_dir {
+            Some(base) => base.join(path),
+            None => path.to_path_buf(),
+        }
+    };
+    if resolved.extension().and_then(|e| e.to_str()) == Some("prz") && resolved.is_file() {
+        LinkTarget::LocalPrz(resolved)
+    } else {
+        LinkTarget::Invalid
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1956,6 +2034,100 @@ mod tests {
     /// AABB = (pos_x, pos_y) .. (pos_x+w, pos_y+h)。
     fn make_frame(pos_x: f32, pos_y: f32, w: f32, h: f32) -> Item {
         Item::new_frame(1, (w, h), pos_x, pos_y, None)
+    }
+
+    // ─────────────────────── 元素超链接（plan #6） ───────────────────────
+
+    #[test]
+    fn link_field_defaults_on_serde_roundtrip() {
+        // 旧存档 JSON（无 link 字段）反序列化 → None；带 link 往返保真。
+        let item = Item::new_text("a".into(), 0.0, 0.0, 16.0, [0, 0, 0, 255]);
+        let json = serde_json::to_string(&item).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        // Option::None 默认序列化为 null（未启用 skip_serializing_if）
+        assert_eq!(v.get("link"), Some(&serde_json::Value::Null));
+        let back: Item = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.link, None);
+        let mut with_link = item.clone();
+        with_link.link = Some("https://example.com".into());
+        let json2 = serde_json::to_string(&with_link).unwrap();
+        let back2: Item = serde_json::from_str(&json2).unwrap();
+        assert_eq!(back2.link.as_deref(), Some("https://example.com"));
+    }
+
+    #[test]
+    fn sanitize_link_trims_and_rejects_empty() {
+        assert_eq!(sanitize_link("  https://a.b  "), Some("https://a.b".into()));
+        assert_eq!(sanitize_link("   "), None);
+        assert_eq!(sanitize_link(""), None);
+    }
+
+    #[test]
+    fn classify_web_urls() {
+        let base = std::path::Path::new("E:/nonexistent-base");
+        assert_eq!(
+            classify_link("https://example.com/x?y=1", Some(base)),
+            LinkTarget::Web("https://example.com/x?y=1".into())
+        );
+        assert_eq!(
+            classify_link("HTTP://EXAMPLE.COM", Some(base)),
+            LinkTarget::Web("HTTP://EXAMPLE.COM".into())
+        );
+    }
+
+    #[test]
+    fn classify_rejects_protocol_injection() {
+        let base = std::path::Path::new("E:/nonexistent-base");
+        for evil in [
+            "javascript:alert(1)",
+            "file:///c:/windows",
+            "data:text/html,x",
+        ] {
+            assert_eq!(
+                classify_link(evil, Some(base)),
+                LinkTarget::Invalid,
+                "{evil} 应被拒绝"
+            );
+        }
+    }
+
+    #[test]
+    fn classify_local_prz_relative_then_absolute() {
+        let dir = std::env::temp_dir();
+        let name = format!(
+            "preferz_link_{}.prz",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let target = dir.join(&name);
+        std::fs::write(&target, b"x").unwrap();
+
+        // 相对路径按 base 解析
+        assert_eq!(
+            classify_link(&name, Some(&dir)),
+            LinkTarget::LocalPrz(target.clone())
+        );
+        // 绝对路径直接判定
+        assert_eq!(
+            classify_link(target.to_str().unwrap(), Some(&dir)),
+            LinkTarget::LocalPrz(target.clone())
+        );
+        // 存在但不是 .prz → Invalid
+        let txt = dir.join(format!("{name}.txt"));
+        std::fs::write(&txt, b"x").unwrap();
+        assert_eq!(
+            classify_link(txt.to_str().unwrap(), Some(&dir)),
+            LinkTarget::Invalid
+        );
+        // 不存在的 .prz → Invalid
+        assert_eq!(
+            classify_link("no_such_file_12345.prz", Some(&dir)),
+            LinkTarget::Invalid
+        );
+        let _ = std::fs::remove_file(&target);
+        let _ = std::fs::remove_file(&txt);
     }
 
     #[test]

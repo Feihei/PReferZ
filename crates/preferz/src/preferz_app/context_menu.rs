@@ -237,6 +237,33 @@ impl PReferZApp {
                         }
                         ui.separator();
 
+                        // 元素超链接（plan #6 / H4）：恰选中 1 项时提供编辑入口，
+                        // 已有链接再给「移除」。与 Excalidraw actionLink 谓词一致。
+                        if self.scene.selection.len() == 1 {
+                            let id = *self.scene.selection.iter().next().expect("len == 1");
+                            let has_link =
+                                self.scene.get_item(&id).is_some_and(|it| it.link.is_some());
+                            if ui
+                                .button(format!(
+                                    "\u{1F517} {}",
+                                    self.shortcut_hint(T::MenuEditLink, &[Action::EditLink])
+                                ))
+                                .clicked()
+                            {
+                                self.focus_link_input(ctx);
+                                self.context_menu_open = false;
+                            }
+                            if has_link
+                                && ui
+                                    .button(format!("\u{2716} {}", t(self.lang, T::MenuRemoveLink)))
+                                    .clicked()
+                            {
+                                self.remove_selected_link();
+                                self.context_menu_open = false;
+                            }
+                            ui.separator();
+                        }
+
                         // Phase 5：灰度/透明度/裁剪（仅 Pixmap 单选时）
                         if self.selected_pixmap_count() == 1 {
                             let is_gray = self.selected_pixmap_grayscale();

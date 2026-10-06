@@ -25,8 +25,9 @@ use preferz_core::commands::{
     EditShapePoints, EditTextContent, FillChange, FillState, FlipItems, FrameGeom, FreedrawStyle,
     MoveItems, MultiCommand, NormalizeItems, RenumberFrame, ReorderItems, ReorderRelative,
     SetArrowHeads, SetClosed, SetCurveType, SetElbowFixedSegments, SetFrameFollowGlobal,
-    SetFrameNumber, SetFrameSize, SetFreedrawStyle, SetGroup, SetPixmapProps, SetPixmapStyle,
-    SetRoundness, SetShapeFill, SetSloppiness, SetStrokeStyle, SetTextStyle, TransformItem,
+    SetFrameNumber, SetFrameSize, SetFreedrawStyle, SetGroup, SetLink, SetPixmapProps,
+    SetPixmapStyle, SetRoundness, SetShapeFill, SetSloppiness, SetStrokeStyle, SetTextStyle,
+    TransformItem,
 };
 use preferz_core::flowchart;
 use preferz_core::mermaid::{
@@ -44,8 +45,8 @@ use preferz_core::{
 };
 // draw_chart_item 的局部坐标变换与图表默认尺寸常量（core 仅在 item 模块导出）。
 use preferz_core::item::{
-    constrain_drag_to_ratio, elbow_axis_from_anchor, frame_geom_for_ratio, ItemLocalSpace,
-    CHART_DEFAULT_SIZE,
+    classify_link, constrain_drag_to_ratio, elbow_axis_from_anchor, frame_geom_for_ratio,
+    sanitize_link, ItemLocalSpace, LinkTarget, CHART_DEFAULT_SIZE,
 };
 use preferz_fileio::{PrzFile, ViewportMeta};
 use std::collections::HashMap;
@@ -63,6 +64,7 @@ mod context_menu;
 mod drag;
 mod export_dialog;
 mod file_io;
+mod link;
 mod offscreen;
 mod present;
 mod props;
@@ -504,6 +506,13 @@ pub struct PReferZApp {
     export_dialog: ExportDialogState,
     /// 离屏导出用的字体定义缓存（首次打开对话框时解压构建，约 27MB）。
     export_fonts: Option<egui::FontDefinitions>,
+    /// 元素超链接 badge 的屏幕矩形（plan #6）：render_scene 每帧重建，
+    /// 供按下守卫（点击 badge 不启动拖拽）与光标形态（PointingHand）使用。
+    link_badge_rects: Vec<(ItemId, egui::Rect)>,
+    /// badge 点击待处理的 item id（render 中点击、ui 末尾统一打开）。
+    pending_link_open: Option<ItemId>,
+    /// 属性面板链接输入框是否持焦（防按键派发抢键，同 zoom_hud_focused）。
+    link_input_focused: bool,
 }
 
 /// 保存提示对话框的触发场景#[derive(Clone, Copy, PartialEq)]
@@ -1012,6 +1021,9 @@ impl PReferZApp {
             prop_changed_this_frame: false,
             export_dialog: ExportDialogState::default(),
             export_fonts: None,
+            link_badge_rects: Vec::new(),
+            pending_link_open: None,
+            link_input_focused: false,
         }
     }
 
@@ -1025,6 +1037,15 @@ impl PReferZApp {
     pub fn new_help_doc(ctx: &egui::Context) -> Self {
         let mut app = Self::new();
         app.load_embedded_help(ctx);
+        app
+    }
+
+    /// 位置参数启动（plan #6 / H2）：`preferz [path.prz]`——链接 badge 新窗口
+    /// spawn 自身 exe 时携带目标路径。加载复用 pending_open_recent 的首帧
+    /// 流程（后台加载 + recent 记录 + 失败 flash + autosave 恢复检测全复用）。
+    pub fn new_with_file(path: PathBuf) -> Self {
+        let mut app = Self::new();
+        app.pending_open_recent = Some(path);
         app
     }
 
@@ -1379,6 +1400,9 @@ impl eframe::App for PReferZApp {
 
         // 每帧重置连续编辑标记；本帧结束时据此决定是否结算待合并的拖拽编辑（Phase H）。
         self.prop_changed_this_frame = false;
+        // 链接输入框持焦标记同样每帧重置（props 面板渲染时按实际状态置回，
+        // plan #6：选区清空后不再误屏蔽快捷键派发）。
+        self.link_input_focused = false;
 
         // 主题 + 背景透明度：按当前主题构造 Visuals，并把 bg_alpha 施加到 chrome 填充色
         // （panel/window/faint），使透明窗口效果在明暗两套主题下都生效。
@@ -1804,6 +1828,10 @@ impl eframe::App for PReferZApp {
             // 用于守卫 primary_pressed 等全局 PointerState 信号，避免穿透到画布。
 
             // 更新 hover + 光标
+            // 链接 badge 命中（plan #6）：render_scene 本帧刚重建的矩形表，
+            // 命中时光标为手型，且点击不启动 item 拖拽（Excalidraw 同款语义）。
+            let over_link_badge = pointer_pos
+                .is_some_and(|p| self.link_badge_rects.iter().any(|(_, r)| r.contains(p)));
             if pointer_on_canvas {
                 if let Some(pos) = pointer_pos {
                     let selected = self.selected_items_snapshot();
@@ -1818,25 +1846,30 @@ impl eframe::App for PReferZApp {
                     } else {
                         self.transform_handles.hover_handle = Handle::None;
                     }
-                    let cursor = match self.transform_handles.hover_handle {
-                        Handle::ResizeTopLeft | Handle::ResizeBottomRight => {
-                            egui::CursorIcon::ResizeNorthEast
-                        }
-                        Handle::ResizeTopRight | Handle::ResizeBottomLeft => {
-                            egui::CursorIcon::ResizeNorthWest
-                        }
-                        Handle::Rotate => egui::CursorIcon::Grab,
-                        Handle::Endpoint(_) | Handle::SegmentMid(_) => egui::CursorIcon::Grab,
-                        Handle::ElbowSegment(_) => egui::CursorIcon::Grab,
-                        Handle::FlipH => egui::CursorIcon::ResizeHorizontal,
-                        Handle::FlipV => egui::CursorIcon::ResizeVertical,
-                        Handle::None => {
-                            // 在 item 上时显示移动光标
-                            if interaction::get_item_at(pos, &self.scene, &self.viewport).is_some()
-                            {
-                                egui::CursorIcon::Move
-                            } else {
-                                egui::CursorIcon::Default
+                    let cursor = if over_link_badge {
+                        egui::CursorIcon::PointingHand
+                    } else {
+                        match self.transform_handles.hover_handle {
+                            Handle::ResizeTopLeft | Handle::ResizeBottomRight => {
+                                egui::CursorIcon::ResizeNorthEast
+                            }
+                            Handle::ResizeTopRight | Handle::ResizeBottomLeft => {
+                                egui::CursorIcon::ResizeNorthWest
+                            }
+                            Handle::Rotate => egui::CursorIcon::Grab,
+                            Handle::Endpoint(_) | Handle::SegmentMid(_) => egui::CursorIcon::Grab,
+                            Handle::ElbowSegment(_) => egui::CursorIcon::Grab,
+                            Handle::FlipH => egui::CursorIcon::ResizeHorizontal,
+                            Handle::FlipV => egui::CursorIcon::ResizeVertical,
+                            Handle::None => {
+                                // 在 item 上时显示移动光标
+                                if interaction::get_item_at(pos, &self.scene, &self.viewport)
+                                    .is_some()
+                                {
+                                    egui::CursorIcon::Move
+                                } else {
+                                    egui::CursorIcon::Default
+                                }
                             }
                         }
                     };
@@ -1867,7 +1900,9 @@ impl eframe::App for PReferZApp {
             // pointer_on_canvas 守卫确保只有 pointer 在画布上且未被遮挡时才开始拖拽，
             // 避免点击设置/Debug 窗口时穿透触发画布 drag。
             // 菜单打开时也不启动拖拽（render_context_menu 负责检测点击外部并关闭菜单）。
-            if primary_pressed && !self.context_menu_open && pointer_on_canvas {
+            // 按在链接 badge 上时不启动拖拽（plan #6）：badge 的 interact 会在
+            // 释放沿登记 pending_link_open，这里只须把拖拽让开。
+            if primary_pressed && !over_link_badge && !self.context_menu_open && pointer_on_canvas {
                 if let Some(pos) = pointer_pos {
                     let additive = ctx.input(|i| i.modifiers.shift);
                     let free_scale = ctx.input(|i| i.modifiers.ctrl);
@@ -1879,6 +1914,14 @@ impl eframe::App for PReferZApp {
             // 释放：固化到 undo 栈
             if primary_released {
                 self.end_drag();
+            }
+
+            // 链接 badge 点击（plan #6）：render 阶段登记，这里统一打开。
+            // 放在 end_drag 之后：点击 badge 时 press 被守卫跳过，drag 恒 Idle。
+            if primary_released {
+                if let Some(id) = self.pending_link_open.take() {
+                    self.open_item_link(id);
+                }
             }
 
             // 右键菜单
@@ -2844,7 +2887,8 @@ impl PReferZApp {
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
         // 文本编辑中不派发场景快捷键（Esc/Enter 由 render_text_editor 自行处理）
         // HUD 缩放输入框持焦时同理：回车用于提交缩放，不能被 EditText/Confirm 抢占。
-        if self.editing_text.is_some() || self.zoom_hud_focused {
+        // 链接输入框持焦时同理（plan #6）：字母键不能切工具、Enter 用于提交链接。
+        if self.editing_text.is_some() || self.zoom_hud_focused || self.link_input_focused {
             return;
         }
 
@@ -2916,6 +2960,13 @@ impl PReferZApp {
                 self.start_text_edit(id);
                 return;
             }
+        }
+
+        // 编辑链接（plan #6，Excalidraw 同款 Ctrl+K）：恰选中 1 项时打开
+        // 属性栏并聚焦链接输入框。无选中 / 多选时不响应（与 Excalidraw 一致）。
+        if self.keymap.pressed(Action::EditLink, ctx) && self.single_selected_id().is_some() {
+            self.focus_link_input(ctx);
+            return;
         }
 
         // 显示右键菜单

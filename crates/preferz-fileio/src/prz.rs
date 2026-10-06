@@ -92,6 +92,7 @@ impl PrzFile {
 
         // plan #13：旧文件（version 3 之前建的 items 表）缺 group_id 列，就地补列。
         // CREATE TABLE IF NOT EXISTS 不会给已存在的表加列，open 时迁移一次即可。
+        // plan #6 / H1：同理为 version 4 之前的文件补 link 列（元素超链接）。
         let has_group_id: i64 = conn.query_row(
             "SELECT COUNT(*) FROM pragma_table_info('items') WHERE name = 'group_id'",
             [],
@@ -99,6 +100,14 @@ impl PrzFile {
         )?;
         if has_group_id == 0 {
             conn.execute("ALTER TABLE items ADD COLUMN group_id TEXT", [])?;
+        }
+        let has_link: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('items') WHERE name = 'link'",
+            [],
+            |row| row.get(0),
+        )?;
+        if has_link == 0 {
+            conn.execute("ALTER TABLE items ADD COLUMN link TEXT", [])?;
         }
 
         Ok(Self {
@@ -125,7 +134,8 @@ impl PrzFile {
             data BLOB NOT NULL,
             transform TEXT NOT NULL,
             z INTEGER NOT NULL,
-            group_id TEXT
+            group_id TEXT,
+            link TEXT
         );
         CREATE TABLE IF NOT EXISTS sqlar (
             name TEXT PRIMARY KEY,
@@ -137,7 +147,7 @@ impl PrzFile {
             value TEXT NOT NULL
         );
         INSERT OR REPLACE INTO metadata (key, value) VALUES ('format', 'prz');
-        INSERT OR REPLACE INTO metadata (key, value) VALUES ('version', '3');
+        INSERT OR REPLACE INTO metadata (key, value) VALUES ('version', '4');
         "#
     }
 
@@ -172,6 +182,7 @@ impl PrzFile {
                     transform,
                     item.z,
                     item.group_id.map(|g| g.to_string()),
+                    item.link,
                 ])?;
             }
         }
@@ -258,11 +269,20 @@ impl PrzFile {
                 let transform_str: String = row.get(3)?;
                 let z: i32 = row.get(4)?;
                 let group_id: Option<String> = row.get(5)?;
-                Ok((id_str, kind_str, data_blob, transform_str, z, group_id))
+                let link: Option<String> = row.get(6)?;
+                Ok((
+                    id_str,
+                    kind_str,
+                    data_blob,
+                    transform_str,
+                    z,
+                    group_id,
+                    link,
+                ))
             })?;
 
             for row in rows {
-                let (id_str, _kind_str, data_blob, transform_str, z, group_id_str) = row?;
+                let (id_str, _kind_str, data_blob, transform_str, z, group_id_str, link) = row?;
                 let id = ItemId::parse_str(&id_str)
                     .map_err(|e| format!("invalid item id '{}': {}", id_str, e))?;
                 let group_id = match group_id_str {
@@ -295,6 +315,7 @@ impl PrzFile {
                     transform,
                     z,
                     group_id,
+                    link,
                 };
                 // 保留 z（add_item_preserve_z 会推进 next_z）
                 scene.add_item_preserve_z(item);
@@ -992,6 +1013,34 @@ mod tests {
         assert_eq!(loaded.items.len(), 2);
         assert_eq!(loaded.get_item(&a_id).unwrap().group_id, Some(gid));
         assert_eq!(loaded.get_item(&b_id).unwrap().group_id, Some(gid));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// plan #6 / H1：link 字段随 save/load 往返保真；旧库（无 link 列）
+    /// 经 open_connection 补列后加载不失败、link 为 None。
+    #[test]
+    fn prz_save_load_link_roundtrip() {
+        let path = tmp_path("link.prz");
+        let mut scene = Scene::new();
+        scene.add_item(Item::new_text(
+            "带链接".to_string(),
+            0.0,
+            0.0,
+            16.0,
+            [255, 255, 255, 255],
+        ));
+        let id = scene.items[0].id;
+        scene.items[0].link = Some("https://example.com".to_string());
+        {
+            let mut prz = PrzFile::create(&path).unwrap();
+            prz.save_scene(&scene, &HashMap::new(), ViewportMeta::default())
+                .unwrap();
+        }
+        let prz = PrzFile::open(&path).unwrap();
+        let (loaded, _img, _vp) = prz.load_scene().unwrap();
+        assert_eq!(loaded.items.len(), 1);
+        assert_eq!(loaded.items[0].link.as_deref(), Some("https://example.com"));
+        assert_eq!(loaded.items[0].id, id);
         let _ = std::fs::remove_file(&path);
     }
 

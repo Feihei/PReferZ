@@ -406,6 +406,9 @@ impl PReferZApp {
 
     pub(crate) fn render_scene(&mut self, ui: &mut egui::Ui) {
         let screen_rect = ui.max_rect();
+        // 链接 badge 矩形表每帧重建（plan #6）：供按下守卫与光标形态使用。
+        // 空场景 / 欢迎页提前返回也不留陈值。
+        self.link_badge_rects.clear();
 
         // 空场景：渲染欢迎页（spec §2.3 欢迎页 + 最近文件列表）
         if self.scene.items.is_empty() {
@@ -585,6 +588,45 @@ impl PReferZApp {
                             );
                         }
                     }
+                }
+            }
+
+            // 元素超链接 badge（plan #6，Excalidraw 同款）：有链接且未选中时
+            // 画在屏幕 AABB 右上角（选中态让位给 ne 缩放手柄），屏幕恒定尺寸，
+            // 可点击打开。文本用内嵌字体自带的 ↗（U+2197，cmap 已核验）。
+            if item.link.is_some() && !is_selected {
+                const BADGE_FONT: f32 = 10.0;
+                let galley = ui.painter().layout_no_wrap(
+                    "\u{2197}".to_string(),
+                    egui::FontId::proportional(BADGE_FONT),
+                    egui::Color32::WHITE,
+                );
+                let badge_size = galley.size() + egui::vec2(8.0, 4.0);
+                let badge_rect = egui::Rect::from_min_size(
+                    egui::pos2(
+                        item_screen_rect.right() - badge_size.x - 2.0,
+                        item_screen_rect.top() + 2.0,
+                    ),
+                    badge_size,
+                );
+                ui.painter().rect_filled(
+                    badge_rect,
+                    egui::CornerRadius::same(3),
+                    egui::Color32::from_rgba_unmultiplied(70, 110, 200, 230),
+                );
+                ui.painter().galley(
+                    badge_rect.min + egui::vec2(4.0, 2.0),
+                    galley,
+                    egui::Color32::WHITE,
+                );
+                self.link_badge_rects.push((item.id, badge_rect));
+                // 点击 badge → 登记待打开（ui() 输入段统一执行，press 已被守卫让开拖拽）
+                let badge_id = egui::Id::new(("link_badge", item.id));
+                if ui
+                    .interact(badge_rect, badge_id, egui::Sense::click())
+                    .clicked()
+                {
+                    self.pending_link_open = Some(item.id);
                 }
             }
 
