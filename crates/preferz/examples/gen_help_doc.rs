@@ -90,7 +90,7 @@ struct Card {
 
 impl Card {
     const W: f32 = 408.0;
-    const H: f32 = 240.0;
+    const H: f32 = 260.0;
 
     fn render(&self, scene: &mut Scene) {
         add_rect(
@@ -109,7 +109,7 @@ impl Card {
             scene,
             self.title,
             self.x + 20.0,
-            self.y + 16.0,
+            self.y + 14.0,
             21.0,
             ACCENT,
             FontFamily::Normal,
@@ -119,7 +119,7 @@ impl Card {
                 scene,
                 line,
                 self.x + 20.0,
-                self.y + 56.0 + (i as f32) * 32.0,
+                self.y + 52.0 + (i as f32) * 30.0,
                 17.0,
                 INK,
                 FontFamily::Normal,
@@ -137,7 +137,7 @@ fn main() {
         0.0,
         0.0,
         960.0,
-        1140.0,
+        1200.0,
         PAPER_STROKE,
         1.0,
         PAPER_FILL,
@@ -217,7 +217,7 @@ fn main() {
             title: "工具",
             lines: &[
                 "V/1 选择 · R/2 矩形 · D/3 菱形",
-                "O/4 椭圆 · A/5 箭头 · L/6 直线",
+                "O/4 椭圆 · A/5 直角箭头 · L/6 直线",
                 "Shift+P 多边形 · P 徒手画",
                 "8 文字 · F 画框",
                 "C 裁剪 · I 取色器",
@@ -225,7 +225,7 @@ fn main() {
         },
         Card {
             x: 48.0,
-            y: 528.0,
+            y: 548.0,
             title: "编辑",
             lines: &[
                 "Ctrl+A 全选 · Ctrl+Shift+A 取消全选",
@@ -233,11 +233,12 @@ fn main() {
                 "Ctrl+D 原位复制 · Delete 删除",
                 "Enter 编辑文字 · Esc 取消",
                 "Ctrl+G 编组 · Ctrl+Shift+G 解组",
+                "Ctrl+K 编辑超链接（网页 / .prz）",
             ],
         },
         Card {
             x: 504.0,
-            y: 528.0,
+            y: 548.0,
             title: "文件",
             lines: &[
                 "Ctrl+N 新建 · Ctrl+O 打开",
@@ -249,7 +250,7 @@ fn main() {
         },
         Card {
             x: 48.0,
-            y: 792.0,
+            y: 832.0,
             title: "撤销 · 层级",
             lines: &[
                 "Ctrl+Z 撤销 · Ctrl+Shift+Z / Ctrl+Y 重做",
@@ -260,11 +261,13 @@ fn main() {
         },
         Card {
             x: 504.0,
-            y: 792.0,
-            title: "流程图 · 面板",
+            y: 832.0,
+            title: "连接 · 面板",
             lines: &[
                 "Ctrl+方向键 沿该向克隆节点并连线",
                 "Alt+方向键 沿连接跳到相邻节点",
+                "右键菜单 直角箭头烘焙为多段线",
+                "点击元素右上 ↗ 角标打开其链接",
                 "T 工具栏显隐 · N 属性栏显隐",
                 "右键菜单 查看全部功能",
             ],
@@ -279,16 +282,16 @@ fn main() {
         &mut scene,
         "本窗口的内容可以随意涂改、试用——关闭重开会还原。",
         48.0,
-        1064.0,
+        1116.0,
         17.0,
         FAINT,
         FontFamily::Normal,
     );
     add_text(
         &mut scene,
-        "右下角的 ? 按钮可随时再开一个帮助窗口；帮助实例里改的设置只在内存中，下次启动以最后一次保存的配置为准。",
+        "左侧工具栏最下方的 ? 按钮可随时再开一个帮助窗口；帮助实例里改的设置只在内存中，下次启动以最后一次保存的配置为准。",
         48.0,
-        1096.0,
+        1148.0,
         15.0,
         FAINT,
         FontFamily::Normal,
