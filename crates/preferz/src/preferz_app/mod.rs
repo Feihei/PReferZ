@@ -2171,7 +2171,7 @@ impl PReferZApp {
         }
     }
 
-    /// 悬浮 HUD：右下角胶囊（缩放百分数 + 语言切换）+ 底部居中 flash toast。
+    /// 悬浮 HUD：左下角两行胶囊（第一行 语言/明暗/风格，第二行 缩放）+ 底部居中 flash toast。
     ///
     /// 悬浮工具栏（左上角固定位置浮层）：9 个绘图工具垂直排列，圆角倒角 + 柔和阴影。
     ///
@@ -2328,102 +2328,27 @@ impl PReferZApp {
     }
 
     /// 替代原底部 `TopBottomPanel` 状态栏，让画布吃满窗口高度。
+    /// 左下角合并 HUD（2026-10-08）：第一行 语言/明暗/默认风格，第二行 缩放。
+    /// 原缩放 HUD 挂右下角，被撑满窗口的属性侧栏遮挡（Excalidraw 同样把缩放
+    /// 控件放左下）。两行合并进同一个 Area 垂直堆叠，而非两个锚定 Area 硬编码
+    /// 偏移——行高随字体/主题变化自动跟随。
     /// 用 `egui::Area` 而非 `Window`：无标题栏、不可拖动、不抢焦点，纯浮层。
-    /// `interactable(true)` 让语言按钮可点；HUD 未覆盖的区域仍透传给画布，
+    /// `interactable(true)` 让按钮可点；HUD 未覆盖的区域仍透传给画布，
     /// 画布的 `pointer_on_canvas` 守卫会自动排除被浮层遮挡的部分。
     fn render_hud(&mut self, ctx: &egui::Context) {
-        // 每帧复位；下方缩放输入框若持焦会置真（供 handle_shortcuts 守卫）。
+        // 每帧复位；缩放输入框若持焦会置真（供 handle_shortcuts 守卫）。
         self.zoom_hud_focused = false;
-        egui::Area::new(egui::Id::new("hud_zoom"))
-            .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-12.0, -12.0))
-            .order(egui::Order::Foreground)
-            .interactable(true)
-            .show(ctx, |ui| {
-                // popup frame 自带主题化背景 + 描边，明暗主题下都可读。
-                // 行内布局 + 关闭 wrap：窄屏/缩放数值下也保持单行、宽度自适应内容。
-                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
-                egui::Frame::popup(ui.style())
-                    .inner_margin(egui::Margin::symmetric(8, 4))
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 2.0;
-
-                            // − 缩小（以视口中心为锚点，乘法步进）
-                            if ui
-                                .small_button("-")
-                                .on_hover_text(t(self.lang, T::ZoomOut))
-                                .clicked()
-                            {
-                                self.viewport.zoom_center_by(1.0 / ZOOM_BTN_FACTOR);
-                            }
-                            // 百分比输入：temp 缓存输入串，未聚焦时以当前缩放回填，
-                            // 聚焦（正在打字）时保留用户输入，避免每帧重置光标。
-                            let id = ui.id().with("hud_zoom_input");
-                            let focused_key = id.with("focus");
-                            let was_focused = ui
-                                .ctx()
-                                .data(|d| d.get_temp::<bool>(focused_key))
-                                .unwrap_or(false);
-                            let cur_pct = (self.viewport.zoom * 100.0).round() as i32;
-                            let mut buf = if was_focused {
-                                ui.ctx()
-                                    .data(|d| d.get_temp::<String>(id))
-                                    .unwrap_or_default()
-                            } else {
-                                cur_pct.to_string()
-                            };
-                            let resp = ui
-                                .add(
-                                    egui::TextEdit::singleline(&mut buf)
-                                        .desired_width(40.0)
-                                        .char_limit(5)
-                                        .margin(egui::vec2(2.0, 2.0))
-                                        .horizontal_align(egui::Align::Center),
-                                )
-                                .on_hover_text(t(self.lang, T::ZoomHint));
-                            ui.label("%");
-                            let has_focus = resp.has_focus();
-                            ui.ctx().data_mut(|d| {
-                                d.insert_temp(id, buf.clone());
-                                d.insert_temp(focused_key, has_focus);
-                            });
-                            self.zoom_hud_focused = has_focus;
-                            // 回车：解析百分比（容忍 "150" / "150%"），设定缩放、中心不变。
-                            // 单行 TextEdit 提交时会主动失焦，故用 lost_focus + Enter 判定
-                            // （0.36 无 Response::entered）。提交帧把焦点守卫置真，避免同一
-                            // 次 Enter 再被 handle_shortcuts 的 EditText/Confirm 抢占。
-                            if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                                let cleaned: String = buf
-                                    .chars()
-                                    .filter(|c| c.is_ascii_digit() || *c == '.')
-                                    .collect();
-                                if let Ok(pct) = cleaned.parse::<f32>() {
-                                    self.viewport
-                                        .set_zoom_centered((pct / 100.0).max(f32::EPSILON));
-                                }
-                                self.zoom_hud_focused = true;
-                            }
-                            // + 放大
-                            if ui
-                                .small_button("+")
-                                .on_hover_text(t(self.lang, T::ZoomIn))
-                                .clicked()
-                            {
-                                self.viewport.zoom_center_by(ZOOM_BTN_FACTOR);
-                            }
-                        });
-                    });
-            });
-
-        // 语言切换：左下角独立悬浮，按钮显示目标语言（中文界面显示 EN，
-        // 英文界面显示 中），点击切到该语言（hover 提示目标语言全名）。
         let lang = self.lang;
-        egui::Area::new(egui::Id::new("hud_lang"))
+        egui::Area::new(egui::Id::new("hud_bottom_left"))
             .anchor(egui::Align2::LEFT_BOTTOM, egui::vec2(12.0, -12.0))
             .order(egui::Order::Foreground)
             .interactable(true)
             .show(ctx, |ui| {
+                // 行内布局 + 关闭 wrap：窄屏/缩放数值下也保持单行、宽度自适应内容。
                 ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+                // —— 单块弹层（2026-10-08 按用户反馈由两块合并）：第一行
+                // 语言切换/主题切换/默认风格，分隔线之下第二行 缩放。
+                // 宽度收紧到内容（帧宽 = 最宽行），不再设最小宽度。
                 egui::Frame::popup(ui.style())
                     .inner_margin(egui::Margin::symmetric(10, 5))
                     .show(ui, |ui| {
@@ -2574,6 +2499,75 @@ impl PReferZApp {
                                     &mut self.default_font_family,
                                 );
                                 self.persist_config();
+                            }
+                        });
+                        ui.separator();
+                        // —— 第二行：缩放（− / 百分比 / +）——
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 2.0;
+
+                            // − 缩小（以视口中心为锚点，乘法步进）
+                            if ui
+                                .small_button("-")
+                                .on_hover_text(t(self.lang, T::ZoomOut))
+                                .clicked()
+                            {
+                                self.viewport.zoom_center_by(1.0 / ZOOM_BTN_FACTOR);
+                            }
+                            // 百分比输入：temp 缓存输入串，未聚焦时以当前缩放回填，
+                            // 聚焦（正在打字）时保留用户输入，避免每帧重置光标。
+                            let id = ui.id().with("hud_zoom_input");
+                            let focused_key = id.with("focus");
+                            let was_focused = ui
+                                .ctx()
+                                .data(|d| d.get_temp::<bool>(focused_key))
+                                .unwrap_or(false);
+                            let cur_pct = (self.viewport.zoom * 100.0).round() as i32;
+                            let mut buf = if was_focused {
+                                ui.ctx()
+                                    .data(|d| d.get_temp::<String>(id))
+                                    .unwrap_or_default()
+                            } else {
+                                cur_pct.to_string()
+                            };
+                            let resp = ui
+                                .add(
+                                    egui::TextEdit::singleline(&mut buf)
+                                        .desired_width(40.0)
+                                        .char_limit(5)
+                                        .margin(egui::vec2(2.0, 2.0))
+                                        .horizontal_align(egui::Align::Center),
+                                )
+                                .on_hover_text(t(self.lang, T::ZoomHint));
+                            ui.label("%");
+                            let has_focus = resp.has_focus();
+                            ui.ctx().data_mut(|d| {
+                                d.insert_temp(id, buf.clone());
+                                d.insert_temp(focused_key, has_focus);
+                            });
+                            self.zoom_hud_focused = has_focus;
+                            // 回车：解析百分比（容忍 "150" / "150%"），设定缩放、中心不变。
+                            // 单行 TextEdit 提交时会主动失焦，故用 lost_focus + Enter 判定
+                            // （0.36 无 Response::entered）。提交帧把焦点守卫置真，避免同一
+                            // 次 Enter 再被 handle_shortcuts 的 EditText/Confirm 抢占。
+                            if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                                let cleaned: String = buf
+                                    .chars()
+                                    .filter(|c| c.is_ascii_digit() || *c == '.')
+                                    .collect();
+                                if let Ok(pct) = cleaned.parse::<f32>() {
+                                    self.viewport
+                                        .set_zoom_centered((pct / 100.0).max(f32::EPSILON));
+                                }
+                                self.zoom_hud_focused = true;
+                            }
+                            // + 放大
+                            if ui
+                                .small_button("+")
+                                .on_hover_text(t(self.lang, T::ZoomIn))
+                                .clicked()
+                            {
+                                self.viewport.zoom_center_by(ZOOM_BTN_FACTOR);
                             }
                         });
                     });
