@@ -137,7 +137,7 @@ fn main() {
         0.0,
         0.0,
         960.0,
-        1200.0,
+        1176.0,
         PAPER_STROKE,
         1.0,
         PAPER_FILL,
@@ -154,15 +154,6 @@ fn main() {
         44.0,
         INK,
         FontFamily::Handwriting,
-    );
-    add_text(
-        &mut scene,
-        "参考图板 · 把参考图收进一块画布",
-        52.0,
-        92.0,
-        16.0,
-        FAINT,
-        FontFamily::Normal,
     );
 
     // —— 警示横幅 ——
@@ -284,15 +275,6 @@ fn main() {
         48.0,
         1116.0,
         17.0,
-        FAINT,
-        FontFamily::Normal,
-    );
-    add_text(
-        &mut scene,
-        "左侧工具栏最下方的 ? 按钮可随时再开一个帮助窗口；帮助实例里改的设置只在内存中，下次启动以最后一次保存的配置为准。",
-        48.0,
-        1148.0,
-        15.0,
         FAINT,
         FontFamily::Normal,
     );
