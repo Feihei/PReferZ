@@ -1184,6 +1184,23 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
   （`eframe::Frame::_new_kittest`），覆盖单击/拖拽两条路径的编辑框存活断言；
   可复用于焦点/单击/双击等事件层 bug 的回归测试。
 
+### 侧栏高度撑满窗口真修复 + 缩放 HUD 移左下角（2026-10-08，`9e2e083` / `478b62f`）
+
+> 用户复测发现 09-29 的"高度撑满"从未生效：内容未满窗口仍出现滚动。根因是
+> **anchored Area 内容定尺寸**——每帧 size = 上一帧内容高（首帧 egui
+> `default_area_size` 400px），`auto_shrink(false)` 的 ScrollArea view 恒等于
+> 容器内 available，自引用闭环把面板高度冻结在 400px。
+
+- `chrome.rs` 新增 `panel_view_height()`（唯一入口）：视图高度从
+  `ctx.input(|i| i.viewport_rect())` 显式推导（0.36 无 `ctx.screen_rect()`），
+  减上下 BAR_MARGIN / 内边距 / 标题行占用 / 8px 底部余量，极小窗口钳 64px；
+  `props.rs` 两面板 `allocate_ui` 钉死，打破自引用。附单测。
+- 缩放 HUD 原挂右下角被撑满窗口的侧栏遮挡 → 移至左下角语言/明暗/风格栏
+  之下（Excalidraw 同款位置）。`render_hud` 重构为单个 Area（`hud_bottom_left`）
+  + 单个 `Frame::popup`：语言/主题/风格行 + 分隔线 + 缩放行，宽度收紧到内容；
+  `zoom_hud_focused` 守卫与 flash toast 不变。
+- 全量 123+3+220+12 = 358 通过。
+
 ### 右侧栏宽度钳制 + 高度撑满窗口（2026-09-29，`8f24949`）
 
 - 修复上一条引入的回归：`ScrollArea::auto_shrink([false, true])` 让面板宽度
