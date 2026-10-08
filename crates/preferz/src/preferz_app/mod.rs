@@ -2122,15 +2122,17 @@ impl PReferZApp {
             egui::FontId::proportional(42.0),
             self.theme.text_primary(&ctx),
         );
-        y += 50.0;
-        ui.painter().text(
-            egui::pos2(center.x, y),
-            egui::Align2::CENTER_CENTER,
-            t(self.lang, T::WelcomeSubtitle),
-            egui::FontId::proportional(15.0),
-            self.theme.text_secondary(&ctx),
+        y += 44.0;
+        // 分隔线：标题与最近文件之间的居中短横线（不放 tagline 文案）
+        let line_w = 220.0;
+        ui.painter().line_segment(
+            [
+                egui::pos2(center.x - line_w / 2.0, y),
+                egui::pos2(center.x + line_w / 2.0, y),
+            ],
+            egui::Stroke::new(1.0, self.theme.text_tertiary(&ctx)),
         );
-        y += 36.0;
+        y += 32.0;
 
         // 最近文件列表
         if !self.recent_files.is_empty() {

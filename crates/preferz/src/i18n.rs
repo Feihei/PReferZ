@@ -203,7 +203,6 @@ pub enum T {
     ArrangeModeOptimal,       // 最优装箱
     // ── 欢迎页 ──
     WelcomeTitle, // PReferZ（固定不翻译）
-    WelcomeSubtitle,
     WelcomeRecentFiles,
     WelcomeHint,
     // ── 设置面板 ──
@@ -602,7 +601,6 @@ fn translate_en(key: T) -> &'static str {
         T::ArrangeModeOptimal => "Optimal packing",
         // 欢迎页
         T::WelcomeTitle => "PReferZ",
-        T::WelcomeSubtitle => "Your Preferred Inspiration · right-click to start",
         T::WelcomeRecentFiles => "Recent Files",
         T::WelcomeHint => "Right-click → Open Project / Load Image / Paste Image",
         // 设置面板
@@ -920,7 +918,6 @@ fn translate_zh(key: T) -> &'static str {
         T::ArrangeModeOptimal => "最优装箱",
         // 欢迎页
         T::WelcomeTitle => "PReferZ",
-        T::WelcomeSubtitle => "Your Preferred Inspiration · 右键打开菜单开始",
         T::WelcomeRecentFiles => "最近文件",
         T::WelcomeHint => "右键 → 打开项目 / 载入图片 / 粘贴图片",
         // 设置面板
