@@ -478,12 +478,21 @@ impl PReferZApp {
     /// `link_input`，供 Ctrl+K / 右键菜单 `focus_link_input` 跨帧认领焦点。
     /// 持焦状态写入 `self.link_input_focused`，屏蔽场景快捷键派发（同
     /// zoom_hud_focused：字母键不能切工具、Enter 用于提交链接）。
+    ///
+    /// 编辑缓冲按 item id 存进 egui memory 跨帧保留，未持焦时跟随存储值
+    /// （undo / 清除链接 / 外部修改后自动同步）——不能每帧从存储值重新 clone，
+    /// 否则键入的字符下一帧即被冲掉（输入框打不进字的根因）。
     fn render_link_section(&mut self, ui: &mut egui::Ui, lang: Lang, id: ItemId) {
         let Some(item) = self.scene.get_item(&id) else {
             return;
         };
         let current = item.link.clone().unwrap_or_default();
-        let mut buf = current.clone();
+        let buf_id = egui::Id::new("link_input_buf").with(id);
+        let mut buf = ui.ctx().memory_mut(|m| {
+            m.data
+                .get_temp_mut_or_insert_with(buf_id, || current.clone())
+                .clone()
+        });
         let resp = ui.add(
             egui::TextEdit::singleline(&mut buf)
                 .id(egui::Id::new("link_input"))
@@ -492,17 +501,26 @@ impl PReferZApp {
         );
         self.link_input_focused = resp.has_focus();
         let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
+        let mut settled = false;
         if (resp.changed() && enter) || (resp.lost_focus() && buf != current) {
             let new = sanitize_link(&buf);
             let old = sanitize_link(&current);
             if new != old {
                 self.push_cmd(Box::new(SetLink::new(id, old, new)));
             }
+            settled = true;
         }
         if !current.is_empty() && ui.button(t(lang, T::MenuRemoveLink)).clicked() {
             self.push_cmd(Box::new(SetLink::new(id, Some(current.clone()), None)));
             self.flash(t(lang, T::FlashLinkRemoved).to_string());
+            buf.clear();
+            settled = true;
         }
+        // 未持焦且本帧未提交/清除时，缓冲跟随存储值（undo 后自动同步）。
+        if !resp.has_focus() && !settled && buf != current {
+            buf = current.clone();
+        }
+        ui.ctx().memory_mut(|m| m.data.insert_temp(buf_id, buf));
     }
 
     /// 叠放顺序按钮组：上移一层 / 置于顶层 / 下移一层 / 置于底层。
