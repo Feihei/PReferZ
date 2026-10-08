@@ -157,12 +157,19 @@ impl PReferZApp {
                         &[ids.len().to_string()],
                     ));
                     ui.separator();
-                    // 面板高度撑满窗口（用户要求 2026-09-29）：内容不满一屏时
-                    // 完整展示、无滚动条；超出才滚动。auto_shrink 全关 = 两轴都
-                    // 吃满可用空间，宽度已被上面钳死。
-                    egui::ScrollArea::vertical()
-                        .auto_shrink(false)
-                        .show(ui, |ui| {
+                    // 面板高度撑满窗口（2026-10-08 修正）：anchored Area 是内容
+                    // 定尺寸，其内 available 恒等于上一帧内容高度——auto_shrink(false)
+                    // 的 view 因此被冻结在 egui default_area_size（400px），内容一超
+                    // 就滚动、永远撑不满窗口。改从 screen_rect 显式推导视图高度并
+                    // allocate_ui 钉死，打破自引用：不满一屏完整展示，超出才滚动。
+                    let view_h = chrome::panel_view_height(
+                        ctx.input(|i| i.viewport_rect().height()),
+                        ui.cursor().top() - ui.min_rect().top(),
+                    );
+                    ui.allocate_ui(egui::vec2(chrome::PROPS_BAR_WIDTH, view_h), |ui| {
+                        egui::ScrollArea::vertical()
+                            .auto_shrink(false)
+                            .show(ui, |ui| {
                             // 叠放顺序：Frame 不参与，选区含非 Frame item 时显示
                             let has_reorderable = ids.iter().any(|id| {
                                 !self.scene.get_item(id).is_some_and(|i| i.is_frame())
@@ -286,6 +293,7 @@ impl PReferZApp {
                                 self.render_frame_props(ui, lang, &frame_ids);
                             }
                         });
+                    });
                 });
             });
     }
@@ -620,85 +628,93 @@ impl PReferZApp {
                     ui.set_max_width(chrome::PROPS_BAR_WIDTH);
                     ui.label(t(lang, T::PropsDefaultsTitle));
                     ui.separator();
-                    // 面板高度撑满窗口（同属性侧栏，2026-09-29）：内容不满一屏
-                    // 完整展示，超出才滚动。
-                    egui::ScrollArea::vertical()
-                        .auto_shrink(false)
-                        .show(ui, |ui| {
-                            // 描边颜色（Excalidraw 式调色板）
-                            let mut stroke = self.default_stroke.color;
-                            if palette::color_palette_button(ui, &mut stroke, dark, lang) {
-                                self.default_stroke.color = stroke;
-                            }
-                            ui.add_space(4.0);
-                            // 描边宽度
-                            ui.label(t(lang, T::StyleStrokeWidth));
-                            stepper(
-                                ui,
-                                &mut self.default_stroke.width,
-                                &[1.0, 2.0, 4.0, 8.0, 16.0],
-                                &["XS", "S", "M", "L", "XL"],
-                                1.0..=64.0,
-                                None,
-                                0.1,
-                            );
-                            // 线型
-                            ui.label(t(lang, T::StyleDashLabel));
-                            ui.horizontal(|ui| {
-                                for (dash, label) in [
-                                    (DashStyle::Solid, T::StyleDashSolid),
-                                    (DashStyle::Dashed, T::StyleDashDashed),
-                                    (DashStyle::Dotted, T::StyleDashDotted),
-                                ] {
-                                    let active = self.default_stroke.dash == dash;
-                                    if ui.selectable_label(active, t(lang, label)).clicked() {
-                                        self.default_stroke.dash = dash;
-                                    }
+                    // 面板高度撑满窗口（同属性侧栏，2026-10-08 修正）：视图高度
+                    // 从 screen_rect 显式推导 + allocate_ui 钉死，不满一屏完整
+                    // 展示，超出才滚动。
+                    let view_h = chrome::panel_view_height(
+                        ctx.input(|i| i.viewport_rect().height()),
+                        ui.cursor().top() - ui.min_rect().top(),
+                    );
+                    ui.allocate_ui(egui::vec2(chrome::PROPS_BAR_WIDTH, view_h), |ui| {
+                        egui::ScrollArea::vertical()
+                            .auto_shrink(false)
+                            .show(ui, |ui| {
+                                // 描边颜色（Excalidraw 式调色板）
+                                let mut stroke = self.default_stroke.color;
+                                if palette::color_palette_button(ui, &mut stroke, dark, lang) {
+                                    self.default_stroke.color = stroke;
                                 }
-                            });
-                            // 填充（闭合图形类工具）
-                            if show_fill {
                                 ui.add_space(4.0);
-                                ui.label(t(lang, T::StyleFillLabel));
+                                // 描边宽度
+                                ui.label(t(lang, T::StyleStrokeWidth));
+                                stepper(
+                                    ui,
+                                    &mut self.default_stroke.width,
+                                    &[1.0, 2.0, 4.0, 8.0, 16.0],
+                                    &["XS", "S", "M", "L", "XL"],
+                                    1.0..=64.0,
+                                    None,
+                                    0.1,
+                                );
+                                // 线型
+                                ui.label(t(lang, T::StyleDashLabel));
                                 ui.horizontal(|ui| {
-                                    if let Some(new_style) = palette::fill_style_picker(
-                                        ui,
-                                        lang,
-                                        self.default_fill_style,
-                                    ) {
-                                        self.default_fill_style = new_style;
+                                    for (dash, label) in [
+                                        (DashStyle::Solid, T::StyleDashSolid),
+                                        (DashStyle::Dashed, T::StyleDashDashed),
+                                        (DashStyle::Dotted, T::StyleDashDotted),
+                                    ] {
+                                        let active = self.default_stroke.dash == dash;
+                                        if ui.selectable_label(active, t(lang, label)).clicked() {
+                                            self.default_stroke.dash = dash;
+                                        }
                                     }
                                 });
-                                if self.default_fill_style.is_some() {
-                                    // 未显式选过填充色时按钮显示描边色（实际创建时同样跟随描边色）
-                                    let mut fill =
-                                        self.default_fill.unwrap_or(self.default_stroke.color);
-                                    if palette::fill_color_palette_button(ui, &mut fill, dark, lang)
-                                    {
-                                        self.default_fill = Some(fill);
+                                // 填充（闭合图形类工具）
+                                if show_fill {
+                                    ui.add_space(4.0);
+                                    ui.label(t(lang, T::StyleFillLabel));
+                                    ui.horizontal(|ui| {
+                                        if let Some(new_style) = palette::fill_style_picker(
+                                            ui,
+                                            lang,
+                                            self.default_fill_style,
+                                        ) {
+                                            self.default_fill_style = new_style;
+                                        }
+                                    });
+                                    if self.default_fill_style.is_some() {
+                                        // 未显式选过填充色时按钮显示描边色（实际创建时同样跟随描边色）
+                                        let mut fill =
+                                            self.default_fill.unwrap_or(self.default_stroke.color);
+                                        if palette::fill_color_palette_button(
+                                            ui, &mut fill, dark, lang,
+                                        ) {
+                                            self.default_fill = Some(fill);
+                                        }
                                     }
                                 }
-                            }
-                            // 手绘风：新建形状的默认档位（plan #3，对齐 Excalidraw sloppiness）
-                            ui.add_space(4.0);
-                            ui.label(t(lang, T::StyleRough));
-                            ui.horizontal(|ui| {
-                                let opts = [
-                                    (Sloppiness::Off, T::SloppinessOff),
-                                    (Sloppiness::Architect, T::SloppinessArchitect),
-                                    (Sloppiness::Artist, T::SloppinessArtist),
-                                    (Sloppiness::Cartoonist, T::SloppinessCartoonist),
-                                ];
-                                for (val, label) in opts {
-                                    let selected = self.default_sloppiness == val;
-                                    if ui.selectable_label(selected, t(lang, label)).clicked()
-                                        && !selected
-                                    {
-                                        self.default_sloppiness = val;
+                                // 手绘风：新建形状的默认档位（plan #3，对齐 Excalidraw sloppiness）
+                                ui.add_space(4.0);
+                                ui.label(t(lang, T::StyleRough));
+                                ui.horizontal(|ui| {
+                                    let opts = [
+                                        (Sloppiness::Off, T::SloppinessOff),
+                                        (Sloppiness::Architect, T::SloppinessArchitect),
+                                        (Sloppiness::Artist, T::SloppinessArtist),
+                                        (Sloppiness::Cartoonist, T::SloppinessCartoonist),
+                                    ];
+                                    for (val, label) in opts {
+                                        let selected = self.default_sloppiness == val;
+                                        if ui.selectable_label(selected, t(lang, label)).clicked()
+                                            && !selected
+                                        {
+                                            self.default_sloppiness = val;
+                                        }
                                     }
-                                }
+                                });
                             });
-                        });
+                    });
                 });
             });
     }
