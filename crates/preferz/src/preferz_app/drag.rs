@@ -631,6 +631,10 @@ impl PReferZApp {
                 let moved: std::collections::HashSet<ItemId> = ids.iter().copied().collect();
                 let threshold = SNAP_THRESHOLD_PX / self.viewport.zoom;
                 self.snap_highlight = None;
+                // 点选守卫：零/微位移的单击也走本分支，端点已绑定时
+                // find_snap_target 必命中 → 高亮闪现。位移超过 2 屏幕像素
+                // 才开始吸附检测；不足时按未命中处理（端点保持基准位）。
+                let snap_active = delta.length() * self.viewport.zoom > 2.0;
                 for ls in line_snaps {
                     let last = ls.start_points.len().saturating_sub(1);
                     for endpoint in [0usize, last] {
@@ -639,11 +643,15 @@ impl PReferZApp {
                             .scene
                             .get_item(&ls.line_id)
                             .map(|it| it.local_point_to_canvas(ls.start_points[endpoint]));
-                        let hit = qc.and_then(|qc| {
-                            self.scene
-                                .find_snap_target(&ls.line_id, qc, threshold)
-                                .filter(|(bid, _, _)| !moved.contains(bid))
-                        });
+                        let hit = if snap_active {
+                            qc.and_then(|qc| {
+                                self.scene
+                                    .find_snap_target(&ls.line_id, qc, threshold)
+                                    .filter(|(bid, _, _)| !moved.contains(bid))
+                            })
+                        } else {
+                            None
+                        };
                         match hit {
                             Some((bid, sc, _)) => {
                                 // 先不可变换算（锚点 + 线局部新坐标），再可变写回
@@ -680,8 +688,11 @@ impl PReferZApp {
                                 }
                             }
                             None => {
-                                // 端点回到随线移动的基准位（上一帧可能吸附偏移过）
-                                // 并解绑该端点
+                                // 端点回到随线移动的基准位（上一帧可能吸附偏移过）。
+                                // 仅真正拖离（snap_active）才解绑；点选（零/微位移）
+                                // 不算拖离——恢复 begin_drag 快照里的初始绑定，否则
+                                // 单击已绑定线会静默丢失吸附，且随后 refresh_elbow_axis
+                                // 在无绑定下解析取向，elbow 路径翻转跳变（用户反馈）。
                                 if let Some(item) = self.scene.get_item_mut(&ls.line_id) {
                                     if let ItemKind::Shape {
                                         points,
@@ -691,10 +702,15 @@ impl PReferZApp {
                                     } = &mut item.kind
                                     {
                                         points[endpoint] = ls.start_points[endpoint];
-                                        if endpoint == 0 {
-                                            *start_binding = None;
+                                        let orig = if endpoint == 0 {
+                                            ls.start_start_binding
                                         } else {
-                                            *end_binding = None;
+                                            ls.start_end_binding
+                                        };
+                                        if endpoint == 0 {
+                                            *start_binding = if snap_active { None } else { orig };
+                                        } else {
+                                            *end_binding = if snap_active { None } else { orig };
                                         }
                                     }
                                 }
@@ -1012,6 +1028,9 @@ impl PReferZApp {
         }
 
         let prev = std::mem::replace(&mut self.drag, DragState::Idle);
+        // 所有拖拽释放统一清吸附高亮：MoveItems 的点选（零位移）路径此前不清理，
+        // 端点已绑定时单击选中即点亮高亮且残留到取消选择之后。
+        self.snap_highlight = None;
         match prev {
             DragState::HandleTransform {
                 item_id,
