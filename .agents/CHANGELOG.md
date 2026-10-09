@@ -1386,10 +1386,13 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 > 路径 `Q` 命令的 rough.js `_bezierTo` 等价实现，plan.md 当时未清账）。🔶 待人工验收。
 
 - **zigzag 填充**（rough.js `zigzag-filler.ts` 自移植）：`FillStyle::Zigzag`——
-  hachure 扫描线基础上，每条线**起点**沿原始 hachureAngle 方向（= 有效角 −90°，
-  垂直于扫描线）拆成 ±gap/2 两条、共享终点，人字纹两两成对；起点偏移允许溢出
-  多边形边界（rough.js 同款行为）。RoughStyler 走 `sketch_edge` 双笔抖动，
-  CleanStyler 直线段。
+  hachure 扫描线行距放大为 `gap + offset`（`zigzagOffset` auto = 半行距），
+  每条线上按步长 `2×offset` 交替 ±offset 垂直偏移，连成**连续锯齿折线**。
+  RoughStyler 每条折线整条双笔（顶点小幅抖动后直线连接 polyline，尖角共享
+  端点不断开、抖动受齿距 clamp 保护），CleanStyler 开放 polyline。
+  2026-10-08 修正：原实现「每条线起点 ±gap/2 拆两条、共享终点」在长线上两笔
+  几乎完全重叠，视觉上与 hachure 无区分（用户验收反馈）；改为真锯齿折线后
+  平行线 vs 锯齿纹区分明显，「起点溢出边界」问题随之消失（偏移幅度 ≤ gap/2）。
 - **dots 填充**（rough.js `dot-filler.ts` 自移植）：`FillStyle::Dots`——竖向
   扫描线（hachureAngle=0 → 有效角 90°）按 gap 均匀布点，首点余量
   `length − count·gap`，位置 ±gap/4 抖动（rough.js 用 `Math.random()` 无种子，
@@ -1398,6 +1401,8 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
   覆盖半径 ≈ 0.75×fillWeight）；RoughStyler 以抖动圆心实心圆近似逐点 rough
   椭圆（原实现每点 ≥18 条贝塞尔，观感等价、开销 1 shape/点），CleanStyler
   规整圆点。两风格器共用 `dot_radius` 公式，切换 sloppiness 观感连续。
+  2026-10-08 加密：行距从 hachure 同款 4×线宽 减半（`dot_gap` = hachure 的一
+  半），同间距点数 ×4，点填充观感明显（用户验收反馈：默认行距太稀）。
 - **椭圆 overlap 收笔**（rough.js `ellipseWithParams`）：椭圆从「闭合点环 +
   封闭 CR」重构为 rough.js 的**开放点环**——0.9r 前导点 + 整圈 + 收笔尾段，
   主 pass 在整圈后按 `overlap = increment × [0.1..inner] × amp_scale`
@@ -1418,6 +1423,11 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
   重写为开放点环结构断言（段数 (segs+2)×2、open CR 的 C1、收笔点 0.9r、
   起画点全半径）。质量门：fmt / `clippy -D warnings` 零告警，
   `cargo test --workspace` 351 项全绿。
+- **2026-10-08 zigzag/dots 观感修正**（plan #20 验收反馈）：`zigzag_segments`
+  重写为连续锯齿折线（见上），Rough 双笔改折线整体（顶点抖动 + polyline），
+  dots 行距减半（`dot_gap`）。测试重写 3 项（zigzag 交替偏移/齿距断言、
+  Clean 折线 Path 结构 + 行数对比、Rough 折线双笔计数）+ 新增 dots 行距
+  断言；stylers 54 项全绿，`cargo test --workspace` 358 项全绿。
 
 ---
 

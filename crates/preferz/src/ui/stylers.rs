@@ -340,6 +340,12 @@ fn hachure_gap(stroke_width: f32, zoom: f32) -> f32 {
     (stroke_width * 4.0).max(0.1).round() * zoom
 }
 
+/// 圆点填充行距：hachure 行距的一半（plan #20 验收反馈：4×线宽 行距太稀，
+/// 减半后同间距点数 ×4，配合 0.75×fillWeight 点径观感明显）。
+fn dot_gap(stroke_width: f32, zoom: f32) -> f32 {
+    hachure_gap(stroke_width, zoom) * 0.5
+}
+
 /// 生成沿 `angle_deg` 方向的斜线填充线段（屏幕空间）。
 ///
 /// 算法：把多边形旋转 `-angle`，使填充线方向变为水平；对每条水平扫描线求与
@@ -422,25 +428,41 @@ fn closed_filled_path(pts: Vec<Pos2>, fill: Color32) -> Shape {
     })
 }
 
-/// 之字线段（rough.js `zigzag-filler.ts` 自移植，plan #20）：在 hachure 扫描线
-/// 基础上，每条线把**起点**沿原始 hachureAngle 方向（= 有效角 − 90°，即垂直于
-/// 扫描线）拆成 ±gap/2 偏移的两条、共享终点——渲染后两两成对组成连续人字纹。
-/// 返回值语义同 [`hachure_segments`]。
+/// 之字线段（rough.js `zigzag-filler.ts` 自移植，plan #20）：hachure 扫描线
+/// 行距放大为 `gap + offset`（`zigzagOffset` auto = 半行距，rough.js 同款关系），
+/// 每条线上按步长 `2×offset` 交替 ±offset 垂直偏移（垂直于扫描线方向），
+/// 连成连续锯齿折线——与 hachure 平行直线的观感区分明显。
+/// 返回每条扫描线的锯齿折线顶点序列。
 fn zigzag_segments(
     pts: &[Pos2],
     angle_deg: f32,
     gap: f32,
     skip_first_line: bool,
-) -> Vec<[Pos2; 2]> {
-    let lines = hachure_segments(pts, angle_deg, gap, skip_first_line);
+) -> Vec<Vec<Pos2>> {
+    let offset = gap * 0.5;
+    let lines = hachure_segments(pts, angle_deg, gap + offset, skip_first_line);
     let raw = (angle_deg - 90.0).to_radians();
-    let (dgx, dgy) = (gap * 0.5 * raw.cos(), gap * 0.5 * raw.sin());
-    let mut out = Vec::with_capacity(lines.len() * 2);
+    let (dx, dy) = (raw.cos(), raw.sin());
+    let step = offset * 2.0;
+    let mut out = Vec::with_capacity(lines.len());
     for [p1, p2] in lines {
-        if (p2 - p1).length_sq() > 1e-6 {
-            out.push([egui::pos2(p1.x - dgx, p1.y + dgy), p2]);
-            out.push([egui::pos2(p1.x + dgx, p1.y - dgy), p2]);
+        let length = (p2 - p1).length();
+        if length < 1e-6 {
+            continue;
         }
+        let (ux, uy) = ((p2.x - p1.x) / length, (p2.y - p1.y) / length);
+        let count = ((length / step) as usize).max(1);
+        let mut poly = Vec::with_capacity(count + 2);
+        poly.push(p1);
+        let mut up = true;
+        for i in 1..count {
+            let t = i as f32 * step;
+            let s = if up { -offset } else { offset };
+            poly.push(egui::pos2(p1.x + ux * t + dx * s, p1.y + uy * t + dy * s));
+            up = !up;
+        }
+        poly.push(p2);
+        out.push(poly);
     }
     out
 }
@@ -573,21 +595,19 @@ impl ShapeStyler for CleanStyler {
                 }
                 FillStyle::Zigzag => {
                     let s = egui::Stroke::new(fill_width, fill_color);
-                    out.extend(
-                        zigzag_segments(
-                            &pts,
-                            HACHURE_ANGLE_DEG,
-                            hachure_gap(stroke.width, zoom),
-                            false,
-                        )
-                        .into_iter()
-                        .map(|seg| Shape::line_segment(seg, s)),
-                    );
+                    for poly in zigzag_segments(
+                        &pts,
+                        HACHURE_ANGLE_DEG,
+                        hachure_gap(stroke.width, zoom),
+                        false,
+                    ) {
+                        out.push(Shape::line(poly, s));
+                    }
                 }
                 FillStyle::Dots => {
                     let r = dot_radius(fill_width);
                     out.extend(
-                        dot_layout(&pts, hachure_gap(stroke.width, zoom), false)
+                        dot_layout(&pts, dot_gap(stroke.width, zoom), false)
                             .into_iter()
                             .map(|(p, _)| Shape::circle_filled(p, r, fill_color)),
                     );
@@ -1167,7 +1187,7 @@ impl ShapeStyler for RoughStyler {
                             .collect();
                         out.push(closed_filled_path(jittered, f));
                     }
-                    FillStyle::Hachure | FillStyle::CrossHatch | FillStyle::Zigzag => {
+                    FillStyle::Hachure | FillStyle::CrossHatch => {
                         let angles: &[f32] = match fill_style {
                             FillStyle::CrossHatch => &[HACHURE_ANGLE_DEG, HACHURE_ANGLE_DEG + 90.0],
                             _ => &[HACHURE_ANGLE_DEG],
@@ -1177,12 +1197,7 @@ impl ShapeStyler for RoughStyler {
                         let gap = hachure_gap(stroke.width, zoom);
                         let path_stroke = egui::epaint::PathStroke::new(line_width * 0.5, f);
                         for angle in angles {
-                            let segs = if fill_style == FillStyle::Zigzag {
-                                zigzag_segments(&pts, *angle, gap, skip_first)
-                            } else {
-                                hachure_segments(&pts, *angle, gap, skip_first)
-                            };
-                            for [a, b] in segs {
+                            for [a, b] in hachure_segments(&pts, *angle, gap, skip_first) {
                                 for _ in 0..Self::PASSES {
                                     let bez = Self::sketch_edge(&mut fill_rng, a, b, &ctx);
                                     out.push(Shape::CubicBezier(
@@ -1197,14 +1212,32 @@ impl ShapeStyler for RoughStyler {
                             }
                         }
                     }
+                    FillStyle::Zigzag => {
+                        // 锯齿折线整条双笔：顶点小幅抖动后直线连接（polyline），
+                        // 尖角共享端点不断开；抖动幅度受齿距 clamp 保护
+                        //（jitter_points 邻段上限），与 hachure 的手绘观感连续。
+                        let path_stroke = egui::epaint::PathStroke::new(line_width * 0.5, f);
+                        let mut fill_rng = SeededRng::new(shape.seed ^ 0x6841_4355_4C4C_5F53);
+                        let skip_first = ctx.amp_scale >= 1.0 && fill_rng.next_f32() > 0.7;
+                        let gap = hachure_gap(stroke.width, zoom);
+                        for poly in zigzag_segments(&pts, HACHURE_ANGLE_DEG, gap, skip_first) {
+                            let amp = Self::curve_jitter_amp(&poly, zoom, false, ctx.amp_scale);
+                            for _ in 0..Self::PASSES {
+                                let jittered =
+                                    Self::jitter_points(&mut fill_rng, &poly, false, amp);
+                                out.push(Shape::line(jittered, path_stroke.clone()));
+                            }
+                        }
+                    }
                     FillStyle::Dots => {
                         // rough.js dot-filler：竖向扫描线均匀布点 ±gap/4 抖动。
                         // 原实现逐点画"宽 fillWeight 的 rough 椭圆"（每点 ≥18 条
                         // 贝塞尔），此处以抖动圆心 + 共享半径的实心圆近似——
-                        // 观感等价、开销 1 shape/点（plan #20）。
+                        // 观感等价、开销 1 shape/点（plan #20）。行距取 dot_gap
+                        //（hachure 的一半，验收反馈：变密更明显）。
                         let mut fill_rng = SeededRng::new(shape.seed ^ 0x6841_4355_4C4C_5F53);
                         let skip_first = ctx.amp_scale >= 1.0 && fill_rng.next_f32() > 0.7;
-                        let gap = hachure_gap(stroke.width, zoom);
+                        let gap = dot_gap(stroke.width, zoom);
                         let r = dot_radius(line_width * 0.5);
                         for (p, ro) in dot_layout(&pts, gap, skip_first) {
                             let c = p + egui::vec2(fill_rng.signed() * ro, fill_rng.signed() * ro);
@@ -1779,9 +1812,10 @@ mod tests {
     }
 
     #[test]
-    fn zigzag_segments_pairs_share_endpoints_gap_apart() {
-        // rough.js zigzag-filler：每条 hachure 线拆成两条、共享终点，起点沿
-        // 垂直于扫描线方向相距恰一个 gap（±gap/2 对称偏移）
+    fn zigzag_segments_alternate_offsets_with_gap_tooth_pitch() {
+        // 锯齿折线：中间顶点沿垂直于扫描线方向交替 ±offset（= gap/2），沿线
+        // 间距恒等于 2×offset = gap（齿距）；首末点垂直偏移为 0（在原始
+        // hachure 线上）。行距 = gap + offset = 1.5×gap。
         let pts = vec![
             egui::pos2(0.0, 0.0),
             egui::pos2(100.0, 0.0),
@@ -1789,13 +1823,32 @@ mod tests {
             egui::pos2(0.0, 60.0),
         ];
         let gap = 16.0;
-        let segs = zigzag_segments(&pts, HACHURE_ANGLE_DEG, gap, false);
-        assert!(!segs.is_empty());
-        assert_eq!(segs.len() % 2, 0, "人字对必须成对出现");
-        for pair in segs.chunks(2) {
-            assert_eq!(pair[0][1], pair[1][1], "人字对共享终点");
-            let d = (pair[0][0] - pair[1][0]).length();
-            assert!((d - gap).abs() < 1e-3, "对起点相距 gap: {d}");
+        let polys = zigzag_segments(&pts, HACHURE_ANGLE_DEG, gap, false);
+        assert!(!polys.is_empty(), "锯齿折线必须产出");
+        let raw = (HACHURE_ANGLE_DEG - 90.0).to_radians();
+        let perp = egui::vec2(raw.cos(), raw.sin());
+        for poly in &polys {
+            assert!(poly.len() >= 2);
+            let p1 = poly[0];
+            let p2 = *poly.last().unwrap();
+            let len = (p2 - p1).length();
+            let ux = (p2 - p1) / len;
+            let n = poly.len();
+            for (i, p) in poly.iter().enumerate() {
+                let d = *p - p1;
+                let along = d.dot(ux);
+                let s = d.dot(perp);
+                if i == 0 || i + 1 == n {
+                    assert!(s.abs() < 1e-3, "首末点垂直偏移应为 0: s={s}");
+                } else {
+                    let want = if i % 2 == 1 { -gap * 0.5 } else { gap * 0.5 };
+                    assert!((s - want).abs() < 1e-3, "顶点 {i} 应交替 ±offset: s={s}");
+                    assert!(
+                        (along - i as f32 * gap).abs() < 1e-3,
+                        "顶点 {i} 沿线间距应 = gap: {along}"
+                    );
+                }
+            }
         }
     }
 
@@ -1841,12 +1894,32 @@ mod tests {
             1.0,
         );
         assert!(!zig.is_empty());
-        // 填充层全为独立线段，另有 1 个闭合轮廓 Path
-        let seg_count = zig
+        // 填充层全为开放锯齿折线（Shape::Path closed=false），另有 1 个闭合轮廓
+        let open_paths = zig
             .iter()
-            .filter(|s| matches!(s, Shape::LineSegment { .. }))
+            .filter(|s| matches!(s, Shape::Path(p) if !p.closed))
             .count();
-        assert_eq!(seg_count, zig.len() - 1, "除轮廓外应全为线段");
+        let closed_paths = zig
+            .iter()
+            .filter(|s| matches!(s, Shape::Path(p) if p.closed))
+            .count();
+        assert!(open_paths > 0, "填充层应为开放折线 Path");
+        assert_eq!(closed_paths, 1, "轮廓应为单个闭合 Path");
+        assert_eq!(open_paths + closed_paths, zig.len(), "不应有其他形状类型");
+        // 锯齿与 hachure 的区分：锯齿行距 = 1.5 × hachure 行距 → 行数更少
+        let rect_pts = &[
+            egui::pos2(0.0, 0.0),
+            egui::pos2(100.0, 0.0),
+            egui::pos2(100.0, 60.0),
+            egui::pos2(0.0, 60.0),
+        ];
+        let gap = hachure_gap(stroke.width, 1.0);
+        let zig_count = zigzag_segments(rect_pts, HACHURE_ANGLE_DEG, gap, false).len();
+        let hach_count = hachure_segments(rect_pts, HACHURE_ANGLE_DEG, gap, false).len();
+        assert!(
+            zig_count > 0 && zig_count < hach_count,
+            "锯齿行距更大，行数应少于 hachure: {zig_count} vs {hach_count}"
+        );
         let dots = CleanStyler.build_shapes(
             &rect(0),
             &stroke,
@@ -1868,6 +1941,11 @@ mod tests {
                 assert!((c.radius - dot_radius(stroke.width * 0.5)).abs() < 1e-4);
             }
         }
+        // 点行距 = hachure 的一半（plan #20 验收反馈：变密更明显）
+        assert_eq!(
+            dot_gap(stroke.width, 1.0),
+            hachure_gap(stroke.width, 1.0) * 0.5
+        );
     }
 
     #[test]
@@ -1923,9 +2001,19 @@ mod tests {
             &identity(),
             1.0,
         );
-        // 全部为抖动贝塞尔（sketch_edge 双笔），数量为人字线数 × 2 passes + 轮廓 8×2。
+        // 轮廓 4 条抖动边 × 2 passes；填充层全为开放锯齿折线 Path（每条线 × 2 passes）。
         // skip_first 与 build 同种子推导（Artist amp_scale=2 ≥ 1，首线可能被跳）。
-        assert!(shapes.iter().all(|s| matches!(s, Shape::CubicBezier(_))));
+        let bez = shapes
+            .iter()
+            .filter(|s| matches!(s, Shape::CubicBezier(_)))
+            .count();
+        assert_eq!(bez, 8, "轮廓应为 4 条边 × 2 passes 贝塞尔");
+        let fill_polys = shapes
+            .iter()
+            .filter(|s| matches!(s, Shape::Path(p) if !p.closed))
+            .count();
+        assert!(fill_polys > 0, "填充层应为锯齿折线 Path");
+        assert_eq!(bez + fill_polys, shapes.len(), "不应有其他形状类型");
         let gap = hachure_gap(stroke.width, 1.0);
         let pts = vec![
             egui::pos2(0.0, 0.0),
@@ -1936,7 +2024,17 @@ mod tests {
         let mut fill_rng = SeededRng::new(7 ^ 0x6841_4355_4C4C_5F53);
         let skip_first = fill_rng.next_f32() > 0.7;
         let zig_lines = zigzag_segments(&pts, HACHURE_ANGLE_DEG, gap, skip_first).len();
-        assert_eq!(shapes.len(), zig_lines * 2 + 8);
+        assert_eq!(fill_polys, zig_lines * 2, "每条锯齿线双笔两遍");
+        // 确定性：同 seed 两次构建结果一致
+        let again = RoughStyler.build_shapes(
+            &d,
+            &stroke,
+            Some(Color32::from_rgb(4, 5, 6)),
+            FillStyle::Zigzag,
+            &identity(),
+            1.0,
+        );
+        assert_eq!(debug(&shapes), debug(&again));
     }
 
     #[test]

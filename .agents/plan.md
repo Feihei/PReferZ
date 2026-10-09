@@ -32,7 +32,7 @@
 | # | 打磨项 | 现状 / 剩余工作 | 关键约束 |
 |---|---|---|---|
 | 17 C | mermaid 布局质量 | 🔶 **代码已交付**（2026-10-04）：`layout_flowchart` 层内加**重心排序（barycenter）**减 `&` 展开同层交叉；边默认改 `Item::new_elbow`（映射 `ShapeType::Elbow`，绑定期走 #24 A\* 正交路由）。待人工 `cargo run` 验收后清空归档 | 批次 A/B 已于 2026-09-28 复验通过 |
-| 20 | RoughStyler 剩余缺口 | 🔶 **代码已交付**（2026-10-05）：zigzag / dots 填充（rough.js 自移植，`FillStyle` 新增两态）+ 椭圆 `overlap` 收笔重叠段（开放点环重构）；「圆角矩形 `_bezierTo`」经核对已随 2026-10-01 Segmented 路线交付（见 CHANGELOG §plan #20 说明）。待人工 `cargo run` 验收后清空归档 | dots 以抖动实心圆近似逐点 rough 椭圆（1 shape/点）；zigzag 起点溢出边界为 rough.js 同款行为 |
+| 20 | RoughStyler 剩余缺口 | 🔶 **代码已交付**（2026-10-05）：zigzag / dots 填充（rough.js 自移植，`FillStyle` 新增两态）+ 椭圆 `overlap` 收笔重叠段（开放点环重构）；「圆角矩形 `_bezierTo`」经核对已随 2026-10-01 Segmented 路线交付（见 CHANGELOG §plan #20 说明）。2026-10-08 观感修正：zigzag 重写为连续锯齿折线（与 hachure 区分明显）、dots 行距减半变密（验收反馈）。待人工 `cargo run` 验收后清空归档 | dots 以抖动实心圆近似逐点 rough 椭圆（1 shape/点），行距 = hachure 一半；zigzag 锯齿偏移幅度 ≤ gap/2 |
 | 18 | 相乘叠合模式（Multiply / 荧光马克笔） | ⏳ **先不做**（L19），评估已存档。重启前提：egui 0.36.2 无 per-shape blend（epaint 无 `BlendMode`、glow 固定预乘 alpha），屏幕实时真 multiply 是唯一硬点（需 `Shape::Callback` + GL 状态 hack）；导出侧需先重写为正向合成。分 M1（荧光色板 + 低透明填充，近似）/ M2（真 multiply） | 导出管线重写本身是独立大项（顺带解决矢量元素导出缺失），M2 排其后 |
 
 ---
