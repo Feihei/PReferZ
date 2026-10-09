@@ -1164,10 +1164,12 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 
 ---
 
-## v0.2.1（2026-09-28 ~ 09-29）
+## v0.3.0（2026-09-28 ~ 10-09）
 
-> v0.2.0 之后的全部交付：四项 Excalidraw 对齐功能/修复 + 内置帮助文档实例。
-> 规划中未实施的 #24（elbow 连接器独立类型化 + A* 自动路由）见 plan.md，不在本版本。
+> v0.2.0 之后的全部交付。原拟以 v0.2.1 发布（版本号已 bump），但未打 tag，最终并入
+> v0.3.0——所以本节标题从 v0.2.1 更名。本节收 09-28 ~ 09-29 的功能/修复；
+> 10 月交付见后续小节（elbow 取向稳定化 / A\* 路由 / mermaid 批次 C / RoughStyler
+> 收尾 / 元素超链接 / 验收反馈批次）。
 
 ### fix(ui)：文字工具单击创建的编辑框被点击释放沿误关（2026-09-28，`e06e830`）
 
@@ -1361,7 +1363,8 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 ## mermaid 布局质量：重心排序 + 边默认 Elbow（plan #17 批次 C，2026-10-04）
 
 > 批次 A（解析）/ B（映射）2026-09-28 交付并复验通过；批次 C 在 #24 elbow 独立类型化
-> + A\* 路由落地后实施（plan 预告的映射目标 `ShapeType::Elbow`）。🔶 待人工验收。
+> + A\* 路由落地后实施（plan 预告的映射目标 `ShapeType::Elbow`）。2026-10-09 人工
+> `cargo run` 复验通过。
 
 - **重心排序（barycenter）**：core `layout_flowchart` 层级松弛后、落位前插入 5 次
   down/up 交替扫掠（down 按前驱排位均值、up 按后继；跨层长边一并计入邻居均值），
@@ -1383,7 +1386,8 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 
 > plan #20 剩余缺口全部交付（「圆角矩形 `_bezierTo` 平滑抖动」一项经调研确认
 > 已随 2026-10-01 的 Segmented 路线交付——`corner_bezier` 即 Excalidraw 圆角
-> 路径 `Q` 命令的 rough.js `_bezierTo` 等价实现，plan.md 当时未清账）。🔶 待人工验收。
+> 路径 `Q` 命令的 rough.js `_bezierTo` 等价实现，plan.md 当时未清账）。2026-10-09
+> 人工 `cargo run` 复验通过（含 10-08 观感修正与 10-09 zigzag 重写一并验收）。
 
 - **zigzag 填充**（rough.js `zigzag-filler.ts` 自移植）：`FillStyle::Zigzag`——
   hachure 扫描线行距放大为 `gap + offset`（`zigzagOffset` auto = 半行距），
@@ -1428,6 +1432,55 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
   dots 行距减半（`dot_gap`）。测试重写 3 项（zigzag 交替偏移/齿距断言、
   Clean 折线 Path 结构 + 行数对比、Rough 折线双笔计数）+ 新增 dots 行距
   断言；stylers 54 项全绿，`cargo test --workspace` 358 项全绿。
+
+---
+
+## 元素超链接（plan #6，2026-10-06，`684b743`）
+
+> 决策点 H1–H4（2026-10-06 拍板，见 plan.md 当时记录）：web URL 与本地 `.prz` 双类型、
+> spawn 新窗口、路径存原文、精简编辑入口。2026-10-09 人工 `cargo run` 复验通过。
+
+- **数据模型**：`Item` 顶层新增 `link: Option<String>`（`#[serde(default)]`，I4 零迁移）；
+  `.prz` items 表加 `link` 列（照 `group_id` 先例：`pragma_table_info` 检测 +
+  `ALTER TABLE` 就地迁移，不动 USER_VERSION）。
+- **链接分类与安全**：core 纯函数 `classify_link` 区分 web URL（http/https）与本地路径；
+  `sanitize_link` 拒绝协议注入（非 http/https scheme 一律不收）。本地路径存用户输入
+  **原文**，打开时相对路径优先（相对当前 `.prz` 所在目录），不存在再按绝对路径解析；
+  无当前文件时按工作目录（H3）。
+- **打开方式**：web 交系统默认浏览器（explorer/open/xdg-open 三平台 cfg，零新依赖）；
+  本地 `.prz` spawn 新窗口（自身 exe + 路径参数，照 `spawn_help_instance` 先例）；
+  `main.rs` 增加位置参数，启动时加载指定 `.prz`（复用 pending_open_recent 流程）（H2）。
+- **编辑入口**（H4）：① props 面板「链接」section（恰选中 1 项时，输入框 + 清除按钮，
+  Enter/失焦提交，持焦屏蔽快捷键派发）；② 右键菜单 Add/Edit link + Remove link 两入口；
+  ③ keymap 新增 `Action::EditLink`（Ctrl+K 聚焦链接输入框）。
+- **hover badge**：悬停带链接的 item 显示右上角 ↗ 徽标（U+2197，内嵌字体 cmap 已核验），
+  按下守卫不启拖拽。
+- **修复**（2026-10-08，`052f608`）：props 链接输入框每帧从存储值重克隆缓冲，打字在
+  下一帧被清空、字段不可编辑——缓冲持久化到 egui memory（按 item id 键控），仅失焦时
+  跟随存储值（undo / Remove link 保持同步）。
+- 测试：`sanitize_link`/`classify_link` headless 5 项（含协议注入拒绝）、link 列
+  roundtrip 与旧库迁移覆盖；交付时全量 357 通过，fmt / `clippy -D warnings` 零告警。
+
+---
+
+## 验收反馈批次：点选吸附线修复 + 欢迎页/帮助文案微调（2026-10-08~09）
+
+### fix(ui)：点选已吸附线时高亮残留且丢失端点绑定（2026-10-08，`0b7dd0f`）
+
+- `end_drag` 统一清 `snap_highlight`：原仅 LineEndpoint 分支清理，MoveItems 点选
+  （零位移）路径释放后高亮框残留到取消选择。
+- `update_drag` MoveItems 加点选守卫：位移不足 2 屏幕像素不做吸附检测，避免单击
+  已绑定线时高亮闪现。
+- 未命中分支仅在真正拖离时解绑；点选恢复 `begin_drag` 快照里的初始绑定——否则单击
+  吸附线静默清空端点绑定，随后 `refresh_elbow_axis` 在无绑定下解析取向导致 elbow
+  路径翻转跳变。
+
+### 欢迎页与帮助文档文案微调（2026-10-08，`96bd7e7` / `f76cd2f` / `5d38475` / `cc54530`）
+
+- 欢迎页副标题重定位为品牌 tagline（`96bd7e7`），随后再去掉 tagline 改居中分隔线
+  （`f76cd2f`）。
+- help.prz 内容与 v0.2 以来交付的功能同步（`cc54530`），并删去画布小标题与末行页脚
+  （`5d38475`）。
 
 ---
 

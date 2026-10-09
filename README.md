@@ -1,6 +1,5 @@
 # PReferZ
-
-![icon](./assets/icon.png)
+![header](./assets/header.webp)
 
 [中文readme](#chinese)
 
