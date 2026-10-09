@@ -3056,7 +3056,7 @@ dependencies = [
 
 [[package]]
 name = "preferz"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "arboard",
  "eframe",
@@ -3076,7 +3076,7 @@ dependencies = [
 
 [[package]]
 name = "preferz-core"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "euclid",
  "serde",
@@ -3086,7 +3086,7 @@ dependencies = [
 
 [[package]]
 name = "preferz-fileio"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "image",
  "log",
