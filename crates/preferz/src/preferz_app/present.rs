@@ -6,11 +6,12 @@ impl PReferZApp {
     /// 进入演示：收集尺寸达标的画框快照（按编号升序）+ 预计算成员，记录视口，进入全屏。
     pub(crate) fn enter_present(&mut self, ctx: &egui::Context) {
         let slides: Vec<ItemId> = self
+            .session
             .scene
             .frames_by_number()
             .into_iter()
             .filter(|id| {
-                self.scene.get_item(id).is_some_and(|it| {
+                self.session.scene.get_item(id).is_some_and(|it| {
                     let s = it.base_size();
                     s.x >= 10.0 && s.y >= 10.0
                 })
@@ -23,10 +24,10 @@ impl PReferZApp {
         // 进入时预计算每帧成员快照（翻页不重算）。
         let members: Vec<Vec<ItemId>> = slides
             .iter()
-            .map(|id| self.scene.frame_members(*id))
+            .map(|id| self.session.scene.frame_members(*id))
             .collect();
-        let saved_pan = self.viewport.pan;
-        let saved_zoom = self.viewport.zoom;
+        let saved_pan = self.session.viewport.pan;
+        let saved_zoom = self.session.viewport.zoom;
         self.app_mode = AppMode::Present {
             slides,
             members,
@@ -48,8 +49,8 @@ impl PReferZApp {
             ..
         } = &self.app_mode
         {
-            self.viewport.pan = *saved_pan;
-            self.viewport.zoom = *saved_zoom;
+            self.session.viewport.pan = *saved_pan;
+            self.session.viewport.zoom = *saved_zoom;
         }
         self.app_mode = AppMode::Edit;
         self.present_anim = None;
@@ -88,20 +89,20 @@ impl PReferZApp {
             // 指数插值，约 200ms 收敛
             let dt = ctx.input(|i| i.unstable_dt).clamp(0.0, 0.05);
             let k = 1.0 - (-dt / 0.18).exp();
-            self.viewport.zoom += (tz - self.viewport.zoom) * k;
-            self.viewport.pan.x += (tp.x - self.viewport.pan.x) * k;
-            self.viewport.pan.y += (tp.y - self.viewport.pan.y) * k;
-            let pan_close = (self.viewport.pan - tp).length() < 0.5;
-            if (self.viewport.zoom - tz).abs() < 0.001 && pan_close {
-                self.viewport.zoom = tz;
-                self.viewport.pan = tp;
+            self.session.viewport.zoom += (tz - self.session.viewport.zoom) * k;
+            self.session.viewport.pan.x += (tp.x - self.session.viewport.pan.x) * k;
+            self.session.viewport.pan.y += (tp.y - self.session.viewport.pan.y) * k;
+            let pan_close = (self.session.viewport.pan - tp).length() < 0.5;
+            if (self.session.viewport.zoom - tz).abs() < 0.001 && pan_close {
+                self.session.viewport.zoom = tz;
+                self.session.viewport.pan = tp;
                 self.present_anim = None;
             } else {
                 ctx.request_repaint();
             }
         } else {
-            self.viewport.zoom = tz;
-            self.viewport.pan = tp;
+            self.session.viewport.zoom = tz;
+            self.session.viewport.pan = tp;
         }
     }
 
@@ -128,7 +129,7 @@ impl PReferZApp {
         if let AppMode::Present { index: slot, .. } = &mut self.app_mode {
             *slot = idx;
         }
-        if let Some(frame) = self.scene.get_item(&slides[idx]) {
+        if let Some(frame) = self.session.scene.get_item(&slides[idx]) {
             let (z, p) = self.present_compute_fit(ctx.content_rect(), frame.bounding_rect());
             self.present_anim = Some((z, p));
         }
@@ -150,14 +151,14 @@ impl PReferZApp {
             return;
         }
         let screen_rect = ctx.content_rect();
-        self.viewport.set_screen_rect_egui(screen_rect);
+        self.session.viewport.set_screen_rect_egui(screen_rect);
 
-        let Some(frame) = self.scene.get_item(&slides[index]) else {
+        let Some(frame) = self.session.scene.get_item(&slides[index]) else {
             return;
         };
         let frame_rect = frame.bounding_rect();
         self.present_apply_fit(ctx, screen_rect, frame_rect);
-        let frame_screen_rect = self.viewport.canvas_rect_to_egui(frame_rect);
+        let frame_screen_rect = self.session.viewport.canvas_rect_to_egui(frame_rect);
 
         // 画布背景跟随主题（D2）；Present 为不透明演示背景。
         let present_bg = self.theme.canvas_bg(ctx);
@@ -172,10 +173,13 @@ impl PReferZApp {
                 // 只绘制当前帧成员，且裁剪到帧矩形，形成独立"幻灯片"画布。
                 ui.set_clip_rect(frame_screen_rect);
                 for id in &members[index] {
-                    let Some(item) = self.scene.get_item(id).cloned() else {
+                    let Some(item) = self.session.scene.get_item(id).cloned() else {
                         continue;
                     };
-                    let cull = self.viewport.canvas_rect_to_egui(item.bounding_rect());
+                    let cull = self
+                        .session
+                        .viewport
+                        .canvas_rect_to_egui(item.bounding_rect());
                     if screen_rect.intersects(cull) {
                         self.draw_item_visual(ui, &item, None);
                     }

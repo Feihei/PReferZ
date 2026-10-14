@@ -40,7 +40,7 @@ impl PReferZApp {
     ///
     /// `region`：选区画布包围盒（含边距）；`zoom`：画布像素 → 输出像素的比例
     /// （栅格导出用 `EXPORT_SCALE`=2，SVG 用 1）。必须在 UI 线程调用（临时换出
-    /// `self.viewport`），成本为一次形状收集，无逐像素工作。
+    /// `self.session.viewport`），成本为一次形状收集，无逐像素工作。
     pub(crate) fn collect_offscreen_scene(
         &mut self,
         main_ctx: &egui::Context,
@@ -75,6 +75,7 @@ impl PReferZApp {
 
         // Z 序排列选中项（底层先画）
         let items: Vec<Item> = self
+            .session
             .scene
             .items_by_z_order()
             .into_iter()
@@ -116,7 +117,7 @@ impl PReferZApp {
             preferz_core::spaces::ScreenPoint::new(target.min.x, target.min.y),
             euclid::Size2D::new(target.width(), target.height()),
         ));
-        let old_viewport = std::mem::replace(&mut self.viewport, vp);
+        let old_viewport = std::mem::replace(&mut self.session.viewport, vp);
 
         let layer_id = egui::LayerId::new(egui::Order::Middle, egui::Id::new("export_offscreen"));
         let builder = egui::UiBuilder {
@@ -137,7 +138,7 @@ impl PReferZApp {
             prev_len = len;
         }
 
-        self.viewport = old_viewport;
+        self.session.viewport = old_viewport;
 
         OffscreenScene {
             ctx,

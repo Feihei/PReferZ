@@ -32,7 +32,7 @@ impl PReferZApp {
         if self.editing_text.is_some() {
             return true;
         }
-        let Some(kind) = self.scene.get_item(&id).map(|it| it.kind.clone()) else {
+        let Some(kind) = self.session.scene.get_item(&id).map(|it| it.kind.clone()) else {
             return false;
         };
         match kind {
@@ -45,6 +45,7 @@ impl PReferZApp {
                 ..
             } => {
                 let canvas_pos = self
+                    .session
                     .scene
                     .get_item(&id)
                     .map(|it| it.transform.pos)
@@ -63,6 +64,7 @@ impl PReferZApp {
             }
             ref k if is_text_container(k) => {
                 let center = self
+                    .session
                     .scene
                     .get_item(&id)
                     .map(|it| it.bounding_rect().center())
@@ -70,9 +72,10 @@ impl PReferZApp {
                 let Some(center) = center else {
                     return false;
                 };
-                let existing = self.scene.texts_bound_to(id).into_iter().next();
+                let existing = self.session.scene.texts_bound_to(id).into_iter().next();
                 // 新建绑定文字时初值取容器描边色（默认"跟随边框"，创建即观感正确）。
                 let container_stroke = self
+                    .session
                     .scene
                     .get_item(&id)
                     .and_then(|it| match &it.kind {
@@ -82,7 +85,7 @@ impl PReferZApp {
                     .unwrap_or([255; 4]);
                 // 已有绑定文本 → 编辑；否则提交时才写入容器 id 新建一个
                 let (editing_item_id, buffer, font_size, color, font_family) =
-                    match existing.and_then(|tid| self.scene.get_item(&tid)) {
+                    match existing.and_then(|tid| self.session.scene.get_item(&tid)) {
                         Some(it) => match &it.kind {
                             ItemKind::Text {
                                 content,
@@ -127,8 +130,8 @@ impl PReferZApp {
 
     /// 选中项恰好一个时返回其 id（多选返回 None，此时不做"编辑文本"这类单选语义的操作）。
     pub(crate) fn single_selected_id(&self) -> Option<ItemId> {
-        if self.scene.selection.len() == 1 {
-            self.scene.selection.iter().next().copied()
+        if self.session.scene.selection.len() == 1 {
+            self.session.scene.selection.iter().next().copied()
         } else {
             None
         }
@@ -138,9 +141,9 @@ impl PReferZApp {
     /// 仅在 `measured_size` 为 None 时测量（content 变化会清空 measured_size）；
     /// 绑定文本例外——它随容器宽度换行，需每帧重测。
     pub(crate) fn update_text_measured_sizes(&mut self, ctx: &egui::Context) {
-        let zoom = self.viewport.zoom;
+        let zoom = self.session.viewport.zoom;
         let mut updates: Vec<(ItemId, (f32, f32))> = Vec::new();
-        for item in &self.scene.items {
+        for item in &self.session.scene.items {
             if let ItemKind::Text {
                 content,
                 font_size,
@@ -162,8 +165,9 @@ impl PReferZApp {
                 };
                 if let Some(cid) = container_id {
                     // 绑定文本：换行到容器宽度，随容器 resize 每帧重测。
-                    if let Some(container) = self.scene.get_item(cid) {
+                    if let Some(container) = self.session.scene.get_item(cid) {
                         let cw = self
+                            .session
                             .viewport
                             .canvas_to_screen_rect(container.bounding_rect())
                             .width();
@@ -193,7 +197,7 @@ impl PReferZApp {
             }
         }
         for (id, (w, h)) in updates {
-            if let Some(item) = self.scene.get_item_mut(&id) {
+            if let Some(item) = self.session.scene.get_item_mut(&id) {
                 if let ItemKind::Text { measured_size, .. } = &mut item.kind {
                     *measured_size = Some((w, h));
                 }
@@ -207,12 +211,14 @@ impl PReferZApp {
             Some(e) => e,
             None => return,
         };
-        let screen_pos = self.viewport.canvas_to_pos2(edit.canvas_pos);
+        let screen_pos = self.session.viewport.canvas_to_pos2(edit.canvas_pos);
         // 绑定文本：获取容器屏幕矩形，用于居中 + 定宽（换行）。
         let container_screen_rect = edit.container_id.and_then(|cid| {
-            self.scene
-                .get_item(&cid)
-                .map(|it| self.viewport.canvas_rect_to_egui(it.bounding_rect()))
+            self.session.scene.get_item(&cid).map(|it| {
+                self.session
+                    .viewport
+                    .canvas_rect_to_egui(it.bounding_rect())
+            })
         });
         let mut commit = false;
         let mut cancel = false;
@@ -348,7 +354,7 @@ impl PReferZApp {
                 Some(id) => {
                     // 编辑模式：空内容不修改原 item（避免误删）；非空且变化push EditTextContent
                     if !edit.buffer.trim().is_empty() {
-                        let old_content = self.scene.get_item(&id).and_then(|item| {
+                        let old_content = self.session.scene.get_item(&id).and_then(|item| {
                             if let ItemKind::Text { content, .. } = &item.kind {
                                 Some(content.clone())
                             } else {
@@ -377,12 +383,20 @@ impl PReferZApp {
         let Some(frame_id) = self.editing_frame_number else {
             return;
         };
-        let Some(frame) = self.scene.get_item(&frame_id).filter(|it| it.is_frame()) else {
+        let Some(frame) = self
+            .session
+            .scene
+            .get_item(&frame_id)
+            .filter(|it| it.is_frame())
+        else {
             self.editing_frame_number = None;
             return;
         };
         let old_number = frame.frame_number().unwrap_or(1);
-        let sr = self.viewport.canvas_rect_to_egui(frame.bounding_rect());
+        let sr = self
+            .session
+            .viewport
+            .canvas_rect_to_egui(frame.bounding_rect());
         let mut commit = false;
         let mut cancel = false;
 
@@ -435,7 +449,7 @@ impl PReferZApp {
             return;
         };
         if new_number != old_number {
-            let plan = self.scene.plan_frame_renumber(frame_id, new_number);
+            let plan = self.session.scene.plan_frame_renumber(frame_id, new_number);
             let cmd = RenumberFrame::new(plan);
             self.push_cmd(Box::new(cmd));
             self.flash(fill(

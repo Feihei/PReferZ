@@ -6,11 +6,11 @@ impl PReferZApp {
     /// 编组选中项（plan #13，`Ctrl+G`）。G1 单组：已属别组的项自动换组；
     /// 少于 2 项不动作（单元素编组无意义）。
     pub(crate) fn group_selected(&mut self) {
-        let selected: Vec<ItemId> = self.scene.selection.iter().cloned().collect();
+        let selected: Vec<ItemId> = self.session.scene.selection.iter().cloned().collect();
         if selected.len() < 2 {
             return;
         }
-        let Some(cmd) = SetGroup::group(&self.scene, &selected) else {
+        let Some(cmd) = SetGroup::group(&self.session.scene, &selected) else {
             return;
         };
         self.push_cmd(Box::new(cmd));
@@ -20,11 +20,11 @@ impl PReferZApp {
     /// 解组选中项（plan #13，`Ctrl+Shift+G`）。G3：只清选中项的组 id，
     /// 未被解组的其余同组成员保持编组。
     pub(crate) fn ungroup_selected(&mut self) {
-        let selected: Vec<ItemId> = self.scene.selection.iter().cloned().collect();
+        let selected: Vec<ItemId> = self.session.scene.selection.iter().cloned().collect();
         if selected.is_empty() {
             return;
         }
-        let Some(cmd) = SetGroup::ungroup(&self.scene, &selected) else {
+        let Some(cmd) = SetGroup::ungroup(&self.session.scene, &selected) else {
             return;
         };
         self.push_cmd(Box::new(cmd));
@@ -33,20 +33,20 @@ impl PReferZApp {
 
     pub(crate) fn delete_selected(&mut self) {
         // 容器联动：删除封闭形状时连带删除其绑定文本（Phase C/Step 3）。
-        let base_ids: Vec<ItemId> = self.scene.selection.iter().cloned().collect();
+        let base_ids: Vec<ItemId> = self.session.scene.selection.iter().cloned().collect();
         if base_ids.is_empty() {
             return;
         }
         let mut ids: Vec<ItemId> = base_ids.clone();
         for sid in &base_ids {
-            ids.extend(self.scene.texts_bound_to(*sid));
+            ids.extend(self.session.scene.texts_bound_to(*sid));
         }
         ids.sort();
         ids.dedup();
         // 先快照被删 Pixmap 的 texture_id（命令执行后 item 就查不到了）
         let deleted_tex_ids: Vec<u64> = ids
             .iter()
-            .filter_map(|id| self.scene.get_item(id))
+            .filter_map(|id| self.session.scene.get_item(id))
             .filter_map(|it| match &it.kind {
                 ItemKind::Pixmap { texture_id, .. } => Some(*texture_id),
                 _ => None,
@@ -55,7 +55,7 @@ impl PReferZApp {
         // DeleteItems 命令（修 S1/W8），undo 已支持快照恢复（P1-3
         let cmd = DeleteItems::new(ids.clone());
         self.push_cmd(Box::new(cmd));
-        self.scene.selection.clear();
+        self.session.scene.selection.clear();
         self.flash(fill(
             t(self.lang, T::FlashDeleted),
             &[ids.len().to_string()],
@@ -66,7 +66,7 @@ impl PReferZApp {
         // - 场景无引用时也只驱逐 GPU 纹理句柄，保留字节/像素缓存：undo 恢复 item 后
         //   `ensure_pixmap_textures` 按 rgba 缓存懒重建纹理，保存 sqlar 仍需原始字节。
         for tid in deleted_tex_ids {
-            let still_used = self.scene.items.iter().any(
+            let still_used = self.session.scene.items.iter().any(
                 |it| matches!(&it.kind, ItemKind::Pixmap { texture_id, .. } if *texture_id == tid),
             );
             if !still_used {
@@ -80,7 +80,7 @@ impl PReferZApp {
     /// 选区带容器联动（封闭形状的绑定文本；画框不连带成员），副本偏移 10px 画布避免完全重叠；
     /// 副本已经入场景，push `AddItems(preview_applied=true)`，一次 undo 撤掉整个复制。
     pub(crate) fn duplicate_in_place(&mut self) {
-        let selected: Vec<ItemId> = self.scene.selection.iter().cloned().collect();
+        let selected: Vec<ItemId> = self.session.scene.selection.iter().cloned().collect();
         if selected.is_empty() {
             return;
         }
@@ -88,11 +88,12 @@ impl PReferZApp {
         // 与拖拽一致；整体复制需先与成员编组）。
         let mut collected = selected.clone();
         for sid in &selected {
-            collected.extend(self.scene.texts_bound_to(*sid));
+            collected.extend(self.session.scene.texts_bound_to(*sid));
         }
         collected.sort();
         collected.dedup();
         let dups = self
+            .session
             .scene
             .duplicate_items(&collected, CanvasVector::new(10.0, 10.0));
         let n = dups.len();
@@ -100,12 +101,12 @@ impl PReferZApp {
             return;
         }
         for dup in &dups {
-            self.scene.add_item(dup.clone());
+            self.session.scene.add_item(dup.clone());
         }
         // 选区切到副本
-        self.scene.deselect_all();
+        self.session.scene.deselect_all();
         for dup in &dups {
-            self.scene.select(dup.id);
+            self.session.scene.select(dup.id);
         }
         self.push_cmd(Box::new(AddItems::new(dups).with_preview_applied(true)));
         self.flash(fill(t(self.lang, T::FlashDuplicated), &[n.to_string()]));
@@ -117,21 +118,21 @@ impl PReferZApp {
     /// - 其余（多张图 / 形状 / 文字 / 混合）只进应用内缓冲 `clipboard_items`，
     ///   需要图片形式走「导出选区」。
     pub(crate) fn copy_selected(&mut self) {
-        let selected: Vec<ItemId> = self.scene.selection.iter().cloned().collect();
+        let selected: Vec<ItemId> = self.session.scene.selection.iter().cloned().collect();
         if selected.is_empty() {
             return;
         }
         // 容器联动与拖拽 / Ctrl+D 一致（封闭形状的绑定文本；画框不连带成员）
         let mut collected = selected.clone();
         for sid in &selected {
-            collected.extend(self.scene.texts_bound_to(*sid));
+            collected.extend(self.session.scene.texts_bound_to(*sid));
         }
         collected.sort();
         collected.dedup();
         // 存原位置快照；粘贴时才分配新 id 并重定位
         let items: Vec<Item> = collected
             .iter()
-            .filter_map(|id| self.scene.get_item(id).cloned())
+            .filter_map(|id| self.session.scene.get_item(id).cloned())
             .collect();
         let n = items.len();
         if n == 0 {
@@ -152,7 +153,7 @@ impl PReferZApp {
     /// 剪切选中项（`Ctrl+X`）：同 [`Self::copy_selected`] 分流 + 删除选中
     /// （删除走 undo stack，一次 undo 恢复）。
     pub(crate) fn cut_selected(&mut self) {
-        let had_selection = !self.scene.selection.is_empty();
+        let had_selection = !self.session.scene.selection.is_empty();
         self.copy_selected();
         // copy_selected 里清不掉选区；仅在实际复制到内容后删除。
         // 复制失败（选区空）时 delete_selected 自身也会空转，无需回滚缓冲。
@@ -211,7 +212,7 @@ impl PReferZApp {
         }
         let center = CanvasPoint::new((min.x + max.x) / 2.0, (min.y + max.y) / 2.0);
         let target = match mouse {
-            Some(p) => self.viewport.pos2_to_canvas(p),
+            Some(p) => self.session.viewport.pos2_to_canvas(p),
             // 无指针位置（极少见）：原位偏移，同 Ctrl+D
             None => center + CanvasVector::new(10.0, 10.0),
         };
@@ -227,11 +228,11 @@ impl PReferZApp {
             return false;
         }
         for dup in &dups {
-            self.scene.add_item(dup.clone());
+            self.session.scene.add_item(dup.clone());
         }
-        self.scene.deselect_all();
+        self.session.scene.deselect_all();
         for dup in &dups {
-            self.scene.select(dup.id);
+            self.session.scene.select(dup.id);
         }
         let n = dups.len();
         // 副本已手动入场景（同 duplicate_in_place），push 时跳过首次 redo——
@@ -255,7 +256,7 @@ impl PReferZApp {
         let Some(src_id) = self.single_selected_id() else {
             return;
         };
-        let (w, h, stroke) = match self.scene.get_item(&src_id) {
+        let (w, h, stroke) = match self.session.scene.get_item(&src_id) {
             Some(item) => match &item.kind {
                 ItemKind::Shape {
                     shape_type,
@@ -269,7 +270,7 @@ impl PReferZApp {
             },
             None => return,
         };
-        let src_rect = match self.scene.get_item(&src_id) {
+        let src_rect = match self.session.scene.get_item(&src_id) {
             Some(item) => item.bounding_rect(),
             None => return,
         };
@@ -286,12 +287,12 @@ impl PReferZApp {
         let offset = target - src_rect.min();
         // duplicate_items：新 uuid（手绘抖动由 id 派生自动不同）、未编组化、
         // 不含绑定文字（只复制传入的 id）——正合克隆节点语义。
-        let mut dups = self.scene.duplicate_items(&[src_id], offset);
+        let mut dups = self.session.scene.duplicate_items(&[src_id], offset);
         let Some(dup) = dups.pop() else { return };
         let new_id = dup.id;
         let src_anchor = edge_anchor_local(dir, w, h);
         let dup_anchor = edge_anchor_local(dir.opposite(), w, h);
-        let s = match self.scene.get_item(&src_id) {
+        let s = match self.session.scene.get_item(&src_id) {
             Some(item) => item.local_point_to_canvas(src_anchor),
             None => return,
         };
@@ -331,10 +332,10 @@ impl PReferZApp {
             *elbow_axis = Some(elbow_axis_from_anchor((w, h), src_anchor));
         }
         let added = vec![dup.clone(), arrow.clone()];
-        self.scene.add_item(dup);
-        self.scene.add_item(arrow); // 递增 z：箭头压在新节点上（Excalidraw 同款顺序）
-        self.scene.deselect_all();
-        self.scene.select(new_id);
+        self.session.scene.add_item(dup);
+        self.session.scene.add_item(arrow); // 递增 z：箭头压在新节点上（Excalidraw 同款顺序）
+        self.session.scene.deselect_all();
+        self.session.scene.select(new_id);
         self.push_cmd(Box::new(AddItems::new(added).with_preview_applied(true)));
     }
 
@@ -346,9 +347,9 @@ impl PReferZApp {
         id: ItemId,
         dir: FlowDir,
     ) -> Option<(ItemId, CanvasRect)> {
-        let cur_center = self.scene.get_item(&id)?.bounding_rect().center();
+        let cur_center = self.session.scene.get_item(&id)?.bounding_rect().center();
         let mut best: Option<(ItemId, f32, CanvasRect)> = None; // (邻居, 主轴距离, rect)
-        for item in &self.scene.items {
+        for item in &self.session.scene.items {
             let ItemKind::Shape {
                 shape_type: ShapeType::Polyline | ShapeType::Elbow,
                 start_binding,
@@ -364,7 +365,7 @@ impl PReferZApp {
                 (Some(b0), Some(b1)) if b1.target == id && b0.target != id => b0.target,
                 _ => continue,
             };
-            let nb_rect = match self.scene.get_item(&nb) {
+            let nb_rect = match self.session.scene.get_item(&nb) {
                 Some(neighbor) => neighbor.bounding_rect(),
                 None => continue,
             };
@@ -391,7 +392,7 @@ impl PReferZApp {
         let mut queue: Vec<ItemId> = vec![id];
         let mut out: Vec<CanvasRect> = Vec::new();
         while let Some(cur) = queue.pop() {
-            for item in &self.scene.items {
+            for item in &self.session.scene.items {
                 let ItemKind::Shape {
                     shape_type: ShapeType::Polyline | ShapeType::Elbow,
                     start_binding,
@@ -408,7 +409,8 @@ impl PReferZApp {
                     _ => continue,
                 };
                 if visited.insert(nb) {
-                    if let Some(rect) = self.scene.get_item(&nb).map(|i| i.bounding_rect()) {
+                    if let Some(rect) = self.session.scene.get_item(&nb).map(|i| i.bounding_rect())
+                    {
                         out.push(rect);
                     }
                     queue.push(nb);
@@ -425,9 +427,9 @@ impl PReferZApp {
             return;
         };
         if let Some((nb, _)) = self.find_connected_neighbor(cur_id, dir) {
-            self.scene.deselect_all();
-            for hid in self.scene.expand_to_groups(&[nb]) {
-                self.scene.select(hid);
+            self.session.scene.deselect_all();
+            for hid in self.session.scene.expand_to_groups(&[nb]) {
+                self.session.scene.select(hid);
             }
         }
     }
@@ -476,13 +478,20 @@ impl PReferZApp {
     /// 排列以保持选区内相对顺序（修复 HashSet 迭代顺序不确定导致多选置顶顺序随机化）。
     fn reorderable_selected_ids(&self) -> Vec<ItemId> {
         let mut ids: Vec<ItemId> = self
+            .session
             .scene
             .selection
             .iter()
             .copied()
-            .filter(|id| !self.scene.get_item(id).is_some_and(|i| i.is_frame()))
+            .filter(|id| {
+                !self
+                    .session
+                    .scene
+                    .get_item(id)
+                    .is_some_and(|i| i.is_frame())
+            })
             .collect();
-        ids.sort_by_key(|id| self.scene.get_item(id).map_or(0, |i| i.z));
+        ids.sort_by_key(|id| self.session.scene.get_item(id).map_or(0, |i| i.z));
         ids
     }
 
@@ -493,8 +502,8 @@ impl PReferZApp {
     pub(crate) fn compute_fit(&self, content_rect: CanvasRect) -> (f32, CanvasVector) {
         let content_w = content_rect.width().max(1.0);
         let content_h = content_rect.height().max(1.0);
-        let screen_w = self.viewport.screen_rect.width().max(1.0);
-        let screen_h = self.viewport.screen_rect.height().max(1.0);
+        let screen_w = self.session.viewport.screen_rect.width().max(1.0);
+        let screen_h = self.session.viewport.screen_rect.height().max(1.0);
         let scale = (screen_w / content_w).min(screen_h / content_h) * 0.9;
         (scale, content_rect.center().to_vector())
     }
@@ -502,9 +511,9 @@ impl PReferZApp {
     pub(crate) fn fit_to_screen(&mut self) {
         // 「全部内容 AABB 并集」决策归 core（Scene::content_bounding_rect）；
         // app 只负责视口动作与提示。None ⟺ 空场景 → 重置视口。
-        match self.scene.content_bounding_rect() {
-            Some(b) => self.viewport.fit_to_content(b),
-            None => self.viewport.reset(),
+        match self.session.scene.content_bounding_rect() {
+            Some(b) => self.session.viewport.fit_to_content(b),
+            None => self.session.viewport.reset(),
         }
         self.flash(t(self.lang, T::FlashFitToCanvas).to_string());
     }
@@ -512,13 +521,13 @@ impl PReferZApp {
     /// Shift+2：缩放视口到选中元素（Excalidraw 同款 Zoom to selection）。
     /// 无选中时仅 flash 提示，不做任何视口变更。
     pub(crate) fn zoom_to_selection(&mut self) {
-        if self.scene.selection.is_empty() {
+        if self.session.scene.selection.is_empty() {
             self.flash(t(self.lang, T::FlashNoSelection).to_string());
             return;
         }
         // 「选区 AABB 并集」决策归 core（Scene::selection_bounding_rect）。
-        if let Some(b) = self.scene.selection_bounding_rect() {
-            self.viewport.fit_to_content(b);
+        if let Some(b) = self.session.scene.selection_bounding_rect() {
+            self.session.viewport.fit_to_content(b);
             self.flash(t(self.lang, T::FlashZoomToSelection).to_string());
         }
     }
@@ -527,20 +536,22 @@ impl PReferZApp {
 
     /// 当前选中 Pixmap item 数量
     pub(crate) fn selected_pixmap_count(&self) -> usize {
-        self.scene
+        self.session
+            .scene
             .selection
             .iter()
-            .filter_map(|id| self.scene.get_item(id))
+            .filter_map(|id| self.session.scene.get_item(id))
             .filter(|it| matches!(it.kind, ItemKind::Pixmap { .. }))
             .count()
     }
 
     /// 选区内 elbow 连接器数量（右键菜单「转为多段线」的显隐条件，plan #24 DP-3）。
     pub(crate) fn selected_elbow_count(&self) -> usize {
-        self.scene
+        self.session
+            .scene
             .selection
             .iter()
-            .filter_map(|id| self.scene.get_item(id))
+            .filter_map(|id| self.session.scene.get_item(id))
             .filter(|it| {
                 matches!(
                     it.kind,
@@ -557,12 +568,13 @@ impl PReferZApp {
     /// `ConvertElbowToPolyline`（当前路由固化为自由顶点，视觉不变），逐条入 undo 栈。
     pub(crate) fn convert_elbows_to_polyline(&mut self) {
         let ids: Vec<ItemId> = self
+            .session
             .scene
             .selection
             .iter()
             .copied()
             .filter(|id| {
-                self.scene.get_item(id).is_some_and(|it| {
+                self.session.scene.get_item(id).is_some_and(|it| {
                     matches!(
                         it.kind,
                         ItemKind::Shape {
@@ -575,7 +587,7 @@ impl PReferZApp {
             .collect();
         let mut converted = 0usize;
         for id in ids {
-            if let Some(cmd) = ConvertElbowToPolyline::build(&self.scene, id) {
+            if let Some(cmd) = ConvertElbowToPolyline::build(&self.session.scene, id) {
                 self.push_cmd(Box::new(cmd));
                 converted += 1;
             }
@@ -587,8 +599,8 @@ impl PReferZApp {
 
     /// 单Pixmap grayscale 状态（用于右键菜单文案）
     pub(crate) fn selected_pixmap_grayscale(&self) -> bool {
-        for id in &self.scene.selection {
-            if let Some(item) = self.scene.get_item(id) {
+        for id in &self.session.scene.selection {
+            if let Some(item) = self.session.scene.get_item(id) {
                 if let ItemKind::Pixmap { grayscale, .. } = &item.kind {
                     return *grayscale;
                 }
@@ -663,8 +675,9 @@ impl PReferZApp {
             by1 = by1.max(ln.y + ln.h);
         }
         let center = self
+            .session
             .viewport
-            .screen_to_canvas(self.viewport.screen_rect.center());
+            .screen_to_canvas(self.session.viewport.screen_rect.center());
         let (off_x, off_y) = (center.x - (bx0 + bx1) / 2.0, center.y - (by0 + by1) / 2.0);
 
         let stroke = self.default_stroke;
@@ -784,11 +797,11 @@ impl PReferZApp {
         let node_count = fc.nodes.len();
         let edge_count = fc.edges.len();
         for it in &added {
-            self.scene.add_item(it.clone());
+            self.session.scene.add_item(it.clone());
         }
-        self.scene.deselect_all();
+        self.session.scene.deselect_all();
         for id in &node_ids {
-            self.scene.select(*id);
+            self.session.scene.select(*id);
         }
         self.push_cmd(Box::new(AddItems::new(added).with_preview_applied(true)));
         self.mermaid_open = false;
@@ -803,14 +816,18 @@ impl PReferZApp {
     pub(crate) fn toggle_grayscale_selected(&mut self) {
         // 收集 (id, old_gray) 后再处理，避免借用冲突
         let targets: Vec<(ItemId, bool)> = self
+            .session
             .scene
             .selection
             .iter()
             .filter_map(|id| {
-                self.scene.get_item(id).and_then(|it| match &it.kind {
-                    ItemKind::Pixmap { grayscale, .. } => Some((*id, *grayscale)),
-                    _ => None,
-                })
+                self.session
+                    .scene
+                    .get_item(id)
+                    .and_then(|it| match &it.kind {
+                        ItemKind::Pixmap { grayscale, .. } => Some((*id, *grayscale)),
+                        _ => None,
+                    })
             })
             .collect();
         for (id, old) in targets {
@@ -822,12 +839,12 @@ impl PReferZApp {
 
     /// 进入裁剪模式（spec §2.2 裁剪）    /// 选中单个 Pixmap 时，初始crop 矩形为当crop 或整个图片
     pub(crate) fn enter_crop_mode(&mut self) {
-        if self.scene.selection.len() != 1 {
+        if self.session.scene.selection.len() != 1 {
             self.flash(t(self.lang, T::FlashCropNeedSingleImage).to_string());
             return;
         }
-        let id = *self.scene.selection.iter().next().unwrap();
-        let (original_size, current_crop) = match self.scene.get_item(&id) {
+        let id = *self.session.scene.selection.iter().next().unwrap();
+        let (original_size, current_crop) = match self.session.scene.get_item(&id) {
             Some(item) => match &item.kind {
                 ItemKind::Pixmap {
                     original_size,
@@ -884,7 +901,7 @@ impl PReferZApp {
         }
         // 新 transform 交给 core 计算：以「当前可见区域」为基准而非整图尺寸，
         // 否则对已裁剪过的图片二次裁剪会再缩小一次（旋转下表现为图片错位）。
-        let new_transform = match self.scene.get_item(&item_id) {
+        let new_transform = match self.session.scene.get_item(&item_id) {
             Some(item) => match item.transform_after_crop(c) {
                 Some(t) => t,
                 None => {
@@ -896,7 +913,7 @@ impl PReferZApp {
         };
 
         // old_transform（再次取，因为上面的clone item
-        let old_transform = match self.scene.get_item(&item_id) {
+        let old_transform = match self.session.scene.get_item(&item_id) {
             Some(item) => item.transform,
             None => return,
         };
@@ -916,11 +933,11 @@ impl PReferZApp {
     /// 命中裁剪手柄：手柄位于旋转后的裁剪框 4 角，跟随 item 一起旋转。
     pub(crate) fn crop_handle_hit_test(&self, screen_pos: egui::Pos2) -> Option<CropHandle> {
         let crop_state = self.crop_mode.as_ref()?;
-        let item = self.scene.get_item(&crop_state.item_id)?;
+        let item = self.session.scene.get_item(&crop_state.item_id)?;
         // crop_corners 走完整 local_to_canvas（含旋转），手柄因此跟随图片一起转
         let crop_quad = item
             .crop_corners(crop_state.rect)?
-            .map(|p| self.viewport.canvas_to_pos2(p));
+            .map(|p| self.session.viewport.canvas_to_pos2(p));
         let handle_size = TransformHandles::handle_size() * 2.0;
         // 角点顺序：TL → TR → BR → BL
         let handles = [
@@ -940,12 +957,12 @@ impl PReferZApp {
 
     /// 拖拽裁剪手柄时更新 crop 矩形（屏幕坐标 → 原图像素坐标）。
     pub(crate) fn update_crop_drag(&mut self, screen_pos: egui::Pos2, handle: CropHandle) {
-        // 先取一份 crop_state，避免 &mut self.crop_mode 与 &self.scene 借用冲突
+        // 先取一份 crop_state，避免 &mut self.crop_mode 与 &self.session.scene 借用冲突
         let (item_id, mut rect) = match self.crop_mode.as_ref() {
             Some(c) => (c.item_id, c.rect),
             None => return,
         };
-        let item = match self.scene.get_item(&item_id) {
+        let item = match self.session.scene.get_item(&item_id) {
             Some(i) => i.clone(),
             None => return,
         };
@@ -956,7 +973,7 @@ impl PReferZApp {
 
         // 屏幕 → 画布 → 原图像素：走 item 变换的逆变换，旋转下同样正确
         // （旧的 AABB 线性映射在旋转下会算出错误的像素位置）。
-        let canvas_pos = self.viewport.pos2_to_canvas(screen_pos);
+        let canvas_pos = self.session.viewport.pos2_to_canvas(screen_pos);
         let (raw_px, raw_py) = match item.canvas_to_crop_pixel(canvas_pos) {
             Some(p) => p,
             None => return,
@@ -1000,7 +1017,7 @@ impl PReferZApp {
 
     /// 颜色采样：在 Pixmap 上的鼠标位置读取像素 RGB（spec §2.2 颜色采样）
     pub(crate) fn pick_color_at(&mut self, screen_pos: egui::Pos2) {
-        let hit = interaction::get_item_at(screen_pos, &self.scene, &self.viewport);
+        let hit = interaction::get_item_at(screen_pos, &self.session.scene, &self.session.viewport);
         let item = match hit {
             Some(it) => it,
             None => {
@@ -1024,7 +1041,7 @@ impl PReferZApp {
             Some(m) => m,
             None => return,
         };
-        let canvas_pos = self.viewport.pos2_to_canvas(screen_pos);
+        let canvas_pos = self.session.viewport.pos2_to_canvas(screen_pos);
         let local = inv.transform_point(canvas_pos);
         let ow = original_size.0 as f32;
         let oh = original_size.1 as f32;
@@ -1068,10 +1085,11 @@ impl PReferZApp {
         // 复制一个仅包含选中项的子场景，传给 plan_arrange
         let mut sub = Scene::new();
         let selected_items: Vec<Item> = self
+            .session
             .scene
             .selection
             .iter()
-            .filter_map(|id| self.scene.get_item(id).cloned())
+            .filter_map(|id| self.session.scene.get_item(id).cloned())
             .collect();
         for it in selected_items {
             sub.add_item_preserve_z(it);
@@ -1095,11 +1113,11 @@ impl PReferZApp {
 
     /// 多元素对齐（plan #6）。参考系 = 选区包围盒；命令复用 `ArrangeItems` 入 undo 栈。
     pub(crate) fn align_selected(&mut self, mode: AlignMode) {
-        let ids: Vec<ItemId> = self.scene.selection.iter().copied().collect();
+        let ids: Vec<ItemId> = self.session.scene.selection.iter().copied().collect();
         if ids.len() < 2 {
             return;
         }
-        let moves = plan_align(&self.scene, &ids, mode);
+        let moves = plan_align(&self.session.scene, &ids, mode);
         if moves.is_empty() {
             return; // 已经在位：不产生无意义 undo 条目
         }
@@ -1122,12 +1140,12 @@ impl PReferZApp {
 
     /// 多元素分布（plan #6）。首尾元素不动，中间按 `mode` 均分；要求 ≥3 项。
     pub(crate) fn distribute_selected(&mut self, axis: DistributeAxis, mode: DistributeMode) {
-        let ids: Vec<ItemId> = self.scene.selection.iter().copied().collect();
+        let ids: Vec<ItemId> = self.session.scene.selection.iter().copied().collect();
         if ids.len() < 3 {
             self.flash(t(self.lang, T::FlashDistributeNeedThree).to_string());
             return;
         }
-        let moves = plan_distribute(&self.scene, &ids, axis, mode);
+        let moves = plan_distribute(&self.session.scene, &ids, axis, mode);
         if moves.is_empty() {
             return;
         }
@@ -1149,14 +1167,18 @@ impl PReferZApp {
     /// 归一化选中 Pixmap item 尺寸（spec §2.2 归一化尺寸）
     pub(crate) fn normalize_selected(&mut self, mode: preferz_core::commands::NormalizeMode) {
         let ids: Vec<ItemId> = self
+            .session
             .scene
             .selection
             .iter()
             .filter_map(|id| {
-                self.scene.get_item(id).and_then(|it| match &it.kind {
-                    ItemKind::Pixmap { .. } => Some(*id),
-                    _ => None,
-                })
+                self.session
+                    .scene
+                    .get_item(id)
+                    .and_then(|it| match &it.kind {
+                        ItemKind::Pixmap { .. } => Some(*id),
+                        _ => None,
+                    })
             })
             .collect();
         if ids.len() < 2 {
@@ -1165,24 +1187,27 @@ impl PReferZApp {
         }
         // target = 首个选中 Pixmap 的当前
         let target = ids.first().and_then(|id| {
-            self.scene.get_item(id).and_then(|it| match &it.kind {
-                ItemKind::Pixmap { original_size, .. } => {
-                    let ow = original_size.0 as f32;
-                    let oh = original_size.1 as f32;
-                    match mode {
-                        preferz_core::commands::NormalizeMode::Width => {
-                            Some(it.transform.scale.x * ow)
-                        }
-                        preferz_core::commands::NormalizeMode::Height => {
-                            Some(it.transform.scale.y * oh)
-                        }
-                        preferz_core::commands::NormalizeMode::Area => {
-                            Some(it.transform.scale.x * it.transform.scale.y * ow * oh)
+            self.session
+                .scene
+                .get_item(id)
+                .and_then(|it| match &it.kind {
+                    ItemKind::Pixmap { original_size, .. } => {
+                        let ow = original_size.0 as f32;
+                        let oh = original_size.1 as f32;
+                        match mode {
+                            preferz_core::commands::NormalizeMode::Width => {
+                                Some(it.transform.scale.x * ow)
+                            }
+                            preferz_core::commands::NormalizeMode::Height => {
+                                Some(it.transform.scale.y * oh)
+                            }
+                            preferz_core::commands::NormalizeMode::Area => {
+                                Some(it.transform.scale.x * it.transform.scale.y * ow * oh)
+                            }
                         }
                     }
-                }
-                _ => None,
-            })
+                    _ => None,
+                })
         });
         let target = match target {
             Some(t) => t,

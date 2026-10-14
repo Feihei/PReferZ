@@ -9,7 +9,7 @@ impl PReferZApp {
     /// 绑定（中间顶点不涉绑定）。预览直改 + `EditShapePoints`（恒 skip_first_redo）
     /// 入 undo 栈，一步可撤。
     pub(crate) fn try_delete_vertex(&mut self, item_id: ItemId, idx: usize) {
-        let (old_points, closed, so, eo) = match self.scene.get_item(&item_id) {
+        let (old_points, closed, so, eo) = match self.session.scene.get_item(&item_id) {
             Some(item) => match &item.kind {
                 ItemKind::Shape {
                     points,
@@ -39,7 +39,7 @@ impl PReferZApp {
         let sn = if idx == 0 { None } else { so };
         let en = if idx == last { None } else { eo };
         // 预览直改（命令 skip_first_redo 恒 true，push 不再重放 redo）
-        if let Some(item) = self.scene.get_item_mut(&item_id) {
+        if let Some(item) = self.session.scene.get_item_mut(&item_id) {
             if let ItemKind::Shape {
                 start_binding,
                 end_binding,
@@ -83,7 +83,7 @@ impl PReferZApp {
         // additive（=Shift 按住）用于正方形锁定，free_scale（=Ctrl 按住）用于椭圆解锁。
         match self.tool {
             Tool::Shape(shape_type) => {
-                let start_canvas = self.viewport.pos2_to_canvas(screen_pos);
+                let start_canvas = self.session.viewport.pos2_to_canvas(screen_pos);
                 self.drag = DragState::CreatingShape {
                     shape_type,
                     end_arrow: None,
@@ -95,7 +95,7 @@ impl PReferZApp {
                 return;
             }
             Tool::Linear => {
-                let start_canvas = self.viewport.pos2_to_canvas(screen_pos);
+                let start_canvas = self.session.viewport.pos2_to_canvas(screen_pos);
                 self.drag = DragState::CreatingShape {
                     shape_type: ShapeType::Polyline,
                     end_arrow: None,
@@ -108,7 +108,7 @@ impl PReferZApp {
             }
             // elbow 连接器（plan #24 DP-1，取代旧 Arrow 工具）：默认终点箭头
             Tool::Elbow => {
-                let start_canvas = self.viewport.pos2_to_canvas(screen_pos);
+                let start_canvas = self.session.viewport.pos2_to_canvas(screen_pos);
                 self.drag = DragState::CreatingShape {
                     shape_type: ShapeType::Elbow,
                     end_arrow: Some(ArrowHeadStyle::Arrow),
@@ -120,7 +120,7 @@ impl PReferZApp {
                 return;
             }
             Tool::Frame => {
-                let start_canvas = self.viewport.pos2_to_canvas(screen_pos);
+                let start_canvas = self.session.viewport.pos2_to_canvas(screen_pos);
                 self.drag = DragState::CreatingFrame {
                     start: start_canvas,
                     current: start_canvas,
@@ -130,7 +130,7 @@ impl PReferZApp {
             }
             // 多拍工具：第一拍落首个顶点，后续每拍追加一个顶点（见 finish_create_polygon）
             Tool::Polygon => {
-                let p = self.viewport.pos2_to_canvas(screen_pos);
+                let p = self.session.viewport.pos2_to_canvas(screen_pos);
                 match &mut self.drag {
                     DragState::CreatingPolygon {
                         points,
@@ -161,14 +161,14 @@ impl PReferZApp {
             // 徒手绘制（plan #10）：按下起笔，采集首个画布点，随后由
             // update_drag_preview 连续追点、end_drag 定型成墨迹。
             Tool::Freehand => {
-                let p = self.viewport.pos2_to_canvas(screen_pos);
+                let p = self.session.viewport.pos2_to_canvas(screen_pos);
                 self.drag = DragState::Drawing { raw: vec![p] };
                 return;
             }
             // 文字工具（plan #22）：单击落点即起一段自由文本，随后回 Select
             // （Excalidraw 同款一次性工具；输入期间 begin_drag 有 editing_text 守卫）。
             Tool::Text => {
-                let p = self.viewport.pos2_to_canvas(screen_pos);
+                let p = self.session.viewport.pos2_to_canvas(screen_pos);
                 self.tool = Tool::Select;
                 self.begin_free_text_at(p);
                 return;
@@ -203,12 +203,12 @@ impl PReferZApp {
                 let show_flip = should_show_flip(item);
                 let show_rotate = should_show_rotate(item);
                 // elbow 路由与渲染/命中同源（非 elbow 返回空）。
-                let route = self.scene.elbow_route_local(item);
+                let route = self.session.scene.elbow_route_local(item);
                 let h = self.transform_handles.hit_test(
                     screen_pos,
                     item,
                     &route,
-                    &self.viewport,
+                    &self.session.viewport,
                     show_flip,
                     show_rotate,
                 );
@@ -231,7 +231,7 @@ impl PReferZApp {
                             return;
                         }
                         let base_pos = start_points.get(endpoint).copied().unwrap_or((0.0, 0.0));
-                        let start_canvas = self.viewport.pos2_to_canvas(screen_pos);
+                        let start_canvas = self.session.viewport.pos2_to_canvas(screen_pos);
                         // elbow 取向拖拽前快照（plan #21 DP-B）：释放时随点集入同
                         // 一条 undo，undo 后取向与拖拽前一致（不残留翻转）。
                         let start_axis = if is_elbow {
@@ -275,12 +275,12 @@ impl PReferZApp {
                             _ => None,
                         };
                         if let Some((start_points, insert_idx, mid)) = prep {
-                            if let Some(it) = self.scene.get_item_mut(&item.id) {
+                            if let Some(it) = self.session.scene.get_item_mut(&item.id) {
                                 if let ItemKind::Shape { points, .. } = &mut it.kind {
                                     points.insert(insert_idx, mid);
                                 }
                             }
-                            let start_canvas = self.viewport.pos2_to_canvas(screen_pos);
+                            let start_canvas = self.session.viewport.pos2_to_canvas(screen_pos);
                             self.drag = DragState::LineEndpoint {
                                 item_id: item.id,
                                 endpoint: insert_idx,
@@ -299,8 +299,8 @@ impl PReferZApp {
                     // elbow 中间段：进入段拖拽（plan #24 阶段 D）——预览把该段
                     // 临时固化为固定段（路由绕其重算），释放入 SetElbowFixedSegments。
                     if let Handle::ElbowSegment(seg_index) = h {
-                        let prep = self.scene.get_item(&item.id).and_then(|item| {
-                            let route = self.scene.elbow_route_local(item);
+                        let prep = self.session.scene.get_item(&item.id).and_then(|item| {
+                            let route = self.session.scene.elbow_route_local(item);
                             let ItemKind::Shape { fixed_segments, .. } = &item.kind else {
                                 return None;
                             };
@@ -317,7 +317,7 @@ impl PReferZApp {
                         let Some((orig_start, orig_end, was_fixed, orig_fixed)) = prep else {
                             return;
                         };
-                        let start_canvas = self.viewport.pos2_to_canvas(screen_pos);
+                        let start_canvas = self.session.viewport.pos2_to_canvas(screen_pos);
                         self.drag = DragState::ElbowSegment {
                             item_id: item.id,
                             start_canvas,
@@ -332,7 +332,8 @@ impl PReferZApp {
                     }
                     // 翻转边手柄：点击即触发翻转，不进入拖拽（spec L239「翻转边」）
                     if h == Handle::FlipH || h == Handle::FlipV {
-                        let ids: Vec<ItemId> = self.scene.selection.iter().cloned().collect();
+                        let ids: Vec<ItemId> =
+                            self.session.scene.selection.iter().cloned().collect();
                         let horizontal = h == Handle::FlipH;
                         let cmd = FlipItems::new(ids, horizontal);
                         self.push_cmd(Box::new(cmd));
@@ -362,11 +363,15 @@ impl PReferZApp {
         }
 
         // 2) 命中 item：选中并开始移动拖
-        if let Some(item) = interaction::get_item_at(screen_pos, &self.scene, &self.viewport) {
+        if let Some(item) =
+            interaction::get_item_at(screen_pos, &self.session.scene, &self.session.viewport)
+        {
             let id = item.id;
             // G2（plan #13）：命中组员 → 命中集扩展为整组（未编组项 = 自身，行为不变）
-            let hit_ids: Vec<ItemId> = self.scene.expand_to_groups(&[id]);
-            let hit_fully_selected = hit_ids.iter().all(|hid| self.scene.selection.contains(hid));
+            let hit_ids: Vec<ItemId> = self.session.scene.expand_to_groups(&[id]);
+            let hit_fully_selected = hit_ids
+                .iter()
+                .all(|hid| self.session.scene.selection.contains(hid));
 
             let mut pending_deselect = None;
             if additive {
@@ -378,24 +383,24 @@ impl PReferZApp {
                     pending_deselect = hit_ids.first().copied();
                 } else {
                     for hid in &hit_ids {
-                        self.scene.toggle_selection(*hid);
+                        self.session.scene.toggle_selection(*hid);
                     }
                 }
             } else if !hit_fully_selected {
                 // 非加选且命中集未完全选中：替换选中为整组
-                self.scene.deselect_all();
+                self.session.scene.deselect_all();
                 for hid in &hit_ids {
-                    self.scene.select(*hid);
+                    self.session.scene.select(*hid);
                 }
             }
             // 收集所有选中 item transform 快照
-            let selected: Vec<ItemId> = self.scene.selection.iter().cloned().collect();
+            let selected: Vec<ItemId> = self.session.scene.selection.iter().cloned().collect();
             // 容器联动：选中封闭形状时连带其绑定文本（Phase C）。
             // 画框**不**连带成员（frame 即构图工具，变换只动框本身）；
             // 需要整体移动时与成员 Ctrl+G 编组，经 expand_to_groups 自然联动。
             let mut collected: Vec<ItemId> = selected.clone();
             for sid in &selected {
-                collected.extend(self.scene.texts_bound_to(*sid));
+                collected.extend(self.session.scene.texts_bound_to(*sid));
             }
             collected.sort();
             collected.dedup();
@@ -403,10 +408,13 @@ impl PReferZApp {
             // Ctrl+拖动 = 复制移动（plan #11）：先建副本、选区切到副本，原件留原地。
             // 取"按下即建副本"（plan 倾向），避免释放时才复制造成落点跳变。
             let duplicate_ids = if free_scale && !collected.is_empty() {
-                let dups = self.scene.duplicate_items(&collected, CanvasVector::zero());
+                let dups = self
+                    .session
+                    .scene
+                    .duplicate_items(&collected, CanvasVector::zero());
                 let ids: Vec<ItemId> = dups.iter().map(|it| it.id).collect();
                 for dup in dups {
-                    self.scene.add_item(dup);
+                    self.session.scene.add_item(dup);
                 }
                 // 复制的画框须压到成员之下（与 finish_create_frame 一致）：否则它 z
                 // 最高会盖住框内成员命中（frame_border_hit 已修，但近边框仍会误选
@@ -414,7 +422,8 @@ impl PReferZApp {
                 let frame_dup_ids: Vec<ItemId> = ids
                     .iter()
                     .filter(|id| {
-                        self.scene
+                        self.session
+                            .scene
                             .get_item(id)
                             .map(|it| it.is_frame())
                             .unwrap_or(false)
@@ -422,11 +431,11 @@ impl PReferZApp {
                     .copied()
                     .collect();
                 if !frame_dup_ids.is_empty() {
-                    ReorderItems::new(frame_dup_ids, false).redo(&mut self.scene);
+                    ReorderItems::new(frame_dup_ids, false).redo(&mut self.session.scene);
                 }
-                self.scene.deselect_all();
+                self.session.scene.deselect_all();
                 for nid in &ids {
-                    self.scene.select(*nid);
+                    self.session.scene.select(*nid);
                 }
                 Some(ids)
             } else {
@@ -440,14 +449,19 @@ impl PReferZApp {
             let drag_ids = duplicate_ids.clone().unwrap_or(collected);
             let start_transforms: Vec<(ItemId, preferz_core::Transform)> = drag_ids
                 .into_iter()
-                .filter_map(|sid| self.scene.get_item(&sid).map(|it| (sid, it.transform)))
+                .filter_map(|sid| {
+                    self.session
+                        .scene
+                        .get_item(&sid)
+                        .map(|it| (sid, it.transform))
+                })
                 .collect();
-            let start_canvas = self.viewport.pos2_to_canvas(screen_pos);
+            let start_canvas = self.session.viewport.pos2_to_canvas(screen_pos);
             // plan #14：移动组内的 Polyline 快照（预览吸附 + 释放打包入栈）
             let line_snaps: Vec<LineSnapState> = start_transforms
                 .iter()
                 .filter_map(|(id, _)| {
-                    let it = self.scene.get_item(id)?;
+                    let it = self.session.scene.get_item(id)?;
                     match &it.kind {
                         ItemKind::Shape {
                             shape_type: ShapeType::Polyline | ShapeType::Elbow,
@@ -479,7 +493,7 @@ impl PReferZApp {
         }
 
         // 3) 空白：开始框选（spec L240）。Shift = 加选模
-        let start_canvas = self.viewport.pos2_to_canvas(screen_pos);
+        let start_canvas = self.session.viewport.pos2_to_canvas(screen_pos);
         self.drag = DragState::BoxSelect {
             start_canvas,
             current_canvas: start_canvas,
@@ -518,11 +532,11 @@ impl PReferZApp {
                 ..
             } = &self.drag
             {
-                let cur = self.viewport.pos2_to_canvas(screen_pos);
-                let moved =
-                    (cur - *start_canvas).length() >= EXTEND_TRIGGER_PX / self.viewport.zoom;
+                let cur = self.session.viewport.pos2_to_canvas(screen_pos);
+                let moved = (cur - *start_canvas).length()
+                    >= EXTEND_TRIGGER_PX / self.session.viewport.zoom;
                 if moved {
-                    let not_appended_yet = self.scene.get_item(item_id).is_some_and(|it| {
+                    let not_appended_yet = self.session.scene.get_item(item_id).is_some_and(|it| {
                         !matches!(&it.kind, ItemKind::Shape { points, .. }
                             if points.len() > start_points.len())
                     });
@@ -533,7 +547,7 @@ impl PReferZApp {
             }
             if let Some((item_id, endpoint, n_old, base_pos)) = armed {
                 let prepend = endpoint == 0;
-                if let Some(it) = self.scene.get_item_mut(&item_id) {
+                if let Some(it) = self.session.scene.get_item_mut(&item_id) {
                     if let ItemKind::Shape { points, .. } = &mut it.kind {
                         if prepend {
                             points.insert(0, base_pos);
@@ -564,12 +578,12 @@ impl PReferZApp {
                 let start_screen = *start_screen;
                 let start_transform = *start_transform;
                 let start_corners = *start_corners;
-                let mouse_canvas = self.viewport.pos2_to_canvas(screen_pos);
-                if let Some(item) = self.scene.get_item_mut(&item_id) {
+                let mouse_canvas = self.session.viewport.pos2_to_canvas(screen_pos);
+                if let Some(item) = self.session.scene.get_item_mut(&item_id) {
                     match handle {
                         Handle::Rotate => {
                             apply_rotate_drag(
-                                &self.viewport,
+                                &self.session.viewport,
                                 item,
                                 start_transform,
                                 start_corners,
@@ -599,7 +613,7 @@ impl PReferZApp {
                     }
                 }
                 // plan #5：缩放/旋转形状时，实时联动重算绑定到它的线端点
-                self.scene.resolve_bindings(&[item_id]);
+                self.session.scene.resolve_bindings(&[item_id]);
             }
             DragState::MoveItems {
                 start_canvas,
@@ -607,7 +621,7 @@ impl PReferZApp {
                 line_snaps,
                 ..
             } => {
-                let current_canvas = self.viewport.pos2_to_canvas(screen_pos);
+                let current_canvas = self.session.viewport.pos2_to_canvas(screen_pos);
                 let mut delta = current_canvas - *start_canvas;
                 if axis_lock {
                     // Shift 轴约束：只保留位移较大的那一轴，另一轴清零
@@ -620,7 +634,7 @@ impl PReferZApp {
                     }
                 }
                 for (id, start_tf) in start_transforms {
-                    if let Some(item) = self.scene.get_item_mut(id) {
+                    if let Some(item) = self.session.scene.get_item_mut(id) {
                         item.transform.pos = start_tf.pos + delta;
                     }
                 }
@@ -629,23 +643,25 @@ impl PReferZApp {
                 // 绑定（锚点 = 贴合点在目标局部系坐标）；未命中 → 端点随线自由
                 // 移动并解绑（Excalidraw 同款）。吸附目标排除移动组自身。
                 let moved: std::collections::HashSet<ItemId> = ids.iter().copied().collect();
-                let threshold = SNAP_THRESHOLD_PX / self.viewport.zoom;
+                let threshold = SNAP_THRESHOLD_PX / self.session.viewport.zoom;
                 self.snap_highlight = None;
                 // 点选守卫：零/微位移的单击也走本分支，端点已绑定时
                 // find_snap_target 必命中 → 高亮闪现。位移超过 2 屏幕像素
                 // 才开始吸附检测；不足时按未命中处理（端点保持基准位）。
-                let snap_active = delta.length() * self.viewport.zoom > 2.0;
+                let snap_active = delta.length() * self.session.viewport.zoom > 2.0;
                 for ls in line_snaps {
                     let last = ls.start_points.len().saturating_sub(1);
                     for endpoint in [0usize, last] {
                         // 端点当前画布位置（points 尚为初始值，transform 已随组移动）
                         let qc = self
+                            .session
                             .scene
                             .get_item(&ls.line_id)
                             .map(|it| it.local_point_to_canvas(ls.start_points[endpoint]));
                         let hit = if snap_active {
                             qc.and_then(|qc| {
-                                self.scene
+                                self.session
+                                    .scene
                                     .find_snap_target(&ls.line_id, qc, threshold)
                                     .filter(|(bid, _, _)| !moved.contains(bid))
                             })
@@ -656,15 +672,17 @@ impl PReferZApp {
                             Some((bid, sc, _)) => {
                                 // 先不可变换算（锚点 + 线局部新坐标），再可变写回
                                 let anchor = self
+                                    .session
                                     .scene
                                     .get_item(&bid)
                                     .and_then(|t| t.canvas_to_local_point(sc));
                                 let new_local = self
+                                    .session
                                     .scene
                                     .get_item(&ls.line_id)
                                     .and_then(|it| it.canvas_to_local_point(sc));
                                 if let (Some(new_local), Some(item)) =
-                                    (new_local, self.scene.get_item_mut(&ls.line_id))
+                                    (new_local, self.session.scene.get_item_mut(&ls.line_id))
                                 {
                                     if let ItemKind::Shape {
                                         points,
@@ -693,7 +711,7 @@ impl PReferZApp {
                                 // 不算拖离——恢复 begin_drag 快照里的初始绑定，否则
                                 // 单击已绑定线会静默丢失吸附，且随后 refresh_elbow_axis
                                 // 在无绑定下解析取向，elbow 路径翻转跳变（用户反馈）。
-                                if let Some(item) = self.scene.get_item_mut(&ls.line_id) {
+                                if let Some(item) = self.session.scene.get_item_mut(&ls.line_id) {
                                     if let ItemKind::Shape {
                                         points,
                                         start_binding,
@@ -719,12 +737,12 @@ impl PReferZApp {
                     }
                 }
                 // plan #5：移动形状时，实时联动重算绑定到它的线端点
-                self.scene.resolve_bindings(&ids);
+                self.session.scene.resolve_bindings(&ids);
                 // elbow 取向刷新（plan #21 DP-B）：移动组内的 elbow 端点随组移动 /
                 // 重新吸附（预览直改 points 与绑定），取向随之解析写回；释放时经
                 // LineSnapState.start_axis 快照随点集入同一条 undo。
                 for ls in line_snaps {
-                    self.scene.refresh_elbow_axis(ls.line_id);
+                    self.session.scene.refresh_elbow_axis(ls.line_id);
                 }
             }
             DragState::CreatingShape { current, .. } => {
@@ -746,7 +764,7 @@ impl PReferZApp {
                 // plan #4：Alt 延伸尚未触发（还没插入复制点）时不动原端点——
                 // Alt+单击删除不该因几像素抖动被误当"微调端点"提交。
                 if *alt_extend {
-                    let appended = self.scene.get_item(&item_id).is_some_and(|it| {
+                    let appended = self.session.scene.get_item(&item_id).is_some_and(|it| {
                         matches!(&it.kind, ItemKind::Shape { points, .. }
                             if points.len() > start_points.len())
                     });
@@ -754,7 +772,7 @@ impl PReferZApp {
                         return;
                     }
                 }
-                let current_canvas = self.viewport.pos2_to_canvas(screen_pos);
+                let current_canvas = self.session.viewport.pos2_to_canvas(screen_pos);
                 let delta_canvas = current_canvas - start_canvas;
 
                 // plan #5：端点吸附。仅真实端点（0 / 末点）可绑定；查询点取**被拖端点**
@@ -762,7 +780,7 @@ impl PReferZApp {
                 // 最近的点。修复：此前误用另一端点位置做查询，导致拖拽端永远吸不上
                 // （另一端不在形状附近时无命中），且另一端恰在形状上时会把被拖端吸回起点。
                 let mut snap: Option<(ItemId, CanvasPoint)> = None;
-                if let Some(item) = self.scene.get_item(&item_id) {
+                if let Some(item) = self.session.scene.get_item(&item_id) {
                     if let ItemKind::Shape { points, .. } = &item.kind {
                         let last = points.len().saturating_sub(1);
                         if endpoint == 0 || endpoint == last {
@@ -775,9 +793,9 @@ impl PReferZApp {
                                     base_pos.0 + delta_local.x,
                                     base_pos.1 + delta_local.y,
                                 ));
-                                let threshold = SNAP_THRESHOLD_PX / self.viewport.zoom;
+                                let threshold = SNAP_THRESHOLD_PX / self.session.viewport.zoom;
                                 if let Some((bid, sc, _)) =
-                                    self.scene.find_snap_target(&item_id, qc, threshold)
+                                    self.session.scene.find_snap_target(&item_id, qc, threshold)
                                 {
                                     snap = Some((bid, sc));
                                 }
@@ -791,10 +809,12 @@ impl PReferZApp {
                 let (snap_anchor, snap_local): (Option<_>, Option<SnapHitLocal>) = match snap {
                     Some((bid, sc)) => {
                         let anchor = self
+                            .session
                             .scene
                             .get_item(&bid)
                             .and_then(|t| t.canvas_to_local_point(sc));
                         let local = self
+                            .session
                             .scene
                             .get_item(&item_id)
                             .and_then(|it| it.canvas_to_local_point(sc));
@@ -803,7 +823,7 @@ impl PReferZApp {
                     None => (None, None),
                 };
 
-                if let Some(item) = self.scene.get_item_mut(&item_id) {
+                if let Some(item) = self.session.scene.get_item_mut(&item_id) {
                     // 画布位移 → 局部位移（逆变换向量的平移部分自动抵消）
                     let delta_local = item
                         .local_to_canvas()
@@ -838,17 +858,21 @@ impl PReferZApp {
                 // （锚点驱动取向），拖离为无绑定；另一端读存储字段。释放时
                 // `start_axis` 快照经 `EditShapePoints::with_elbow_axis_change`
                 // 随点集入同一条 undo（undo 后取向与拖拽前一致）。
-                let elbow_info = self.scene.get_item(&item_id).and_then(|it| match &it.kind {
-                    ItemKind::Shape {
-                        shape_type: ShapeType::Elbow,
-                        points,
-                        elbow_axis,
-                        start_binding,
-                        end_binding,
-                        ..
-                    } => Some((points.clone(), *elbow_axis, *start_binding, *end_binding)),
-                    _ => None,
-                });
+                let elbow_info =
+                    self.session
+                        .scene
+                        .get_item(&item_id)
+                        .and_then(|it| match &it.kind {
+                            ItemKind::Shape {
+                                shape_type: ShapeType::Elbow,
+                                points,
+                                elbow_axis,
+                                start_binding,
+                                end_binding,
+                                ..
+                            } => Some((points.clone(), *elbow_axis, *start_binding, *end_binding)),
+                            _ => None,
+                        });
                 if let Some((pts, stored, sb, eb)) = elbow_info {
                     let last = pts.len().saturating_sub(1);
                     if endpoint == 0 || endpoint == last {
@@ -865,9 +889,10 @@ impl PReferZApp {
                             (sb.as_ref(), dragged.as_ref())
                         };
                         let axis = self
+                            .session
                             .scene
                             .resolve_elbow_axis(&pts, stored, start_eff, end_eff);
-                        if let Some(item) = self.scene.get_item_mut(&item_id) {
+                        if let Some(item) = self.session.scene.get_item_mut(&item_id) {
                             if let ItemKind::Shape {
                                 shape_type: ShapeType::Elbow,
                                 elbow_axis,
@@ -895,13 +920,13 @@ impl PReferZApp {
                 let orig_end = *orig_end;
                 let was_fixed = *was_fixed;
                 let orig_fixed = orig_fixed.clone();
-                let current_canvas = self.viewport.pos2_to_canvas(screen_pos);
+                let current_canvas = self.session.viewport.pos2_to_canvas(screen_pos);
                 let delta_canvas = current_canvas - start_canvas;
                 // 段沿自身轴滑移：位移逆变换到局部后取**垂直于段轴**的分量
                 // （水平段平移 y、垂直段平移 x），轴向跨度保持原样。
                 let seg_horizontal =
                     (orig_end.0 - orig_start.0).abs() >= (orig_end.1 - orig_start.1).abs();
-                let new_seg = self.scene.get_item(&item_id).and_then(|item| {
+                let new_seg = self.session.scene.get_item(&item_id).and_then(|item| {
                     let delta_local = item
                         .local_to_canvas()
                         .inverse()
@@ -943,7 +968,7 @@ impl PReferZApp {
                     }
                 }
                 // 预览直改 fixed_segments：路由/渲染当帧绕新段重算（同源）。
-                if let Some(item) = self.scene.get_item_mut(&item_id) {
+                if let Some(item) = self.session.scene.get_item_mut(&item_id) {
                     if let ItemKind::Shape {
                         shape_type: ShapeType::Elbow,
                         fixed_segments,
@@ -975,10 +1000,10 @@ impl PReferZApp {
         }
         // BoxSelect / CreatingShape 更新 current（match &self.drag 不可写，故单独 &mut）
         if let DragState::BoxSelect { current_canvas, .. } = &mut self.drag {
-            *current_canvas = self.viewport.pos2_to_canvas(screen_pos);
+            *current_canvas = self.session.viewport.pos2_to_canvas(screen_pos);
         }
         if let DragState::CreatingShape { current, ctrl, .. } = &mut self.drag {
-            *current = self.viewport.pos2_to_canvas(screen_pos);
+            *current = self.session.viewport.pos2_to_canvas(screen_pos);
             // 拖动中实时更新 Ctrl 状态（椭圆正圆/自由宽高比切换）
             *ctrl = free_scale;
         }
@@ -988,7 +1013,7 @@ impl PReferZApp {
             shift,
         } = &mut self.drag
         {
-            *current = self.viewport.pos2_to_canvas(screen_pos);
+            *current = self.session.viewport.pos2_to_canvas(screen_pos);
             // 全局比例锁定（所见即所得）：拖拽全程把 current 钳到比例上（长边跟
             // 主方向），Shift 临时解除。全局为「自由」时保持自由矩形。
             *shift = axis_lock;
@@ -999,13 +1024,13 @@ impl PReferZApp {
             }
         }
         if let DragState::CreatingPolygon { current, .. } = &mut self.drag {
-            *current = self.viewport.pos2_to_canvas(screen_pos);
+            *current = self.session.viewport.pos2_to_canvas(screen_pos);
         }
         // 徒手绘制（plan #10）：按屏幕最小间距过滤后连续追点（去抖/去重合，但保留
         // 间距→速度的信号供释放时定锥形笔宽）。
         if let DragState::Drawing { raw } = &mut self.drag {
-            let p = self.viewport.pos2_to_canvas(screen_pos);
-            let min_d = FREEDRAW_MIN_SPACING_PX / self.viewport.zoom;
+            let p = self.session.viewport.pos2_to_canvas(screen_pos);
+            let min_d = FREEDRAW_MIN_SPACING_PX / self.session.viewport.zoom;
             if raw.last().is_none_or(|last| (p - *last).length() >= min_d) {
                 raw.push(p);
             }
@@ -1037,8 +1062,8 @@ impl PReferZApp {
                 start_transform,
                 ..
             } => {
-                // clone new_transform，避免与 undo_stack.push &mut self.scene 冲突
-                let new_transform = self.scene.get_item(&item_id).map(|it| it.transform);
+                // clone new_transform，避免与 undo_stack.push &mut self.session.scene 冲突
+                let new_transform = self.session.scene.get_item(&item_id).map(|it| it.transform);
                 if let Some(new_tf) = new_transform {
                     if new_tf != start_transform {
                         let cmd = TransformItem::new(item_id, start_transform, new_tf);
@@ -1068,7 +1093,7 @@ impl PReferZApp {
                     // Ctrl+拖动复制：副本已在场景中（预览已移动到最终位置）。
                     let items: Vec<Item> = ids
                         .iter()
-                        .filter_map(|id| self.scene.get_item(id).cloned())
+                        .filter_map(|id| self.session.scene.get_item(id).cloned())
                         .collect();
                     // 用任一副本相对其 start_tf 判断是否真的移动了
                     let moved =
@@ -1076,7 +1101,10 @@ impl PReferZApp {
                             .and_then(|id| {
                                 start_transforms.iter().find(|(i, _)| i == id).and_then(
                                     |(_, st)| {
-                                        self.scene.get_item(id).map(|it| it.transform.pos - st.pos)
+                                        self.session
+                                            .scene
+                                            .get_item(id)
+                                            .map(|it| it.transform.pos - st.pos)
                                     },
                                 )
                             })
@@ -1090,17 +1118,18 @@ impl PReferZApp {
                     } else {
                         // 没移动：删掉重叠副本，恢复原件选区（Ctrl+点击 ≠ 复制）
                         for id in &ids {
-                            self.scene.remove_item(id);
+                            self.session.scene.remove_item(id);
                         }
-                        self.scene.deselect_all();
+                        self.session.scene.deselect_all();
                         for oid in &original_ids {
-                            self.scene.select(*oid);
+                            self.session.scene.select(*oid);
                         }
                     }
                 } else {
                     // 普通移动 / Shift 轴约束移动：用第一 item 反 delta
                     let delta_opt = start_transforms.first().and_then(|(id, start_tf)| {
-                        self.scene
+                        self.session
+                            .scene
                             .get_item(id)
                             .map(|it| it.transform.pos - start_tf.pos)
                     });
@@ -1114,7 +1143,7 @@ impl PReferZApp {
                             // 绑定均已预览直改，skip_first_redo 语义一致。
                             let mut line_cmds: Vec<Box<dyn Command>> = Vec::new();
                             for ls in line_snaps {
-                                let Some(item) = self.scene.get_item(&ls.line_id) else {
+                                let Some(item) = self.session.scene.get_item(&ls.line_id) else {
                                     continue;
                                 };
                                 let ItemKind::Shape {
@@ -1165,13 +1194,13 @@ impl PReferZApp {
                             ));
                         } else if let Some(pid) = pending_deselect {
                             // Shift+点击已选中项且没拖动 → 取消选中（组则取消整组，G2）
-                            for hid in self.scene.expand_to_groups(&[pid]) {
-                                self.scene.selection.remove(&hid);
+                            for hid in self.session.scene.expand_to_groups(&[pid]) {
+                                self.session.scene.selection.remove(&hid);
                             }
                         }
                     } else if let Some(pid) = pending_deselect {
-                        for hid in self.scene.expand_to_groups(&[pid]) {
-                            self.scene.selection.remove(&hid);
+                        for hid in self.session.scene.expand_to_groups(&[pid]) {
+                            self.session.scene.selection.remove(&hid);
                         }
                     }
                 }
@@ -1192,21 +1221,22 @@ impl PReferZApp {
                 );
                 let mode = BoxSelectMode::from_drag(start_canvas, current_canvas);
                 if !additive {
-                    self.scene.deselect_all();
+                    self.session.scene.deselect_all();
                 }
                 // 先收集命中 id，再 select（避免同时 &self.items 和 &mut self.selection）
                 // 绑定文本不参与框选：它随容器联动（容器被框选时经 texts_bound_to
                 // 带上），单独框中它只会得到一个移动不了的可视快照选中框
                 let hits: Vec<ItemId> = self
+                    .session
                     .scene
                     .items
                     .iter()
                     .filter(|item| mode.hits(&sel_rect, &item.bounding_rect()))
-                    .filter(|item| !self.scene.is_bound_text(item))
+                    .filter(|item| !self.session.scene.is_bound_text(item))
                     .map(|item| item.id)
                     .collect();
                 for id in hits {
-                    self.scene.select(id);
+                    self.session.scene.select(id);
                 }
             }
             DragState::CreatingShape {
@@ -1235,7 +1265,7 @@ impl PReferZApp {
                 start_axis,
             } => {
                 // 预览已直接改 points；释放时若有变化则固化到 undo 栈
-                let mut new_points = match self.scene.get_item(&item_id) {
+                let mut new_points = match self.session.scene.get_item(&item_id) {
                     Some(item) => match &item.kind {
                         ItemKind::Shape { points, .. } => points.clone(),
                         _ => Vec::new(),
@@ -1254,7 +1284,7 @@ impl PReferZApp {
                     {
                         // 点击了段中点但未拖动：移除插入的顶点，不产生空命令
                         // （Alt 延伸越阈后又精确拖回 base 的罕见情形同样落在此清理）
-                        if let Some(item) = self.scene.get_item_mut(&item_id) {
+                        if let Some(item) = self.session.scene.get_item_mut(&item_id) {
                             if let ItemKind::Shape { points, .. } = &mut item.kind {
                                 if points.len() == new_points.len() {
                                     points.remove(endpoint);
@@ -1266,7 +1296,7 @@ impl PReferZApp {
                         let last = new_points.len().saturating_sub(1);
                         let is_real = endpoint == 0 || endpoint == last;
                         let (start_old, end_old, open_now) = {
-                            let it = self.scene.get_item(&item_id);
+                            let it = self.session.scene.get_item(&item_id);
                             let sb = it.and_then(|i| i.start_binding());
                             let eb = it.and_then(|i| i.end_binding());
                             let open = matches!(
@@ -1279,7 +1309,7 @@ impl PReferZApp {
                         // （≥3 顶点、首尾距 ≤ 屏幕 8px；Excalidraw isPathALoop 同式）。
                         let will_close = open_now
                             && is_real
-                            && should_auto_close(&new_points, endpoint, self.viewport.zoom);
+                            && should_auto_close(&new_points, endpoint, self.session.viewport.zoom);
                         // 验收反馈 #4-1：反向操作——"已闭合的合并点"（首尾重合）
                         // 把其中一个端点拖开（释放时首尾距 > 屏幕 8px）→ 自动恢复
                         // 开放，无需回侧栏取消闭合勾选。仅重合态触发，普通闭合多边形
@@ -1289,7 +1319,7 @@ impl PReferZApp {
                         let will_open = !open_now
                             && is_real
                             && overlap_before
-                            && first_last_screen_dist(&new_points, self.viewport.zoom)
+                            && first_last_screen_dist(&new_points, self.session.viewport.zoom)
                                 > POLYLINE_CLOSE_DISTANCE;
                         let mut start_new = start_old;
                         let mut end_new = end_old;
@@ -1297,7 +1327,7 @@ impl PReferZApp {
                         if will_close {
                             // 闭合优先于吸附：被拖端点吸附至对端、该端解绑；
                             // closed 与点集经 with_closed 同占一条 undo。
-                            if let Some(item) = self.scene.get_item_mut(&item_id) {
+                            if let Some(item) = self.session.scene.get_item_mut(&item_id) {
                                 if let ItemKind::Shape {
                                     points,
                                     closed,
@@ -1328,7 +1358,7 @@ impl PReferZApp {
                             if will_open {
                                 // 预览直改开放态；closed 变更记录经 with_closed
                                 // 随同一条 undo 还原。
-                                if let Some(item) = self.scene.get_item_mut(&item_id) {
+                                if let Some(item) = self.session.scene.get_item_mut(&item_id) {
                                     if let ItemKind::Shape { closed, .. } = &mut item.kind {
                                         *closed = false;
                                     }
@@ -1362,7 +1392,7 @@ impl PReferZApp {
                         // 绑定字段只在 redo 里写——不直改的话吸附释放后
                         // start/end_binding 仍是 None，移动被吸附图形时
                         // resolve_bindings 不重算，端点不跟随（用户反馈）。
-                        if let Some(item) = self.scene.get_item_mut(&item_id) {
+                        if let Some(item) = self.session.scene.get_item_mut(&item_id) {
                             if let ItemKind::Shape {
                                 start_binding,
                                 end_binding,
@@ -1381,6 +1411,7 @@ impl PReferZApp {
                         // elbow 或取向未变（新旧相等）不记录。
                         let cmd = {
                             let cur_axis = self
+                                .session
                                 .scene
                                 .get_item(&item_id)
                                 .and_then(|it| match &it.kind {
@@ -1425,6 +1456,7 @@ impl PReferZApp {
                 // 预览已直改 fixed_segments；释放时若有变化则固化到 undo 栈。
                 let orig_fixed = orig_fixed.clone();
                 let cur_fixed = self
+                    .session
                     .scene
                     .get_item(&item_id)
                     .and_then(|item| match &item.kind {
@@ -1440,7 +1472,7 @@ impl PReferZApp {
                         .with_preview_applied(true);
                     self.push_cmd(Box::new(cmd));
                 } else if !was_fixed {
-                    if let Some(item) = self.scene.get_item_mut(&item_id) {
+                    if let Some(item) = self.session.scene.get_item_mut(&item_id) {
                         if let ItemKind::Shape {
                             shape_type: ShapeType::Elbow,
                             fixed_segments,
@@ -1614,7 +1646,7 @@ impl PReferZApp {
         }
         let raw_pts: Vec<(f32, f32)> = raw.iter().map(|p| (p.x, p.y)).collect();
         let raw_pressures =
-            preferz_core::freedraw::pressures_from_spacing(&raw_pts, self.viewport.zoom);
+            preferz_core::freedraw::pressures_from_spacing(&raw_pts, self.session.viewport.zoom);
         // 落笔定型即做 Catmull-Rom 重采样（压力同步插值）：存储即平滑，命中与渲染用同
         // 一份点集，消除快运笔稀疏采样的折角分段感。
         let (pts, pressures) = preferz_core::freedraw::smooth_centerline(
@@ -1643,7 +1675,7 @@ impl PReferZApp {
         }
         let min_x = start.x.min(current.x);
         let min_y = start.y.min(current.y);
-        let number = self.scene.next_frame_number();
+        let number = self.session.scene.next_frame_number();
         let item = Item::new_frame(number, (w, h), min_x, min_y, None);
         let frame_id = item.id;
         let cmd = AddItem::new(item);
@@ -1651,8 +1683,8 @@ impl PReferZApp {
         // 画框恒在最底（z = min - 1）：用 ReorderItems send-to-back
         let reorder = ReorderItems::new(vec![frame_id], false);
         self.push_cmd(Box::new(reorder));
-        self.scene.deselect_all();
-        self.scene.select(frame_id);
+        self.session.scene.deselect_all();
+        self.session.scene.select(frame_id);
         self.flash(fill(
             t(self.lang, T::FlashFrameCreated),
             &[number.to_string()],

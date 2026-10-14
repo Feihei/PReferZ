@@ -36,7 +36,7 @@ impl PReferZApp {
 
         let text_color =
             egui::Color32::from_rgba_premultiplied(color[0], color[1], color[2], color[3]);
-        let zoom = self.viewport.zoom;
+        let zoom = self.session.viewport.zoom;
         // 字体族：Handwriting → 内嵌 851远星夜行手写体；Normal → Proportional（思源黑体）
         let make_font_id = |size: f32| {
             if *font_family == FontFamily::Handwriting {
@@ -48,11 +48,18 @@ impl PReferZApp {
 
         // 统一产出 (字形 galley, 绝对屏幕位置) 列表 + 文字内容包围矩形。
         let (pieces, content_rect) =
-            match container_id.filter(|cid| self.scene.get_item(cid).is_some()) {
+            match container_id.filter(|cid| self.session.scene.get_item(cid).is_some()) {
                 // 绑定文本：换行到容器宽度，按对齐枚举定位（plan #1；默认居中 = 历史行为）
                 Some(cid) => {
-                    let container = self.scene.get_item(&cid).expect("filter 已保证存在");
-                    let cr = self.viewport.canvas_rect_to_egui(container.bounding_rect());
+                    let container = self
+                        .session
+                        .scene
+                        .get_item(&cid)
+                        .expect("filter 已保证存在");
+                    let cr = self
+                        .session
+                        .viewport
+                        .canvas_rect_to_egui(container.bounding_rect());
                     let wrap = (cr.width() - 12.0).max(20.0);
                     let pad = 6.0 * zoom;
                     let galley = ui.ctx().fonts_mut(|f| {
@@ -83,7 +90,10 @@ impl PReferZApp {
                 // 自由文本（或容器已丢失）：按自身 transform 定位，字号叠加 scale；
                 // 对齐枚举不生效（单行无框，恒 top-left）
                 None => {
-                    let origin = self.viewport.canvas_to_pos2(item.canvas_corners()[0]);
+                    let origin = self
+                        .session
+                        .viewport
+                        .canvas_to_pos2(item.canvas_corners()[0]);
                     // scale.x（等比缩放场景下 scale.y 相同；非等比 egui text 不支持非均匀缩放）
                     let effective_font_size = *font_size * item.transform.scale.x.abs() * zoom;
                     let galley = ui.ctx().fonts_mut(|f| {
@@ -123,13 +133,13 @@ impl PReferZApp {
         editing_id: Option<ItemId>,
     ) {
         let canvas_bbox = item.bounding_rect();
-        let item_screen_rect = self.viewport.canvas_rect_to_egui(canvas_bbox);
+        let item_screen_rect = self.session.viewport.canvas_rect_to_egui(canvas_bbox);
         let corners = item.canvas_corners();
         let screen_corners = [
-            self.viewport.canvas_to_pos2(corners[0]),
-            self.viewport.canvas_to_pos2(corners[1]),
-            self.viewport.canvas_to_pos2(corners[2]),
-            self.viewport.canvas_to_pos2(corners[3]),
+            self.session.viewport.canvas_to_pos2(corners[0]),
+            self.session.viewport.canvas_to_pos2(corners[1]),
+            self.session.viewport.canvas_to_pos2(corners[2]),
+            self.session.viewport.canvas_to_pos2(corners[3]),
         ];
         match &item.kind {
             ItemKind::Pixmap {
@@ -193,22 +203,25 @@ impl PReferZApp {
             ItemKind::Text { .. } => self.draw_text_item(ui, item, editing_id),
             // 风格器分发（CleanStyler / RoughStyler）在 build_shape_visuals 内按 sloppiness 档位决定。
             ItemKind::Shape { .. } => {
-                let to_screen = item_local_to_screen(item, &self.viewport);
+                let to_screen = item_local_to_screen(item, &self.session.viewport);
                 // elbow 路由由 Scene 派生（阶段 C 同源；非 elbow 返回空）。
-                let route = self.scene.elbow_route_local(item);
+                let route = self.session.scene.elbow_route_local(item);
                 let shapes =
-                    build_shape_visuals(&item.kind, &route, &to_screen, self.viewport.zoom);
+                    build_shape_visuals(&item.kind, &route, &to_screen, self.session.viewport.zoom);
                 ui.painter().extend(shapes);
                 self.draw_edge_label(ui, item);
             }
             // 墨迹（plan #10）：速度锥形 ribbon 填充轮廓。
             ItemKind::Freedraw { .. } => {
-                let to_screen = item_local_to_screen(item, &self.viewport);
+                let to_screen = item_local_to_screen(item, &self.session.viewport);
                 let shapes = build_freedraw_visuals(&item.kind, &to_screen);
                 ui.painter().extend(shapes);
             }
             ItemKind::Frame { .. } => {
-                let sr = self.viewport.canvas_rect_to_egui(item.bounding_rect());
+                let sr = self
+                    .session
+                    .viewport
+                    .canvas_rect_to_egui(item.bounding_rect());
                 let border = egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(90, 90, 95));
                 ui.painter()
                     .rect_stroke(sr, 0.0, border, egui::StrokeKind::Middle);
@@ -238,7 +251,7 @@ impl PReferZApp {
         if n == 0 {
             return;
         }
-        let to_screen = item_local_to_screen(item, &self.viewport);
+        let to_screen = item_local_to_screen(item, &self.session.viewport);
         // 屏幕像素 / 局部单位（含 item scale + 视口 zoom），用于线宽与字号。
         let unit =
             to_screen.transform_vector(euclid::Vector2D::<f32, ItemLocalSpace>::new(1.0, 0.0));
@@ -388,12 +401,15 @@ impl PReferZApp {
         if text.is_empty() {
             return;
         }
-        let to_screen = item_local_to_screen(item, &self.viewport);
+        let to_screen = item_local_to_screen(item, &self.session.viewport);
         let scale = to_screen
             .transform_vector(euclid::Vector2D::<f32, ItemLocalSpace>::new(1.0, 0.0))
             .length()
             .max(1e-4);
-        let center = self.viewport.canvas_to_pos2(item.bounding_rect().center());
+        let center = self
+            .session
+            .viewport
+            .canvas_to_pos2(item.bounding_rect().center());
         let text_col = ui.visuals().text_color();
         let galley = ui.painter().layout_no_wrap(
             text.clone(),
@@ -411,7 +427,7 @@ impl PReferZApp {
         self.link_badge_rects.clear();
 
         // 空场景：渲染欢迎页（spec §2.3 欢迎页 + 最近文件列表）
-        if self.scene.items.is_empty() {
+        if self.session.scene.items.is_empty() {
             self.render_welcome_page(ui, &screen_rect);
             return;
         }
@@ -420,31 +436,31 @@ impl PReferZApp {
         // measured_size 为 None（新建/编辑/undo/redo 后）才重新测量，避免每帧重复计算。
         self.update_text_measured_sizes(ui.ctx());
 
-        // 预生成所grayscale=true Pixmap 灰度纹理（避免渲染循环里 &mut self &self.scene 冲突
+        // 预生成所grayscale=true Pixmap 灰度纹理（避免渲染循环里 &mut self &self.session.scene 冲突
         self.ensure_grayscale_textures(ui.ctx());
 
         // Z 序渲染（W9）：底层先画，顶层后
-        let items: Vec<&Item> = self.scene.items_by_z_order();
-        let selection_count = self.scene.selection.len();
+        let items: Vec<&Item> = self.session.scene.items_by_z_order();
+        let selection_count = self.session.scene.selection.len();
         let editing_id = self.editing_text.as_ref().and_then(|e| e.editing_item_id);
         let crop_item_id = self.crop_mode.as_ref().map(|c| c.item_id);
         for item in items {
             // 视口剔除（修 S9/M11）：用画AABB 转屏幕矩形，不相交则跳过
             let canvas_bbox = item.bounding_rect();
-            let item_screen_rect = self.viewport.canvas_rect_to_egui(canvas_bbox);
+            let item_screen_rect = self.session.viewport.canvas_rect_to_egui(canvas_bbox);
             if !screen_rect.intersects(item_screen_rect) {
                 continue;
             }
 
             let corners = item.canvas_corners();
             let screen_corners = [
-                self.viewport.canvas_to_pos2(corners[0]),
-                self.viewport.canvas_to_pos2(corners[1]),
-                self.viewport.canvas_to_pos2(corners[2]),
-                self.viewport.canvas_to_pos2(corners[3]),
+                self.session.viewport.canvas_to_pos2(corners[0]),
+                self.session.viewport.canvas_to_pos2(corners[1]),
+                self.session.viewport.canvas_to_pos2(corners[2]),
+                self.session.viewport.canvas_to_pos2(corners[3]),
             ];
 
-            let is_selected = self.scene.selection_contains(&item.id);
+            let is_selected = self.session.scene.selection_contains(&item.id);
 
             match &item.kind {
                 ItemKind::Pixmap {
@@ -520,17 +536,21 @@ impl PReferZApp {
                 ItemKind::Text { .. } => self.draw_text_item(ui, item, editing_id),
                 // Shape：风格器分发同 render_scene，sloppiness 档位决定 Clean 或手绘。
                 ItemKind::Shape { .. } => {
-                    let to_screen = item_local_to_screen(item, &self.viewport);
+                    let to_screen = item_local_to_screen(item, &self.session.viewport);
                     // elbow 路由由 Scene 派生（阶段 C 同源；非 elbow 返回空）。
-                    let route = self.scene.elbow_route_local(item);
-                    let shapes =
-                        build_shape_visuals(&item.kind, &route, &to_screen, self.viewport.zoom);
+                    let route = self.session.scene.elbow_route_local(item);
+                    let shapes = build_shape_visuals(
+                        &item.kind,
+                        &route,
+                        &to_screen,
+                        self.session.viewport.zoom,
+                    );
                     ui.painter().extend(shapes);
                     self.draw_edge_label(ui, item);
                 }
                 // 墨迹（plan #10）：速度锥形 ribbon 填充轮廓。
                 ItemKind::Freedraw { .. } => {
-                    let to_screen = item_local_to_screen(item, &self.viewport);
+                    let to_screen = item_local_to_screen(item, &self.session.viewport);
                     let shapes = build_freedraw_visuals(&item.kind, &to_screen);
                     ui.painter().extend(shapes);
                 }
@@ -540,7 +560,7 @@ impl PReferZApp {
                 ItemKind::Frame { number, name, .. } => {
                     // 边框矩形（画布 AABB 转屏幕：frame 不旋转，直接用 bounding_rect）。
                     let fc = item.bounding_rect();
-                    let sr = self.viewport.canvas_rect_to_egui(fc);
+                    let sr = self.session.viewport.canvas_rect_to_egui(fc);
                     let border = egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(90, 90, 95));
                     ui.painter()
                         .rect_stroke(sr, 0.0, border, egui::StrokeKind::Middle);
@@ -634,12 +654,12 @@ impl PReferZApp {
             if is_selected && selection_count == 1 && crop_item_id != Some(item.id) {
                 let show_flip = should_show_flip(item);
                 let show_rotate = should_show_rotate(item);
-                let route = self.scene.elbow_route_local(item);
+                let route = self.session.scene.elbow_route_local(item);
                 self.transform_handles.render(
                     item,
                     &route,
                     ui.painter(),
-                    &self.viewport,
+                    &self.session.viewport,
                     show_flip,
                     show_rotate,
                 );
@@ -648,8 +668,8 @@ impl PReferZApp {
 
         // 多选统一外框（spec L241：多选时画一个统一 bbox
         if selection_count > 1 {
-            if let Some(bbox) = self.scene.selection_bounding_rect() {
-                let screen_bbox = self.viewport.canvas_rect_to_egui(bbox);
+            if let Some(bbox) = self.session.scene.selection_bounding_rect() {
+                let screen_bbox = self.session.viewport.canvas_rect_to_egui(bbox);
                 let stroke = egui::Stroke::new(1.5_f32, egui::Color32::YELLOW);
                 ui.painter()
                     .rect_stroke(screen_bbox, 0.0, stroke, egui::StrokeKind::Middle);
@@ -672,12 +692,12 @@ impl PReferZApp {
         // 端点吸附高亮（plan #5）：拖动线端点靠近某形状轮廓时，高亮该形状轮廓。
         // 仅在拖拽预览期间由 update_drag / update_drag_preview 设置，end_drag 时清空。
         if let Some(bid) = self.snap_highlight {
-            if let Some(item) = self.scene.get_item(&bid) {
+            if let Some(item) = self.session.scene.get_item(&bid) {
                 let segs = snap::outline_segments(item);
                 let stroke = egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(255, 170, 40));
                 for (a, b) in segs {
-                    let sa = self.viewport.canvas_to_pos2(a);
-                    let sb = self.viewport.canvas_to_pos2(b);
+                    let sa = self.session.viewport.canvas_to_pos2(a);
+                    let sb = self.session.viewport.canvas_to_pos2(b);
                     ui.painter().line_segment([sa, sb], stroke);
                 }
             }
@@ -691,7 +711,7 @@ impl PReferZApp {
     pub(crate) fn ensure_grayscale_textures(&mut self, ctx: &egui::Context) {
         // 收集需要生成的 (texture_id, original_size) 列表
         let mut to_generate: Vec<(u64, (u32, u32))> = Vec::new();
-        for item in &self.scene.items {
+        for item in &self.session.scene.items {
             if let ItemKind::Pixmap {
                 texture_id,
                 original_size,
@@ -739,6 +759,7 @@ impl PReferZApp {
     /// 也不会因为一次删除而集体变灰。每帧调用，缺纹理的场景通常为空，开销可忽略。
     pub(crate) fn ensure_pixmap_textures(&mut self, ctx: &egui::Context) {
         let missing: Vec<u64> = self
+            .session
             .scene
             .items
             .iter()
@@ -769,7 +790,7 @@ impl PReferZApp {
             None => return,
         };
         let item_id = crop_state.item_id;
-        let item = match self.scene.get_item(&item_id) {
+        let item = match self.session.scene.get_item(&item_id) {
             Some(i) => i.clone(),
             None => {
                 self.crop_mode = None;
@@ -796,9 +817,9 @@ impl PReferZApp {
         // 会膨胀且不含旋转，裁剪框与图片会错位。
         let item_quad = item
             .canvas_corners_ring()
-            .map(|p| self.viewport.canvas_to_pos2(p));
+            .map(|p| self.session.viewport.canvas_to_pos2(p));
         let crop_quad = match item.crop_corners(crop_state.rect) {
-            Some(q) => q.map(|p| self.viewport.canvas_to_pos2(p)),
+            Some(q) => q.map(|p| self.session.viewport.canvas_to_pos2(p)),
             None => return,
         };
 

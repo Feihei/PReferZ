@@ -8,6 +8,7 @@ pub mod mermaid;
 pub mod routing;
 pub mod scene;
 pub mod selection;
+pub mod session;
 pub mod shape;
 pub mod snap;
 pub mod spaces;
@@ -20,6 +21,7 @@ pub use item::{ChartType, CropRect, EndpointBinding, Item, ItemId, ItemKind};
 pub use routing::ElbowFixedSegment;
 pub use scene::Scene;
 pub use selection::BoxSelectMode;
+pub use session::{Session, UndoStack};
 pub use shape::{
     ArrowHeadStyle, CurveType, DashStyle, ElbowAxis, FillStyle, PixmapStyle, SeededRng, ShapeType,
     StrokeStyle, TextStyle,

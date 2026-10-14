@@ -7,7 +7,7 @@ impl PReferZApp {
     /// web URL → 系统默认浏览器；本地 `.prz` → spawn 新窗口（H2）；
     /// 无法识别 / 目标不存在 → flash 提示后放弃。
     pub(crate) fn open_item_link(&mut self, id: ItemId) {
-        let Some(item) = self.scene.get_item(&id) else {
+        let Some(item) = self.session.scene.get_item(&id) else {
             return;
         };
         let Some(link) = item.link.clone() else {
@@ -57,7 +57,12 @@ impl PReferZApp {
         let Some(id) = self.single_selected_id() else {
             return;
         };
-        let Some(old) = self.scene.get_item(&id).and_then(|it| it.link.clone()) else {
+        let Some(old) = self
+            .session
+            .scene
+            .get_item(&id)
+            .and_then(|it| it.link.clone())
+        else {
             return;
         };
         self.push_cmd(Box::new(SetLink::new(id, Some(old), None)));

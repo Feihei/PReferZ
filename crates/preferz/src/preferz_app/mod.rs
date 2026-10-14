@@ -41,7 +41,7 @@ use preferz_core::snap;
 use preferz_core::spaces::{CanvasPoint, CanvasRect, CanvasSize, CanvasVector};
 use preferz_core::{
     parse_two_column_data, BoxSelectMode, ChartType, Command, CropRect, ElbowFixedSegment,
-    EndpointBinding, Item, ItemId, ItemKind, Scene,
+    EndpointBinding, Item, ItemId, ItemKind, Scene, Session,
 };
 // draw_chart_item 的局部坐标变换与图表默认尺寸常量（core 仅在 item 模块导出）。
 use preferz_core::item::{
@@ -75,53 +75,8 @@ mod text_edit;
 pub(crate) use export_dialog::{ClipboardImageOutcome, ExportDialogState};
 pub(crate) use offscreen::{rasterize_primitives, OffscreenScene};
 
-/// Undo 栈。`push` 会读`Command::skip_first_redo()`
-/// - 交互预览命令（拖拽中已直接改 item）返true 跳过首次 redo
-/// - 普通命令返false push 时立redo 应用变更
-///
-/// 这让 AGENTS.md Gotcha #5（skip_first_redo）真正生效（S5/M7）
-struct UndoStack {
-    undo: Vec<Box<dyn Command>>,
-    redo: Vec<Box<dyn Command>>,
-}
-
-impl UndoStack {
-    fn new() -> Self {
-        Self {
-            undo: Vec::new(),
-            redo: Vec::new(),
-        }
-    }
-
-    fn push(&mut self, mut cmd: Box<dyn Command>, scene: &mut Scene) {
-        let skip = cmd.skip_first_redo();
-        if !skip {
-            cmd.redo(scene);
-        }
-        self.redo.clear();
-        self.undo.push(cmd);
-    }
-
-    fn undo(&mut self, scene: &mut Scene) -> bool {
-        if let Some(mut cmd) = self.undo.pop() {
-            cmd.undo(scene);
-            self.redo.push(cmd);
-            true
-        } else {
-            false
-        }
-    }
-
-    fn redo(&mut self, scene: &mut Scene) -> bool {
-        if let Some(mut cmd) = self.redo.pop() {
-            cmd.redo(scene);
-            self.undo.push(cmd);
-            true
-        } else {
-            false
-        }
-    }
-}
+// Undo 栈已下沉到 preferz-core（`session::UndoStack`），与无头 `Session` 一起
+// 供 UI 与 CLI 共享。`push` 读 `Command::skip_first_redo()` 的语义见 core 文档。
 
 /// 当前激活工具。Select = 现有选择/框选行为。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -360,12 +315,12 @@ const SNAP_THRESHOLD_PX: f32 = 10.0;
 const ZOOM_BTN_FACTOR: f32 = 1.1;
 
 pub struct PReferZApp {
-    scene: Scene,
-    viewport: ViewportState,
+    /// 无头文档会话（Scene + ViewportState + UndoStack），定义在 preferz-core，
+    /// UI 与 CLI 共享同一份领域状态与撤销语义。
+    session: Session,
     /// 双击图片「适应视口」前的视口快照（zoom, pan）。
     /// 再次双击同一图片（已处于适配视图）时恢复到此视图（.issues #2）。
     view_fit_prev: Option<(f32, CanvasVector)>,
-    undo_stack: UndoStack,
     /// 临时状态消息（已导），会在若干帧后清空，避免覆盖持续状态（B5）
     flash_status: Option<(String, std::time::Instant)>,
     /// HUD 缩放百分比输入框本帧是否持有键盘焦点。为真时 `handle_shortcuts` 直接
@@ -941,10 +896,8 @@ impl PReferZApp {
         // 只加载一次：lang 与 keymap 同源
         let cfg = load_config();
         Self {
-            scene: Scene::new(),
-            viewport: ViewportState::default(),
+            session: Session::new(),
             view_fit_prev: None,
-            undo_stack: UndoStack::new(),
             flash_status: None,
             zoom_hud_focused: false,
             flash_seq: 0,
@@ -1057,14 +1010,16 @@ impl PReferZApp {
             Ok((mut scene, images, viewport_meta)) => {
                 self.install_loaded_assets(ctx, &mut scene, &images);
                 // 视口元数据防御性还原（与 finish_load 同策）。
-                self.viewport.pan = CanvasVector::new(viewport_meta.pan_x, viewport_meta.pan_y);
-                self.viewport.zoom = if viewport_meta.zoom.is_finite() && viewport_meta.zoom > 0.0 {
-                    viewport_meta.zoom
-                } else {
-                    1.0
-                };
-                self.scene = scene;
-                self.scene.cleanup_orphan_containers();
+                self.session.viewport.pan =
+                    CanvasVector::new(viewport_meta.pan_x, viewport_meta.pan_y);
+                self.session.viewport.zoom =
+                    if viewport_meta.zoom.is_finite() && viewport_meta.zoom > 0.0 {
+                        viewport_meta.zoom
+                    } else {
+                        1.0
+                    };
+                self.session.scene = scene;
+                self.session.scene.cleanup_orphan_containers();
             }
             Err(e) => {
                 log::error!("加载内嵌帮助文档失败: {e}");
@@ -1096,7 +1051,7 @@ impl PReferZApp {
 
     /// push undo command 并标记画布为 dirty（有未保存修改）
     fn push_cmd(&mut self, cmd: Box<dyn Command>) {
-        self.undo_stack.push(cmd, &mut self.scene);
+        self.session.push(cmd);
         self.mark_dirty();
     }
 
@@ -1132,7 +1087,7 @@ impl PReferZApp {
 
     /// 执行 undo：成功则标记 dirty
     fn perform_undo(&mut self) -> bool {
-        if self.undo_stack.undo(&mut self.scene) {
+        if self.session.undo() {
             self.mark_dirty();
             true
         } else {
@@ -1147,13 +1102,13 @@ impl PReferZApp {
     fn push_new_item(&mut self, cmd: AddItem) {
         let id = cmd.item_id();
         self.push_cmd(Box::new(cmd));
-        self.scene.deselect_all();
-        self.scene.select(id);
+        self.session.scene.deselect_all();
+        self.session.scene.select(id);
     }
 
     /// 执行 redo：成功则标记 dirty
     fn perform_redo(&mut self) -> bool {
-        if self.undo_stack.redo(&mut self.scene) {
+        if self.session.redo() {
             self.mark_dirty();
             true
         } else {
@@ -1269,10 +1224,11 @@ impl PReferZApp {
     /// 选中 item 的快照（Z 序倒序，顶层在前）
     fn selected_items_snapshot(&self) -> Vec<Item> {
         let mut items: Vec<Item> = self
+            .session
             .scene
             .selection
             .iter()
-            .filter_map(|id| self.scene.get_item(id).cloned())
+            .filter_map(|id| self.session.scene.get_item(id).cloned())
             .collect();
         items.sort_by_key(|b| std::cmp::Reverse(b.z));
         items
@@ -1495,7 +1451,7 @@ impl eframe::App for PReferZApp {
         let central_panel = egui::CentralPanel::default().frame(central_frame);
         central_panel.show(ui, |ui| {
             let rect = ui.max_rect();
-            self.viewport.set_screen_rect_egui(rect);
+            self.session.viewport.set_screen_rect_egui(rect);
 
             let response =
                 ui.interact(rect, egui::Id::new("canvas"), egui::Sense::click_and_drag());
@@ -1519,8 +1475,8 @@ impl eframe::App for PReferZApp {
                 ..
             } = &self.drag
             {
-                let a = self.viewport.canvas_to_pos2(*start_canvas);
-                let b = self.viewport.canvas_to_pos2(*current_canvas);
+                let a = self.session.viewport.canvas_to_pos2(*start_canvas);
+                let b = self.session.viewport.canvas_to_pos2(*current_canvas);
                 let rect = egui::Rect::from_two_pos(a, b);
                 let mode = BoxSelectMode::from_drag(*start_canvas, *current_canvas);
                 let (fill_rgb, stroke_rgb) = match mode {
@@ -1574,7 +1530,7 @@ impl eframe::App for PReferZApp {
                 let h = (current.y - start.y).abs();
                 let min_canvas = CanvasPoint::new(min_x, min_y);
                 let rect_canvas = CanvasRect::new(min_canvas, CanvasSize::new(w, h));
-                let screen_rect = self.viewport.canvas_rect_to_egui(rect_canvas);
+                let screen_rect = self.session.viewport.canvas_rect_to_egui(rect_canvas);
                 let stroke = egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(100, 200, 255));
                 match shape_type {
                     ShapeType::Rectangle => {
@@ -1597,7 +1553,7 @@ impl eframe::App for PReferZApp {
                         ];
                         let corners_screen: Vec<egui::Pos2> = corners_canvas
                             .iter()
-                            .map(|p| self.viewport.canvas_to_pos2(*p))
+                            .map(|p| self.session.viewport.canvas_to_pos2(*p))
                             .collect();
                         ui.painter().add(egui::Shape::convex_polygon(
                             corners_screen,
@@ -1624,7 +1580,9 @@ impl eframe::App for PReferZApp {
                                 let a = i as f32 / segments as f32 * std::f32::consts::TAU;
                                 let px = cx_canvas + rx_canvas * a.cos();
                                 let py = cy_canvas + ry_canvas * a.sin();
-                                self.viewport.canvas_to_pos2(CanvasPoint::new(px, py))
+                                self.session
+                                    .viewport
+                                    .canvas_to_pos2(CanvasPoint::new(px, py))
                             })
                             .collect();
                         pts.push(pts[0]); // 闭合路径
@@ -1634,8 +1592,8 @@ impl eframe::App for PReferZApp {
                     // elbow 连接器（plan #24）创建预览同款——正交路由在定型后由
                     // elbow_route 从两端点推导。
                     ShapeType::Polyline | ShapeType::Elbow => {
-                        let s0 = self.viewport.canvas_to_pos2(*start);
-                        let s1 = self.viewport.canvas_to_pos2(*current);
+                        let s0 = self.session.viewport.canvas_to_pos2(*start);
+                        let s1 = self.session.viewport.canvas_to_pos2(*current);
                         ui.painter().line_segment([s0, s1], stroke);
                         if let Some(ArrowHeadStyle::Arrow) = end_arrow {
                             let dir = s1 - s0;
@@ -1663,7 +1621,7 @@ impl eframe::App for PReferZApp {
                 let h = (current.y - start.y).abs();
                 let rect_canvas =
                     CanvasRect::new(CanvasPoint::new(min_x, min_y), CanvasSize::new(w, h));
-                let screen_rect = self.viewport.canvas_rect_to_egui(rect_canvas);
+                let screen_rect = self.session.viewport.canvas_rect_to_egui(rect_canvas);
                 let stroke = egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(100, 200, 255));
                 ui.painter()
                     .rect_stroke(screen_rect, 0.0, stroke, egui::StrokeKind::Middle);
@@ -1676,7 +1634,7 @@ impl eframe::App for PReferZApp {
             // 未按下时也要跟随指针（两点式工具的预览只在按住时更新），故在此同步 current。
             if let DragState::CreatingPolygon { current, .. } = &mut self.drag {
                 if let Some(pos) = pointer_pos {
-                    *current = self.viewport.pos2_to_canvas(pos);
+                    *current = self.session.viewport.pos2_to_canvas(pos);
                 }
             }
             let polygon_preview = match &self.drag {
@@ -1697,16 +1655,16 @@ impl eframe::App for PReferZApp {
                 let stroke = egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(100, 200, 255));
                 let mut screen_pts: Vec<egui::Pos2> = points
                     .iter()
-                    .map(|p| self.viewport.canvas_to_pos2(*p))
+                    .map(|p| self.session.viewport.canvas_to_pos2(*p))
                     .collect();
-                screen_pts.push(self.viewport.canvas_to_pos2(tip));
+                screen_pts.push(self.session.viewport.canvas_to_pos2(tip));
                 if screen_pts.len() >= 2 {
                     ui.painter().add(egui::Shape::line(screen_pts, stroke));
                 }
                 // ≥3 个顶点时才提示"再确认一下就闭合成面"：两点连不出面
                 if points.len() >= 3 {
-                    let a = self.viewport.canvas_to_pos2(tip);
-                    let b = self.viewport.canvas_to_pos2(points[0]);
+                    let a = self.session.viewport.canvas_to_pos2(tip);
+                    let b = self.session.viewport.canvas_to_pos2(points[0]);
                     const CLOSE_HINT_DASHES: usize = 10;
                     for i in 0..CLOSE_HINT_DASHES {
                         let t0 = i as f32 / CLOSE_HINT_DASHES as f32;
@@ -1717,7 +1675,7 @@ impl eframe::App for PReferZApp {
                 }
                 // 顶点小方块：让"点了几个点"一眼可数
                 for p in points.iter() {
-                    let s = self.viewport.canvas_to_pos2(*p);
+                    let s = self.session.viewport.canvas_to_pos2(*p);
                     ui.painter().rect_filled(
                         egui::Rect::from_center_size(s, egui::vec2(6.0, 6.0)),
                         egui::CornerRadius::ZERO,
@@ -1733,7 +1691,7 @@ impl eframe::App for PReferZApp {
                 if raw_pts.len() >= 2 {
                     let raw_pressures = preferz_core::freedraw::pressures_from_spacing(
                         &raw_pts,
-                        self.viewport.zoom,
+                        self.session.viewport.zoom,
                     );
                     let (pts, pressures) = preferz_core::freedraw::smooth_centerline(
                         &raw_pts,
@@ -1742,9 +1700,9 @@ impl eframe::App for PReferZApp {
                     );
                     let screen_pts: Vec<egui::Pos2> = pts
                         .iter()
-                        .map(|&(x, y)| self.viewport.canvas_to_pos2(CanvasPoint::new(x, y)))
+                        .map(|&(x, y)| self.session.viewport.canvas_to_pos2(CanvasPoint::new(x, y)))
                         .collect();
-                    let sw = self.default_stroke.width * self.viewport.zoom;
+                    let sw = self.default_stroke.width * self.session.viewport.zoom;
                     let screen_widths: Vec<f32> = pressures.iter().map(|pr| sw * pr).collect();
                     let c = self.default_stroke.color;
                     let color = egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]);
@@ -1755,7 +1713,9 @@ impl eframe::App for PReferZApp {
 
             // 鼠标中键拖拽平移
             if response.dragged_by(egui::PointerButton::Middle) {
-                self.viewport.pan_by_screen_egui(response.drag_delta());
+                self.session
+                    .viewport
+                    .pan_by_screen_egui(response.drag_delta());
             }
 
             // 滚轮缩放（以鼠标位置为锚点）。SCROLL_ZOOM_SENSITIVITY：换 glow 后端后
@@ -1767,7 +1727,8 @@ impl eframe::App for PReferZApp {
             let scroll = ctx.input(|i| i.smooth_scroll_delta);
             if scroll.y != 0.0 && pointer_on_canvas {
                 if let Some(pos) = ctx.input(|i| i.pointer.latest_pos()) {
-                    self.viewport
+                    self.session
+                        .viewport
                         .zoom_at_egui(scroll.y * SCROLL_ZOOM_SENSITIVITY, pos);
                 }
             }
@@ -1785,28 +1746,31 @@ impl eframe::App for PReferZApp {
                 } else if let Some(pos) = ctx.input(|i| i.pointer.latest_pos()) {
                     // 一次性取全命中信息（id + 是否图片 + 包围盒），避免借用冲突
                     let hit =
-                        interaction::get_item_at(pos, &self.scene, &self.viewport).map(|item| {
-                            (
-                                item.id,
-                                matches!(item.kind, ItemKind::Pixmap { .. }),
-                                item.bounding_rect(),
-                            )
-                        });
+                        interaction::get_item_at(pos, &self.session.scene, &self.session.viewport)
+                            .map(|item| {
+                                (
+                                    item.id,
+                                    matches!(item.kind, ItemKind::Pixmap { .. }),
+                                    item.bounding_rect(),
+                                )
+                            });
                     match hit {
                         // 双击图片：已处于该图片的适配视图 → 回到上一视图；否则适配视口。
                         Some((_, true, rect)) => {
                             let (target_zoom, target_pan) = self.compute_fit(rect);
-                            let already_fit = (self.viewport.zoom - target_zoom).abs() < 1e-3
-                                && (self.viewport.pan - target_pan).length() < 1e-2;
+                            let already_fit = (self.session.viewport.zoom - target_zoom).abs()
+                                < 1e-3
+                                && (self.session.viewport.pan - target_pan).length() < 1e-2;
                             if already_fit {
                                 if let Some((z, p)) = self.view_fit_prev.take() {
-                                    self.viewport.zoom = z;
-                                    self.viewport.pan = p;
+                                    self.session.viewport.zoom = z;
+                                    self.session.viewport.pan = p;
                                     self.flash(t(self.lang, T::FlashFitRestore).to_string());
                                 }
                             } else {
-                                self.view_fit_prev = Some((self.viewport.zoom, self.viewport.pan));
-                                self.viewport.fit_to_content(rect);
+                                self.view_fit_prev =
+                                    Some((self.session.viewport.zoom, self.session.viewport.pan));
+                                self.session.viewport.fit_to_content(rect);
                                 self.flash(t(self.lang, T::FlashFitToCanvas).to_string());
                             }
                         }
@@ -1839,9 +1803,9 @@ impl eframe::App for PReferZApp {
                     if selected.len() == 1 {
                         self.transform_handles.update_hover(
                             pos,
-                            &self.scene,
+                            &self.session.scene,
                             &selected,
-                            &self.viewport,
+                            &self.session.viewport,
                         );
                     } else {
                         self.transform_handles.hover_handle = Handle::None;
@@ -1863,8 +1827,12 @@ impl eframe::App for PReferZApp {
                             Handle::FlipV => egui::CursorIcon::ResizeVertical,
                             Handle::None => {
                                 // 在 item 上时显示移动光标
-                                if interaction::get_item_at(pos, &self.scene, &self.viewport)
-                                    .is_some()
+                                if interaction::get_item_at(
+                                    pos,
+                                    &self.session.scene,
+                                    &self.session.viewport,
+                                )
+                                .is_some()
                                 {
                                     egui::CursorIcon::Move
                                 } else {
@@ -2042,7 +2010,7 @@ impl eframe::App for PReferZApp {
         // 拖动中（本帧仍有控件变更）则保留，等下一帧无变更时再结算——整段拖动一次 undo。
         if let Some(pending) = self.prop_edit_pending.take() {
             if !self.prop_changed_this_frame {
-                if let Some(cmd) = prop_cmd(pending, &self.scene) {
+                if let Some(cmd) = prop_cmd(pending, &self.session.scene) {
                     self.push_cmd(cmd);
                 }
             } else {
@@ -2514,7 +2482,7 @@ impl PReferZApp {
                                 .on_hover_text(t(self.lang, T::ZoomOut))
                                 .clicked()
                             {
-                                self.viewport.zoom_center_by(1.0 / ZOOM_BTN_FACTOR);
+                                self.session.viewport.zoom_center_by(1.0 / ZOOM_BTN_FACTOR);
                             }
                             // 百分比输入：temp 缓存输入串，未聚焦时以当前缩放回填，
                             // 聚焦（正在打字）时保留用户输入，避免每帧重置光标。
@@ -2524,7 +2492,7 @@ impl PReferZApp {
                                 .ctx()
                                 .data(|d| d.get_temp::<bool>(focused_key))
                                 .unwrap_or(false);
-                            let cur_pct = (self.viewport.zoom * 100.0).round() as i32;
+                            let cur_pct = (self.session.viewport.zoom * 100.0).round() as i32;
                             let mut buf = if was_focused {
                                 ui.ctx()
                                     .data(|d| d.get_temp::<String>(id))
@@ -2558,7 +2526,8 @@ impl PReferZApp {
                                     .filter(|c| c.is_ascii_digit() || *c == '.')
                                     .collect();
                                 if let Ok(pct) = cleaned.parse::<f32>() {
-                                    self.viewport
+                                    self.session
+                                        .viewport
                                         .set_zoom_centered((pct / 100.0).max(f32::EPSILON));
                                 }
                                 self.zoom_hud_focused = true;
@@ -2569,7 +2538,7 @@ impl PReferZApp {
                                 .on_hover_text(t(self.lang, T::ZoomIn))
                                 .clicked()
                             {
-                                self.viewport.zoom_center_by(ZOOM_BTN_FACTOR);
+                                self.session.viewport.zoom_center_by(ZOOM_BTN_FACTOR);
                             }
                         });
                     });
@@ -2635,14 +2604,19 @@ impl PReferZApp {
                     self.transform_handles.is_dragging
                 ));
                 ui.label(format!("Drag state: {}", drag_state_name(&self.drag)));
-                ui.label(format!("Selection: {} items", self.scene.selection.len()));
+                ui.label(format!(
+                    "Selection: {} items",
+                    self.session.scene.selection.len()
+                ));
                 ui.label(format!(
                     "Pan: ({:.1}, {:.1}) Zoom: {:.3}",
-                    self.viewport.pan.x, self.viewport.pan.y, self.viewport.zoom
+                    self.session.viewport.pan.x,
+                    self.session.viewport.pan.y,
+                    self.session.viewport.zoom
                 ));
                 ui.separator();
-                if let Some(id) = self.scene.selection.iter().next() {
-                    if let Some(item) = self.scene.get_item(id) {
+                if let Some(id) = self.session.scene.selection.iter().next() {
+                    if let Some(item) = self.session.scene.get_item(id) {
                         ui.label(format!("Selected item {}:", id));
                         ui.label(format!(
                             "  pos: ({:.1}, {:.1})",
@@ -2987,22 +2961,26 @@ impl PReferZApp {
         // 全选（Ctrl+A，Excalidraw 同款）：绑定文本不参与（随容器联动，同框选）。
         // 文本编辑中已在函数开头提前 return，TextEdit 自身的 Ctrl+A 全选文字不受影响。
         if self.keymap.pressed(Action::SelectAll, ctx) {
-            self.scene.select_all();
+            self.session.scene.select_all();
         }
 
         // 取消全选（Ctrl+Shift+A）：Excalidraw 无专用快捷键（其 Esc 兼职清空选择），
         // 本项目 Esc 已被 Cancel 占用，按用户习惯挂独立组合键。
         if self.keymap.pressed(Action::DeselectAll, ctx) {
-            self.scene.deselect_all();
+            self.session.scene.deselect_all();
         }
 
         // 删除选中（走命令栈）
-        if self.keymap.pressed(Action::DeleteSelected, ctx) && !self.scene.selection.is_empty() {
+        if self.keymap.pressed(Action::DeleteSelected, ctx)
+            && !self.session.scene.selection.is_empty()
+        {
             self.delete_selected();
         }
 
         // 原位复制选中项（Ctrl+D）：副本偏移 10px 画布，一次 undo 撤销
-        if self.keymap.pressed(Action::DuplicateInPlace, ctx) && !self.scene.selection.is_empty() {
+        if self.keymap.pressed(Action::DuplicateInPlace, ctx)
+            && !self.session.scene.selection.is_empty()
+        {
             self.duplicate_in_place();
         }
 
@@ -3069,7 +3047,7 @@ impl PReferZApp {
         }
         // 导出选区（Excalidraw 同款 Ctrl+Shift+E）：无选中只提示不弹窗
         if self.keymap.pressed(Action::ExportSelection, ctx) {
-            if self.scene.selection.is_empty() {
+            if self.session.scene.selection.is_empty() {
                 self.flash(t(self.lang, T::FlashNoSelectionToExport).to_string());
             } else {
                 self.open_export_selection_dialog();
@@ -3109,7 +3087,7 @@ impl PReferZApp {
             self.zoom_to_selection();
         }
         if self.keymap.pressed(Action::Zoom100, ctx) {
-            self.viewport.zoom = 1.0; // 视口中心（pan）不动，仅改缩放
+            self.session.viewport.zoom = 1.0; // 视口中心（pan）不动，仅改缩放
             self.flash(t(self.lang, T::FlashZoom100).to_string());
         }
 
@@ -3342,8 +3320,8 @@ mod tests {
             CanvasPoint::new(60.0, 70.0),
         );
         app.finish_create_polygon();
-        assert_eq!(app.scene.items.len(), 1);
-        let item = &app.scene.items[0];
+        assert_eq!(app.session.scene.items.len(), 1);
+        let item = &app.session.scene.items[0];
         // 整体位置 = AABB 左上角，局部坐标从 (0,0) 起算
         assert_eq!((item.transform.pos.x, item.transform.pos.y), (10.0, 20.0));
         match &item.kind {
@@ -3386,9 +3364,9 @@ mod tests {
             CanvasPoint::new(240.0, 30.0),
         ];
         app.finish_create_freedraw(raw);
-        assert_eq!(app.scene.items.len(), 1);
+        assert_eq!(app.session.scene.items.len(), 1);
         assert_eq!(app.tool, Tool::Select, "收尾后应回 Select");
-        let item = &app.scene.items[0];
+        let item = &app.session.scene.items[0];
         // 整体位置 = 点集 AABB 左上角 (10,30)。
         assert_eq!((item.transform.pos.x, item.transform.pos.y), (10.0, 30.0));
         match &item.kind {
@@ -3418,7 +3396,7 @@ mod tests {
         let mut app = PReferZApp::new();
         app.tool = Tool::Text;
         let screen = egui::pos2(40.0, 60.0);
-        let expect_canvas = app.viewport.pos2_to_canvas(screen);
+        let expect_canvas = app.session.viewport.pos2_to_canvas(screen);
         app.begin_drag(screen, false, false, false);
         assert_eq!(app.tool, Tool::Select, "起文本后应回 Select");
         let editing = app.editing_text.take().expect("应进入文本编辑态");
@@ -3436,7 +3414,7 @@ mod tests {
         app.tool = Tool::Freehand;
         // 单点（误触/单击）：不产生 item，但仍回 Select。
         app.finish_create_freedraw(vec![CanvasPoint::new(5.0, 5.0)]);
-        assert!(app.scene.items.is_empty(), "单点墨迹应被丢弃");
+        assert!(app.session.scene.items.is_empty(), "单点墨迹应被丢弃");
         assert_eq!(app.tool, Tool::Select);
     }
 
@@ -3452,7 +3430,7 @@ mod tests {
             CanvasPoint::new(0.0, 50.0),
         );
         app.finish_create_polygon();
-        let item = &app.scene.items[0];
+        let item = &app.session.scene.items[0];
         match &item.kind {
             ItemKind::Shape { points, .. } => assert_eq!(points.len(), 4),
             _ => panic!("多边形应为 Shape item"),
@@ -3466,7 +3444,10 @@ mod tests {
             CanvasPoint::new(50.0, 0.0),
         );
         app.finish_create_polygon();
-        assert!(app.scene.items.is_empty(), "两点连不出面，不应产生 item");
+        assert!(
+            app.session.scene.items.is_empty(),
+            "两点连不出面，不应产生 item"
+        );
         assert_eq!(app.tool, Tool::Select);
         assert!(app.flash_status.is_some(), "应给出提示");
     }
@@ -3484,7 +3465,7 @@ mod tests {
             matches!(app.drag, DragState::BoxSelect { .. }),
             "非多边形状态应原样保留，不能被吞掉"
         );
-        assert!(app.scene.items.is_empty());
+        assert!(app.session.scene.items.is_empty());
     }
 
     // ───────── 多边形顶点编辑（plan #4） ─────────
@@ -3507,12 +3488,12 @@ mod tests {
             StrokeStyle::default(),
         );
         let id = item.id;
-        app.scene.add_item(item);
+        app.session.scene.add_item(item);
         (app, id)
     }
 
     fn polyline_points(app: &PReferZApp, id: ItemId) -> Vec<(f32, f32)> {
-        match &app.scene.get_item(&id).unwrap().kind {
+        match &app.session.scene.get_item(&id).unwrap().kind {
             ItemKind::Shape { points, .. } => points.clone(),
             _ => panic!("应为 Shape"),
         }
@@ -3533,7 +3514,7 @@ mod tests {
             StrokeStyle::default(),
         );
         let id = item.id;
-        app.scene.add_item(item);
+        app.session.scene.add_item(item);
         // 中间 bar 段（Z 路由 4 点：段 1 = (0,0)→(0,100)? 按路由取实际段）：
         // dx=200 > dy=100 → 垂直先走，bar 为水平段 y=50；拖拽手柄命中该段。
         app.drag = DragState::ElbowSegment {
@@ -3545,9 +3526,12 @@ mod tests {
             orig_fixed: Vec::new(),
         };
         // 垂直拖 30（局部 == 画布）：水平段沿 y 滑移
-        let moved = app.viewport.canvas_to_pos2(CanvasPoint::new(100.0, 80.0));
+        let moved = app
+            .session
+            .viewport
+            .canvas_to_pos2(CanvasPoint::new(100.0, 80.0));
         app.update_drag_preview(moved, false, false);
-        match &app.scene.get_item(&id).unwrap().kind {
+        match &app.session.scene.get_item(&id).unwrap().kind {
             ItemKind::Shape { fixed_segments, .. } => {
                 assert_eq!(fixed_segments.len(), 1, "拖拽预览即固化该段");
                 assert!(
@@ -3558,9 +3542,9 @@ mod tests {
             _ => panic!("应为 Shape"),
         }
         app.end_drag();
-        assert_eq!(app.undo_stack.undo.len(), 1, "释放固化一条 undo");
+        assert_eq!(app.session.undo_stack.undo_len(), 1, "释放固化一条 undo");
         assert!(app.perform_undo());
-        match &app.scene.get_item(&id).unwrap().kind {
+        match &app.session.scene.get_item(&id).unwrap().kind {
             ItemKind::Shape { fixed_segments, .. } => {
                 assert!(fixed_segments.is_empty(), "undo 还原固定段列表")
             }
@@ -3580,8 +3564,8 @@ mod tests {
         app.update_drag_preview(egui::pos2(140.0, 120.0), false, false);
         app.end_drag();
         assert_eq!(app.tool, Tool::Select, "创建后回 Select");
-        assert_eq!(app.scene.items.len(), 1);
-        match &app.scene.items[0].kind {
+        assert_eq!(app.session.scene.items.len(), 1);
+        match &app.session.scene.items[0].kind {
             ItemKind::Shape {
                 shape_type,
                 points,
@@ -3601,8 +3585,8 @@ mod tests {
         app2.begin_drag(egui::pos2(10.0, 10.0), false, false, false);
         app2.update_drag_preview(egui::pos2(110.0, 60.0), false, false);
         app2.end_drag();
-        assert_eq!(app2.scene.items.len(), 1);
-        match &app2.scene.items[0].kind {
+        assert_eq!(app2.session.scene.items.len(), 1);
+        match &app2.session.scene.items[0].kind {
             ItemKind::Shape {
                 shape_type,
                 end_arrow,
@@ -3638,18 +3622,18 @@ mod tests {
         // 两点开放线删端点：拒绝、不入 undo 栈、有 flash
         let (mut app, id) = app_with_polyline(vec![(0.0, 0.0), (50.0, 0.0)], false);
         app.try_delete_vertex(id, 0);
-        assert!(app.undo_stack.undo.is_empty(), "守卫失败不应产生命令");
+        assert_eq!(app.session.undo_stack.undo_len(), 0, "守卫失败不应产生命令");
         assert_eq!(polyline_points(&app, id).len(), 2);
         assert!(app.flash_status.is_some(), "应提示拒绝原因");
         // 闭合三角形删顶点：拒绝（保 ≥3）
         let (mut app, id) = app_with_polyline(vec![(0.0, 0.0), (50.0, 0.0), (25.0, 40.0)], true);
         app.try_delete_vertex(id, 1);
-        assert!(app.undo_stack.undo.is_empty());
+        assert_eq!(app.session.undo_stack.undo_len(), 0);
         assert_eq!(polyline_points(&app, id).len(), 3);
         // 开放三点删中间点：成功剩两点，一步 undo 还原
         let (mut app, id) = app_with_polyline(vec![(0.0, 0.0), (25.0, 10.0), (50.0, 0.0)], false);
         app.try_delete_vertex(id, 1);
-        assert_eq!(app.undo_stack.undo.len(), 1);
+        assert_eq!(app.session.undo_stack.undo_len(), 1);
         assert_eq!(polyline_points(&app, id), vec![(0.0, 0.0), (50.0, 0.0)]);
         assert!(app.perform_undo());
         assert_eq!(polyline_points(&app, id).len(), 3);
@@ -3661,7 +3645,7 @@ mod tests {
             app_with_polyline(vec![(0.0, 0.0), (25.0, 10.0), (50.0, 0.0)], false);
         let (target_app, target_id) = app_with_polyline(vec![(0.0, 0.0), (10.0, 10.0)], false);
         drop(target_app); // 只取一个 id 作绑定目标占位
-        if let Some(it) = app.scene.get_item_mut(&line_id) {
+        if let Some(it) = app.session.scene.get_item_mut(&line_id) {
             if let ItemKind::Shape { start_binding, .. } = &mut it.kind {
                 *start_binding = Some(EndpointBinding {
                     target: target_id,
@@ -3670,13 +3654,13 @@ mod tests {
             }
         }
         app.try_delete_vertex(line_id, 0);
-        if let Some(it) = app.scene.get_item(&line_id) {
+        if let Some(it) = app.session.scene.get_item(&line_id) {
             if let ItemKind::Shape { start_binding, .. } = &it.kind {
                 assert!(start_binding.is_none(), "删首顶点应解除起点绑定");
             }
         }
         assert!(app.perform_undo());
-        if let Some(it) = app.scene.get_item(&line_id) {
+        if let Some(it) = app.session.scene.get_item(&line_id) {
             if let ItemKind::Shape { start_binding, .. } = &it.kind {
                 assert_eq!(
                     *start_binding,
@@ -3703,8 +3687,8 @@ mod tests {
             None,
         );
         let id = item.id;
-        app.scene.add_item(item);
-        app.scene.select(id);
+        app.session.scene.add_item(item);
+        app.session.scene.select(id);
         (app, id)
     }
 
@@ -3724,9 +3708,10 @@ mod tests {
         let (mut app, src_id) = app_with_rect((10.0, 10.0), (120.0, 80.0));
         app.add_connected_shape(FlowDir::Right);
 
-        assert_eq!(app.scene.items.len(), 3, "应新增节点+箭头各一");
-        let src = app.scene.get_item(&src_id).unwrap().clone();
+        assert_eq!(app.session.scene.items.len(), 3, "应新增节点+箭头各一");
+        let src = app.session.scene.get_item(&src_id).unwrap().clone();
         let dup = app
+            .session
             .scene
             .items
             .iter()
@@ -3743,6 +3728,7 @@ mod tests {
             .expect("克隆的矩形节点")
             .clone();
         let arrow = app
+            .session
             .scene
             .items
             .iter()
@@ -3791,14 +3777,14 @@ mod tests {
         }
         // z 序：箭头在两者之上；选区 = 新节点（连按可接链）。
         assert!(arrow.z > dup.z && arrow.z > src.z);
-        assert_eq!(app.scene.selection.len(), 1);
-        assert!(app.scene.selection.contains(&dup.id));
+        assert_eq!(app.session.scene.selection.len(), 1);
+        assert!(app.session.scene.selection.contains(&dup.id));
         // 一条 undo 撤回整对；redo 恢复。
-        assert_eq!(app.undo_stack.undo.len(), 1);
+        assert_eq!(app.session.undo_stack.undo_len(), 1);
         assert!(app.perform_undo());
-        assert_eq!(app.scene.items.len(), 1);
+        assert_eq!(app.session.scene.items.len(), 1);
         assert!(app.perform_redo());
-        assert_eq!(app.scene.items.len(), 3);
+        assert_eq!(app.session.scene.items.len(), 3);
     }
 
     #[test]
@@ -3806,30 +3792,34 @@ mod tests {
         // 线性对象（Polyline）不作源（对齐 Excalidraw isFlowchartNodeElement），
         // 静默：不加 item、不入 undo。
         let (mut app, line_id) = app_with_polyline(vec![(0.0, 0.0), (50.0, 0.0)], false);
-        app.scene.deselect_all();
-        app.scene.select(line_id);
+        app.session.scene.deselect_all();
+        app.session.scene.select(line_id);
         app.add_connected_shape(FlowDir::Right);
-        assert_eq!(app.scene.items.len(), 1);
-        assert!(app.undo_stack.undo.is_empty());
+        assert_eq!(app.session.scene.items.len(), 1);
+        assert_eq!(app.session.undo_stack.undo_len(), 0);
     }
 
     #[test]
     fn navigate_connected_jumps_along_bound_arrows() {
         let (mut app, src_id) = app_with_rect((10.0, 10.0), (120.0, 80.0));
         app.add_connected_shape(FlowDir::Right); // 选区已在 dup 上
-        let dup_id = *app.scene.selection.iter().next().unwrap();
-        let undo_len = app.undo_stack.undo.len(); // 创建本身占 1 条
+        let dup_id = *app.session.scene.selection.iter().next().unwrap();
+        let undo_len = app.session.undo_stack.undo_len(); // 创建本身占 1 条
 
         // 从 dup 向左回到 src；从 src 向右到 dup。
         app.navigate_connected(FlowDir::Left);
-        assert_eq!(app.scene.selection.len(), 1);
-        assert!(app.scene.selection.contains(&src_id));
+        assert_eq!(app.session.scene.selection.len(), 1);
+        assert!(app.session.scene.selection.contains(&src_id));
         app.navigate_connected(FlowDir::Right);
-        assert!(app.scene.selection.contains(&dup_id));
+        assert!(app.session.scene.selection.contains(&dup_id));
         // 无该方向邻居：选区保持不动（不产生命令、不清选区）。
         app.navigate_connected(FlowDir::Up);
-        assert!(app.scene.selection.contains(&dup_id));
-        assert_eq!(app.undo_stack.undo.len(), undo_len, "导航不应新增命令");
+        assert!(app.session.scene.selection.contains(&dup_id));
+        assert_eq!(
+            app.session.undo_stack.undo_len(),
+            undo_len,
+            "导航不应新增命令"
+        );
     }
 
     // ───────── mermaid 流程图（plan #9） ─────────
@@ -3842,8 +3832,9 @@ mod tests {
         app.generate_mermaid_flowchart(&ctx);
 
         // 3 节点形状 + 3 绑定文字 + 2 elbow 边（#17 C：边默认 Elbow 连接器）
-        assert_eq!(app.scene.items.len(), 8);
+        assert_eq!(app.session.scene.items.len(), 8);
         let arrows: Vec<Item> = app
+            .session
             .scene
             .items
             .iter()
@@ -3873,6 +3864,7 @@ mod tests {
         }
         // 绑定文字：container_id 指向各自的节点形状
         let texts = app
+            .session
             .scene
             .items
             .iter()
@@ -3880,11 +3872,11 @@ mod tests {
             .count();
         assert_eq!(texts, 3);
         // 整批一条 undo：一步撤回全消；redo 恢复
-        assert_eq!(app.undo_stack.undo.len(), 1);
+        assert_eq!(app.session.undo_stack.undo_len(), 1);
         assert!(app.perform_undo());
-        assert!(app.scene.items.is_empty());
+        assert!(app.session.scene.items.is_empty());
         assert!(app.perform_redo());
-        assert_eq!(app.scene.items.len(), 8);
+        assert_eq!(app.session.scene.items.len(), 8);
         // 弹窗关闭、缓冲已消费
         assert!(!app.mermaid_open);
         assert!(app.mermaid_buf.is_empty());
@@ -3896,8 +3888,8 @@ mod tests {
         app.mermaid_buf = "a --> b".to_string(); // 缺首行
         let ctx = egui::Context::default();
         app.generate_mermaid_flowchart(&ctx);
-        assert!(app.scene.items.is_empty(), "解析失败不应生成 item");
-        assert!(app.undo_stack.undo.is_empty());
+        assert!(app.session.scene.items.is_empty(), "解析失败不应生成 item");
+        assert_eq!(app.session.undo_stack.undo_len(), 0);
         assert_eq!(app.mermaid_buf, "a --> b", "输入保留供修改");
     }
 
@@ -3909,6 +3901,7 @@ mod tests {
         app.generate_mermaid_flowchart(&ctx);
 
         let texts: Vec<&String> = app
+            .session
             .scene
             .items
             .iter()
@@ -3927,6 +3920,7 @@ mod tests {
 
         // 两行标签的节点形状应高于单行基线高 60
         let node_h = app
+            .session
             .scene
             .items
             .iter()
@@ -4138,22 +4132,22 @@ mod tests {
         // （> 屏幕 8px）→ 释放时自动恢复开放，一条 undo 可还原重合 + closed。
         let start = vec![(0.0, 0.0), (50.0, 0.0), (0.0, 50.0), (0.0, 0.0)];
         let (mut app, id) = app_with_polyline(start.clone(), true);
-        if let Some(it) = app.scene.get_item_mut(&id) {
+        if let Some(it) = app.session.scene.get_item_mut(&id) {
             if let ItemKind::Shape { points, .. } = &mut it.kind {
                 points[3] = (30.0, 20.0); // 预览已拖开
             }
         }
         finish_endpoint_drag(&mut app, id, 3, start);
-        match &app.scene.get_item(&id).unwrap().kind {
+        match &app.session.scene.get_item(&id).unwrap().kind {
             ItemKind::Shape { closed, points, .. } => {
                 assert!(!*closed, "拖开合并点应自动恢复开放");
                 assert_eq!(points[3], (30.0, 20.0));
             }
             _ => unreachable!(),
         }
-        assert_eq!(app.undo_stack.undo.len(), 1);
+        assert_eq!(app.session.undo_stack.undo_len(), 1);
         assert!(app.perform_undo());
-        match &app.scene.get_item(&id).unwrap().kind {
+        match &app.session.scene.get_item(&id).unwrap().kind {
             ItemKind::Shape { closed, points, .. } => {
                 assert!(*closed, "undo 应还原闭合态");
                 assert_eq!(points[3], (0.0, 0.0), "undo 应还原合并位置");
@@ -4167,7 +4161,7 @@ mod tests {
         // 非重合的普通闭合多边形（侧栏手动闭合）拖顶点**不得**被自动开放。
         let start = vec![(0.0, 0.0), (50.0, 0.0), (25.0, 40.0)];
         let (mut app, id) = app_with_polyline(start.clone(), true);
-        if let Some(it) = app.scene.get_item_mut(&id) {
+        if let Some(it) = app.session.scene.get_item_mut(&id) {
             if let ItemKind::Shape { points, .. } = &mut it.kind {
                 points[0] = (60.0, 10.0);
             }
@@ -4175,7 +4169,7 @@ mod tests {
         finish_endpoint_drag(&mut app, id, 0, start);
         assert!(
             matches!(
-                &app.scene.get_item(&id).unwrap().kind,
+                &app.session.scene.get_item(&id).unwrap().kind,
                 ItemKind::Shape { closed: true, .. }
             ),
             "首尾不重合的闭合形状拖顶点保持闭合"
@@ -4190,13 +4184,14 @@ mod tests {
         // 箭头仍是 A→C。
         let (mut app, a_id) = app_with_rect((10.0, 10.0), (120.0, 80.0));
         app.add_connected_shape(FlowDir::Right); // A→B，选区在 B
-        let b_id = *app.scene.selection.iter().next().unwrap();
-        app.scene.deselect_all();
-        app.scene.select(a_id);
+        let b_id = *app.session.scene.selection.iter().next().unwrap();
+        app.session.scene.deselect_all();
+        app.session.scene.select(a_id);
         app.add_connected_shape(FlowDir::Right);
 
-        assert_eq!(app.scene.items.len(), 5, "3 节点 + 2 箭头");
+        assert_eq!(app.session.scene.items.len(), 5, "3 节点 + 2 箭头");
         let c = app
+            .session
             .scene
             .items
             .iter()
@@ -4217,6 +4212,7 @@ mod tests {
         assert_eq!((c.transform.pos.x, c.transform.pos.y), (230.0, 190.0));
         // 第二条箭头：A→C
         let arrow = app
+            .session
             .scene
             .items
             .iter()
@@ -4272,8 +4268,8 @@ mod tests {
             None,
         );
         let (a_id, b_id) = (a.id, b.id);
-        app.scene.add_item(a);
-        app.scene.add_item(b);
+        app.session.scene.add_item(a);
+        app.session.scene.add_item(b);
 
         // 取出本步产生的 flash，断言已按英文出文案
         let expect_ascii_flash = |app: &mut PReferZApp, what: &str| {
@@ -4286,16 +4282,16 @@ mod tests {
             assert!(!has_cjk(&msg), "EN 界面下 {what} 的提示未翻译: {msg}");
         };
 
-        app.scene.deselect_all();
-        app.scene.select(a_id);
-        app.scene.select(b_id);
+        app.session.scene.deselect_all();
+        app.session.scene.select(a_id);
+        app.session.scene.select(b_id);
         app.align_selected(AlignMode::Left);
         expect_ascii_flash(&mut app, "对齐");
         app.arrange_selected(ArrangeMode::Grid);
         expect_ascii_flash(&mut app, "排列");
 
-        app.scene.deselect_all();
-        app.scene.select(b_id);
+        app.session.scene.deselect_all();
+        app.session.scene.select(b_id);
         app.delete_selected();
         expect_ascii_flash(&mut app, "删除");
 
@@ -4383,13 +4379,14 @@ mod tests {
         app.frame_ratio = Some((16, 9));
         // 400×400 正方形画框（`new_frame` 默认跟随全局）
         app.finish_create_frame(CanvasPoint::new(0.0, 0.0), CanvasPoint::new(400.0, 400.0));
-        let id = app.scene.items[0].id;
-        let size = |app: &PReferZApp| match &app.scene.get_item(&id).unwrap().kind {
+        let id = app.session.scene.items[0].id;
+        let size = |app: &PReferZApp| match &app.session.scene.get_item(&id).unwrap().kind {
             ItemKind::Frame { base_size, .. } => *base_size,
             _ => panic!("选中项应为画框"),
         };
         let follows = |app: &PReferZApp| {
-            app.scene
+            app.session
+                .scene
                 .get_item(&id)
                 .unwrap()
                 .frame_follows_global_ratio()
@@ -4403,15 +4400,19 @@ mod tests {
         assert_eq!(size(&app), square, "解除跟随不该动几何");
 
         // 重新选「跟随全局」→ 按 16:9 重算（保持有效长边 400、中心锚定）
-        let cmds = app.undo_stack.undo.len();
+        let cmds = app.session.undo_stack.undo_len();
         app.set_frames_follow_global(&[id], true);
         assert!(follows(&app));
         assert_eq!(size(&app), (400.0, 225.0), "16:9 应压短边");
-        assert_eq!(app.undo_stack.undo.len(), cmds + 1, "状态 + 尺寸合并成一条");
+        assert_eq!(
+            app.session.undo_stack.undo_len(),
+            cmds + 1,
+            "状态 + 尺寸合并成一条"
+        );
 
         // 已跟随时再选同项：幂等，不产生空命令
         app.set_frames_follow_global(&[id], true);
-        assert_eq!(app.undo_stack.undo.len(), cmds + 1);
+        assert_eq!(app.session.undo_stack.undo_len(), cmds + 1);
 
         // 一条 undo 同时回滚状态与尺寸
         assert!(app.perform_undo());

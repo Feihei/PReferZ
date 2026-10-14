@@ -35,8 +35,9 @@ impl PReferZApp {
 
         // 初始位置：视口中心对应的画布
         let center_canvas = self
+            .session
             .viewport
-            .screen_to_canvas(self.viewport.screen_rect.center());
+            .screen_to_canvas(self.session.viewport.screen_rect.center());
         let item = Item::new_pixmap(
             texture_id,
             Some(outcome.path.to_string_lossy().to_string()),
@@ -115,7 +116,7 @@ impl PReferZApp {
                 self.image_data_cache.clear();
                 self.rgba_pixel_cache.clear();
                 self.rgba_size_cache.clear();
-                self.undo_stack = UndoStack::new();
+                self.session.clear_history();
 
                 // Pixmap 重分配 texture_id + 解码上传纹理（与内嵌帮助文档共用）
                 self.install_loaded_assets(ctx, &mut scene, &images);
@@ -124,16 +125,18 @@ impl PReferZApp {
                 // 可合法低于 min_zoom（内容过大），保存后重开必须忠实还原；且
                 // zoom_at 已处理越界渐进回归，旧版"滚轮在越界值上空转"的问题
                 // 不复存在。仅防御损坏数据（NaN / 非正数）。
-                self.viewport.pan = CanvasVector::new(viewport_meta.pan_x, viewport_meta.pan_y);
-                self.viewport.zoom = if viewport_meta.zoom.is_finite() && viewport_meta.zoom > 0.0 {
-                    viewport_meta.zoom
-                } else {
-                    1.0
-                };
+                self.session.viewport.pan =
+                    CanvasVector::new(viewport_meta.pan_x, viewport_meta.pan_y);
+                self.session.viewport.zoom =
+                    if viewport_meta.zoom.is_finite() && viewport_meta.zoom > 0.0 {
+                        viewport_meta.zoom
+                    } else {
+                        1.0
+                    };
 
-                self.scene = scene;
+                self.session.scene = scene;
                 // 清理孤儿 container_id（容器已不存在则置 None），Phase C/Step 4
-                self.scene.cleanup_orphan_containers();
+                self.session.scene.cleanup_orphan_containers();
                 // plan #5：从 .autosave 恢复时，当前文件仍指向原 .prz，
                 // 恢复的内容尚未写回原文件 → 视作未保存（dirty）。
                 match self.restoring_from_autosave.take() {
@@ -193,13 +196,13 @@ impl PReferZApp {
 
     /// 新建空白画布：清scene / 纹理缓存 / undo / current_file / dirty    /// 调用前应已处理保存提示（由调用方负责）
     pub(crate) fn reset_canvas(&mut self, ctx: &egui::Context) {
-        self.scene = Scene::new();
+        self.session.scene = Scene::new();
         self.texture_cache.clear();
         self.grayscale_texture_cache.clear();
         self.image_data_cache.clear();
         self.rgba_pixel_cache.clear();
         self.rgba_size_cache.clear();
-        self.undo_stack = UndoStack::new();
+        self.session.clear_history();
         self.current_file = None;
         self.dirty = false;
         self.crop_mode = None;
@@ -210,7 +213,7 @@ impl PReferZApp {
         self.pending_autosave_restore = None;
         self.restoring_from_autosave = None;
         self.autosave_dirty_since = None;
-        self.viewport.reset();
+        self.session.viewport.reset();
         self.flash(t(self.lang, T::FlashNewCanvas).to_string());
         ctx.request_repaint();
     }
@@ -405,8 +408,9 @@ impl PReferZApp {
             return;
         };
         let center = self
+            .session
             .viewport
-            .screen_to_canvas(self.viewport.screen_rect.center());
+            .screen_to_canvas(self.session.viewport.screen_rect.center());
         let (w, h) = CHART_DEFAULT_SIZE;
         let item = Item::new_chart(
             chart_type,
@@ -443,7 +447,7 @@ impl PReferZApp {
     fn start_save_common(&mut self, ctx: &egui::Context, path: PathBuf, msg: String) {
         // 收集 image_data_cache（key 转字符串以匹sqlar name
         let mut images: HashMap<String, Vec<u8>> = HashMap::new();
-        for item in &self.scene.items {
+        for item in &self.session.scene.items {
             if let ItemKind::Pixmap { texture_id, .. } = &item.kind {
                 if let Some(bytes) = self.image_data_cache.get(texture_id) {
                     images.insert(texture_id.to_string(), bytes.clone());
@@ -451,12 +455,12 @@ impl PReferZApp {
             }
         }
         let viewport = ViewportMeta {
-            pan_x: self.viewport.pan.x,
-            pan_y: self.viewport.pan.y,
-            zoom: self.viewport.zoom,
+            pan_x: self.session.viewport.pan.x,
+            pan_y: self.session.viewport.pan.y,
+            zoom: self.session.viewport.zoom,
         };
         self.bg_ops
-            .start_save_msg(ctx, path, self.scene.clone(), images, viewport, msg);
+            .start_save_msg(ctx, path, self.session.scene.clone(), images, viewport, msg);
     }
 
     /// 启动后台导出（spec §2.3 导出）。
@@ -469,22 +473,23 @@ impl PReferZApp {
         format: ExportFormat,
         selection_only: bool,
     ) {
-        if self.scene.items.is_empty() {
+        if self.session.scene.items.is_empty() {
             self.flash(t(self.lang, T::FlashCanvasEmptyNoExport).to_string());
             return;
         }
 
         // 按 selection_only 过滤 items（绑定文本随容器联动，见 expanded_export_ids）
         let items_snapshot: Vec<Item> = if selection_only {
-            let sel = super::export_dialog::expanded_export_ids(&self.scene);
-            self.scene
+            let sel = super::export_dialog::expanded_export_ids(&self.session.scene);
+            self.session
+                .scene
                 .items
                 .iter()
                 .filter(|it| sel.contains(&it.id))
                 .cloned()
                 .collect()
         } else {
-            self.scene.items.clone()
+            self.session.scene.items.clone()
         };
         if items_snapshot.is_empty() {
             self.flash(t(self.lang, T::FlashNoSelectionToExport).to_string());
@@ -530,8 +535,9 @@ impl PReferZApp {
         selection_only: bool,
     ) {
         // 过滤 Pixmap items
-        let sel = &self.scene.selection;
+        let sel = &self.session.scene.selection;
         let pixmap_items: Vec<&Item> = self
+            .session
             .scene
             .items
             .iter()

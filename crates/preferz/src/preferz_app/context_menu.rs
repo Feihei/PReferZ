@@ -6,7 +6,7 @@ impl PReferZApp {
     pub(crate) fn render_context_menu(&mut self, ctx: &egui::Context) {
         let menu_id = egui::Id::new("context_menu");
         let pos = self.context_menu_pos;
-        let has_selection = !self.scene.selection.is_empty();
+        let has_selection = !self.session.scene.selection.is_empty();
         let primary_pressed = ctx.input(|i| i.pointer.primary_pressed());
         let pointer_pos = ctx.input(|i| i.pointer.latest_pos());
 
@@ -149,11 +149,13 @@ impl PReferZApp {
                             self.context_menu_open = false;
                         }
                         // z-order：Frame 恒在最底，选区全为 Frame 时禁用
-                        let reorderable = self
-                            .scene
-                            .selection
-                            .iter()
-                            .any(|id| !self.scene.get_item(id).is_some_and(|i| i.is_frame()));
+                        let reorderable = self.session.scene.selection.iter().any(|id| {
+                            !self
+                                .session
+                                .scene
+                                .get_item(id)
+                                .is_some_and(|i| i.is_frame())
+                        });
                         if ui
                             .add_enabled(
                                 reorderable,
@@ -207,7 +209,7 @@ impl PReferZApp {
                             self.context_menu_open = false;
                         }
                         // 编组/解组（plan #13）：编组需 ≥2 项；解组需选区内有已编组项
-                        if self.scene.selection.len() >= 2
+                        if self.session.scene.selection.len() >= 2
                             && ui
                                 .button(format!("\u{1F510} {}", t(self.lang, T::MenuGroup)))
                                 .clicked()
@@ -239,10 +241,19 @@ impl PReferZApp {
 
                         // 元素超链接（plan #6 / H4）：恰选中 1 项时提供编辑入口，
                         // 已有链接再给「移除」。与 Excalidraw actionLink 谓词一致。
-                        if self.scene.selection.len() == 1 {
-                            let id = *self.scene.selection.iter().next().expect("len == 1");
-                            let has_link =
-                                self.scene.get_item(&id).is_some_and(|it| it.link.is_some());
+                        if self.session.scene.selection.len() == 1 {
+                            let id = *self
+                                .session
+                                .scene
+                                .selection
+                                .iter()
+                                .next()
+                                .expect("len == 1");
+                            let has_link = self
+                                .session
+                                .scene
+                                .get_item(&id)
+                                .is_some_and(|it| it.link.is_some());
                             if ui
                                 .button(format!(
                                     "\u{1F517} {}",
@@ -314,7 +325,7 @@ impl PReferZApp {
                         }
 
                         // Phase 5：批量排列（≥ 2 项）
-                        if self.scene.selection.len() >= 2 {
+                        if self.session.scene.selection.len() >= 2 {
                             ui.menu_button(
                                 format!("\u{1F9ED} {}", t(self.lang, T::Arrange)),
                                 |ui| {
@@ -353,7 +364,7 @@ impl PReferZApp {
                                     ui.menu_button(
                                         format!("\u{22EF} {}", t(self.lang, T::Distribute)),
                                         |ui| {
-                                            let enabled = self.scene.selection.len() >= 3;
+                                            let enabled = self.session.scene.selection.len() >= 3;
                                             for (axis, dist_mode, key) in [
                                                 (
                                                     DistributeAxis::Horizontal,
@@ -429,7 +440,7 @@ impl PReferZApp {
                         .button(format!("\u{1F504} {}", t(self.lang, T::ResetZoom)))
                         .clicked()
                     {
-                        self.viewport.reset();
+                        self.session.viewport.reset();
                         self.flash(t(self.lang, T::FlashResetZoom).to_string());
                         self.context_menu_open = false;
                     }

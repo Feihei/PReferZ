@@ -118,7 +118,7 @@ impl PReferZApp {
     /// 批量应用到所有选中项。连续控件（滑块 / 取色器）经 [`PropEdit`] 合并成一条 undo 命令。
     pub(crate) fn render_props_panel(&mut self, ctx: &egui::Context) {
         // 始终渲染（anim=0 时偏移到屏外不可见，不拦截事件）；避免 Area 首帧闪现。
-        if self.scene.selection.is_empty() {
+        if self.session.scene.selection.is_empty() {
             // 无选中且绘制工具激活：右侧栏显示「新建元素默认样式」
             // （原底部样式面板移入侧栏；Frame 无样式可调，不显示）。
             if self.tool != Tool::Select && self.tool != Tool::Frame {
@@ -126,7 +126,7 @@ impl PReferZApp {
             }
             return;
         }
-        let ids: Vec<ItemId> = self.scene.selection.iter().copied().collect();
+        let ids: Vec<ItemId> = self.session.scene.selection.iter().copied().collect();
         let lang = self.lang;
         let dark = self.theme.is_dark(ctx);
         // 指数缓动 anim 直接映射偏移（不套 smoothstep，避免端点导数≈0 导致贴边卡顿）。
@@ -172,7 +172,7 @@ impl PReferZApp {
                             .show(ui, |ui| {
                             // 叠放顺序：Frame 不参与，选区含非 Frame item 时显示
                             let has_reorderable = ids.iter().any(|id| {
-                                !self.scene.get_item(id).is_some_and(|i| i.is_frame())
+                                !self.session.scene.get_item(id).is_some_and(|i| i.is_frame())
                             });
                             if has_reorderable {
                                 ui.label(t(lang, T::PropsSectionZOrder));
@@ -199,35 +199,35 @@ impl PReferZApp {
                                 .iter()
                                 .copied()
                                 .filter(|id| {
-                                    matches!(self.scene.get_item(id), Some(item) if matches!(item.kind, ItemKind::Shape { .. }))
+                                    matches!(self.session.scene.get_item(id), Some(item) if matches!(item.kind, ItemKind::Shape { .. }))
                                 })
                                 .collect();
                             let freedraw_ids: Vec<ItemId> = ids
                                 .iter()
                                 .copied()
                                 .filter(|id| {
-                                    matches!(self.scene.get_item(id), Some(item) if matches!(item.kind, ItemKind::Freedraw { .. }))
+                                    matches!(self.session.scene.get_item(id), Some(item) if matches!(item.kind, ItemKind::Freedraw { .. }))
                                 })
                                 .collect();
                             let text_ids: Vec<ItemId> = ids
                                 .iter()
                                 .copied()
                                 .filter(|id| {
-                                    matches!(self.scene.get_item(id), Some(item) if matches!(item.kind, ItemKind::Text { .. }))
+                                    matches!(self.session.scene.get_item(id), Some(item) if matches!(item.kind, ItemKind::Text { .. }))
                                 })
                                 .collect();
                             let pixmap_ids: Vec<ItemId> = ids
                                 .iter()
                                 .copied()
                                 .filter(|id| {
-                                    matches!(self.scene.get_item(id), Some(item) if matches!(item.kind, ItemKind::Pixmap { .. }))
+                                    matches!(self.session.scene.get_item(id), Some(item) if matches!(item.kind, ItemKind::Pixmap { .. }))
                                 })
                                 .collect();
                             let frame_ids: Vec<ItemId> = ids
                                 .iter()
                                 .copied()
                                 .filter(|id| {
-                                    matches!(self.scene.get_item(id), Some(item) if matches!(item.kind, ItemKind::Frame { .. }))
+                                    matches!(self.session.scene.get_item(id), Some(item) if matches!(item.kind, ItemKind::Frame { .. }))
                                 })
                                 .collect();
 
@@ -252,10 +252,10 @@ impl PReferZApp {
                             let mut text_ids = text_ids;
                             for id in &ids {
                                 if matches!(
-                                    self.scene.get_item(id),
+                                    self.session.scene.get_item(id),
                                     Some(item) if matches!(item.kind, ItemKind::Shape { .. })
                                 ) {
-                                    for item in &self.scene.items {
+                                    for item in &self.session.scene.items {
                                         if let ItemKind::Text {
                                             container_id: Some(cid),
                                             ..
@@ -315,13 +315,13 @@ impl PReferZApp {
     ) {
         let all_colorable = ids.iter().all(|id| {
             matches!(
-                self.scene.get_item(id).map(|it| &it.kind),
+                self.session.scene.get_item(id).map(|it| &it.kind),
                 Some(ItemKind::Shape { .. } | ItemKind::Freedraw { .. } | ItemKind::Text { .. })
             )
         });
         let all_widthable = ids.iter().all(|id| {
             matches!(
-                self.scene.get_item(id).map(|it| &it.kind),
+                self.session.scene.get_item(id).map(|it| &it.kind),
                 Some(ItemKind::Shape { .. } | ItemKind::Freedraw { .. })
             )
         });
@@ -337,7 +337,7 @@ impl PReferZApp {
         ui.label(t(lang, T::PropsSectionCommon));
         // 颜色（形状描边 / 墨迹 / 文字统一映射）
         if all_colorable {
-            if let Some(p) = prop(&self.scene, ids, |it| match &it.kind {
+            if let Some(p) = prop(&self.session.scene, ids, |it| match &it.kind {
                 ItemKind::Shape { stroke, .. } => Some(stroke.color),
                 ItemKind::Freedraw { color, .. } => Some(*color),
                 ItemKind::Text { color, .. } => Some(*color),
@@ -354,7 +354,7 @@ impl PReferZApp {
         }
         // 线宽（形状描边 + 墨迹基准笔宽统一映射）
         if all_widthable {
-            if let Some(p) = prop(&self.scene, ids, |it| match &it.kind {
+            if let Some(p) = prop(&self.session.scene, ids, |it| match &it.kind {
                 ItemKind::Shape { stroke, .. } => Some(stroke.width),
                 ItemKind::Freedraw { stroke_width, .. } => Some(*stroke_width),
                 _ => None,
@@ -389,7 +389,7 @@ impl PReferZApp {
     fn apply_common_color(&mut self, ids: &[ItemId], new: [u8; 4]) {
         let mut items: Vec<(ItemId, PropValue)> = Vec::new();
         for id in ids {
-            let Some(item) = self.scene.get_item(id) else {
+            let Some(item) = self.session.scene.get_item(id) else {
                 continue;
             };
             match &item.kind {
@@ -416,7 +416,7 @@ impl PReferZApp {
         self.ensure_prop_edit(PropKind::Stroke, items);
         // 预览：直接改色（文字同时脱离跟随）
         for id in ids {
-            if let Some(item) = self.scene.get_item_mut(id) {
+            if let Some(item) = self.session.scene.get_item_mut(id) {
                 match &mut item.kind {
                     ItemKind::Shape { stroke, .. } => stroke.color = new,
                     ItemKind::Freedraw { color, .. } => *color = new,
@@ -441,7 +441,7 @@ impl PReferZApp {
     fn apply_common_width(&mut self, ids: &[ItemId], w: f32) {
         let mut items: Vec<(ItemId, PropValue)> = Vec::new();
         for id in ids {
-            let Some(item) = self.scene.get_item(id) else {
+            let Some(item) = self.session.scene.get_item(id) else {
                 continue;
             };
             match &item.kind {
@@ -462,7 +462,7 @@ impl PReferZApp {
         }
         self.ensure_prop_edit(PropKind::Stroke, items);
         for id in ids {
-            if let Some(item) = self.scene.get_item_mut(id) {
+            if let Some(item) = self.session.scene.get_item_mut(id) {
                 match &mut item.kind {
                     ItemKind::Shape { stroke, .. } => stroke.width = w,
                     ItemKind::Freedraw { stroke_width, .. } => *stroke_width = w,
@@ -483,7 +483,7 @@ impl PReferZApp {
     /// （undo / 清除链接 / 外部修改后自动同步）——不能每帧从存储值重新 clone，
     /// 否则键入的字符下一帧即被冲掉（输入框打不进字的根因）。
     fn render_link_section(&mut self, ui: &mut egui::Ui, lang: Lang, id: ItemId) {
-        let Some(item) = self.scene.get_item(&id) else {
+        let Some(item) = self.session.scene.get_item(&id) else {
             return;
         };
         let current = item.link.clone().unwrap_or_default();
@@ -747,7 +747,7 @@ impl PReferZApp {
         ids: &[ItemId],
     ) {
         // 颜色（与 Shape 描边同调色板）
-        if let Some(p) = prop(&self.scene, ids, |it| match &it.kind {
+        if let Some(p) = prop(&self.session.scene, ids, |it| match &it.kind {
             ItemKind::Freedraw { color, .. } => Some(*color),
             _ => None,
         }) {
@@ -780,7 +780,7 @@ impl PReferZApp {
             }
         }
         // 粗细（基准笔宽；逐点相对乘子保持不变，整条墨迹等比缩放）
-        if let Some(p) = prop(&self.scene, ids, |it| match &it.kind {
+        if let Some(p) = prop(&self.session.scene, ids, |it| match &it.kind {
             ItemKind::Freedraw { stroke_width, .. } => Some(*stroke_width),
             _ => None,
         }) {
@@ -831,7 +831,7 @@ impl PReferZApp {
         ids: &[ItemId],
     ) {
         // 描边颜色（Excalidraw 式调色板）
-        if let Some(p) = prop(&self.scene, ids, |it| match &it.kind {
+        if let Some(p) = prop(&self.session.scene, ids, |it| match &it.kind {
             ItemKind::Shape { stroke, .. } => Some(stroke.color),
             _ => None,
         }) {
@@ -860,7 +860,7 @@ impl PReferZApp {
             }
         }
         // 描边宽度
-        if let Some(p) = prop(&self.scene, ids, |it| match &it.kind {
+        if let Some(p) = prop(&self.session.scene, ids, |it| match &it.kind {
             ItemKind::Shape { stroke, .. } => Some(stroke.width),
             _ => None,
         }) {
@@ -894,7 +894,7 @@ impl PReferZApp {
             }
         }
         // 线型
-        if let Some(p) = prop(&self.scene, ids, |it| match &it.kind {
+        if let Some(p) = prop(&self.session.scene, ids, |it| match &it.kind {
             ItemKind::Shape { stroke, .. } => Some(stroke.dash),
             _ => None,
         }) {
@@ -930,7 +930,7 @@ impl PReferZApp {
             .iter()
             .copied()
             .filter(|id| {
-                matches!(self.scene.get_item(id), Some(item) if match &item.kind {
+                matches!(self.session.scene.get_item(id), Some(item) if match &item.kind {
                     ItemKind::Shape { shape_type, closed, .. } => {
                         !matches!(shape_type, ShapeType::Polyline | ShapeType::Elbow) || *closed
                     }
@@ -938,7 +938,7 @@ impl PReferZApp {
                 })
             })
             .collect();
-        if let Some(p) = prop(&self.scene, &fill_ids, |it| match &it.kind {
+        if let Some(p) = prop(&self.session.scene, &fill_ids, |it| match &it.kind {
             ItemKind::Shape {
                 fill,
                 fill_style,
@@ -990,7 +990,7 @@ impl PReferZApp {
             // 填充颜色（仅有填充时显示；带「跟随形状」格，plan #2 与描边共用 5 色）
             if let Some(c) = state.color {
                 // 边框色：跟随格底色 + 开启跟随时吸附目标（取代表描边色）
-                let border = prop(&self.scene, &fill_ids, |it| match &it.kind {
+                let border = prop(&self.session.scene, &fill_ids, |it| match &it.kind {
                     ItemKind::Shape { stroke, .. } => Some(stroke.color),
                     _ => None,
                 })
@@ -1086,14 +1086,14 @@ impl PReferZApp {
             .iter()
             .copied()
             .filter(|id| {
-                matches!(self.scene.get_item(id), Some(item) if matches!(&item.kind,
+                matches!(self.session.scene.get_item(id), Some(item) if matches!(&item.kind,
                     ItemKind::Shape { shape_type: ShapeType::Rectangle, .. }
                     | ItemKind::Shape { shape_type: ShapeType::Elbow, .. })
                 )
             })
             .collect();
         if !roundable_ids.is_empty() {
-            if let Some(p) = prop(&self.scene, &roundable_ids, |it| match &it.kind {
+            if let Some(p) = prop(&self.session.scene, &roundable_ids, |it| match &it.kind {
                 ItemKind::Shape { roundness, .. } => Some(*roundness),
                 _ => None,
             }) {
@@ -1128,7 +1128,7 @@ impl PReferZApp {
             }
         }
         // 手绘风档位（plan #3，离散四档，整批一条命令）
-        if let Some(p) = prop(&self.scene, ids, |it| match &it.kind {
+        if let Some(p) = prop(&self.session.scene, ids, |it| match &it.kind {
             ItemKind::Shape { sloppiness, .. } => Some(*sloppiness),
             _ => None,
         }) {
@@ -1147,12 +1147,15 @@ impl PReferZApp {
                         let items: Vec<(ItemId, Sloppiness, Sloppiness)> = ids
                             .iter()
                             .filter_map(|id| {
-                                self.scene.get_item(id).and_then(|it| match &it.kind {
-                                    ItemKind::Shape { sloppiness, .. } => {
-                                        Some((*id, *sloppiness, val))
-                                    }
-                                    _ => None,
-                                })
+                                self.session
+                                    .scene
+                                    .get_item(id)
+                                    .and_then(|it| match &it.kind {
+                                        ItemKind::Shape { sloppiness, .. } => {
+                                            Some((*id, *sloppiness, val))
+                                        }
+                                        _ => None,
+                                    })
                             })
                             .collect();
                         if !items.is_empty() {
@@ -1167,7 +1170,7 @@ impl PReferZApp {
             .iter()
             .copied()
             .filter(|id| {
-                matches!(self.scene.get_item(id), Some(item) if matches!(item.kind, ItemKind::Shape { shape_type: ShapeType::Polyline, .. }))
+                matches!(self.session.scene.get_item(id), Some(item) if matches!(item.kind, ItemKind::Shape { shape_type: ShapeType::Polyline, .. }))
             })
             .collect();
         // elbow 连接器（plan #24）：无曲线 / 闭合语义，仅箭头（倒角已在上方 roundness 节）。
@@ -1175,11 +1178,11 @@ impl PReferZApp {
             .iter()
             .copied()
             .filter(|id| {
-                matches!(self.scene.get_item(id), Some(item) if matches!(item.kind, ItemKind::Shape { shape_type: ShapeType::Elbow, .. }))
+                matches!(self.session.scene.get_item(id), Some(item) if matches!(item.kind, ItemKind::Shape { shape_type: ShapeType::Elbow, .. }))
             })
             .collect();
         if !elbow_ids.is_empty() {
-            if let Some(p) = prop(&self.scene, &elbow_ids, |it| match &it.kind {
+            if let Some(p) = prop(&self.session.scene, &elbow_ids, |it| match &it.kind {
                 ItemKind::Shape {
                     start_arrow,
                     end_arrow,
@@ -1202,7 +1205,7 @@ impl PReferZApp {
             }
         }
         if !poly_ids.is_empty() {
-            if let Some(p) = prop(&self.scene, &poly_ids, |it| match &it.kind {
+            if let Some(p) = prop(&self.session.scene, &poly_ids, |it| match &it.kind {
                 ItemKind::Shape { curve_type, .. } => Some(*curve_type),
                 _ => None,
             }) {
@@ -1219,7 +1222,7 @@ impl PReferZApp {
                     }
                 });
             }
-            if let Some(p) = prop(&self.scene, &poly_ids, |it| match &it.kind {
+            if let Some(p) = prop(&self.session.scene, &poly_ids, |it| match &it.kind {
                 ItemKind::Shape { closed, .. } => Some(*closed),
                 _ => None,
             }) {
@@ -1230,10 +1233,13 @@ impl PReferZApp {
                     let items: Vec<(ItemId, bool, bool)> = poly_ids
                         .iter()
                         .filter_map(|id| {
-                            self.scene.get_item(id).and_then(|it| match &it.kind {
-                                ItemKind::Shape { closed, .. } => Some((*id, *closed, checked)),
-                                _ => None,
-                            })
+                            self.session
+                                .scene
+                                .get_item(id)
+                                .and_then(|it| match &it.kind {
+                                    ItemKind::Shape { closed, .. } => Some((*id, *closed, checked)),
+                                    _ => None,
+                                })
                         })
                         .collect();
                     if !items.is_empty() {
@@ -1244,10 +1250,10 @@ impl PReferZApp {
             // 起/终点箭头（仅开放折线；闭合图形首尾相连，箭头无意义）。
             // Excalidraw 同款：两端各自独立选样式（无 / Arrow / Triangle / Dot / Bar）。
             let all_closed = poly_ids.iter().all(|id| {
-                matches!(self.scene.get_item(id), Some(item) if matches!(item.kind, ItemKind::Shape { closed: true, .. }))
+                matches!(self.session.scene.get_item(id), Some(item) if matches!(item.kind, ItemKind::Shape { closed: true, .. }))
             });
             if !all_closed {
-                if let Some(p) = prop(&self.scene, &poly_ids, |it| match &it.kind {
+                if let Some(p) = prop(&self.session.scene, &poly_ids, |it| match &it.kind {
                     ItemKind::Shape {
                         start_arrow,
                         end_arrow,
@@ -1279,25 +1285,28 @@ impl PReferZApp {
         let items: Vec<(ItemId, ArrowHeads, ArrowHeads)> = ids
             .iter()
             .filter_map(|id| {
-                self.scene.get_item(id).and_then(|it| match &it.kind {
-                    ItemKind::Shape {
-                        start_arrow,
-                        end_arrow,
-                        closed: false,
-                        ..
-                    } => Some((
-                        *id,
-                        ArrowHeads {
-                            start: *start_arrow,
-                            end: *end_arrow,
-                        },
-                        ArrowHeads {
-                            start: if start { new } else { *start_arrow },
-                            end: if start { *end_arrow } else { new },
-                        },
-                    )),
-                    _ => None,
-                })
+                self.session
+                    .scene
+                    .get_item(id)
+                    .and_then(|it| match &it.kind {
+                        ItemKind::Shape {
+                            start_arrow,
+                            end_arrow,
+                            closed: false,
+                            ..
+                        } => Some((
+                            *id,
+                            ArrowHeads {
+                                start: *start_arrow,
+                                end: *end_arrow,
+                            },
+                            ArrowHeads {
+                                start: if start { new } else { *start_arrow },
+                                end: if start { *end_arrow } else { new },
+                            },
+                        )),
+                        _ => None,
+                    })
             })
             .collect();
         if !items.is_empty() {
@@ -1317,7 +1326,7 @@ impl PReferZApp {
         dark: bool,
         ids: &[ItemId],
     ) {
-        if let Some(p) = prop(&self.scene, ids, |it| match &it.kind {
+        if let Some(p) = prop(&self.session.scene, ids, |it| match &it.kind {
             ItemKind::Text { font_size, .. } => Some(*font_size),
             _ => None,
         }) {
@@ -1347,7 +1356,7 @@ impl PReferZApp {
                 ui.label(t(lang, T::PropsMixedValue));
             }
         }
-        if let Some(p) = prop(&self.scene, ids, |it| match &it.kind {
+        if let Some(p) = prop(&self.session.scene, ids, |it| match &it.kind {
             ItemKind::Text { color, .. } => Some(*color),
             _ => None,
         }) {
@@ -1359,7 +1368,7 @@ impl PReferZApp {
                 .copied()
                 .filter(|id| {
                     matches!(
-                        self.scene.get_item(id).map(|it| &it.kind),
+                        self.session.scene.get_item(id).map(|it| &it.kind),
                         Some(ItemKind::Text {
                             container_id: Some(_),
                             ..
@@ -1374,7 +1383,7 @@ impl PReferZApp {
                     self.apply_text_color(ids, col);
                 }
             } else {
-                let follow_on = prop(&self.scene, &bound_ids, |it| match &it.kind {
+                let follow_on = prop(&self.session.scene, &bound_ids, |it| match &it.kind {
                     ItemKind::Text { follow_stroke, .. } => Some(*follow_stroke),
                     _ => None,
                 })
@@ -1401,8 +1410,11 @@ impl PReferZApp {
                         // 开启跟随：绑定文字色吸附到各自容器边框色，follow=true
                         let mut changes: Vec<(ItemId, TextStyle, TextStyle)> = Vec::new();
                         for id in &bound_ids {
-                            if let Some(old) =
-                                self.scene.get_item(id).and_then(|it| it.kind.text_style())
+                            if let Some(old) = self
+                                .session
+                                .scene
+                                .get_item(id)
+                                .and_then(|it| it.kind.text_style())
                             {
                                 let b = self.container_stroke_of(id).unwrap_or(old.color);
                                 if old.follow_stroke && old.color == b {
@@ -1422,8 +1434,11 @@ impl PReferZApp {
                         // 关闭跟随：保持当前颜色，转为独立
                         let mut changes: Vec<(ItemId, TextStyle, TextStyle)> = Vec::new();
                         for id in ids {
-                            if let Some(old) =
-                                self.scene.get_item(id).and_then(|it| it.kind.text_style())
+                            if let Some(old) = self
+                                .session
+                                .scene
+                                .get_item(id)
+                                .and_then(|it| it.kind.text_style())
                             {
                                 if !old.follow_stroke {
                                     continue;
@@ -1443,7 +1458,7 @@ impl PReferZApp {
             // 绑定文字且仍跟随：给出提示（一旦手选即消失）
             let any_following = ids.iter().any(|id| {
                 matches!(
-                    self.scene.get_item(id).map(|it| &it.kind),
+                    self.session.scene.get_item(id).map(|it| &it.kind),
                     Some(ItemKind::Text {
                         container_id: Some(_),
                         follow_stroke: true,
@@ -1463,7 +1478,7 @@ impl PReferZApp {
             }
         }
         // 字体族（plan #1）：黑体 / 伪手写（逐字微抖，零体积增量）
-        if let Some(p) = prop(&self.scene, ids, |it| match &it.kind {
+        if let Some(p) = prop(&self.session.scene, ids, |it| match &it.kind {
             ItemKind::Text { font_family, .. } => Some(*font_family),
             _ => None,
         }) {
@@ -1496,7 +1511,7 @@ impl PReferZApp {
         // 对齐（plan #1）：仅绑定文字显示；自由文本单行无框恒 top-left
         let has_bound_text = ids.iter().any(|id| {
             matches!(
-                self.scene.get_item(id),
+                self.session.scene.get_item(id),
                 Some(it) if matches!(
                     &it.kind,
                     ItemKind::Text {
@@ -1507,7 +1522,7 @@ impl PReferZApp {
             )
         });
         if has_bound_text {
-            if let Some(p) = prop(&self.scene, ids, |it| match &it.kind {
+            if let Some(p) = prop(&self.session.scene, ids, |it| match &it.kind {
                 ItemKind::Text { align_h, .. } => Some(*align_h),
                 _ => None,
             }) {
@@ -1538,7 +1553,7 @@ impl PReferZApp {
                     }
                 });
             }
-            if let Some(p) = prop(&self.scene, ids, |it| match &it.kind {
+            if let Some(p) = prop(&self.session.scene, ids, |it| match &it.kind {
                 ItemKind::Text { align_v, .. } => Some(*align_v),
                 _ => None,
             }) {
@@ -1574,7 +1589,7 @@ impl PReferZApp {
 
     /// 图片节：不透明度 / 灰度（Phase H）。
     pub(crate) fn render_pixmap_props(&mut self, ui: &mut egui::Ui, lang: Lang, ids: &[ItemId]) {
-        if let Some(p) = prop(&self.scene, ids, |it| match &it.kind {
+        if let Some(p) = prop(&self.session.scene, ids, |it| match &it.kind {
             ItemKind::Pixmap { opacity, .. } => Some(*opacity),
             _ => None,
         }) {
@@ -1623,7 +1638,7 @@ impl PReferZApp {
                 ui.label(t(lang, T::PropsMixedValue));
             }
         }
-        if let Some(p) = prop(&self.scene, ids, |it| match &it.kind {
+        if let Some(p) = prop(&self.session.scene, ids, |it| match &it.kind {
             ItemKind::Pixmap { grayscale, .. } => Some(*grayscale),
             _ => None,
         }) {
@@ -1658,7 +1673,7 @@ impl PReferZApp {
     /// 画框节：编号（Phase H）+ 比例下拉（plan #3，「跟随全局比例」为其中一项）。
     pub(crate) fn render_frame_props(&mut self, ui: &mut egui::Ui, lang: Lang, ids: &[ItemId]) {
         ui.label(t(lang, T::PropsFrameNumber));
-        if let Some(p) = prop(&self.scene, ids, |it| match &it.kind {
+        if let Some(p) = prop(&self.session.scene, ids, |it| match &it.kind {
             ItemKind::Frame { number, .. } => Some(*number),
             _ => None,
         }) {
@@ -1670,10 +1685,13 @@ impl PReferZApp {
                 let items: Vec<(ItemId, u32, u32)> = ids
                     .iter()
                     .filter_map(|id| {
-                        self.scene.get_item(id).and_then(|it| match &it.kind {
-                            ItemKind::Frame { number, .. } => Some((*id, *number, n)),
-                            _ => None,
-                        })
+                        self.session
+                            .scene
+                            .get_item(id)
+                            .and_then(|it| match &it.kind {
+                                ItemKind::Frame { number, .. } => Some((*id, *number, n)),
+                                _ => None,
+                            })
                     })
                     .collect();
                 if !items.is_empty() {
@@ -1692,7 +1710,7 @@ impl PReferZApp {
         // 该项禁用并在下拉下方提示。
         ui.add_space(6.0);
         ui.label(t(lang, T::FramePresetLabel));
-        let follows_prop = prop(&self.scene, ids, |it| match &it.kind {
+        let follows_prop = prop(&self.session.scene, ids, |it| match &it.kind {
             ItemKind::Frame {
                 follow_global_ratio,
                 ..
@@ -1757,7 +1775,7 @@ impl PReferZApp {
         let mut sizes: Vec<(ItemId, FrameGeom, FrameGeom)> = Vec::new();
         let rf = self.frame_ratio.map(|(w, h)| (w as f32, h as f32));
         for id in ids {
-            let Some(it) = self.scene.get_item(id) else {
+            let Some(it) = self.session.scene.get_item(id) else {
                 continue;
             };
             if !it.is_frame() {
@@ -1808,7 +1826,7 @@ impl PReferZApp {
         let mut items: Vec<(ItemId, FrameGeom, FrameGeom)> = Vec::new();
         let mut follows: Vec<(ItemId, bool, bool)> = Vec::new();
         for id in ids {
-            let Some(it) = self.scene.get_item(id) else {
+            let Some(it) = self.session.scene.get_item(id) else {
                 continue;
             };
             let (bw, bh) = match &it.kind {
@@ -1855,14 +1873,17 @@ impl PReferZApp {
         let items: Vec<(ItemId, CurveType, CurveType)> = ids
             .iter()
             .filter_map(|id| {
-                self.scene.get_item(id).and_then(|it| match &it.kind {
-                    ItemKind::Shape {
-                        shape_type: ShapeType::Polyline,
-                        curve_type,
-                        ..
-                    } => Some((*id, *curve_type, new_curve)),
-                    _ => None,
-                })
+                self.session
+                    .scene
+                    .get_item(id)
+                    .and_then(|it| match &it.kind {
+                        ItemKind::Shape {
+                            shape_type: ShapeType::Polyline,
+                            curve_type,
+                            ..
+                        } => Some((*id, *curve_type, new_curve)),
+                        _ => None,
+                    })
             })
             .collect();
         if items.is_empty() {
@@ -1893,14 +1914,14 @@ impl PReferZApp {
 
     /// 绑定文字所属容器的描边色（"跟随形状"的边框色）；非绑定文字或容器已删则 `None`。
     fn container_stroke_of(&self, text_id: &ItemId) -> Option<[u8; 4]> {
-        let cid = match self.scene.get_item(text_id).map(|it| &it.kind) {
+        let cid = match self.session.scene.get_item(text_id).map(|it| &it.kind) {
             Some(ItemKind::Text {
                 container_id: Some(c),
                 ..
             }) => *c,
             _ => return None,
         };
-        match self.scene.get_item(&cid).map(|it| &it.kind) {
+        match self.session.scene.get_item(&cid).map(|it| &it.kind) {
             Some(ItemKind::Shape { stroke, .. }) => Some(stroke.color),
             _ => None,
         }
@@ -1913,7 +1934,7 @@ impl PReferZApp {
     pub(crate) fn ensure_prop_edit(&mut self, kind: PropKind, snapshot: Vec<(ItemId, PropValue)>) {
         if let Some(p) = self.prop_edit_pending.take() {
             if p.kind != kind {
-                if let Some(cmd) = prop_cmd(p, &self.scene) {
+                if let Some(cmd) = prop_cmd(p, &self.session.scene) {
                     self.push_cmd(cmd);
                 }
             } else {
@@ -1943,14 +1964,15 @@ impl PReferZApp {
         let items: Vec<(ItemId, PropValue)> = ids
             .iter()
             .filter_map(|id| {
-                self.scene
+                self.session
+                    .scene
                     .get_item(id)
                     .and_then(|it| snap(&it.kind).map(|v| (*id, v)))
             })
             .collect();
         self.ensure_prop_edit(kind, items);
         for id in ids {
-            if let Some(item) = self.scene.get_item_mut(id) {
+            if let Some(item) = self.session.scene.get_item_mut(id) {
                 apply(&mut item.kind);
             }
         }
@@ -1966,7 +1988,7 @@ impl PReferZApp {
         let mut extra: Vec<(ItemId, PropValue)> = Vec::new();
         for id in ids {
             // 一次性提取不可变数据后立即释放借用（后续预览阶段要可变借 scene）
-            let (is_shape, fill_target) = match self.scene.get_item(id).map(|it| &it.kind) {
+            let (is_shape, fill_target) = match self.session.scene.get_item(id).map(|it| &it.kind) {
                 Some(ItemKind::Shape {
                     fill,
                     fill_style,
@@ -1981,6 +2003,7 @@ impl PReferZApp {
             }
             // 该图形的绑定文字：old = 当前整份 TextStyle，new = 仅换 color
             let text_ids: Vec<ItemId> = self
+                .session
                 .scene
                 .items
                 .iter()
@@ -1993,7 +2016,7 @@ impl PReferZApp {
                 })
                 .collect();
             for tid in text_ids {
-                let Some(t) = self.scene.get_item(&tid) else {
+                let Some(t) = self.session.scene.get_item(&tid) else {
                     continue;
                 };
                 let Some(old_style) = t.kind.text_style() else {
@@ -2007,7 +2030,7 @@ impl PReferZApp {
                     extra.push((tid, PropValue::Text(old_style)));
                 }
                 // 预览：直接改文字颜色
-                if let Some(t) = self.scene.get_item_mut(&tid) {
+                if let Some(t) = self.session.scene.get_item_mut(&tid) {
                     if let ItemKind::Text { color: c, .. } = &mut t.kind {
                         *c = color;
                     }
@@ -2028,7 +2051,7 @@ impl PReferZApp {
                         ));
                     }
                     // 预览：直接改填充颜色（保留 alpha）
-                    if let Some(it) = self.scene.get_item_mut(id) {
+                    if let Some(it) = self.session.scene.get_item_mut(id) {
                         if let ItemKind::Shape { fill: Some(f), .. } = &mut it.kind {
                             f[0] = color[0];
                             f[1] = color[1];

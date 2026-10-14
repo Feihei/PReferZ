@@ -70,12 +70,13 @@ pub(crate) fn expanded_export_ids(scene: &Scene) -> Vec<ItemId> {
 impl PReferZApp {
     /// 打开导出选区对话框（快捷键入口；调用方已保证选区非空）。
     pub(crate) fn open_export_selection_dialog(&mut self) {
-        self.export_dialog.open_with(&self.scene);
+        self.export_dialog.open_with(&self.session.scene);
     }
 
     /// 当前仍存在的待导出项（Z 序，底层在前）。
     fn export_selection_items(&self) -> Vec<Item> {
-        self.scene
+        self.session
+            .scene
             .items_by_z_order()
             .into_iter()
             .filter(|it| self.export_dialog.item_ids.contains(&it.id))
@@ -213,7 +214,7 @@ impl PReferZApp {
             ScreenPoint::new(rect.min.x, rect.min.y),
             euclid::Size2D::new(rect.width(), rect.height()),
         ));
-        let old = std::mem::replace(&mut self.viewport, vp);
+        let old = std::mem::replace(&mut self.session.viewport, vp);
         let mut child = ui.new_child(egui::UiBuilder {
             max_rect: Some(rect),
             ..egui::UiBuilder::default()
@@ -222,7 +223,7 @@ impl PReferZApp {
         for item in items {
             self.draw_item_visual(&mut child, item, None);
         }
-        self.viewport = old;
+        self.session.viewport = old;
     }
 
     /// 透明底纹：8px 白/浅灰棋盘格（纹理懒生成，mesh 平铺）。

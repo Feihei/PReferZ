@@ -131,7 +131,7 @@ impl PReferZApp {
         };
         let rf = (r.0 as f32, r.1 as f32);
         let mut items: Vec<(ItemId, FrameGeom, FrameGeom)> = Vec::new();
-        for it in self.scene.items_by_z_order() {
+        for it in self.session.scene.items_by_z_order() {
             if !it.frame_follows_global_ratio() {
                 continue;
             }
