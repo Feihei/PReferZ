@@ -1,0 +1,16 @@
+[package]
+name = "preferz-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Headless JSONL command interface for PReferZ (agent-friendly)"
+
+[[bin]]
+name = "preferz-cli"
+path = "src/main.rs"
+
+[dependencies]
+preferz-core = { path = "../preferz-core" }
+preferz-fileio = { path = "../preferz-fileio" }
+serde = { workspace = true }
+serde_json = { workspace = true }

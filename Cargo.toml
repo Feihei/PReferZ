@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/preferz",
+    "crates/preferz-cli",
     "crates/preferz-core",
     "crates/preferz-fileio",
 ]

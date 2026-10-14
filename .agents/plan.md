@@ -43,3 +43,7 @@
 - [ ] ttf 字体体积优化（内嵌字体 deflate 压缩已做，全量子集是否够用待评估）
 - [ ] 放弃 `.bee` 兼容后可做的架构简化盘点（`PrzFile` 命名与 `prz.rs` 路径已改，schema 简化空间待盘）
 - [ ] 视口裁剪已有，LOD 缩略图（Phase 5+）待评估
+- [ ] preferz-cli 命令扩展（V1 已于 2026-10-14 交付，见 CHANGELOG）：set_style /
+      transform（旋转/缩放/绝对定位）、编组（group/ungroup）、z 序调整、连线与
+      绑定创建、mermaid 文本生成；headless PNG/SVG 导出（硬点：渲染在 binary
+      层 egui Context，需先抽离或接 `Shape::Callback` 离屏上下文）

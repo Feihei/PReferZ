@@ -1484,6 +1484,54 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 
 ---
 
+## headless CLI：preferz-cli JSONL 接口 + Session 下沉（2026-10-14）
+
+> 目标：让 AI agent / 脚本不启 GUI 即可操作 `.prz`。拍板**不做全面架构重构**：
+> 只把 undo 栈下沉 core、提取 headless `Session`，再薄挂一个 JSONL 二进制。
+> 协议选 JSONL stdin/stdout（每行一请求/响应），而非传统 flag 子命令——
+> 一个长会话内跨命令保持选区 / undo 栈 / 文件连接，agent 配对请求响应用
+> 可选 `req_id` 回声。
+
+- **core 下沉**：新增 `preferz-core/src/session.rs`——`UndoStack`（原 binary
+  层私有实现原样下沉：`push` 读 `Command::skip_first_redo()`）+ `Session {
+  scene, viewport, undo_stack }`（`new` / `with_loaded` / `push` / `undo` /
+  `redo` / `clear_history`）。`PReferZApp` 删除三字段改为单一 `session:
+  Session`，13 个 UI 文件的 `self.scene/self.viewport/self.undo_stack` 全部
+  改走 `self.session.*`（含跨行链式调用）；egui-free，headless 可测
+- **新 crate `preferz-cli`**（workspace 第 4 成员）：
+  - `main.rs` REPL：`BufRead` 逐行 stdin → JSON → dispatch → 单行紧凑 JSON
+    到 stdout 并逐行 flush；坏行只回 `ok:false` 不杀会话；可选位置参数启动
+    自动 open；`--exec '<json>'` 单条模式。退出码：0 成功 / 1 命令或 JSON
+    失败 / 2 启动打开失败 / 参数错误
+  - 命令集（V1）：`ping` `version` `new` `open` `save`（复用 `PrzFile`
+    连接，另存为自动 `create`；内嵌图片原样回写 round-trip 不丢图）、
+    `stats` `list`（z 序倒序的类型化摘要：形状/文本/画框/图片/墨迹/图表）、
+    `get`（元素完整 JSON，与 `.prz` kind blob 同形）、`select`/`select_all`/
+    `deselect`、`add_shape`（rect/ellipse/diamond + stroke/fill/线宽，
+    颜色收 `#rgb`/`#rrggbb`/`#rrggbbaa` 与 `[r,g,b,a]`）、`add_text`、
+    `add_item`（转义舱：直接喂 ItemKind JSON，可建任意类型）、`delete`、
+    `move`（目标取显式 `ids` 否则回退选区）、`undo`/`redo`
+  - **所有写操作走 `session.push(Command)`**，与 GUI 同一条 undo 通道；
+    headless 无拖拽预览阶段，`MoveItems` 必须
+    `.with_preview_applied(false)`（单测注释钉死该语义，踩坑回归）
+  - 协议坑：回声字段定名 **`req_id`** 而非 `id`——E2E 中实测回声 `id` 会
+    覆盖 add_shape 返回的新元素 UUID（同名键合并冲突），协议文档中注明
+    `id` 是领域数据保留名
+- **范围边界**：无头 PNG/SVG 导出**不做**——渲染依赖 binary 层 egui
+  Context（`offscreen.rs` / `svg_export.rs`），fileio 的 `Exporter` 仍是
+  stub；发布流程不受影响（release.yml 只构建打包 `preferz`，CI
+  `--workspace` 自动覆盖新 crate）
+- 测试：core session 2 + CLI 5（协议颜色解析 2、回声 1、完整 headless
+  工作流含选区回退移动/undo/redo/错误收敛、add_item Frame 转义舱）；
+  E2E（真实进程管道）：help.prz 49 元素 open/list/stats、new→菱形
+  （#3366ff99 + 红描边）→文字→undo/redo→save→新进程重开 get 校验
+  fill `[51,102,255,153]`/stroke/尺寸/位置全部持久化、三档退出码、
+  REPL 坏行容错。质量门：fmt / `clippy -D warnings` 零告警，
+  `cargo test --workspace` 365 项全绿（123+3 GUI / 222 core /
+  12 fileio / 5 CLI / 2 session 含在 core 222 内）
+
+---
+
 ## 决策点归档（D1–D6 / I1–I4 / L 系列）
 
 > 原列于 plan.md，G/I/H/K 交付后蒸馏归档于此，使 CHANGELOG 自包含、plan.md 仅保留前瞻内容。

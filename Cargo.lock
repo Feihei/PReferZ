@@ -3075,6 +3075,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "preferz-cli"
+version = "0.3.1"
+dependencies = [
+ "preferz-core",
+ "preferz-fileio",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "preferz-core"
 version = "0.3.1"
 dependencies = [

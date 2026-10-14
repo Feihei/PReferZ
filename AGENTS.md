@@ -5,11 +5,11 @@
 - **Rust** (stable, >= 1.88), edition 2021 — 1.88 起才稳定的 `slice::as_chunks` / `as_chunks_mut` 已在代码中使用
 - **GUI**: `egui` + `eframe` 0.36 (glow backend，显式关默认 features 绕开 wgpu)
 - **2D geometry**: `euclid` (parameterized `CanvasSpace` / `ScreenSpace`)
-- **Undo**: 全手写——`preferz-core::commands::Command` trait + binary 层 `UndoStack`（`preferz_app/mod.rs`）；不依赖任何第三方 undo crate
+- **Undo**: 全手写——`preferz-core::commands::Command` trait + `preferz_core::session::UndoStack`（GUI 与 `preferz-cli` 共用）；不依赖任何第三方 undo crate
 - **File I/O**: `rusqlite` (`.prz` SQLite + sqlar), `image`
 - **File dialog**: `rfd`; **clipboard**: `arboard`; **config**: 手写 JSON（`~/.preferz/config.json` + `recent.json`，serde_json + `std::env` 取 home，**无 confy / dirs 依赖**）
 - **字体**: 思源黑体（OFL）+ 851 远星夜行手写体（GB2312+ASCII 子集入库，原始 ttf 不进 git），经 `crates/preferz/build.rs` deflate 压缩嵌入、运行时解压（`flate2`）；重新生成子集的方法见 `assets/FONT_LICENSES.md`
-- **Workspace**: `crates/preferz` (binary), `crates/preferz-core`, `crates/preferz-fileio`
+- **Workspace**: `crates/preferz` (GUI binary), `crates/preferz-cli` (headless JSONL binary), `crates/preferz-core`, `crates/preferz-fileio`
 
 ## Commands
 
@@ -17,6 +17,7 @@
 cargo check --workspace          # fast typecheck
 cargo test --workspace           # unit tests
 cargo run -p preferz             # run app
+cargo run -p preferz-cli         # headless JSONL REPL (stdin/stdout, 每行一个 JSON)
 cargo build --release -p preferz # release binary
 ```
 
@@ -36,15 +37,24 @@ cargo clippy --workspace --all-targets -- -D warnings   # 把警告当错误，�
 
 本地已安装 git pre-commit 钩子（`.git/hooks/pre-commit`），`git commit` 前自动跑 `cargo fmt --check`，不通过会阻止提交。注意 `.git/hooks/` 不入库，clone 到新机器后需重新放置该钩子（可运行 `cargo fmt --all --check` 替代）。
 
-## Architecture (3 crates)
+## Architecture (4 crates)
 
 ```
-preferz (binary, eframe::App)
-  ├── preferz-core        Item, Transform, Scene, Commands, Arrange, ViewportState, snap, freedraw, chart, mermaid
+preferz (GUI binary, eframe::App)
+  ├── preferz-core        Item, Transform, Scene, Commands, Session(Scene+ViewportState+UndoStack),
+  │                       Arrange, ViewportState, snap, freedraw, chart, mermaid
   └── preferz-fileio      PrzFile, ImageLoader, Exporter, schema
+preferz-cli (headless binary)
+  ├── preferz-core        Session + Commands（所有变更走同一条 undo 通道）
+  └── preferz-fileio      open/save 复用 PrzFile
 ```
 
-`PReferZApp` holds `Scene`, `UndoStack`, `ViewportState`. `update()` dispatches each frame. `PReferZApp` is defined in `crates/preferz/src/preferz_app/` — `mod.rs` keeps the struct + shared types/constants + `ui()` dispatch, with per-cluster method groups split into sibling submodules (`export`/`config`/`background_ops`/`render`/`present`/`text_edit`/`context_menu`/`file_io`/`actions`/`settings`/`drag`/`props`); each does `use super::*;` to reach the parent's private vocabulary.
+`PReferZApp` holds a single `preferz_core::Session { scene, viewport, undo_stack }`. `update()` dispatches each frame.
+`preferz-cli` 是无 egui 的 JSONL 接口：stdin 每行一个请求 `{"cmd": ...}`，stdout 每行一个响应；
+协议细节与命令集见 `crates/preferz-cli/src/main.rs` 顶部文档（`--help` 同源）。**无头导出
+（PNG/SVG）不在 CLI 范围**——渲染依赖 binary 层 egui Context。
+
+`PReferZApp` is defined in `crates/preferz/src/preferz_app/` — `mod.rs` keeps the struct + shared types/constants + `ui()` dispatch, with per-cluster method groups split into sibling submodules (`export`/`config`/`background_ops`/`render`/`present`/`text_edit`/`context_menu`/`file_io`/`actions`/`settings`/`drag`/`props`); each does `use super::*;` to reach the parent's private vocabulary.
 
 **Layering (core-sink discipline).** `preferz-core` holds only side-effect-free domain decisions over core types (L1) — egui-free, headless-testable, e.g. `ViewportState`, `snap`, `arrange` planners, `Scene::content_bounding_rect`. egui↔core orchestration (L2: event reads, live `ViewportState`/`UndoStack`/`DragState`, `request_repaint`, `BackgroundOps`, config persistence) and egui rendering (L3, `ui/`) both stay in the binary.
 
