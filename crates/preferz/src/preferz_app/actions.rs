@@ -681,118 +681,17 @@ impl PReferZApp {
         let (off_x, off_y) = (center.x - (bx0 + bx1) / 2.0, center.y - (by0 + by1) / 2.0);
 
         let stroke = self.default_stroke;
-        let mut added: Vec<Item> = Vec::with_capacity(fc.nodes.len() * 2 + fc.edges.len());
-        let mut node_ids: Vec<ItemId> = Vec::with_capacity(fc.nodes.len());
-        let mut node_rects: Vec<CanvasRect> = Vec::with_capacity(fc.nodes.len());
-        for ln in &layout {
-            let node = &fc.nodes[ln.index];
-            let shape_type = match node.shape {
-                MermaidShape::Rectangle => ShapeType::Rectangle,
-                MermaidShape::Ellipse => ShapeType::Ellipse,
-                MermaidShape::Diamond => ShapeType::Diamond,
-            };
-            let x = ln.x + off_x;
-            let y = ln.y + off_y;
-            let shape = Item::new_shape(shape_type, (ln.w, ln.h), x, y, stroke, None)
-                // 默认风格总开关：mermaid 导入节点与其他新建形状同档手绘风。
-                .with_sloppiness(self.default_sloppiness);
-            let shape_id = shape.id;
-            node_ids.push(shape_id);
-            node_rects.push(CanvasRect::new(
-                CanvasPoint::new(x, y),
-                CanvasSize::new(ln.w, ln.h),
-            ));
-            added.push(shape);
-            // 绑定文字：锚定容器中心（随容器联动，Phase C 模型）
-            if !node.label.is_empty() {
-                let txt = Item::new_text_in(
-                    node.label.clone(),
-                    x + ln.w / 2.0,
-                    y + ln.h / 2.0,
-                    18.0,
-                    stroke.color,
-                    shape_id,
-                )
-                // 默认风格总开关：导入文字随预设用手写体/黑体。
-                .with_font_family(self.default_font_family);
-                added.push(txt);
-            }
-        }
-        for e in &fc.edges {
-            let from = node_rects[e.from];
-            let to = node_rects[e.to];
-            // 箭头族 → (start/end 箭头头, 线型 dash, 宽度倍数)（plan #17）。
-            let (start_arrow, end_arrow, dash, width_mult) = match e.kind {
-                MermaidArrow::Arrow => (None, Some(ArrowHeadStyle::Arrow), DashStyle::Solid, 1.0),
-                MermaidArrow::Open => (None, None, DashStyle::Solid, 1.0),
-                MermaidArrow::Dotted => (None, Some(ArrowHeadStyle::Arrow), DashStyle::Dashed, 1.0),
-                MermaidArrow::DottedOpen => (None, None, DashStyle::Dashed, 1.0),
-                MermaidArrow::Thick => (None, Some(ArrowHeadStyle::Arrow), DashStyle::Solid, 2.0),
-                MermaidArrow::ThickOpen => (None, None, DashStyle::Solid, 2.0),
-                MermaidArrow::Double => (
-                    Some(ArrowHeadStyle::Arrow),
-                    Some(ArrowHeadStyle::Arrow),
-                    DashStyle::Solid,
-                    1.0,
-                ),
-            };
-            let mut edge_stroke = stroke;
-            edge_stroke.dash = dash;
-            edge_stroke.width = stroke.width * width_mult;
-            // 主轴方向取中心差的主导轴（与分层布局方向一致）
-            let dx = to.center().x - from.center().x;
-            let dy = to.center().y - from.center().y;
-            let dir = if dx.abs() >= dy.abs() {
-                if dx >= 0.0 {
-                    FlowDir::Right
-                } else {
-                    FlowDir::Left
-                }
-            } else if dy >= 0.0 {
-                FlowDir::Down
-            } else {
-                FlowDir::Up
-            };
-            let src_anchor = edge_anchor_local(dir, from.width(), from.height());
-            let dst_anchor = edge_anchor_local(dir.opposite(), to.width(), to.height());
-            let s = CanvasPoint::new(from.min().x + src_anchor.0, from.min().y + src_anchor.1);
-            let d = CanvasPoint::new(to.min().x + dst_anchor.0, to.min().y + dst_anchor.1);
-            let min = CanvasPoint::new(s.x.min(d.x), s.y.min(d.y));
-            // 边 = Elbow 连接器（plan #17 C，#24 落地后的映射目标）：两端
-            // `EndpointBinding` 绑定节点，路由由 `Scene::elbow_route_local` 派生
-            // （绑定期 A\* 正交避障 / 朝向随锚点边法线），比直箭头更贴 mermaid
-            // 正交观感；节点移动时自动重路由。
-            let mut arrow = Item::new_elbow(
-                vec![(s.x - min.x, s.y - min.y), (d.x - min.x, d.y - min.y)],
-                ((d.x - s.x).abs(), (d.y - s.y).abs()),
-                start_arrow,
-                end_arrow,
-                min.x,
-                min.y,
-                edge_stroke,
-            )
-            // 默认风格总开关：mermaid 导入边与其他新建元素同档手绘风。
-            .with_sloppiness(self.default_sloppiness);
-            if let ItemKind::Shape {
-                start_binding,
-                end_binding,
-                label,
-                ..
-            } = &mut arrow.kind
-            {
-                *start_binding = Some(EndpointBinding {
-                    target: node_ids[e.from],
-                    anchor: Some(src_anchor),
-                });
-                *end_binding = Some(EndpointBinding {
-                    target: node_ids[e.to],
-                    anchor: Some(dst_anchor),
-                });
-                // 边标签（plan #17 DP2）：存于线性对象自身，渲染期画在曲线中点。
-                *label = e.label.clone().filter(|s| !s.is_empty());
-            }
-            added.push(arrow);
-        }
+        // 建项逻辑下沉在 core（`build_flowchart_items`）：GUI 与 CLI/MCP 的
+        // `add_mermaid` 工具共用同一套节点/边/绑定映射，风格由本侧默认样式传入。
+        let style = FlowchartStyle {
+            stroke,
+            sloppiness: self.default_sloppiness,
+            font_family: self.default_font_family,
+            label_font_size: 18.0,
+        };
+        let built = build_flowchart_items(&fc, &layout, (off_x, off_y), &style);
+        let added: Vec<Item> = built.items;
+        let node_ids: Vec<ItemId> = built.node_ids;
 
         let node_count = fc.nodes.len();
         let edge_count = fc.edges.len();

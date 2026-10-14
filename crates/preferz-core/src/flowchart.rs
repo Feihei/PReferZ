@@ -23,6 +23,27 @@ impl FlowDir {
     fn horizontal(self) -> bool {
         matches!(self, FlowDir::Right | FlowDir::Left)
     }
+
+    /// 相反方向（连接器目标端取 `dir.opposite()` 的边锚点）。
+    pub fn opposite(self) -> Self {
+        match self {
+            FlowDir::Up => FlowDir::Down,
+            FlowDir::Down => FlowDir::Up,
+            FlowDir::Left => FlowDir::Right,
+            FlowDir::Right => FlowDir::Left,
+        }
+    }
+
+    /// 包围盒（w×h，局部坐标）朝向 `dir` 的**边中点**——同时用作端点绑定锚点
+    /// （目标局部系）与连接箭头端点的局部位置。
+    pub fn edge_midpoint(self, w: f32, h: f32) -> (f32, f32) {
+        match self {
+            FlowDir::Right => (w, h / 2.0),
+            FlowDir::Left => (0.0, h / 2.0),
+            FlowDir::Down => (w / 2.0, h),
+            FlowDir::Up => (w / 2.0, 0.0),
+        }
+    }
 }
 
 /// 交叉轴上的一段占用区间（已按 `cross_gap` 外扩）。

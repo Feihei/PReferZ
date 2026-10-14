@@ -9,7 +9,7 @@
 - **File I/O**: `rusqlite` (`.prz` SQLite + sqlar), `image`
 - **File dialog**: `rfd`; **clipboard**: `arboard`; **config**: 手写 JSON（`~/.preferz/config.json` + `recent.json`，serde_json + `std::env` 取 home，**无 confy / dirs 依赖**）
 - **字体**: 思源黑体（OFL）+ 851 远星夜行手写体（GB2312+ASCII 子集入库，原始 ttf 不进 git），经 `crates/preferz/build.rs` deflate 压缩嵌入、运行时解压（`flate2`）；重新生成子集的方法见 `assets/FONT_LICENSES.md`
-- **Workspace**: `crates/preferz` (GUI binary), `crates/preferz-cli` (headless JSONL binary), `crates/preferz-core`, `crates/preferz-fileio`
+- **Workspace**: `crates/preferz` (GUI binary), `crates/preferz-cli` (headless JSONL/MCP binary), `crates/preferz-core`, `crates/preferz-fileio`
 
 ## Commands
 
@@ -18,6 +18,7 @@ cargo check --workspace          # fast typecheck
 cargo test --workspace           # unit tests
 cargo run -p preferz             # run app
 cargo run -p preferz-cli         # headless JSONL REPL (stdin/stdout, 每行一个 JSON)
+cargo run -p preferz-cli -- --mcp  # stdio MCP server (JSON-RPC 2.0 双栈协议)
 cargo build --release -p preferz # release binary
 ```
 
@@ -51,7 +52,11 @@ preferz-cli (headless binary)
 
 `PReferZApp` holds a single `preferz_core::Session { scene, viewport, undo_stack }`. `update()` dispatches each frame.
 `preferz-cli` 是无 egui 的 JSONL 接口：stdin 每行一个请求 `{"cmd": ...}`，stdout 每行一个响应；
-协议细节与命令集见 `crates/preferz-cli/src/main.rs` 顶部文档（`--help` 同源）。**无头导出
+协议细节与命令集见 `crates/preferz-cli/src/main.rs` 顶部文档（`--help` 同源）。
+`--mcp` 模式是 stdio JSON-RPC MCP 服务器（手写，零新依赖）：双栈协议——新栈
+2026-07-28 无状态 spec（`server/discover` + `_meta` 协议版本校验回 -32022 +
+`resultType`）与旧栈（≤2025-11-25 `initialize` 握手）按请求特征分流；15 个工具
+与 JSONL 命令一一对应（`tools/call` 直投 dispatch），共享同一 undo 通道。**无头导出
 （PNG/SVG）不在 CLI 范围**——渲染依赖 binary 层 egui Context。
 
 `PReferZApp` is defined in `crates/preferz/src/preferz_app/` — `mod.rs` keeps the struct + shared types/constants + `ui()` dispatch, with per-cluster method groups split into sibling submodules (`export`/`config`/`background_ops`/`render`/`present`/`text_edit`/`context_menu`/`file_io`/`actions`/`settings`/`drag`/`props`); each does `use super::*;` to reach the parent's private vocabulary.

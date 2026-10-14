@@ -31,7 +31,7 @@ use preferz_core::commands::{
 };
 use preferz_core::flowchart;
 use preferz_core::mermaid::{
-    layout_flowchart, parse_mermaid_flowchart, MermaidArrow, MermaidShape,
+    build_flowchart_items, layout_flowchart, parse_mermaid_flowchart, FlowchartStyle,
 };
 use preferz_core::shape::{
     ArrowHeadStyle, CurveType, DashStyle, ElbowAxis, FillStyle, FontFamily, PixmapStyle, ShapeType,

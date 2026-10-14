@@ -1,23 +1,32 @@
-//! preferz-cli — PReferZ 的无头命令接口（JSONL，面向 agent / 脚本）。
+//! preferz-cli — PReferZ 的无头命令接口（JSONL / MCP stdio，面向 agent / 脚本）。
 //!
 //! 用法：
 //! - `preferz-cli [file.prz]`            打开文件（可选）后进入 stdin/stdout JSONL 会话
 //! - `preferz-cli --exec '<json>' [file]` 只执行一条命令并退出
+//! - `preferz-cli --mcp [file.prz]`      以 stdio MCP 服务器运行（JSON-RPC 2.0）
 //! - `preferz-cli --help` / `--version`
 //!
-//! 协议：stdin 每行一个 JSON 请求 `{"cmd": "...", ...}`，stdout 每行一个 JSON
-//! 响应。可选 `req_id`（任意 JSON 值）会原样回显，用于配对请求/响应。
+//! JSONL 协议：stdin 每行一个 JSON 请求 `{"cmd": "...", ...}`，stdout 每行一个
+//! JSON 响应。可选 `req_id`（任意 JSON 值）会原样回显，用于配对请求/响应。
 //! 命令失败只产生 `{"ok": false, ...}`，不退出会话。
+//!
+//! MCP 模式：stdio JSON-RPC，双栈协议——新栈 2026-07-28 无状态 spec
+//! （`server/discover` + `_meta` 版本校验 + `resultType`）与旧栈
+//! （≤2025-11-25 `initialize` 握手）按请求特征分流；15 个工具与 JSONL
+//! 命令一一对应，共享同一 undo 通道。stdout 只走协议帧，日志全走 stderr。
 //!
 //! 示例（PowerShell）：
 //! ```text
 //! '{"cmd":"open","path":"board.prz"}' | preferz-cli
 //! '{"cmd":"list"}' | preferz-cli board.prz
 //! preferz-cli --exec '{"cmd":"add_shape","shape":"rect","x":0,"y":0,"w":10,"h":10}' board.prz
+//! preferz-cli --mcp board.prz
 //! ```
 
 mod dispatch;
 mod doc;
+mod mcp;
+mod mcp_tools;
 mod protocol;
 
 use std::io::{self, BufRead, Write};
@@ -27,7 +36,7 @@ use serde_json::{json, Value};
 use crate::doc::CliDoc;
 
 const HELP: &str = "\
-preferz-cli — headless JSONL interface for PReferZ
+preferz-cli — headless JSONL / MCP stdio interface for PReferZ
 
 USAGE:
     preferz-cli [OPTIONS] [FILE]
@@ -37,18 +46,27 @@ ARGS:
 
 OPTIONS:
     --exec <JSON>       Execute one request and exit
+    --mcp               Run as a stdio MCP server (JSON-RPC 2.0, dual-stack:
+                        2026-07-28 stateless + legacy initialize fallback)
     -h, --help          Print this help
     -V, --version       Print version
 
-PROTOCOL (one JSON object per line):
+JSONL PROTOCOL (one JSON object per line):
     request:   {\"cmd\": \"<name>\", ...args, \"req_id\": <optional echo>}
     response:  {\"ok\": true, \"cmd\": \"<name>\", \"req_id\": <echo>, ...data}
                {\"ok\": false, \"cmd\": \"<name>\", \"req_id\": <echo>, \"error\": \"<message>\"}
 
 COMMANDS:
-    ping, version, new, open, save, stats, list, get,
+    ping, version, new, open, save, stats, list,
     select, select_all, deselect,
-    add_shape, add_text, add_item, delete, move, undo, redo
+    add_shape, add_text, add_item, add_mermaid, add_chart,
+    delete, move, undo, redo
+
+NOTES:
+    - list: {\"ids\": [..]} filters, \"full\": true returns full item JSON
+      (replaces the old get command).
+    - select with an empty ids array deselects everything; select_all is a
+      convenience wrapper.
 
 Send `{\"cmd\":\"ping\"}` to verify the connection.
 ";
@@ -56,6 +74,7 @@ Send `{\"cmd\":\"ping\"}` to verify the connection.
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut exec: Option<String> = None;
+    let mut mcp = false;
     let mut open_path: Option<String> = None;
 
     let mut iter = args.iter();
@@ -73,6 +92,7 @@ fn main() {
                 Some(json) => exec = Some(json.clone()),
                 None => fatal_exit("--exec requires a JSON argument"),
             },
+            "--mcp" => mcp = true,
             other if other.starts_with("--") => {
                 fatal_exit(&format!("unknown option '{other}' (see --help)"));
             }
@@ -84,15 +104,18 @@ fn main() {
             }
         }
     }
+    if mcp && exec.is_some() {
+        fatal_exit("--exec and --mcp are mutually exclusive");
+    }
 
-    let exit_code = run(exec.as_deref(), open_path.as_deref());
+    let exit_code = run(exec.as_deref(), mcp, open_path.as_deref());
     if exit_code != 0 {
         std::process::exit(exit_code);
     }
 }
 
 /// 返回进程退出码（0 成功 / 非 0 失败）。
-fn run(exec: Option<&str>, open_path: Option<&str>) -> i32 {
+fn run(exec: Option<&str>, mcp: bool, open_path: Option<&str>) -> i32 {
     let mut doc = CliDoc::new();
     let stdout = io::stdout();
     let mut out = stdout.lock();
@@ -102,13 +125,25 @@ fn run(exec: Option<&str>, open_path: Option<&str>) -> i32 {
         let req = json!({ "cmd": "open", "path": path });
         let resp = dispatch::dispatch(&mut doc, &req);
         if !resp["ok"].as_bool().unwrap_or(false) {
-            write_line(&mut out, &resp);
+            // MCP 模式 stdout 只走协议帧，启动失败走 stderr。
+            if mcp {
+                eprintln!(
+                    "preferz-cli: open failed: {}",
+                    resp["error"].as_str().unwrap_or("unknown error")
+                );
+            } else {
+                write_line(&mut out, &resp);
+            }
             return 2;
         }
         // --exec 模式下打开成功不必回显，直接执行请求；REPL 模式下回显打开结果。
-        if exec.is_none() {
+        if !mcp && exec.is_none() {
             write_line(&mut out, &resp);
         }
+    }
+
+    if mcp {
+        return mcp::run_mcp(&mut doc);
     }
 
     match exec {

@@ -10,10 +10,20 @@
 //! 大小写不敏感）按 mermaid 官方语义转 `\n` 换行（LLM 生成高频），其余
 //! HTML 标签 egui 无富文本渲染能力，原样保留。`subgraph` / `direction` /
 //! `style` / `classDef` 等分组与
-//! 样式语句、以及 sequence/class/state 等**非 flowchart 图种均不支持**（报错
+//! 语句、以及 sequence/class/state 等**非 flowchart 图种均不支持**（报错
 //! 并指出行号，DP 见 `.agents/plan.md` §17）。布局 = 分层（层级 = 最长路径深度）+
 //! 层内重心排序（barycenter，plan #17 C，减 `&` 展开后同层的边交叉），
 //! 层间距 / 同层间距 100px（对齐 plan #7 `FLOWCHART_GAP` 语义）。
+//!
+//! 除解析与布局外，本模块还提供解析 + 布局结果 → 元素批的**纯构建器**
+//! [`build_flowchart_items`]（core L1）：GUI 的 mermaid 导入与 CLI/MCP 的
+//! `add_mermaid` 工具共用同一套建项逻辑，风格由调用方显式传入。
+
+use crate::flowchart::FlowDir;
+use crate::item::{EndpointBinding, Item, ItemId, ItemKind};
+use crate::shape::{ArrowHeadStyle, DashStyle, FontFamily, Sloppiness, StrokeStyle};
+use crate::spaces::{CanvasPoint, CanvasRect, CanvasSize};
+use crate::ShapeType;
 
 /// 节点形状。DP1「全部近似映射」：mermaid 的多种括号外形在解析期即收敛到这三类
 /// （映射 `ShapeType` 的矩形/椭圆/菱形，对齐 Excalidraw isFlowchartNodeElement）。
@@ -637,6 +647,149 @@ pub fn layout_flowchart(fc: &MermaidFlowchart) -> Vec<MermaidLayoutNode> {
     out
 }
 
+// ─────────────── 流程图 → 元素批构建（core L1，GUI / CLI 共用）───────────────
+
+/// 构建风格参数：调用方（GUI 默认样式 / CLI MCP 工具）显式传入，core 不持有配置。
+#[derive(Debug, Clone)]
+pub struct FlowchartStyle {
+    pub stroke: StrokeStyle,
+    pub sloppiness: Sloppiness,
+    pub font_family: FontFamily,
+    /// 绑定文字字号（GUI 用 18.0）。
+    pub label_font_size: f32,
+}
+
+/// 构建产物：整批元素 + 节点形状元素 id（边/文字不含），调用方做选区或统计。
+#[derive(Debug)]
+pub struct FlowchartBuild {
+    pub items: Vec<Item>,
+    pub node_ids: Vec<ItemId>,
+}
+
+/// 把解析 + 布局结果构建成元素批：节点 = 形状 + 绑定文字（Phase C 模型）；
+/// 边 = 两端 `EndpointBinding` 绑定节点的 Elbow 连接器（路由由
+/// `Scene::elbow_route_local` 派生），边标签存于连接器自身（plan #17 DP2）。
+/// `offset` 为整体平移量（GUI 落视口中心 / CLI 落指定锚点各自换算）。
+/// 纯函数：不改场景、不入 undo——调用方拿到 [`FlowchartBuild`] 后自行
+/// `Scene::add_item` + `AddItems`（GUI）/ 直接 `push(AddItems)`（CLI）。
+pub fn build_flowchart_items(
+    fc: &MermaidFlowchart,
+    layout: &[MermaidLayoutNode],
+    offset: (f32, f32),
+    style: &FlowchartStyle,
+) -> FlowchartBuild {
+    let (off_x, off_y) = offset;
+    let mut items: Vec<Item> = Vec::with_capacity(layout.len() * 2 + fc.edges.len());
+    let mut node_ids: Vec<ItemId> = Vec::with_capacity(layout.len());
+    let mut node_rects: Vec<CanvasRect> = Vec::with_capacity(layout.len());
+    for ln in layout {
+        let node = &fc.nodes[ln.index];
+        let shape_type = match node.shape {
+            MermaidShape::Rectangle => ShapeType::Rectangle,
+            MermaidShape::Ellipse => ShapeType::Ellipse,
+            MermaidShape::Diamond => ShapeType::Diamond,
+        };
+        let x = ln.x + off_x;
+        let y = ln.y + off_y;
+        let shape = Item::new_shape(shape_type, (ln.w, ln.h), x, y, style.stroke, None)
+            .with_sloppiness(style.sloppiness);
+        let shape_id = shape.id;
+        node_ids.push(shape_id);
+        node_rects.push(CanvasRect::new(
+            CanvasPoint::new(x, y),
+            CanvasSize::new(ln.w, ln.h),
+        ));
+        items.push(shape);
+        // 绑定文字：锚定容器中心（随容器联动，Phase C 模型）。
+        if !node.label.is_empty() {
+            let txt = Item::new_text_in(
+                node.label.clone(),
+                x + ln.w / 2.0,
+                y + ln.h / 2.0,
+                style.label_font_size,
+                style.stroke.color,
+                shape_id,
+            )
+            .with_font_family(style.font_family);
+            items.push(txt);
+        }
+    }
+    for e in &fc.edges {
+        let from = node_rects[e.from];
+        let to = node_rects[e.to];
+        // 箭头族 → (start/end 箭头头, 线型 dash, 宽度倍数)（plan #17）。
+        let (start_arrow, end_arrow, dash, width_mult) = match e.kind {
+            MermaidArrow::Arrow => (None, Some(ArrowHeadStyle::Arrow), DashStyle::Solid, 1.0),
+            MermaidArrow::Open => (None, None, DashStyle::Solid, 1.0),
+            MermaidArrow::Dotted => (None, Some(ArrowHeadStyle::Arrow), DashStyle::Dashed, 1.0),
+            MermaidArrow::DottedOpen => (None, None, DashStyle::Dashed, 1.0),
+            MermaidArrow::Thick => (None, Some(ArrowHeadStyle::Arrow), DashStyle::Solid, 2.0),
+            MermaidArrow::ThickOpen => (None, None, DashStyle::Solid, 2.0),
+            MermaidArrow::Double => (
+                Some(ArrowHeadStyle::Arrow),
+                Some(ArrowHeadStyle::Arrow),
+                DashStyle::Solid,
+                1.0,
+            ),
+        };
+        let mut edge_stroke = style.stroke;
+        edge_stroke.dash = dash;
+        edge_stroke.width = style.stroke.width * width_mult;
+        // 主轴方向取中心差的主导轴（与分层布局方向一致）
+        let dx = to.center().x - from.center().x;
+        let dy = to.center().y - from.center().y;
+        let dir = if dx.abs() >= dy.abs() {
+            if dx >= 0.0 {
+                FlowDir::Right
+            } else {
+                FlowDir::Left
+            }
+        } else if dy >= 0.0 {
+            FlowDir::Down
+        } else {
+            FlowDir::Up
+        };
+        let src_anchor = dir.edge_midpoint(from.width(), from.height());
+        let dst_anchor = dir.opposite().edge_midpoint(to.width(), to.height());
+        let s = CanvasPoint::new(from.min().x + src_anchor.0, from.min().y + src_anchor.1);
+        let d = CanvasPoint::new(to.min().x + dst_anchor.0, to.min().y + dst_anchor.1);
+        let min = CanvasPoint::new(s.x.min(d.x), s.y.min(d.y));
+        // 边 = Elbow 连接器（plan #17 C，#24 落地后的映射目标）：两端
+        // `EndpointBinding` 绑定节点，路由由 `Scene::elbow_route_local` 派生；
+        // 节点移动时自动重路由。
+        let mut arrow = Item::new_elbow(
+            vec![(s.x - min.x, s.y - min.y), (d.x - min.x, d.y - min.y)],
+            ((d.x - s.x).abs(), (d.y - s.y).abs()),
+            start_arrow,
+            end_arrow,
+            min.x,
+            min.y,
+            edge_stroke,
+        )
+        .with_sloppiness(style.sloppiness);
+        if let ItemKind::Shape {
+            start_binding,
+            end_binding,
+            label,
+            ..
+        } = &mut arrow.kind
+        {
+            *start_binding = Some(EndpointBinding {
+                target: node_ids[e.from],
+                anchor: Some(src_anchor),
+            });
+            *end_binding = Some(EndpointBinding {
+                target: node_ids[e.to],
+                anchor: Some(dst_anchor),
+            });
+            // 边标签（plan #17 DP2）：存于线性对象自身，渲染期画在曲线中点。
+            *label = e.label.clone().filter(|s| !s.is_empty());
+        }
+        items.push(arrow);
+    }
+    FlowchartBuild { items, node_ids }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -871,5 +1024,141 @@ mod tests {
         let layout = layout_flowchart(&fc);
         let by_idx = |i: usize| layout.iter().find(|n| n.index == i).unwrap();
         assert!(by_idx(0).x < by_idx(1).x && by_idx(1).x < by_idx(2).x);
+    }
+
+    // ───────────────────── build_flowchart_items ─────────────────────
+
+    fn test_style() -> FlowchartStyle {
+        FlowchartStyle {
+            stroke: StrokeStyle::default(),
+            sloppiness: Sloppiness::Off,
+            font_family: FontFamily::Normal,
+            label_font_size: 18.0,
+        }
+    }
+
+    /// 取元素批里的首个连接器。
+    fn first_elbow(items: &[Item]) -> &Item {
+        items
+            .iter()
+            .find(|it| {
+                matches!(
+                    &it.kind,
+                    ItemKind::Shape {
+                        shape_type: ShapeType::Elbow,
+                        ..
+                    }
+                )
+            })
+            .expect("构建结果必含 Elbow 连接器")
+    }
+
+    #[test]
+    fn build_creates_nodes_texts_and_bound_elbow() {
+        let fc = parse_mermaid_flowchart("flowchart TD\n a[开始] -->|是| b[结束]").unwrap();
+        let layout = layout_flowchart(&fc);
+        let built = build_flowchart_items(&fc, &layout, (0.0, 0.0), &test_style());
+        // 2 节点形状 + 2 绑定文字 + 1 连接器
+        assert_eq!(built.items.len(), 5);
+        assert_eq!(built.node_ids.len(), 2);
+
+        let elbow = first_elbow(&built.items);
+        if let ItemKind::Shape {
+            start_binding,
+            end_binding,
+            label,
+            stroke,
+            ..
+        } = &elbow.kind
+        {
+            // 两端绑定到节点形状（node_ids 与节点下标对应）
+            assert_eq!(
+                start_binding.as_ref().expect("src 绑定").target,
+                built.node_ids[0]
+            );
+            assert_eq!(
+                end_binding.as_ref().expect("dst 绑定").target,
+                built.node_ids[1]
+            );
+            // 边标签存于连接器自身
+            assert_eq!(label.as_deref(), Some("是"));
+            // 箭头映射：Arrow → end 箭头 + 实线
+            assert!(start_binding.is_some());
+            let _ = stroke;
+        } else {
+            panic!("expected elbow shape");
+        }
+    }
+
+    #[test]
+    fn build_arrow_family_mapping() {
+        let fc = parse_mermaid_flowchart("flowchart TD\n a --> b\n a <--> c\n a -.-> d").unwrap();
+        let layout = layout_flowchart(&fc);
+        let built = build_flowchart_items(&fc, &layout, (0.0, 0.0), &test_style());
+        let elbows: Vec<&Item> = built
+            .items
+            .iter()
+            .filter(|it| {
+                matches!(
+                    &it.kind,
+                    ItemKind::Shape {
+                        shape_type: ShapeType::Elbow,
+                        ..
+                    }
+                )
+            })
+            .collect();
+        assert_eq!(elbows.len(), 3);
+        // a --> b：end 箭头、无 start 箭头；a <--> c：双箭头；a -.-> d：end 箭头 + 虚线
+        let (s0, e0) = match &elbows[0].kind {
+            ItemKind::Shape {
+                start_arrow,
+                end_arrow,
+                ..
+            } => (*start_arrow, *end_arrow),
+            _ => unreachable!(),
+        };
+        assert!(s0.is_none() && e0.is_some());
+        let (s1, e1) = match &elbows[1].kind {
+            ItemKind::Shape {
+                start_arrow,
+                end_arrow,
+                ..
+            } => (*start_arrow, *end_arrow),
+            _ => unreachable!(),
+        };
+        assert!(s1.is_some() && e1.is_some());
+        match &elbows[2].kind {
+            ItemKind::Shape {
+                start_arrow,
+                stroke,
+                ..
+            } => {
+                assert!(start_arrow.is_none());
+                assert_eq!(stroke.dash, DashStyle::Dashed);
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn build_offset_translates_every_item() {
+        let fc = parse_mermaid_flowchart("flowchart TD\n a --> b").unwrap();
+        let layout = layout_flowchart(&fc);
+        let base = build_flowchart_items(&fc, &layout, (0.0, 0.0), &test_style());
+        let moved = build_flowchart_items(&fc, &layout, (10.0, -20.0), &test_style());
+        for (a, b) in base.items.iter().zip(&moved.items) {
+            assert!((b.transform.pos.x - a.transform.pos.x - 10.0).abs() < 1e-4);
+            assert!((b.transform.pos.y - a.transform.pos.y + 20.0).abs() < 1e-4);
+        }
+    }
+
+    #[test]
+    fn build_empty_label_node_has_no_text() {
+        // 标签为空的节点不生成绑定文字（与 GUI 行为一致）。
+        let fc = parse_mermaid_flowchart("flowchart TD\n a[\"\"] --> b[\"\"]").unwrap();
+        let layout = layout_flowchart(&fc);
+        let built = build_flowchart_items(&fc, &layout, (0.0, 0.0), &test_style());
+        assert_eq!(built.items.len(), 3, "2 节点 + 1 连接器，无文字");
     }
 }

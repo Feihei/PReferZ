@@ -4,16 +4,14 @@
 //! core 命令语义；headless 调用方没有"拖拽预览直改"阶段，故 `MoveItems`
 //! 等默认 preview 的命令必须显式 `with_preview_applied(false)`。
 
-use preferz_core::commands::{AddItem, DeleteItems, MoveItems};
-use preferz_core::shape::StrokeStyle;
+use preferz_core::commands::{AddItem, AddItems, DeleteItems, MoveItems};
+use preferz_core::shape::{FontFamily, Sloppiness, StrokeStyle};
 use preferz_core::spaces::CanvasVector;
-use preferz_core::{Item, ItemId, ItemKind, ShapeType, Transform};
+use preferz_core::{ChartType, Item, ItemId, ItemKind, ShapeType, Transform};
 use serde_json::{json, Value};
 
 use crate::doc::CliDoc;
-use crate::protocol::{
-    self, ok, opt_bool, opt_f32, opt_str, parse_color, parse_id, req_f32, req_str,
-};
+use crate::protocol::{self, ok, opt_bool, opt_f32, opt_str, parse_color, req_f32, req_str};
 
 /// 分发一条已解析为 JSON 值的请求。永不 panic：任何错误都收敛成失败响应。
 pub(crate) fn dispatch(doc: &mut CliDoc, req: &Value) -> Value {
@@ -47,16 +45,7 @@ fn run(doc: &mut CliDoc, cmd: &str, req: &Value) -> Result<Value, String> {
         }
 
         "stats" => Ok(stats(doc)),
-        "list" => Ok(json!({ "items": list_items(doc) })),
-        "get" => {
-            let id = parse_id(req_str(req, "id")?)?;
-            let item = doc
-                .session
-                .scene
-                .get_item(&id)
-                .ok_or_else(|| format!("no item with id {id}"))?;
-            serde_json::to_value(item).map_err(|e| format!("serialize item failed: {e}"))
-        }
+        "list" => list(doc, req),
 
         "select" => {
             let ids = protocol::opt_ids(req)?.ok_or_else(|| "missing 'ids' array".to_string())?;
@@ -84,6 +73,8 @@ fn run(doc: &mut CliDoc, cmd: &str, req: &Value) -> Result<Value, String> {
         "add_shape" => add_shape(doc, req).map(|id| json!({ "id": id.to_string() })),
         "add_text" => add_text(doc, req).map(|id| json!({ "id": id.to_string() })),
         "add_item" => add_item_raw(doc, req).map(|id| json!({ "id": id.to_string() })),
+        "add_mermaid" => add_mermaid(doc, req),
+        "add_chart" => add_chart(doc, req),
 
         "delete" => {
             let ids = target_ids(doc, req)?;
@@ -160,105 +151,129 @@ fn kind_label(kind: &ItemKind) -> &'static str {
     }
 }
 
-/// 每个 item 一行精简摘要（z 序倒序，顶层在前）。
-fn list_items(doc: &CliDoc) -> Vec<Value> {
-    doc.session
+/// list：每个 item 一条摘要（z 序倒序，顶层在前）。参数：
+/// - `ids`（可选，UUID 数组）：只列出这些元素；任一 id 不存在则整体报错
+///   （原 `get` 命令的语义并入此处：`{"cmd":"list","ids":[..],"full":true}`）；
+/// - `full`（可选，默认 false）：true 时返回完整 Item JSON（与 `.prz` 内表示同源）。
+fn list(doc: &CliDoc, req: &Value) -> Result<Value, String> {
+    let filter = protocol::opt_ids(req)?;
+    if let Some(ids) = &filter {
+        for id in ids {
+            if doc.session.scene.get_item(id).is_none() {
+                return Err(format!("no item with id {id}"));
+            }
+        }
+    }
+    let full = opt_bool(req, "full", false);
+    let items: Vec<Value> = doc
+        .session
         .scene
         .items_by_z_order()
         .into_iter()
         .rev()
+        .filter(|item| filter.as_ref().is_none_or(|ids| ids.contains(&item.id)))
         .map(|item| {
-            let mut v = json!({
-                "id": item.id.to_string(),
-                "kind": kind_label(&item.kind),
-                "z": item.z,
-                "x": item.transform.pos.x,
-                "y": item.transform.pos.y,
-                "selected": doc.session.scene.selection_contains(&item.id),
-            });
-            let map = v.as_object_mut().expect("object");
-            match &item.kind {
-                ItemKind::Shape {
-                    shape_type,
-                    base_size,
-                    points,
-                    closed,
-                    ..
-                } => {
-                    map.insert("shape".to_string(), json!(format!("{shape_type:?}")));
-                    map.insert("w".to_string(), json!(base_size.0));
-                    map.insert("h".to_string(), json!(base_size.1));
-                    map.insert("points".to_string(), json!(points.len()));
-                    map.insert("closed".to_string(), json!(closed));
-                }
-                ItemKind::Text {
-                    content,
-                    font_size,
-                    container_id,
-                    ..
-                } => {
-                    let preview: String = content.chars().take(80).collect();
-                    map.insert("text".to_string(), json!(preview));
-                    map.insert("font_size".to_string(), json!(*font_size));
-                    if let Some(cid) = container_id {
-                        map.insert("container".to_string(), json!(cid.to_string()));
-                    }
-                }
-                ItemKind::Frame {
-                    base_size,
-                    number,
-                    name,
-                    ..
-                } => {
-                    map.insert("number".to_string(), json!(*number));
-                    map.insert("w".to_string(), json!(base_size.0));
-                    map.insert("h".to_string(), json!(base_size.1));
-                    if let Some(n) = name {
-                        map.insert("name".to_string(), json!(n));
-                    }
-                }
-                ItemKind::Pixmap {
-                    texture_id,
-                    filename,
-                    original_size,
-                    ..
-                } => {
-                    map.insert("texture_id".to_string(), json!(*texture_id));
-                    if let Some(f) = filename {
-                        map.insert("filename".to_string(), json!(f));
-                    }
-                    map.insert("w".to_string(), json!(original_size.0));
-                    map.insert("h".to_string(), json!(original_size.1));
-                }
-                ItemKind::Freedraw {
-                    points,
-                    stroke_width,
-                    ..
-                } => {
-                    map.insert("points".to_string(), json!(points.len()));
-                    map.insert("stroke_width".to_string(), json!(*stroke_width));
-                }
-                ItemKind::Chart {
-                    chart_type,
-                    base_size,
-                    labels,
-                    ..
-                } => {
-                    map.insert("chart".to_string(), json!(format!("{chart_type:?}")));
-                    map.insert("w".to_string(), json!(base_size.0));
-                    map.insert("h".to_string(), json!(base_size.1));
-                    map.insert("series".to_string(), json!(labels.len()));
-                }
+            if full {
+                serde_json::to_value(item).map_err(|e| format!("serialize item failed: {e}"))
+            } else {
+                Ok(summarize_item(doc, item))
             }
-            if let Some(gid) = item.group_id {
-                map.insert("group".to_string(), json!(gid.to_string()));
-            }
-            if let Some(link) = &item.link {
-                map.insert("link".to_string(), json!(link));
-            }
-            v
         })
-        .collect()
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok(json!({ "items": items }))
+}
+
+/// 每个 item 一行精简摘要（供 [`list`] 的默认精简模式）。
+fn summarize_item(doc: &CliDoc, item: &Item) -> Value {
+    let mut v = json!({
+        "id": item.id.to_string(),
+        "kind": kind_label(&item.kind),
+        "z": item.z,
+        "x": item.transform.pos.x,
+        "y": item.transform.pos.y,
+        "selected": doc.session.scene.selection_contains(&item.id),
+    });
+    let map = v.as_object_mut().expect("object");
+    match &item.kind {
+        ItemKind::Shape {
+            shape_type,
+            base_size,
+            points,
+            closed,
+            ..
+        } => {
+            map.insert("shape".to_string(), json!(format!("{shape_type:?}")));
+            map.insert("w".to_string(), json!(base_size.0));
+            map.insert("h".to_string(), json!(base_size.1));
+            map.insert("points".to_string(), json!(points.len()));
+            map.insert("closed".to_string(), json!(closed));
+        }
+        ItemKind::Text {
+            content,
+            font_size,
+            container_id,
+            ..
+        } => {
+            let preview: String = content.chars().take(80).collect();
+            map.insert("text".to_string(), json!(preview));
+            map.insert("font_size".to_string(), json!(*font_size));
+            if let Some(cid) = container_id {
+                map.insert("container".to_string(), json!(cid.to_string()));
+            }
+        }
+        ItemKind::Frame {
+            base_size,
+            number,
+            name,
+            ..
+        } => {
+            map.insert("number".to_string(), json!(*number));
+            map.insert("w".to_string(), json!(base_size.0));
+            map.insert("h".to_string(), json!(base_size.1));
+            if let Some(n) = name {
+                map.insert("name".to_string(), json!(n));
+            }
+        }
+        ItemKind::Pixmap {
+            texture_id,
+            filename,
+            original_size,
+            ..
+        } => {
+            map.insert("texture_id".to_string(), json!(*texture_id));
+            if let Some(f) = filename {
+                map.insert("filename".to_string(), json!(f));
+            }
+            map.insert("w".to_string(), json!(original_size.0));
+            map.insert("h".to_string(), json!(original_size.1));
+        }
+        ItemKind::Freedraw {
+            points,
+            stroke_width,
+            ..
+        } => {
+            map.insert("points".to_string(), json!(points.len()));
+            map.insert("stroke_width".to_string(), json!(*stroke_width));
+        }
+        ItemKind::Chart {
+            chart_type,
+            base_size,
+            labels,
+            ..
+        } => {
+            map.insert("chart".to_string(), json!(format!("{chart_type:?}")));
+            map.insert("w".to_string(), json!(base_size.0));
+            map.insert("h".to_string(), json!(base_size.1));
+            map.insert("series".to_string(), json!(labels.len()));
+        }
+    }
+    if let Some(gid) = item.group_id {
+        map.insert("group".to_string(), json!(gid.to_string()));
+    }
+    if let Some(link) = &item.link {
+        map.insert("link".to_string(), json!(link));
+    }
+    v
 }
 
 fn add_shape(doc: &mut CliDoc, req: &Value) -> Result<ItemId, String> {
@@ -352,6 +367,101 @@ fn add_item_raw(doc: &mut CliDoc, req: &Value) -> Result<ItemId, String> {
     Ok(id)
 }
 
+/// mermaid 流程图 → 分层布局元素批（节点+绑定文字+Elbow 连接器），
+/// 整批一条 `AddItems` undo。锚点：`x`/`y`（缺省 0,0）为生成内容包围盒左上角。
+/// 风格与 GUI「草绘」出厂预设同档（Artist 手绘 + 手写体标签），GUI 打开观感一致。
+fn add_mermaid(doc: &mut CliDoc, req: &Value) -> Result<Value, String> {
+    let src = req_str(req, "mermaid")?;
+    let fc = preferz_core::mermaid::parse_mermaid_flowchart(src)?;
+    let layout = preferz_core::mermaid::layout_flowchart(&fc);
+    // 布局包围盒左上角 → 把锚点平移进去
+    let (mut bx0, mut by0) = (f32::MAX, f32::MAX);
+    for ln in &layout {
+        bx0 = bx0.min(ln.x);
+        by0 = by0.min(ln.y);
+    }
+    let x = opt_f32(req, "x", 0.0)?;
+    let y = opt_f32(req, "y", 0.0)?;
+    let style = preferz_core::mermaid::FlowchartStyle {
+        stroke: StrokeStyle::default(),
+        sloppiness: Sloppiness::Artist,
+        font_family: FontFamily::Handwriting,
+        label_font_size: 18.0,
+    };
+    let built =
+        preferz_core::mermaid::build_flowchart_items(&fc, &layout, (x - bx0, y - by0), &style);
+    let nodes = fc.nodes.len();
+    let edges = fc.edges.len();
+    let ids: Vec<String> = built.items.iter().map(|it| it.id.to_string()).collect();
+    doc.session.push(Box::new(AddItems::new(built.items)));
+    Ok(json!({ "nodes": nodes, "edges": edges, "ids": ids }))
+}
+
+/// 两列数据 → 单系列图表（柱状/折线）。数据源二选一：
+/// `data`（TSV/CSV 文本，与 GUI 剪贴板路径同一解析器）或 `labels`+`values` 数组。
+fn add_chart(doc: &mut CliDoc, req: &Value) -> Result<Value, String> {
+    let (labels, values) = match req.get("data") {
+        Some(Value::Null) | None => {
+            let labels = req
+                .get("labels")
+                .and_then(Value::as_array)
+                .ok_or("missing 'data' string or 'labels' array")?
+                .iter()
+                .map(|v| {
+                    v.as_str()
+                        .map(str::to_string)
+                        .ok_or_else(|| "every entry of 'labels' must be a string".to_string())
+                })
+                .collect::<Result<Vec<String>, String>>()?;
+            let values = req
+                .get("values")
+                .and_then(Value::as_array)
+                .ok_or("missing 'data' string or 'labels'/'values' arrays")?
+                .iter()
+                .map(|v| {
+                    v.as_f64()
+                        .map(|n| n as f32)
+                        .ok_or_else(|| "every entry of 'values' must be a number".to_string())
+                })
+                .collect::<Result<Vec<f32>, String>>()?;
+            (labels, values)
+        }
+        Some(text) => {
+            preferz_core::parse_two_column_data(text.as_str().ok_or("'data' must be a string")?)
+                .ok_or_else(|| "could not parse 'data' as two-column TSV/CSV".to_string())?
+        }
+    };
+    if labels.is_empty() {
+        return Err("chart needs at least one data point".to_string());
+    }
+    if labels.len() != values.len() {
+        return Err(format!(
+            "labels ({}) and values ({}) lengths differ",
+            labels.len(),
+            values.len()
+        ));
+    }
+    if values.iter().any(|v| !v.is_finite()) {
+        return Err("values must be finite numbers".to_string());
+    }
+    let chart_type = match opt_str(req, "chart_type").unwrap_or("bar") {
+        "bar" => ChartType::Bar,
+        "line" => ChartType::Line,
+        other => {
+            return Err(format!(
+                "unknown chart_type '{other}' (supported: bar, line)"
+            ))
+        }
+    };
+    let x = opt_f32(req, "x", 0.0)?;
+    let y = opt_f32(req, "y", 0.0)?;
+    let points = labels.len();
+    let item = Item::new_chart(chart_type, labels, values, x, y);
+    let id = item.id;
+    doc.session.push(Box::new(AddItem::new(item)));
+    Ok(json!({ "id": id.to_string(), "points": points }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -376,7 +486,7 @@ mod tests {
         assert!(r["ok"].as_bool().unwrap(), "{r}");
         let id = r["id"].as_str().unwrap().to_string();
 
-        // list / stats / get
+        // list / stats / get（full 单条）
         let r = handle(&mut doc, json!({"cmd": "list"}));
         assert_eq!(r["items"].as_array().unwrap().len(), 1);
         assert_eq!(r["items"][0]["kind"], "shape");
@@ -386,8 +496,16 @@ mod tests {
         assert_eq!(r["items"], 1);
         assert_eq!(r["undo_depth"], 1);
 
-        let r = handle(&mut doc, json!({"cmd": "get", "id": id}));
-        assert_eq!(r["id"], id);
+        let r = handle(&mut doc, json!({"cmd": "list", "ids": [id], "full": true}));
+        assert_eq!(r["items"].as_array().unwrap().len(), 1);
+        assert_eq!(r["items"][0]["id"], id);
+        assert!(r["items"][0]["transform"].is_object());
+        // list ids 过滤遇到不存在的 id → 报错（get 语义并入）
+        assert!(
+            !handle(&mut doc, json!({"cmd": "list", "ids": ["not-a-uuid"]}))["ok"]
+                .as_bool()
+                .unwrap()
+        );
 
         // 选中 + 移动（走选区回退）
         let r = handle(&mut doc, json!({"cmd": "select", "ids": [id]}));
@@ -395,15 +513,16 @@ mod tests {
         let r = handle(&mut doc, json!({"cmd": "move", "dx": 5.0, "dy": -5.0}));
         assert_eq!(r["moved"], 1);
         // euclid Vector2D 序列化为数组 [x, y]。
-        let got = handle(&mut doc, json!({"cmd": "get", "id": id}));
-        let pos_x = got["transform"]["pos"][0].as_f64().unwrap();
+        let got = handle(&mut doc, json!({"cmd": "list", "ids": [id], "full": true}));
+        let pos_x = got["items"][0]["transform"]["pos"][0].as_f64().unwrap();
         assert!((pos_x - 15.0).abs() < 1e-4, "pos_x={pos_x}");
 
         // undo 回到 10，redo 再到 15
         assert!(handle(&mut doc, json!({"cmd": "undo"}))["performed"]
             .as_bool()
             .unwrap());
-        let pos_x = handle(&mut doc, json!({"cmd": "get", "id": id}))["transform"]["pos"][0]
+        let pos_x = handle(&mut doc, json!({"cmd": "list", "ids": [id], "full": true}))["items"][0]
+            ["transform"]["pos"][0]
             .as_f64()
             .unwrap();
         assert!((pos_x - 10.0).abs() < 1e-4);
@@ -428,10 +547,72 @@ mod tests {
             .as_bool()
             .unwrap());
         assert!(
-            !handle(&mut doc, json!({"cmd": "get", "id": "not-a-uuid"}))["ok"]
+            !handle(&mut doc, json!({"cmd": "list", "ids": ["not-a-uuid"]}))["ok"]
                 .as_bool()
                 .unwrap()
         );
+    }
+
+    #[test]
+    fn add_mermaid_builds_flowchart_and_undoes() {
+        let mut doc = CliDoc::new();
+        let r = handle(
+            &mut doc,
+            json!({"cmd": "add_mermaid", "mermaid": "flowchart TD\n a[开始] -->|是| b{判断}"}),
+        );
+        assert!(r["ok"].as_bool().unwrap(), "{r}");
+        assert_eq!(r["nodes"], 2);
+        assert_eq!(r["edges"], 1);
+        // 2 节点 + 2 绑定文字 + 1 连接器
+        assert_eq!(r["ids"].as_array().unwrap().len(), 5);
+        assert_eq!(handle(&mut doc, json!({"cmd": "stats"}))["items"], 5);
+        // 坏语法报错不 panic
+        let r = handle(
+            &mut doc,
+            json!({"cmd": "add_mermaid", "mermaid": "subgraph x"}),
+        );
+        assert!(!r["ok"].as_bool().unwrap());
+        // 一条 undo 撤掉整批
+        assert!(handle(&mut doc, json!({"cmd": "undo"}))["performed"]
+            .as_bool()
+            .unwrap());
+        assert_eq!(handle(&mut doc, json!({"cmd": "stats"}))["items"], 0);
+    }
+
+    #[test]
+    fn add_chart_from_data_text_and_arrays() {
+        let mut doc = CliDoc::new();
+        // TSV 文本（与 GUI 剪贴板同源解析器）
+        let r = handle(
+            &mut doc,
+            json!({"cmd": "add_chart", "data": "一月\t10\n二月\t20", "chart_type": "line"}),
+        );
+        assert!(r["ok"].as_bool().unwrap(), "{r}");
+        assert_eq!(r["points"], 2);
+        // labels/values 数组
+        let r = handle(
+            &mut doc,
+            json!({"cmd": "add_chart", "labels": ["a", "b"], "values": [1, 2]}),
+        );
+        assert!(r["ok"].as_bool().unwrap(), "{r}");
+        // 长度不一致 / 坏数据 / 未知类型报错
+        assert!(!handle(
+            &mut doc,
+            json!({"cmd": "add_chart", "labels": ["a"], "values": [1, 2]})
+        )["ok"]
+            .as_bool()
+            .unwrap());
+        assert!(
+            !handle(&mut doc, json!({"cmd": "add_chart", "data": "not numbers"}))["ok"]
+                .as_bool()
+                .unwrap()
+        );
+        assert!(!handle(
+            &mut doc,
+            json!({"cmd": "add_chart", "labels": ["a"], "values": [1], "chart_type": "pie"})
+        )["ok"]
+            .as_bool()
+            .unwrap());
     }
 
     #[test]

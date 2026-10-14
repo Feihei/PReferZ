@@ -1530,6 +1530,60 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
   `cargo test --workspace` 365 项全绿（123+3 GUI / 222 core /
   12 fileio / 5 CLI / 2 session 含在 core 222 内）
 
+## MCP stdio 服务器：`preferz-cli --mcp` + mermaid/chart 工具下沉（2026-10-14）
+
+> 目标：让 LLM 客户端（Claude / Cursor 等）通过 MCP 直接操作画布。拍板要点：
+> **本地优先**——只做 stdio 传输（HTTP 不做）；**双栈协议**——主路径
+> 2026-07-28 无状态 spec + 旧版（≤2025-11-25）`initialize` 兜底；**手写
+> JSON-RPC**（零新依赖，不引 rmcp/tokio，与项目零异步纪律一致）。
+
+- **新栈（2026-07-28 spec）**：无 initialize/initialized 握手；`server/discover`
+  声明 `protocolVersions: ["2026-07-28"]` + capabilities + serverInfo +
+  `resultType: "complete"`；每请求 `params._meta
+  ["io.modelcontextprotocol/protocolVersion"]` 校验，不认识回 **-32022**；
+  `ping` 已移除（回 -32601）；所有 result 带 `resultType`；批处理一律拒绝
+  （-32600）。按「请求是否带 `_meta` 版本字段」分流双栈——旧客户端发
+  `initialize` 走旧握手（版本不在已知集协商到 `2025-11-25`），通知
+  （无 id / `notifications/` 前缀）一律静默不回包
+- **工具集 15 个（刻意精简，D 决策）**：`new` `open` `save` `stats` `list`
+  `select` `add_shape` `add_text` `add_item` `delete` `move` `undo` `redo`
+  + 杀手锏 `add_mermaid` / `add_chart`。表按名称**字典序**（spec 确定性
+  排序，单测钉死）；`readOnlyHint` 给 stats/list、`destructiveHint` 给
+  delete；`tools/list` 结果带 `ttlMs: 3_600_000` + `cacheScope: "private"`
+- **`tools/call` 直投 dispatch**：`name` 当 `cmd`、`arguments` 当请求体，
+  与 JSONL REPL 共享同一语义与 undo 通道，不另写映射层；工具级失败回
+  `isError: true` 的 result（会话不死），缺 `name` 等协议级错误才回
+  JSON-RPC error（-32602）
+- **list 吸收 get（CLI 同步受益）**：`list` 新增 `ids` 过滤 + `full`
+  （true 回完整 Item JSON，与 `.prz` kind blob 同形），独立 `get` 命令
+  移除；`select` 传空数组 = 全不选、全选 = list→select（工具描述里写明）
+- **mermaid 建项逻辑下沉 core**：`preferz-core/src/mermaid.rs` 新增
+  `build_flowchart_items(fc, layout, offset, &FlowchartStyle)`——节点 =
+  形状 + 绑定文字（Phase C 模型）、边 = 两端 `EndpointBinding` 的 Elbow
+  连接器（路由由 `Scene::elbow_route_local` 派生）、箭头族映射
+  （Arrow/Open/Dotted/DottedOpen/Thick/ThickOpen/Double → 箭头头/dash/
+  宽度倍数）与 GUI 原实现逐行等价；风格参数（stroke/sloppiness/
+  font_family/label_font_size）由调用方显式传入（core 不持配置）。
+  GUI `generate_mermaid_flowchart` 改调构建器，`FlowDir` 补
+  `opposite()` / `edge_midpoint()`。**chart 无需下沉**——`Item::new_chart`
+  本就在 core，`parse_two_column_data` 复用 GUI 剪贴板同一解析器
+- **CLI `add_mermaid` / `add_chart`**：mermaid DSL → 分层布局元素批
+  （一条 `AddItems` undo），`x`/`y` 锚点为生成内容包围盒左上角，风格与
+  GUI「草绘」出厂预设同档（Artist 手绘 + 手写体标签，GUI 打开观感一致）；
+  chart 数据源二选一：`data`（TSV/CSV 文本）或 `labels`+`values` 数组，
+  `chart_type` bar（默认）/line
+- **`--mcp` 接线**：与 `--exec` 互斥；位置参数 open 复用，MCP 模式下
+  启动失败走 stderr（stdout 只走协议帧）；日志全走 stderr
+- 测试：core 构建器 5（节点/文字/连接器绑定 + 边标签、箭头族映射、
+  offset 平移、空标签无文字）；mcp.rs 单测 8（旧栈握手协商、通知静默、
+  双栈 ping 分流、discover、-32022、tools/list 排序与元数据、tools/call
+  往返与 isError、未知方法/解析错误/批处理拒绝）；mcp_tools.rs 单测 3
+  （字典序/15 个/schema type）；集成测试 tests/mcp.rs 3（子进程端到端：
+  旧栈全流程握手→工具→undo→EOF、新栈 discover→_meta 校验→-32022/
+  -32601、坏帧鲁棒性）；CLI dispatch 新增 2（add_mermaid 建批与 undo、
+  add_chart 双数据源与错误收敛）。质量门：fmt / `clippy -D warnings`
+  零告警；真实 stdio 冒烟（PowerShell 管道 8 请求会话）通过
+
 ---
 
 ## 决策点归档（D1–D6 / I1–I4 / L 系列）
