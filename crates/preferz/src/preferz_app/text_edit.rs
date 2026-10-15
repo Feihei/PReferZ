@@ -14,7 +14,8 @@ impl PReferZApp {
             canvas_pos,
             buffer: String::new(),
             font_size: 24.0,
-            color: [255, 255, 255, 255],
+            // 新建文字颜色跟随当前主题默认描边色（与 default_stroke 同步翻转）。
+            color: self.default_stroke.color,
             first_frame: true,
             container_id: None,
             // 默认风格总开关（草绘预设 → 手写体）。

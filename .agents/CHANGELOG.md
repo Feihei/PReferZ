@@ -1688,9 +1688,10 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 - **测试**：core 2 个新单测（add_mermaid 显式色生效 + 缺省路径）、GUI
   `inject_theme_defaults` 4 断言单测（注入 / 显式色不覆盖 / null 视为缺失 /
   非目标工具透传）。质量门全绿。
-- **已知遗留**：GUI 自由文字落点默认色写死白色
-  （`text_edit.rs` `begin_free_text_at` 的 `color: [255,255,255,255]`），
-  亮色主题下同样不可见，属 GUI 侧独立问题待修。
+- **遗留跟进**：GUI 自由文字落点默认色写死白色
+  （`text_edit.rs` `begin_free_text_at`）已于同日修复——新建文字颜色改取
+  `default_stroke.color`（随主题同步翻转）；编辑已有文字沿用原色、
+  新建绑定文字取容器描边色的既有行为不变。
 
 ---
 
