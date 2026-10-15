@@ -1,20 +1,20 @@
-//! 请求分发：解析 `cmd` 并在 [`CliDoc`] 上执行，返回统一 JSON 响应。
+//! 请求分发：解析 `cmd` 并在实现 [`RpcDoc`] 的文档上执行，返回统一 JSON 响应。
 //!
 //! 所有写操作都经 `session.push(Command)` 走 undo 通道，与 GUI 共享同一套
 //! core 命令语义；headless 调用方没有"拖拽预览直改"阶段，故 `MoveItems`
 //! 等默认 preview 的命令必须显式 `with_preview_applied(false)`。
 
-use preferz_core::commands::{AddItem, AddItems, DeleteItems, MoveItems};
-use preferz_core::shape::{FontFamily, Sloppiness, StrokeStyle};
-use preferz_core::spaces::CanvasVector;
-use preferz_core::{ChartType, Item, ItemId, ItemKind, ShapeType, Transform};
+use crate::commands::{AddItem, AddItems, DeleteItems, MoveItems};
+use crate::item::{ChartType, Item, ItemId, ItemKind};
+use crate::rpc::doc::RpcDoc;
+use crate::rpc::protocol::{self, ok, opt_bool, opt_f32, opt_str, parse_color, req_f32, req_str};
+use crate::shape::{FontFamily, Sloppiness, StrokeStyle};
+use crate::spaces::CanvasVector;
+use crate::transform::Transform;
 use serde_json::{json, Value};
 
-use crate::doc::CliDoc;
-use crate::protocol::{self, ok, opt_bool, opt_f32, opt_str, parse_color, req_f32, req_str};
-
 /// 分发一条已解析为 JSON 值的请求。永不 panic：任何错误都收敛成失败响应。
-pub(crate) fn dispatch(doc: &mut CliDoc, req: &Value) -> Value {
+pub fn dispatch(doc: &mut impl RpcDoc, req: &Value) -> Value {
     let Some(cmd) = req.get("cmd").and_then(Value::as_str) else {
         return protocol::fail("<none>", req, "request must be an object with string 'cmd'");
     };
@@ -24,10 +24,13 @@ pub(crate) fn dispatch(doc: &mut CliDoc, req: &Value) -> Value {
     }
 }
 
-fn run(doc: &mut CliDoc, cmd: &str, req: &Value) -> Result<Value, String> {
+fn run(doc: &mut impl RpcDoc, cmd: &str, req: &Value) -> Result<Value, String> {
     match cmd {
-        "ping" => Ok(json!({ "pong": true, "version": crate_version() })),
-        "version" => Ok(json!({ "version": crate_version(), "format": "prz" })),
+        "ping" => Ok(json!({ "pong": true, "version": env!("CARGO_PKG_VERSION") })),
+        "version" => Ok(json!({
+            "version": env!("CARGO_PKG_VERSION"),
+            "format": "prz"
+        })),
 
         "new" => {
             doc.reset();
@@ -35,12 +38,12 @@ fn run(doc: &mut CliDoc, cmd: &str, req: &Value) -> Result<Value, String> {
         }
         "open" => {
             let path = req_str(req, "path")?;
-            let count = doc.open(std::path::Path::new(path))?;
+            let count = doc.open_path(std::path::Path::new(path))?;
             Ok(json!({ "path": path, "items": count }))
         }
         "save" => {
             let target = opt_str(req, "path").map(std::path::Path::new);
-            let saved = doc.save(target)?;
+            let saved = doc.save_path(target)?;
             Ok(json!({ "path": saved.to_string_lossy() }))
         }
 
@@ -50,23 +53,23 @@ fn run(doc: &mut CliDoc, cmd: &str, req: &Value) -> Result<Value, String> {
         "select" => {
             let ids = protocol::opt_ids(req)?.ok_or_else(|| "missing 'ids' array".to_string())?;
             if !opt_bool(req, "additive", false) {
-                doc.session.scene.deselect_all();
+                doc.session().scene.deselect_all();
             }
             let mut selected = 0usize;
             for id in ids {
-                if doc.session.scene.get_item(&id).is_some() {
-                    doc.session.scene.select(id);
+                if doc.session().scene.get_item(&id).is_some() {
+                    doc.session().scene.select(id);
                     selected += 1;
                 }
             }
             Ok(json!({ "selected": selected }))
         }
         "select_all" => {
-            doc.session.scene.select_all();
-            Ok(json!({ "selected": doc.session.scene.selection.len() }))
+            doc.session().scene.select_all();
+            Ok(json!({ "selected": doc.session().scene.selection.len() }))
         }
         "deselect" => {
-            doc.session.scene.deselect_all();
+            doc.session().scene.deselect_all();
             Ok(json!({ "selected": 0 }))
         }
 
@@ -82,7 +85,7 @@ fn run(doc: &mut CliDoc, cmd: &str, req: &Value) -> Result<Value, String> {
                 return Err("no ids given and selection is empty".to_string());
             }
             let n = ids.len();
-            doc.session.push(Box::new(DeleteItems::new(ids)));
+            doc.session().push(Box::new(DeleteItems::new(ids)));
             Ok(json!({ "deleted": n }))
         }
 
@@ -97,35 +100,32 @@ fn run(doc: &mut CliDoc, cmd: &str, req: &Value) -> Result<Value, String> {
                 return Err("dx/dy must be finite numbers".to_string());
             }
             let n = ids.len();
-            doc.session.push(Box::new(
+            doc.session().push(Box::new(
                 MoveItems::new(ids, CanvasVector::new(dx, dy)).with_preview_applied(false),
             ));
             Ok(json!({ "moved": n, "dx": dx, "dy": dy }))
         }
 
-        "undo" => Ok(json!({ "performed": doc.session.undo() })),
-        "redo" => Ok(json!({ "performed": doc.session.redo() })),
+        "undo" => Ok(json!({ "performed": doc.session().undo() })),
+        "redo" => Ok(json!({ "performed": doc.session().redo() })),
 
         other => Err(format!("unknown command '{other}'")),
     }
 }
 
-fn crate_version() -> &'static str {
-    env!("CARGO_PKG_VERSION")
-}
-
 /// 命令的目标 id 列表：显式 `ids` 优先，否则回退到当前选区。
-fn target_ids(doc: &CliDoc, req: &Value) -> Result<Vec<ItemId>, String> {
+fn target_ids(doc: &mut impl RpcDoc, req: &Value) -> Result<Vec<ItemId>, String> {
     match protocol::opt_ids(req)? {
         Some(ids) => Ok(ids),
-        None => Ok(doc.session.scene.selection.iter().copied().collect()),
+        None => Ok(doc.session().scene.selection.iter().copied().collect()),
     }
 }
 
-fn stats(doc: &CliDoc) -> Value {
-    let s = &doc.session;
+fn stats(doc: &mut impl RpcDoc) -> Value {
+    let path = doc.path().map(|p| p.to_string_lossy().to_string());
+    let s = doc.session();
     json!({
-        "path": doc.path().map(|p| p.to_string_lossy().to_string()),
+        "path": path,
         "items": s.scene.items.len(),
         "selected": s.scene.selection.len(),
         "undo_depth": s.undo_stack.undo_len(),
@@ -155,18 +155,18 @@ fn kind_label(kind: &ItemKind) -> &'static str {
 /// - `ids`（可选，UUID 数组）：只列出这些元素；任一 id 不存在则整体报错
 ///   （原 `get` 命令的语义并入此处：`{"cmd":"list","ids":[..],"full":true}`）；
 /// - `full`（可选，默认 false）：true 时返回完整 Item JSON（与 `.prz` 内表示同源）。
-fn list(doc: &CliDoc, req: &Value) -> Result<Value, String> {
+fn list(doc: &mut impl RpcDoc, req: &Value) -> Result<Value, String> {
     let filter = protocol::opt_ids(req)?;
     if let Some(ids) = &filter {
         for id in ids {
-            if doc.session.scene.get_item(id).is_none() {
+            if doc.session().scene.get_item(id).is_none() {
                 return Err(format!("no item with id {id}"));
             }
         }
     }
     let full = opt_bool(req, "full", false);
-    let items: Vec<Value> = doc
-        .session
+    let session = doc.session();
+    let items: Vec<Value> = session
         .scene
         .items_by_z_order()
         .into_iter()
@@ -176,7 +176,7 @@ fn list(doc: &CliDoc, req: &Value) -> Result<Value, String> {
             if full {
                 serde_json::to_value(item).map_err(|e| format!("serialize item failed: {e}"))
             } else {
-                Ok(summarize_item(doc, item))
+                Ok(summarize_item(session, item))
             }
         })
         .collect::<Result<Vec<_>, String>>()?;
@@ -184,14 +184,14 @@ fn list(doc: &CliDoc, req: &Value) -> Result<Value, String> {
 }
 
 /// 每个 item 一行精简摘要（供 [`list`] 的默认精简模式）。
-fn summarize_item(doc: &CliDoc, item: &Item) -> Value {
+fn summarize_item(session: &crate::session::Session, item: &Item) -> Value {
     let mut v = json!({
         "id": item.id.to_string(),
         "kind": kind_label(&item.kind),
         "z": item.z,
         "x": item.transform.pos.x,
         "y": item.transform.pos.y,
-        "selected": doc.session.scene.selection_contains(&item.id),
+        "selected": session.scene.selection_contains(&item.id),
     });
     let map = v.as_object_mut().expect("object");
     match &item.kind {
@@ -276,11 +276,11 @@ fn summarize_item(doc: &CliDoc, item: &Item) -> Value {
     v
 }
 
-fn add_shape(doc: &mut CliDoc, req: &Value) -> Result<ItemId, String> {
+fn add_shape(doc: &mut impl RpcDoc, req: &Value) -> Result<ItemId, String> {
     let shape = match req_str(req, "shape")?.to_ascii_lowercase().as_str() {
-        "rectangle" | "rect" => ShapeType::Rectangle,
-        "ellipse" | "circle" => ShapeType::Ellipse,
-        "diamond" => ShapeType::Diamond,
+        "rectangle" | "rect" => crate::shape::ShapeType::Rectangle,
+        "ellipse" | "circle" => crate::shape::ShapeType::Ellipse,
+        "diamond" => crate::shape::ShapeType::Diamond,
         other => {
             return Err(format!(
                 "unknown shape '{other}' (supported: rectangle, ellipse, diamond)"
@@ -321,11 +321,11 @@ fn add_shape(doc: &mut CliDoc, req: &Value) -> Result<ItemId, String> {
         }
     }
     let id = item.id;
-    doc.session.push(Box::new(AddItem::new(item)));
+    doc.session().push(Box::new(AddItem::new(item)));
     Ok(id)
 }
 
-fn add_text(doc: &mut CliDoc, req: &Value) -> Result<ItemId, String> {
+fn add_text(doc: &mut impl RpcDoc, req: &Value) -> Result<ItemId, String> {
     let text = req_str(req, "text")?.to_string();
     let x = opt_f32(req, "x", 0.0)?;
     let y = opt_f32(req, "y", 0.0)?;
@@ -339,13 +339,13 @@ fn add_text(doc: &mut CliDoc, req: &Value) -> Result<ItemId, String> {
     };
     let item = Item::new_text(text, x, y, font_size, color);
     let id = item.id;
-    doc.session.push(Box::new(AddItem::new(item)));
+    doc.session().push(Box::new(AddItem::new(item)));
     Ok(id)
 }
 
 /// 通用转义舱：直接传 `kind`（ItemKind 的 JSON 形态，与 `.prz` 内 kind blob 同源）
 /// 创建任意类型元素，可选 `x`/`y` 指定位置。
-fn add_item_raw(doc: &mut CliDoc, req: &Value) -> Result<ItemId, String> {
+fn add_item_raw(doc: &mut impl RpcDoc, req: &Value) -> Result<ItemId, String> {
     let kind_value = req
         .get("kind")
         .ok_or("missing 'kind' object (ItemKind JSON, same shape as in .prz files)")?
@@ -363,17 +363,17 @@ fn add_item_raw(doc: &mut CliDoc, req: &Value) -> Result<ItemId, String> {
         link: None,
     };
     let id = item.id;
-    doc.session.push(Box::new(AddItem::new(item)));
+    doc.session().push(Box::new(AddItem::new(item)));
     Ok(id)
 }
 
 /// mermaid 流程图 → 分层布局元素批（节点+绑定文字+Elbow 连接器），
 /// 整批一条 `AddItems` undo。锚点：`x`/`y`（缺省 0,0）为生成内容包围盒左上角。
 /// 风格与 GUI「草绘」出厂预设同档（Artist 手绘 + 手写体标签），GUI 打开观感一致。
-fn add_mermaid(doc: &mut CliDoc, req: &Value) -> Result<Value, String> {
+fn add_mermaid(doc: &mut impl RpcDoc, req: &Value) -> Result<Value, String> {
     let src = req_str(req, "mermaid")?;
-    let fc = preferz_core::mermaid::parse_mermaid_flowchart(src)?;
-    let layout = preferz_core::mermaid::layout_flowchart(&fc);
+    let fc = crate::mermaid::parse_mermaid_flowchart(src)?;
+    let layout = crate::mermaid::layout_flowchart(&fc);
     // 布局包围盒左上角 → 把锚点平移进去
     let (mut bx0, mut by0) = (f32::MAX, f32::MAX);
     for ln in &layout {
@@ -382,24 +382,23 @@ fn add_mermaid(doc: &mut CliDoc, req: &Value) -> Result<Value, String> {
     }
     let x = opt_f32(req, "x", 0.0)?;
     let y = opt_f32(req, "y", 0.0)?;
-    let style = preferz_core::mermaid::FlowchartStyle {
+    let style = crate::mermaid::FlowchartStyle {
         stroke: StrokeStyle::default(),
         sloppiness: Sloppiness::Artist,
         font_family: FontFamily::Handwriting,
         label_font_size: 18.0,
     };
-    let built =
-        preferz_core::mermaid::build_flowchart_items(&fc, &layout, (x - bx0, y - by0), &style);
+    let built = crate::mermaid::build_flowchart_items(&fc, &layout, (x - bx0, y - by0), &style);
     let nodes = fc.nodes.len();
     let edges = fc.edges.len();
     let ids: Vec<String> = built.items.iter().map(|it| it.id.to_string()).collect();
-    doc.session.push(Box::new(AddItems::new(built.items)));
+    doc.session().push(Box::new(AddItems::new(built.items)));
     Ok(json!({ "nodes": nodes, "edges": edges, "ids": ids }))
 }
 
 /// 两列数据 → 单系列图表（柱状/折线）。数据源二选一：
 /// `data`（TSV/CSV 文本，与 GUI 剪贴板路径同一解析器）或 `labels`+`values` 数组。
-fn add_chart(doc: &mut CliDoc, req: &Value) -> Result<Value, String> {
+fn add_chart(doc: &mut impl RpcDoc, req: &Value) -> Result<Value, String> {
     let (labels, values) = match req.get("data") {
         Some(Value::Null) | None => {
             let labels = req
@@ -426,10 +425,8 @@ fn add_chart(doc: &mut CliDoc, req: &Value) -> Result<Value, String> {
                 .collect::<Result<Vec<f32>, String>>()?;
             (labels, values)
         }
-        Some(text) => {
-            preferz_core::parse_two_column_data(text.as_str().ok_or("'data' must be a string")?)
-                .ok_or_else(|| "could not parse 'data' as two-column TSV/CSV".to_string())?
-        }
+        Some(text) => crate::parse_two_column_data(text.as_str().ok_or("'data' must be a string")?)
+            .ok_or_else(|| "could not parse 'data' as two-column TSV/CSV".to_string())?,
     };
     if labels.is_empty() {
         return Err("chart needs at least one data point".to_string());
@@ -458,22 +455,23 @@ fn add_chart(doc: &mut CliDoc, req: &Value) -> Result<Value, String> {
     let points = labels.len();
     let item = Item::new_chart(chart_type, labels, values, x, y);
     let id = item.id;
-    doc.session.push(Box::new(AddItem::new(item)));
+    doc.session().push(Box::new(AddItem::new(item)));
     Ok(json!({ "id": id.to_string(), "points": points }))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rpc::test_support::TestDoc;
     use serde_json::json;
 
-    fn handle(doc: &mut CliDoc, v: Value) -> Value {
+    fn handle(doc: &mut TestDoc, v: Value) -> Value {
         dispatch(doc, &v)
     }
 
     #[test]
     fn full_headless_workflow() {
-        let mut doc = CliDoc::new();
+        let mut doc = TestDoc::new();
 
         let r = handle(&mut doc, json!({"cmd": "ping"}));
         assert!(r["ok"].as_bool().unwrap());
@@ -554,8 +552,17 @@ mod tests {
     }
 
     #[test]
+    fn open_save_unsupported_yields_structured_error() {
+        let mut doc = TestDoc::new();
+        let r = handle(&mut doc, json!({"cmd": "open", "path": "x.prz"}));
+        assert!(!r["ok"].as_bool().unwrap());
+        let r = handle(&mut doc, json!({"cmd": "save"}));
+        assert!(!r["ok"].as_bool().unwrap());
+    }
+
+    #[test]
     fn add_mermaid_builds_flowchart_and_undoes() {
-        let mut doc = CliDoc::new();
+        let mut doc = TestDoc::new();
         let r = handle(
             &mut doc,
             json!({"cmd": "add_mermaid", "mermaid": "flowchart TD\n a[开始] -->|是| b{判断}"}),
@@ -581,7 +588,7 @@ mod tests {
 
     #[test]
     fn add_chart_from_data_text_and_arrays() {
-        let mut doc = CliDoc::new();
+        let mut doc = TestDoc::new();
         // TSV 文本（与 GUI 剪贴板同源解析器）
         let r = handle(
             &mut doc,
@@ -617,7 +624,7 @@ mod tests {
 
     #[test]
     fn add_item_raw_escape_hatch() {
-        let mut doc = CliDoc::new();
+        let mut doc = TestDoc::new();
         // ItemKind::Frame 的 JSON（与 .prz 内 kind blob 同形）
         let kind = json!({
             "Frame": {

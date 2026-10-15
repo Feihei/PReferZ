@@ -10,7 +10,7 @@
 //!
 //! 单条命令失败不杀死会话，agent 可在下一条命令中恢复。
 
-use preferz_core::ItemId;
+use crate::item::ItemId;
 use serde_json::{json, Value};
 
 /// 构造成功响应：把 `data`（对象）与 ok/cmd/回显 id 合并。

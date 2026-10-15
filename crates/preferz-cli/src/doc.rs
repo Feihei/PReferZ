@@ -2,10 +2,13 @@
 //!
 //! 与 GUI 的分工：所有领域变更走 `session.push(Command)`（与 UI 同一条 undo 通道），
 //! 持久化复用 `preferz-fileio`，CLI 自身只持有"当前文件是谁"这层薄状态。
+//! RPC 协议（JSONL dispatch / MCP）经由 [`RpcDoc`] 抽象下沉在 preferz-core，
+//! 本类型只是它的 headless 实现。
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use preferz_core::rpc::RpcDoc;
 use preferz_core::spaces::CanvasVector;
 use preferz_core::{Session, ViewportState};
 use preferz_fileio::{PrzFile, ViewportMeta};
@@ -106,5 +109,27 @@ impl CliDoc {
 
         self.path = Some(target_path.clone());
         Ok(target_path)
+    }
+}
+
+impl RpcDoc for CliDoc {
+    fn session(&mut self) -> &mut Session {
+        &mut self.session
+    }
+
+    fn path(&self) -> Option<&Path> {
+        CliDoc::path(self)
+    }
+
+    fn reset(&mut self) {
+        CliDoc::reset(self)
+    }
+
+    fn open_path(&mut self, path: &Path) -> Result<usize, String> {
+        CliDoc::open(self, path)
+    }
+
+    fn save_path(&mut self, target: Option<&Path>) -> Result<PathBuf, String> {
+        CliDoc::save(self, target)
     }
 }

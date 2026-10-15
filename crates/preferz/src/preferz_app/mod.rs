@@ -65,6 +65,7 @@ mod drag;
 mod export_dialog;
 mod file_io;
 mod link;
+mod mcp_serve;
 mod offscreen;
 mod present;
 mod props;
@@ -468,6 +469,10 @@ pub struct PReferZApp {
     pending_link_open: Option<ItemId>,
     /// 属性面板链接输入框是否持焦（防按键派发抢键，同 zoom_hud_focused）。
     link_input_focused: bool,
+    /// GUI 内嵌 MCP 监听（`preferz-cli --mcp` 代理桥的目标端）：
+    /// agent 客户端的工具调用实时操作本窗口的画布。
+    /// `None` = config 关闭或启动失败（端口/握手文件）。
+    mcp: Option<mcp_serve::McpServe>,
 }
 
 /// 保存提示对话框的触发场景#[derive(Clone, Copy, PartialEq)]
@@ -977,6 +982,15 @@ impl PReferZApp {
             link_badge_rects: Vec::new(),
             pending_link_open: None,
             link_input_focused: false,
+            mcp: if cfg.mcp_listen {
+                let serve = mcp_serve::McpServe::start();
+                if serve.is_none() {
+                    log::warn!("内嵌 MCP 监听启动失败（端口或握手文件不可写）");
+                }
+                serve
+            } else {
+                None
+            },
         }
     }
 
@@ -1400,6 +1414,9 @@ impl eframe::App for PReferZApp {
 
         // poll 后台任务结果（导入/加载/保存/导出）。
         self.poll_background(ctx);
+
+        // 内嵌 MCP：处理代理桥转发的 agent 请求（操作本窗口 Session 实时渲染）。
+        self.poll_mcp(ctx);
 
         // 自动保存计时（plan #5）：变更后 N 秒无操作写 .prz.autosave
         self.tick_autosave(ctx);

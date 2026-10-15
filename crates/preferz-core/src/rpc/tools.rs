@@ -4,7 +4,7 @@
 //! - 表按名称**字典序排列**（2026-07-28 spec 要求工具列表确定性排序），新增工具
 //!   必须插到正确位置。
 //! - 工具与 JSONL 命令一一对应：`tools/call` 把 `name` 当 `cmd`、`arguments`
-//!   当请求体直接转投 [`crate::dispatch::dispatch`]，两套入口共享同一套语义与
+//!   当请求体直接转投 [`crate::rpc::dispatch`]，两套入口共享同一套语义与
 //!   undo 通道，不另写映射层。
 //! - 工具集刻意精简（D 决策，见 `.agents/CHANGELOG.md` 对应条目）：
 //!   `select` 传空数组 = 全不选；全选 = `list` 拿 ids 再 `select`；
@@ -16,7 +16,7 @@ use std::sync::LazyLock;
 use serde_json::{json, Value};
 
 /// 一个 MCP 工具定义（name/description/inputSchema/annotations）。
-pub(crate) struct ToolDef {
+pub struct ToolDef {
     pub name: &'static str,
     pub description: &'static str,
     pub input_schema: Value,
@@ -288,13 +288,13 @@ depth, next z and viewport state.",
 });
 
 /// 工具表切片（首次访问时构建，之后缓存）。
-pub(crate) fn tools() -> &'static [ToolDef] {
+pub fn tools() -> &'static [ToolDef] {
     &TOOLS
 }
 
 /// `tools/list` 的结果体：工具数组（确定性字典序）+ 结果缓存元数据。
 /// 静态表内容不变，缓存 1 小时、仅本连接可见。
-pub(crate) fn tools_list_result() -> Value {
+pub fn tools_list_result() -> Value {
     let tools: Vec<Value> = tools()
         .iter()
         .map(|t| {

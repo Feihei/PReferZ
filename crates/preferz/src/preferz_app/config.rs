@@ -25,6 +25,11 @@ fn default_autosave_interval() -> u32 {
     30
 }
 
+/// 内嵌 MCP 监听默认开（GUI 常驻监听，`preferz-cli --mcp` 代理到本窗口）。
+fn default_mcp_listen() -> bool {
+    true
+}
+
 /// 用户配置（语言 + 快捷键 + 主题；均带 `#[serde(default)]` 以便老配置兼容）。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct UserConfig {
@@ -52,6 +57,10 @@ pub(crate) struct UserConfig {
     /// 只决定新建元素的默认 sloppiness 与字体档；详细语义见 `DefaultStylePreset`。
     #[serde(default)]
     pub(crate) default_style: DefaultStylePreset,
+    /// 内嵌 MCP 监听开关（`~/.preferz/mcp-endpoint.json` 握手 + 本地 TCP），
+    /// 默认开。关闭后 `preferz-cli --mcp` 将降级为 headless 单文档模式。
+    #[serde(default = "default_mcp_listen")]
+    pub(crate) mcp_listen: bool,
 }
 
 impl Default for UserConfig {
@@ -64,6 +73,7 @@ impl Default for UserConfig {
             autosave_interval: default_autosave_interval(),
             frame_ratio: None,
             default_style: DefaultStylePreset::default(),
+            mcp_listen: default_mcp_listen(),
         }
     }
 }

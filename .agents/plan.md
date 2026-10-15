@@ -44,7 +44,9 @@
 - [ ] 放弃 `.bee` 兼容后可做的架构简化盘点（`PrzFile` 命名与 `prz.rs` 路径已改，schema 简化空间待盘）
 - [ ] 视口裁剪已有，LOD 缩略图（Phase 5+）待评估
 - [ ] preferz-cli 命令扩展（V1 已于 2026-10-14 交付、`--mcp` stdio MCP
-      服务器已交付（双栈协议 + add_mermaid/add_chart 工具，见 CHANGELOG））：
+      服务器已交付（双栈协议 + add_mermaid/add_chart 工具，见 CHANGELOG）、
+      GUI 内嵌监听 + `--mcp` 代理桥接已交付（2026-10-15，工具实时操作已打开
+      窗口的画布；图片类操作仍不支持））：
       set_style / transform（旋转/缩放/绝对定位）、编组（group/ungroup）、
       z 序调整、连线与绑定创建；headless PNG/SVG 导出（硬点：渲染在 binary
       层 egui Context，需先抽离或接 `Shape::Callback` 离屏上下文）

@@ -1,11 +1,35 @@
 //! `--mcp` stdio 端到端集成测试：拉起 `preferz-cli --mcp` 子进程，
 //! 按真实客户端行为走一遍双栈协议（旧栈握手 → 工具调用 → undo/redo；
 //! 新栈 discover → _meta 校验 → -32022 拒绝）。
+//!
+//! 另覆盖代理桥（GUI 内嵌监听）：
+//! - 假 GUI（本地 TCP + token 验活）→ `--mcp` 进入纯转发模式；
+//! - 握手文件缺失 / 端口不可达 → 降级 headless。
+//!
+//! 所有 headless 测试用 `PREFERZ_MCP_ENDPOINT` 指向不存在的路径强制降级，
+//! 与开发机上真实运行的 GUI 实例隔离。
 
 use std::io::{BufRead, BufReader, Write};
+use std::net::TcpListener;
+use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 
 use serde_json::{json, Value};
+
+/// 强制 headless 的隔离环境变量：指向一个必定不存在的文件。
+fn isolated_endpoint_env() -> String {
+    std::env::temp_dir()
+        .join(format!(
+            "preferz-cli-no-such-endpoint-{}-{}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+        .to_string_lossy()
+        .into_owned()
+}
 
 struct McpProc {
     child: Child,
@@ -13,16 +37,25 @@ struct McpProc {
 }
 
 impl McpProc {
-    fn spawn(args: &[&str]) -> Self {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_preferz-cli"))
-            .args(args)
+    /// spawn 并注入 `PREFERZ_MCP_ENDPOINT`（None = 隔离到不存在的路径，
+    /// 保证 headless 降级，不受开发机上真实 GUI 影响）。
+    fn spawn_env(args: &[&str], endpoint: Option<String>) -> Self {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_preferz-cli"));
+        cmd.args(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn preferz-cli --mcp");
+            .stderr(Stdio::null());
+        match endpoint {
+            Some(p) => cmd.env("PREFERZ_MCP_ENDPOINT", p),
+            None => cmd.env("PREFERZ_MCP_ENDPOINT", isolated_endpoint_env()),
+        };
+        let mut child = cmd.spawn().expect("spawn preferz-cli --mcp");
         let reader = BufReader::new(child.stdout.take().expect("stdout piped"));
         Self { child, reader }
+    }
+
+    fn spawn(args: &[&str]) -> Self {
+        Self::spawn_env(args, None)
     }
 
     fn send(&mut self, v: &Value) {
@@ -256,4 +289,202 @@ fn robustness_parse_error_and_batch_reject() {
     p.send(&rpc(1, "ping", json!({})));
     let resp = p.read();
     assert_eq!(resp["result"], json!({}));
+}
+
+// ─────────────────────────── 代理桥（GUI 内嵌监听）───────────────────────────
+
+/// 假 GUI：accept 一条连接，验 token，回 ok，之后把每个 JSON-RPC 请求原样
+/// 回一个带 `fake_gui: true` 的 result（模拟"协议处理发生在 GUI 进程"）。
+/// listener 移入线程持有；`--mcp` 总是按握手文件里的 token 发送，token 恒匹配，
+/// "denied" 分支是防御性代码，端到端测不到。
+struct FakeGui {
+    endpoint: PathBuf,
+}
+
+impl FakeGui {
+    fn start() -> Self {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind fake gui");
+        let port = listener.local_addr().unwrap().port();
+        let token = "abcdef01".repeat(4);
+        let dir = std::env::temp_dir().join(format!(
+            "preferz-cli-proxy-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let endpoint = dir.join("mcp-endpoint.json");
+        std::fs::write(
+            &endpoint,
+            json!({ "port": port, "token": token, "pid": 0 }).to_string(),
+        )
+        .expect("write endpoint file");
+        std::thread::spawn(move || {
+            let Ok((stream, _)) = listener.accept() else {
+                return;
+            };
+            let mut reader = BufReader::new(stream.try_clone().expect("clone stream"));
+            let mut line = String::new();
+            if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                return;
+            }
+            let auth: Value = serde_json::from_str(line.trim()).unwrap_or(Value::Null);
+            let authorized = auth.get("token").and_then(Value::as_str) == Some(token.as_str());
+            let mut stream = stream;
+            let _ = writeln!(stream, "{}", if authorized { "ok" } else { "denied" });
+            if !authorized {
+                return;
+            }
+            loop {
+                line.clear();
+                match reader.read_line(&mut line) {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {}
+                }
+                let Ok(req) = serde_json::from_str::<Value>(line.trim()) else {
+                    break;
+                };
+                let resp = json!({
+                    "jsonrpc": "2.0",
+                    "id": req.get("id").cloned().unwrap_or(Value::Null),
+                    "result": {
+                        "fake_gui": true,
+                        "method": req.get("method").cloned().unwrap_or(Value::Null),
+                    },
+                });
+                if writeln!(stream, "{resp}").is_err() {
+                    break;
+                }
+            }
+        });
+        FakeGui { endpoint }
+    }
+}
+
+impl Drop for FakeGui {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.endpoint);
+        if let Some(parent) = self.endpoint.parent() {
+            let _ = std::fs::remove_dir(parent);
+        }
+    }
+}
+
+#[test]
+fn proxy_forwards_requests_to_gui() {
+    let gui = FakeGui::start();
+    let mut p = McpProc::spawn_env(
+        &["--mcp"],
+        Some(gui.endpoint.to_string_lossy().into_owned()),
+    );
+
+    // 请求被原样转发：响应由假 GUI 生成（fake_gui 标记），CLI 纯管道。
+    p.send(&rpc(
+        1,
+        "initialize",
+        json!({"protocolVersion": "2025-11-25"}),
+    ));
+    let resp = p.read();
+    assert_eq!(resp["result"]["fake_gui"], true, "{resp}");
+    assert_eq!(resp["result"]["method"], "initialize");
+
+    p.send(&rpc(
+        2,
+        "tools/call",
+        json!({"name": "stats", "arguments": {}}),
+    ));
+    let resp = p.read();
+    assert_eq!(resp["result"]["fake_gui"], true);
+    assert_eq!(resp["result"]["method"], "tools/call");
+
+    // EOF：stdin 半关后 CLI 退出码 0
+    p.close_stdin();
+    let status = p.child.wait().expect("wait after EOF");
+    assert!(status.success(), "proxy exit after EOF should be 0");
+}
+
+#[test]
+fn proxy_unreachable_port_falls_back_to_headless() {
+    // 握手文件有效，但端口没人听 → connect 失败 → headless
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind to reserve port");
+    let port = listener.local_addr().unwrap().port();
+    drop(listener); // 释放端口但保留地址值
+
+    let dir = std::env::temp_dir().join(format!(
+        "preferz-cli-fallback-test-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let endpoint = dir.join("mcp-endpoint.json");
+    std::fs::write(
+        &endpoint,
+        json!({ "port": port, "token": "ff00ff00ff00ff00ff00ff00ff00ff00", "pid": 0 }).to_string(),
+    )
+    .expect("write endpoint file");
+
+    let mut p = McpProc::spawn_env(&["--mcp"], Some(endpoint.to_string_lossy().into_owned()));
+    // 降级后是 headless：协议处理在 CLI 自身，响应不带 fake_gui
+    p.send(&rpc(
+        1,
+        "initialize",
+        json!({"protocolVersion": "2025-11-25"}),
+    ));
+    let resp = p.read();
+    assert_eq!(resp["result"]["protocolVersion"], "2025-11-25", "{resp}");
+    assert!(resp["result"]["fake_gui"].is_null());
+    p.close_stdin();
+    let _ = p.child.wait();
+    let _ = std::fs::remove_file(&endpoint);
+    let _ = std::fs::remove_dir(dir);
+}
+
+#[test]
+fn proxy_denied_token_falls_back_to_headless() {
+    // 握手文件指向的端口接受连接但验活失败（回 denied）→ CLI 视为不可用 → headless。
+    // CLI 发送的是文件里的 token，正常 GUI 不会拒绝；这里手动写一个错位 token
+    // 无法构造（CLI 读同一文件）——该路径由假 GUI 防御分支覆盖，端到端仅保证
+    // "验活失败 → 降级" 的读侧行为：让假 GUI 的 accept 线程直接关闭连接。
+    // 构造方式：握手文件指向一个 accept 后立即关闭的端口。
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind");
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        // accept 后立即 drop 连接（不回 ok），CLI 验活读超时/EOF → 降级。
+        let _ = listener.accept();
+    });
+
+    let dir = std::env::temp_dir().join(format!(
+        "preferz-cli-denied-test-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let endpoint = dir.join("mcp-endpoint.json");
+    std::fs::write(
+        &endpoint,
+        json!({ "port": port, "token": "11223344112233441122334411223344", "pid": 0 }).to_string(),
+    )
+    .expect("write endpoint file");
+
+    let mut p = McpProc::spawn_env(&["--mcp"], Some(endpoint.to_string_lossy().into_owned()));
+    p.send(&rpc(
+        1,
+        "initialize",
+        json!({"protocolVersion": "2025-11-25"}),
+    ));
+    let resp = p.read();
+    assert_eq!(resp["result"]["protocolVersion"], "2025-11-25", "{resp}");
+    assert!(resp["result"]["fake_gui"].is_null());
+    p.close_stdin();
+    let _ = p.child.wait();
+    let _ = std::fs::remove_file(&endpoint);
+    let _ = std::fs::remove_dir(dir);
 }

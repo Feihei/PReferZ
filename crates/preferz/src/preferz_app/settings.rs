@@ -117,6 +117,7 @@ impl PReferZApp {
             autosave_interval: self.autosave_interval,
             frame_ratio: self.frame_ratio,
             default_style: self.default_style,
+            mcp_listen: self.mcp.is_some(),
         });
     }
 

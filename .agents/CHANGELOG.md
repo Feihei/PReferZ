@@ -1586,6 +1586,54 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 
 ---
 
+## GUI 内嵌 MCP 监听 + `--mcp` 代理桥接（2026-10-15）
+
+> 目标（用户拍板，OpenCADStudio 模式）：先打开 GUI 窗口 → agent 客户端连
+> `preferz-cli --mcp` → MCP 工具**实时操作已打开窗口的画布**（不再走
+> 「headless 建 .prz → 开窗口看」的绕路）；无 GUI 实例时 `--mcp` 自动降级
+> 为原 headless 模式（行为不变）。
+
+- **RPC 层下沉 core（`preferz-core/src/rpc/`，egui-free L1）**：原 CLI 的
+  `dispatch.rs` / `protocol.rs` / `mcp.rs` / `mcp_tools.rs` 整体迁入，新增
+  `RpcDoc` trait（`session()` / `path()` / `reset()` / `open_path()` /
+  `save_path()`）抽象「文档宿主」——core 保持零 fileio 依赖，open/save 由
+  实现方落地；`dispatch` / `handle_message` 改泛型 `&mut impl RpcDoc`。
+  CLI 侧 `CliDoc` 实现 trait 改薄壳；GUI 侧新增 `GuiDoc` 适配器。
+- **GUI 内嵌监听（`preferz/src/preferz_app/mcp_serve.rs`，L2）**：启动时
+  `TcpListener` 绑 127.0.0.1 随机端口 + 写握手文件
+  `~/.preferz/mcp-endpoint.json`（`{port, token, pid}`，token 为 uuid v4
+  hex32）；每连接一线程，token 验活（首行 `{"token":...}` → 回 `ok` /
+  `denied`）后逐行转发；请求经 mpsc 投 UI 线程，`ui()` 每帧 `poll_mcp`
+  处理（`handle_message` → `GuiDoc` → 同一 undo 通道），回复经
+  per-request channel 回连接线程。**坑**：`set_ctx` 必须每帧无条件填
+  （OnceLock 幂等）——若等「有请求时」才填，连接线程首次投递时拿不到
+  Context，`request_repaint` 发不出，空闲的 eframe 事件循环永不醒来，
+  死锁（端到端实测踩中后修复）。Drop 时删除握手文件——仅当内容仍是本
+  实例 token（多实例：先退出者不误删后来者的，单测钉死）。
+- **`--mcp` 代理桩（CLI）**：启动先读握手文件 → connect + 发 token 验活
+  （2s 读超时）→ 成功则**纯转发模式**（stdin 行 → socket → stdout 行，
+  本进程不解析协议，`std::process::exit(0)` 收尾）；文件缺失 / 连不上 /
+  token 不符 → stderr 说明后降级 headless。测试隔离：`PREFERZ_MCP_ENDPOINT`
+  环境变量覆盖握手文件路径（CLI/GUI 两侧同源）。
+- **GUI 持久化语义**：`open` 同步加载走 `finish_load`（recent/flash/纹理
+  接线全复用）；`save` 同步写（不走后台保存——MCP 响应需要真实成败），
+  成功后 flash 提示 + 置 clean + 清 autosave 脏标记 + 清理过期 autosave。
+  config 新增 `mcp_listen`（serde default **true**，V1 无设置面板开关，
+  启动失败静默降级不影响 GUI 其余功能）。
+- **已知限制**：`add_item` 原始 JSON 无法建 Pixmap（无纹理字节）；图片类
+  操作 MCP V1 不支持。
+- 测试：core rpc 单测随迁（dispatch 5 + mcp 8 + tools 3 + protocol 3，
+  TestDoc 内存 RpcDoc）；集成测试 tests/mcp.rs 6——headless 三件套加
+  `PREFERZ_MCP_ENDPOINT` 隔离（不受开发机真实 GUI 干扰），新增代理转发
+  （假 GUI 本地 TCP 验活 → `fake_gui` 标记断言纯管道）、端口不可达降级、
+  验活失败降级。GUI 侧 mcp_serve 单测 3（握手文件写/读/归属删除、env
+  覆盖）。**端到端实测**：开 GUI → `--mcp` 代理跑 add_shape/add_mermaid/
+  stats/undo/redo → 窗口画布实时出现内容，stats 证实操作的是 GUI 进程内
+  的 Session。质量门：fmt / `clippy -D warnings` 零告警，workspace 391 测
+  试全绿
+
+---
+
 ## 决策点归档（D1–D6 / I1–I4 / L 系列）
 
 > 原列于 plan.md，G/I/H/K 交付后蒸馏归档于此，使 CHANGELOG 自包含、plan.md 仅保留前瞻内容。

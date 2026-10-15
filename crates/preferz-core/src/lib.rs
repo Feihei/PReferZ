@@ -6,6 +6,7 @@ pub mod freedraw;
 pub mod item;
 pub mod mermaid;
 pub mod routing;
+pub mod rpc;
 pub mod scene;
 pub mod selection;
 pub mod session;

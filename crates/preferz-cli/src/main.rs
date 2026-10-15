@@ -3,7 +3,8 @@
 //! 用法：
 //! - `preferz-cli [file.prz]`            打开文件（可选）后进入 stdin/stdout JSONL 会话
 //! - `preferz-cli --exec '<json>' [file]` 只执行一条命令并退出
-//! - `preferz-cli --mcp [file.prz]`      以 stdio MCP 服务器运行（JSON-RPC 2.0）
+//! - `preferz-cli --mcp [file.prz]`      MCP stdio 服务器：优先**代理**到已打开的
+//!   GUI 实例（工具实时操作窗口画布），无 GUI 时降级为 headless 单文档服务器
 //! - `preferz-cli --help` / `--version`
 //!
 //! JSONL 协议：stdin 每行一个 JSON 请求 `{"cmd": "...", ...}`，stdout 每行一个
@@ -13,7 +14,9 @@
 //! MCP 模式：stdio JSON-RPC，双栈协议——新栈 2026-07-28 无状态 spec
 //! （`server/discover` + `_meta` 版本校验 + `resultType`）与旧栈
 //! （≤2025-11-25 `initialize` 握手）按请求特征分流；15 个工具与 JSONL
-//! 命令一一对应，共享同一 undo 通道。stdout 只走协议帧，日志全走 stderr。
+//! 命令一一对应，共享同一 undo 通道。协议核心下沉在 preferz-core 的
+//! `rpc` 模块，代理与 headless 两种模式共享同一套语义。stdout 只走协议帧，
+//! 日志全走 stderr。
 //!
 //! 示例（PowerShell）：
 //! ```text
@@ -23,14 +26,12 @@
 //! preferz-cli --mcp board.prz
 //! ```
 
-mod dispatch;
 mod doc;
 mod mcp;
-mod mcp_tools;
-mod protocol;
 
 use std::io::{self, BufRead, Write};
 
+use preferz_core::rpc::{dispatch, protocol};
 use serde_json::{json, Value};
 
 use crate::doc::CliDoc;
@@ -46,8 +47,10 @@ ARGS:
 
 OPTIONS:
     --exec <JSON>       Execute one request and exit
-    --mcp               Run as a stdio MCP server (JSON-RPC 2.0, dual-stack:
-                        2026-07-28 stateless + legacy initialize fallback)
+    --mcp               Run as a stdio MCP server (JSON-RPC 2.0). Proxies to a
+                        running PReferZ GUI window when one is up (tools then
+                        act on the opened canvas live); falls back to a
+                        headless single-document server otherwise.
     -h, --help          Print this help
     -V, --version       Print version
 
@@ -116,6 +119,20 @@ fn main() {
 
 /// 返回进程退出码（0 成功 / 非 0 失败）。
 fn run(exec: Option<&str>, mcp: bool, open_path: Option<&str>) -> i32 {
+    // MCP 优先代理到已打开的 GUI 实例（OpenCADStudio 模式）：握手文件存在
+    // 且 connect+token 验活成功 → 纯转发模式，工具实时操作窗口画布。
+    // 失败 → stderr 说明后降级 headless。文件参数在代理模式下无意义（GUI
+    // 有自己的当前文档），忽略之。
+    if mcp {
+        if let Some(stream) = mcp::try_connect_gui() {
+            if open_path.is_some() {
+                eprintln!("preferz-cli: FILE argument is ignored in GUI proxy mode");
+            }
+            return mcp::proxy_loop(stream);
+        }
+        eprintln!("preferz-cli: no running GUI instance found; using headless MCP");
+    }
+
     let mut doc = CliDoc::new();
     let stdout = io::stdout();
     let mut out = stdout.lock();
@@ -123,7 +140,7 @@ fn run(exec: Option<&str>, mcp: bool, open_path: Option<&str>) -> i32 {
     // 启动时打开文件（失败：输出一行失败响应并退出）。
     if let Some(path) = open_path {
         let req = json!({ "cmd": "open", "path": path });
-        let resp = dispatch::dispatch(&mut doc, &req);
+        let resp = dispatch(&mut doc, &req);
         if !resp["ok"].as_bool().unwrap_or(false) {
             // MCP 模式 stdout 只走协议帧，启动失败走 stderr。
             if mcp {
@@ -143,14 +160,14 @@ fn run(exec: Option<&str>, mcp: bool, open_path: Option<&str>) -> i32 {
     }
 
     if mcp {
-        return mcp::run_mcp(&mut doc);
+        return mcp::headless_loop(&mut doc);
     }
 
     match exec {
         // 单条模式：执行 → 输出 → 按 ok 决定退出码。
         Some(json_str) => {
             let resp = match serde_json::from_str::<Value>(json_str) {
-                Ok(req) => dispatch::dispatch(&mut doc, &req),
+                Ok(req) => dispatch(&mut doc, &req),
                 Err(e) => protocol::fail("<parse>", &Value::Null, format!("invalid JSON: {e}")),
             };
             let ok = resp["ok"].as_bool().unwrap_or(false);
@@ -171,7 +188,7 @@ fn run(exec: Option<&str>, mcp: bool, open_path: Option<&str>) -> i32 {
                     continue;
                 }
                 let resp = match serde_json::from_str::<Value>(trimmed) {
-                    Ok(req) => dispatch::dispatch(&mut doc, &req),
+                    Ok(req) => dispatch(&mut doc, &req),
                     Err(e) => protocol::fail("<parse>", &Value::Null, format!("invalid JSON: {e}")),
                 };
                 write_line(&mut out, &resp);
