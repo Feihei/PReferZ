@@ -1667,6 +1667,33 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 
 ---
 
+## MCP 工具调用注入主题默认色（2026-10-15）
+
+> 用户实测代理桥反馈：MCP 画的元素颜色不跟随 GUI 当前主题——暗色主题画黑、
+> 亮色主题画白，几乎不可见。
+
+- **根因**：core 的 `add_shape` / `add_mermaid` / `add_text` 缺省色是
+  `StrokeStyle::default()`（固定深色），headless 场景底色未知不能猜主题；
+  GUI 侧有随主题同步的 `PReferZApp.default_stroke` 却没有传进协议层。
+- **方案**：GUI 收到 MCP 请求后在注入层补默认色，core 协议保持中性：
+  - `mcp_serve.rs` 新增纯函数 `inject_theme_defaults(line, &default_stroke)`：
+    仅对三个新增类工具、且调用方**未显式给色**（键缺失或 null）时注入
+    `stroke` + `stroke_width`（add_text 注 `color`）；显式给色不覆盖。
+    在 `poll_mcp` 中于 `handle_message` 前接线（借用前取 `default_stroke` 快照）。
+  - core `add_mermaid` 新增可选 `stroke` / `stroke_width` 参数（null 跳过、
+    宽度 ≤0 / 非有限报错），作用于全部生成节点/边/标签色
+    （此前标签色 = `style.stroke.color` 固定深色）。
+  - `tools.rs` 三工具 schema 补 "omitted = app theme default" 说明；
+    add_mermaid 补 stroke/stroke_width 属性。
+- **测试**：core 2 个新单测（add_mermaid 显式色生效 + 缺省路径）、GUI
+  `inject_theme_defaults` 4 断言单测（注入 / 显式色不覆盖 / null 视为缺失 /
+  非目标工具透传）。质量门全绿。
+- **已知遗留**：GUI 自由文字落点默认色写死白色
+  （`text_edit.rs` `begin_free_text_at` 的 `color: [255,255,255,255]`），
+  亮色主题下同样不可见，属 GUI 侧独立问题待修。
+
+---
+
 ## 决策点归档（D1–D6 / I1–I4 / L 系列）
 
 > 原列于 plan.md，G/I/H/K 交付后蒸馏归档于此，使 CHANGELOG 自包含、plan.md 仅保留前瞻内容。

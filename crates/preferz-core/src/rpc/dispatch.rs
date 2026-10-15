@@ -369,7 +369,9 @@ fn add_item_raw(doc: &mut impl RpcDoc, req: &Value) -> Result<ItemId, String> {
 
 /// mermaid 流程图 → 分层布局元素批（节点+绑定文字+Elbow 连接器），
 /// 整批一条 `AddItems` undo。锚点：`x`/`y`（缺省 0,0）为生成内容包围盒左上角。
-/// 风格与 GUI「草绘」出厂预设同档（Artist 手绘 + 手写体标签），GUI 打开观感一致。
+/// 可选 `stroke`/`stroke_width`：连接线、节点描边与标签文字共用（标签色 =
+/// 描边色）。缺省 `StrokeStyle::default()`——GUI 侧会注入主题默认色，
+/// headless 侧保持固定深色（文件底色未知，不猜测主题）。
 fn add_mermaid(doc: &mut impl RpcDoc, req: &Value) -> Result<Value, String> {
     let src = req_str(req, "mermaid")?;
     let fc = crate::mermaid::parse_mermaid_flowchart(src)?;
@@ -382,8 +384,26 @@ fn add_mermaid(doc: &mut impl RpcDoc, req: &Value) -> Result<Value, String> {
     }
     let x = opt_f32(req, "x", 0.0)?;
     let y = opt_f32(req, "y", 0.0)?;
+    let mut stroke = StrokeStyle::default();
+    if let Some(v) = req.get("stroke") {
+        if !v.is_null() {
+            stroke.color = parse_color(v)?;
+        }
+    }
+    if let Some(w) = req.get("stroke_width") {
+        if !w.is_null() {
+            let width = w
+                .as_f64()
+                .map(|n| n as f32)
+                .ok_or("'stroke_width' must be a number")?;
+            if width <= 0.0 || !width.is_finite() {
+                return Err("stroke_width must be a positive finite number".to_string());
+            }
+            stroke.width = width;
+        }
+    }
     let style = crate::mermaid::FlowchartStyle {
-        stroke: StrokeStyle::default(),
+        stroke,
         sloppiness: Sloppiness::Artist,
         font_family: FontFamily::Handwriting,
         label_font_size: 18.0,
@@ -584,6 +604,38 @@ mod tests {
             .as_bool()
             .unwrap());
         assert_eq!(handle(&mut doc, json!({"cmd": "stats"}))["items"], 0);
+    }
+
+    #[test]
+    fn add_mermaid_accepts_explicit_stroke() {
+        let mut doc = TestDoc::new();
+        let r = handle(
+            &mut doc,
+            json!({"cmd": "add_mermaid", "mermaid": "flowchart TD\n a --> b", "stroke": [10, 20, 30, 255], "stroke_width": 5.0}),
+        );
+        assert!(r["ok"].as_bool().unwrap(), "{r}");
+        // 全批元素的描边色 / 标签文字色都取显式 stroke（full list 反序列化回
+        // Item 后按类型断言，避开 full JSON 的 kind 枚举形态差异）。
+        let list = handle(&mut doc, json!({"cmd": "list", "full": true}));
+        for v in list["items"].as_array().unwrap() {
+            let item: Item = serde_json::from_value(v.clone()).expect("valid item json");
+            match &item.kind {
+                ItemKind::Shape { stroke, .. } => {
+                    assert_eq!(stroke.color, [10, 20, 30, 255], "{item:?}");
+                }
+                ItemKind::Text { color, .. } => {
+                    assert_eq!(*color, [10, 20, 30, 255], "{item:?}");
+                }
+                other => panic!("unexpected kind in flowchart batch: {other:?}"),
+            }
+        }
+        // 坏的 stroke_width 报结构化错误
+        assert!(!handle(
+            &mut doc,
+            json!({"cmd": "add_mermaid", "mermaid": "flowchart TD\n a --> b", "stroke_width": -1})
+        )["ok"]
+            .as_bool()
+            .unwrap());
     }
 
     #[test]

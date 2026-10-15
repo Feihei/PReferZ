@@ -337,6 +337,64 @@ impl RpcDoc for GuiDoc<'_> {
     }
 }
 
+// ─────────────────────────── 主题默认色注入 ───────────────────────────
+
+/// 把主题当前默认色注入 `tools/call` 请求——仅当调用方**未显式给色**时：
+/// MCP 画的东西观感与手绘新元素一致（`default_stroke` 随主题切换，暗色主题
+/// 浅描边、亮色主题深描边），显式颜色一律不覆盖。纯函数，单测直接驱动。
+///
+/// 覆盖：`add_shape`/`add_mermaid` 注入 `stroke`+`stroke_width`，
+/// `add_text` 注入 `color`。headless 降级模式不经过这里（协议层固定深色）。
+pub(crate) fn inject_theme_defaults(line: &str, default_stroke: &StrokeStyle) -> String {
+    let Ok(mut req) = serde_json::from_str::<Value>(line) else {
+        return line.to_string(); // 坏帧原样透传，handle_message 负责报 parse error
+    };
+    // 工具名在 params.name（不在 arguments 里）；不在目标集 / 无 arguments → 透传
+    let Some(name) = req
+        .get("params")
+        .and_then(|p| p.get("name"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+    else {
+        return line.to_string();
+    };
+    if !matches!(name.as_str(), "add_shape" | "add_mermaid" | "add_text") {
+        return line.to_string();
+    }
+    let Some(args) = req
+        .get_mut("params")
+        .and_then(|p| p.get_mut("arguments"))
+        .and_then(Value::as_object_mut)
+    else {
+        return line.to_string();
+    };
+    let color = json!([
+        default_stroke.color[0],
+        default_stroke.color[1],
+        default_stroke.color[2],
+        default_stroke.color[3],
+    ]);
+    // add_text 用 color 字段；shape/mermaid 用 stroke + stroke_width
+    let mut pairs: Vec<(&str, Value)> = Vec::new();
+    if name == "add_text" {
+        pairs.push(("color", color));
+    } else {
+        pairs.push(("stroke", color));
+        pairs.push(("stroke_width", json!(default_stroke.width as f64)));
+    }
+    let mut touched = false;
+    for (key, value) in pairs {
+        if !args.contains_key(key) || args.get(key).is_some_and(Value::is_null) {
+            args.insert(key.to_string(), value);
+            touched = true;
+        }
+    }
+    if !touched {
+        return line.to_string();
+    }
+    serde_json::to_string(&req).unwrap_or_else(|_| line.to_string())
+}
+
 // ─────────────────────────── UI 接线 ───────────────────────────
 
 impl PReferZApp {
@@ -351,11 +409,14 @@ impl PReferZApp {
             return;
         }
         for req in requests {
+            // 主题默认色注入（在借用 self 之前取出快照）。
+            let default_stroke = self.default_stroke;
+            let line = inject_theme_defaults(&req.line, &default_stroke);
             let mut doc = GuiDoc {
                 app: self,
                 ctx: ctx.clone(),
             };
-            let resp = handle_message(&mut doc, &req.line);
+            let resp = handle_message(&mut doc, &line);
             let text = match resp {
                 Some(v) => serde_json::to_string(&v).unwrap_or_default(),
                 None => String::new(),
@@ -400,5 +461,52 @@ mod tests {
             Some(Path::new("Z:/fake-path/endpoint.json"))
         );
         std::env::remove_var("PREFERZ_MCP_ENDPOINT");
+    }
+
+    #[test]
+    fn theme_defaults_injected_only_when_absent() {
+        use preferz_core::shape::StrokeStyle;
+        let ds = StrokeStyle {
+            color: [200, 200, 210, 255],
+            width: 2.5,
+            ..StrokeStyle::default()
+        };
+
+        // add_shape 缺省 → 注入 stroke + stroke_width
+        let line = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"add_shape","arguments":{"shape":"rect","w":10,"h":5}}}"#;
+        let out: Value = serde_json::from_str(&inject_theme_defaults(line, &ds)).unwrap();
+        let args = &out["params"]["arguments"];
+        assert_eq!(args["stroke"], json!([200, 200, 210, 255]));
+        assert_eq!(args["stroke_width"], 2.5);
+
+        // 显式给色 → 不覆盖（stroke_width 未给仍注入）
+        let line = r##"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"add_shape","arguments":{"shape":"rect","w":10,"h":5,"stroke":"#ff0000"}}}"##;
+        let out: Value = serde_json::from_str(&inject_theme_defaults(line, &ds)).unwrap();
+        let args = &out["params"]["arguments"];
+        assert_eq!(args["stroke"], "#ff0000");
+        assert_eq!(args["stroke_width"], 2.5);
+
+        // add_text 缺省 → 注入 color；显式给色不覆盖
+        let line = r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"add_text","arguments":{"text":"hi"}}}"#;
+        let out: Value = serde_json::from_str(&inject_theme_defaults(line, &ds)).unwrap();
+        assert_eq!(
+            out["params"]["arguments"]["color"],
+            json!([200, 200, 210, 255])
+        );
+        let line = r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"add_text","arguments":{"text":"hi","color":[1,2,3,255]}}}"#;
+        let out: Value = serde_json::from_str(&inject_theme_defaults(line, &ds)).unwrap();
+        assert_eq!(out["params"]["arguments"]["color"], json!([1, 2, 3, 255]));
+
+        // add_mermaid 缺省 → 注入 stroke + stroke_width
+        let line = r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"add_mermaid","arguments":{"mermaid":"flowchart TD\n a-->b"}}}"#;
+        let out: Value = serde_json::from_str(&inject_theme_defaults(line, &ds)).unwrap();
+        let args = &out["params"]["arguments"];
+        assert_eq!(args["stroke"], json!([200, 200, 210, 255]));
+        assert_eq!(args["stroke_width"], 2.5);
+
+        // 非 add_* 工具 / 非法帧 → 原样透传
+        let line = r#"{"jsonrpc":"2.0","id":6,"method":"tools/list"}"#;
+        assert_eq!(inject_theme_defaults(line, &ds), line);
+        assert_eq!(inject_theme_defaults("not json", &ds), "not json");
     }
 }

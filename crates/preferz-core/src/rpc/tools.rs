@@ -101,7 +101,9 @@ undo step. Anchor (x, y) is the top-left of the generated bounding box.",
                         "description": "Mermaid flowchart DSL, e.g. \"flowchart TD\\n a[Start] -->|yes| b{Check?}\""
                     },
                     "x": {"type": "number", "description": "Anchor top-left x, default 0"},
-                    "y": {"type": "number", "description": "Anchor top-left y, default 0"}
+                    "y": {"type": "number", "description": "Anchor top-left y, default 0"},
+                    "stroke": {"type": "string", "description": "Stroke/label color for all generated nodes and edges, \"#rrggbb\" or [r,g,b,a]; omitted = app theme default"},
+                    "stroke_width": {"type": "number", "description": "Stroke width in canvas px; omitted = app default"}
                 },
                 "required": ["mermaid"]
             }),
@@ -124,7 +126,7 @@ size w×h. One undo step. Returns the new item id.",
                     "y": {"type": "number", "description": "Top-left y, default 0"},
                     "w": {"type": "number", "description": "Width (also accepts 'width')"},
                     "h": {"type": "number", "description": "Height (also accepts 'height')"},
-                    "stroke": {"type": "string", "description": "Stroke color, \"#rrggbb\" or [r,g,b,a]"},
+                    "stroke": {"type": "string", "description": "Stroke color, \"#rrggbb\" or [r,g,b,a]; omitted = app theme default"},
                     "stroke_width": {"type": "number", "description": "Stroke width in canvas px"},
                     "fill": {"type": "string", "description": "Fill color; omit for no fill"}
                 },
@@ -143,7 +145,7 @@ size w×h. One undo step. Returns the new item id.",
                     "x": {"type": "number", "description": "Top-left x, default 0"},
                     "y": {"type": "number", "description": "Top-left y, default 0"},
                     "font_size": {"type": "number", "description": "Font size, default 20"},
-                    "color": {"type": "string", "description": "Color, \"#rrggbb\" or [r,g,b,a]"}
+                    "color": {"type": "string", "description": "Color, \"#rrggbb\" or [r,g,b,a]; omitted = app theme default"}
                 },
                 "required": ["text"]
             }),
