@@ -255,7 +255,19 @@ pub enum ItemKind {
         color: [u8; 4],
         /// 折线宽（Line）/ 柱描边宽（Bar），画布单位。
         stroke_width: f32,
+        /// 手绘风抖动档位。serde 缺省 = `Architect`：图表网格/轴线/柱边细密，
+        /// 用最小抖动档保住可读性（2026-10-15 拍板：中间偏精确 + hachure 斜线）。
+        #[serde(default = "default_chart_sloppiness")]
+        sloppiness: Sloppiness,
+        /// 手绘抖动种子（旧存档缺省 0，同种子恒得同抖动）。
+        #[serde(default)]
+        seed: u64,
     },
+}
+
+/// 图表手绘档位的 serde 缺省值：旧存档（无该字段）与新图表统一 Architect。
+fn default_chart_sloppiness() -> Sloppiness {
+    Sloppiness::Architect
 }
 
 /// 图表类型（plan #8）。首轮单系列柱状/折线。
@@ -487,6 +499,8 @@ impl Item {
                 values,
                 color: CHART_DEFAULT_COLOR,
                 stroke_width: 2.0,
+                sloppiness: Sloppiness::Architect,
+                seed: Uuid::new_v4().as_u128() as u64,
             },
             transform: Transform::new(pos_x, pos_y, 1.0, 1.0),
             z: 0,
@@ -3010,6 +3024,62 @@ mod tests {
                 fill_follow_stroke, ..
             } => assert!(fill_follow_stroke, "旧存档填充默认跟随"),
             _ => panic!("expected Shape kind"),
+        }
+    }
+
+    #[test]
+    fn chart_serde_backward_compat_and_defaults() {
+        // 旧存档 Chart JSON 无 sloppiness/seed 字段 → sloppiness 默认 Architect
+        // （图表统一手绘观感，2026-10-15 拍板）、seed 缺省 0（同种子恒同抖动）。
+        let json = r#"{
+            "Chart": {
+                "chart_type": "Bar",
+                "base_size": [440.0, 300.0],
+                "labels": ["a", "b"],
+                "values": [1.0, 2.0],
+                "color": [25, 113, 194, 255],
+                "stroke_width": 2.0
+            }
+        }"#;
+        let kind: ItemKind = serde_json::from_str(json).unwrap();
+        match &kind {
+            ItemKind::Chart {
+                sloppiness, seed, ..
+            } => {
+                assert_eq!(*sloppiness, Sloppiness::Architect);
+                assert_eq!(*seed, 0);
+            }
+            _ => panic!("expected Chart kind"),
+        }
+
+        // 新建图表：Architect + 非零随机种子；serde 往返保真。
+        let item = Item::new_chart(
+            ChartType::Bar,
+            vec!["a".into(), "b".into()],
+            vec![1.0, 2.0],
+            0.0,
+            0.0,
+        );
+        let ItemKind::Chart {
+            sloppiness, seed, ..
+        } = &item.kind
+        else {
+            panic!("expected Chart kind")
+        };
+        assert_eq!(*sloppiness, Sloppiness::Architect);
+        assert_ne!(*seed, 0, "新图表应生成非零抖动种子");
+        let round: ItemKind =
+            serde_json::from_str(&serde_json::to_string(&item.kind).unwrap()).unwrap();
+        match round {
+            ItemKind::Chart {
+                sloppiness: s,
+                seed: sd,
+                ..
+            } => {
+                assert_eq!(s, *sloppiness);
+                assert_eq!(sd, *seed);
+            }
+            _ => panic!("expected Chart kind"),
         }
     }
 

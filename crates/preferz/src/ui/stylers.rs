@@ -1448,6 +1448,93 @@ pub fn build_shape_visuals(
     }
 }
 
+// ─────────────────────────── 图表手绘 helper（render.draw_chart_item 用） ───────────────────────────
+
+/// 图表手绘线段（屏幕空间）：每段独立走 `sketch_edge` 双笔抖动。端点钉死
+/// （`preserve_vertices = true`，Architect 观感——网格/轴线/数据点不漂移）。
+/// `zoom` 取 item 局部→屏幕 scale（含 item scale + 视口 zoom），抖动幅度按
+/// rough.js `_line` 的画布边长增益衰减。
+pub fn rough_line_segments(
+    seed: u64,
+    segs: &[(Pos2, Pos2)],
+    line_width: f32,
+    color: Color32,
+    amp_scale: f32,
+    zoom: f32,
+) -> Vec<Shape> {
+    if segs.is_empty() {
+        return Vec::new();
+    }
+    let ctx = RoughCtx {
+        zoom,
+        amp_scale,
+        preserve_vertices: true,
+        line_width,
+        stroke_color: color,
+    };
+    let mut rng = SeededRng::new(seed);
+    let path_stroke = egui::epaint::PathStroke::new(line_width, color);
+    let mut out = Vec::with_capacity(segs.len() * RoughStyler::PASSES);
+    for &(a, b) in segs {
+        for _ in 0..RoughStyler::PASSES {
+            let bez = RoughStyler::sketch_edge(&mut rng, a, b, &ctx);
+            out.push(Shape::CubicBezier(
+                egui::epaint::CubicBezierShape::from_points_stroke(
+                    bez,
+                    false,
+                    Color32::TRANSPARENT,
+                    path_stroke.clone(),
+                ),
+            ));
+        }
+    }
+    out
+}
+
+/// 图表柱体 hachure 斜线填充（屏幕空间）：闭合多边形扫描线布线，每条线再过
+/// `sketch_edge` 完整双笔抖动（rough.js hachure-filler 的 doubleLineOps），线宽
+/// 减半（`fillWeight = strokeWidth/2`），行距 = 4×画布描边宽（`hachure_gap` 同款）。
+/// roughness ≥1 时 ~30% 概率跳首线（scan-line-hachure 随机相位）。
+pub fn rough_polygon_hachure_fill(
+    seed: u64,
+    pts: &[Pos2],
+    stroke_width_canvas: f32,
+    color: Color32,
+    amp_scale: f32,
+    zoom: f32,
+) -> Vec<Shape> {
+    if pts.len() < 3 {
+        return Vec::new();
+    }
+    let line_width = stroke_width_canvas * zoom;
+    let ctx = RoughCtx {
+        zoom,
+        amp_scale,
+        preserve_vertices: true,
+        line_width,
+        stroke_color: color,
+    };
+    let mut rng = SeededRng::new(seed);
+    let gap = hachure_gap(stroke_width_canvas, zoom);
+    let skip_first = amp_scale >= 1.0 && rng.next_f32() > 0.7;
+    let path_stroke = egui::epaint::PathStroke::new(line_width * 0.5, color);
+    let mut out = Vec::new();
+    for [a, b] in hachure_segments(pts, HACHURE_ANGLE_DEG, gap, skip_first) {
+        for _ in 0..RoughStyler::PASSES {
+            let bez = RoughStyler::sketch_edge(&mut rng, a, b, &ctx);
+            out.push(Shape::CubicBezier(
+                egui::epaint::CubicBezierShape::from_points_stroke(
+                    bez,
+                    false,
+                    Color32::TRANSPARENT,
+                    path_stroke.clone(),
+                ),
+            ));
+        }
+    }
+    out
+}
+
 /// 墨迹描边形状：屏幕中心线点 + 每点**屏幕**笔宽 → 逐段按端点均宽画描边线 +
 /// 每点补一个圆帽（半径 = 该点半宽）。
 ///
@@ -3027,5 +3114,53 @@ mod tests {
                 b.stroke.width
             );
         }
+    }
+
+    #[test]
+    fn rough_line_segments_deterministic_per_seed_and_doubles_passes() {
+        // 图表手绘线段：同种子恒同输出（抖动稳定，缩放/重绘不跳）、不同种子
+        // 不同输出；每段产出 PASSES 条贝塞尔。
+        let segs = [
+            (egui::pos2(0.0, 0.0), egui::pos2(100.0, 50.0)),
+            (egui::pos2(100.0, 50.0), egui::pos2(200.0, 0.0)),
+        ];
+        let a = rough_line_segments(42, &segs, 2.0, Color32::BLACK, 1.0, 1.0);
+        let b = rough_line_segments(42, &segs, 2.0, Color32::BLACK, 1.0, 1.0);
+        let c = rough_line_segments(43, &segs, 2.0, Color32::BLACK, 1.0, 1.0);
+        assert_eq!(a.len(), segs.len() * RoughStyler::PASSES);
+        assert_eq!(format!("{a:?}"), format!("{b:?}"), "同种子应恒同输出");
+        assert_ne!(format!("{a:?}"), format!("{c:?}"), "不同种子应不同");
+        assert!(a.iter().all(|s| matches!(s, Shape::CubicBezier(_))));
+        // 空段表 → 空
+        assert!(rough_line_segments(1, &[], 2.0, Color32::BLACK, 1.0, 1.0).is_empty());
+    }
+
+    #[test]
+    fn rough_polygon_hachure_fill_fills_bars() {
+        // 图表柱体 hachure：矩形闭合多边形产出斜线（双笔贝塞尔），线宽减半；
+        // 退化输入（<3 点）直接空。
+        let pts = [
+            egui::pos2(0.0, 0.0),
+            egui::pos2(60.0, 0.0),
+            egui::pos2(60.0, 100.0),
+            egui::pos2(0.0, 100.0),
+        ];
+        let shapes = rough_polygon_hachure_fill(7, &pts, 2.0, Color32::BLACK, 1.0, 1.0);
+        assert!(!shapes.is_empty(), "矩形柱体应产出至少一条 hachure 线");
+        let expected_width = 2.0 * 1.0 * 0.5; // fillWeight = strokeWidth × zoom / 2
+        for s in &shapes {
+            let Shape::CubicBezier(b) = s else {
+                panic!("hachure 线应为贝塞尔，got {s:?}");
+            };
+            assert!(
+                (b.stroke.width - expected_width).abs() < 1e-3,
+                "填充线宽应为 gap 公式的 strokeWidth/2，got {}",
+                b.stroke.width
+            );
+        }
+        assert!(
+            rough_polygon_hachure_fill(7, &pts[..2], 2.0, Color32::BLACK, 1.0, 1.0).is_empty(),
+            "少于 3 点应返回空"
+        );
     }
 }

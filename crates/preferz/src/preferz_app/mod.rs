@@ -5,6 +5,7 @@ use crate::theme::{self, ThemeMode};
 use crate::ui::chrome;
 use crate::ui::stylers::{
     build_freedraw_visuals, build_shape_visuals, freedraw_stroke_shapes, item_local_to_screen,
+    rough_line_segments, rough_polygon_hachure_fill,
 };
 use crate::ui::tool_icons;
 use crate::ui::widgets::palette;

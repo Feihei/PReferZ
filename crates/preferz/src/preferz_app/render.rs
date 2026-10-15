@@ -235,6 +235,10 @@ impl PReferZApp {
     /// 折线 + 底部类别标签。几何经 `to_screen` 变换（支持移动/缩放/旋转；
     /// 文字不随 item 旋转——首轮取舍，标签保持水平可读）。支持负值：
     /// 零线随数据范围浮动，柱从零线画到数值处。
+    ///
+    /// 手绘风（2026-10-15）：`sloppiness != Off` 时网格/轴线走
+    /// `rough_line_segments` 双笔抖动、柱体 hachure 斜线填充 + 抖动描边、
+    /// 折线走抖动折线（端点钉死，数据点不漂移）；文字标签保持普通渲染。
     fn draw_chart_item(&self, ui: &mut egui::Ui, item: &Item) {
         let ItemKind::Chart {
             chart_type,
@@ -242,6 +246,8 @@ impl PReferZApp {
             values,
             color,
             stroke_width,
+            sloppiness,
+            seed,
             ..
         } = &item.kind
         else {
@@ -274,6 +280,12 @@ impl PReferZApp {
             egui::Color32::from_rgb(0x44, 0x44, 0x44)
         };
         let series = egui::Color32::from_rgba_unmultiplied(color[0], color[1], color[2], color[3]);
+        // 暗色主题下把过暗的系列色提亮一档（旧数据/显式黑色系列的可见性兜底）
+        let series = lighten_series_for_dark(series, dark);
+        let rough = *sloppiness != Sloppiness::Off;
+        let amp = sloppiness.amp_scale();
+        // 抖动幅度公式里的 zoom 取 item 局部→屏幕 scale（含 item scale + 视口 zoom）
+        let zoom = scale;
 
         let painter = ui.painter();
         // 局部 → 屏幕点
@@ -302,14 +314,31 @@ impl PReferZApp {
         let y_of = |val: f32| plot_y1 - (val - lo) / (hi - lo) * plot_h;
 
         // 横向网格线 + 左侧数值刻度（4 等分；网格先画，垫在柱/折线之下）
+        let grid_segs: Vec<(egui::Pos2, egui::Pos2)> = (0..=4)
+            .map(|k| {
+                let t = k as f32 / 4.0;
+                let ly = plot_y1 - t * plot_h;
+                (p(plot_x0, ly), p(plot_x1, ly))
+            })
+            .collect();
+        if rough {
+            painter.extend(rough_line_segments(
+                seed ^ 0x6B1D_C0DE,
+                &grid_segs,
+                scale,
+                grid_col,
+                amp,
+                zoom,
+            ));
+        } else {
+            for (a, b) in &grid_segs {
+                painter.line_segment([*a, *b], egui::Stroke::new(scale, grid_col));
+            }
+        }
         for k in 0..=4 {
             let t = k as f32 / 4.0;
             let val = hi - t * (hi - lo);
             let ly = plot_y1 - t * plot_h;
-            painter.line_segment(
-                [p(plot_x0, ly), p(plot_x1, ly)],
-                egui::Stroke::new(scale, grid_col),
-            );
             let tick = if (val.fract()).abs() < 1e-6 {
                 format!("{}", val as i64)
             } else {
@@ -322,9 +351,24 @@ impl PReferZApp {
         }
 
         // 坐标轴（左 + 下）
-        let axis_stroke = egui::Stroke::new(1.2 * scale, axis_col);
-        painter.line_segment([p(plot_x0, plot_y0), p(plot_x0, plot_y1)], axis_stroke);
-        painter.line_segment([p(plot_x0, plot_y1), p(plot_x1, plot_y1)], axis_stroke);
+        let axis_segs = [
+            (p(plot_x0, plot_y0), p(plot_x0, plot_y1)),
+            (p(plot_x0, plot_y1), p(plot_x1, plot_y1)),
+        ];
+        if rough {
+            painter.extend(rough_line_segments(
+                seed ^ 0xA15_15A,
+                &axis_segs,
+                1.2 * scale,
+                axis_col,
+                amp,
+                zoom,
+            ));
+        } else {
+            for (a, b) in &axis_segs {
+                painter.line_segment([*a, *b], egui::Stroke::new(1.2 * scale, axis_col));
+            }
+        }
 
         let slot_w = plot_w / n as f32;
         let center_x = |i: usize| plot_x0 + (i as f32 + 0.5) * slot_w;
@@ -359,17 +403,51 @@ impl PReferZApp {
                         p(cx + bar_w * 0.5, yv),
                         p(cx - bar_w * 0.5, yv),
                     ];
-                    painter.add(egui::Shape::convex_polygon(
-                        corners.to_vec(),
-                        series,
-                        egui::Stroke::NONE,
-                    ));
+                    if rough {
+                        // 手绘柱：hachure 斜线填充 + 4 边抖动描边（端点钉死，角相接）
+                        painter.extend(rough_polygon_hachure_fill(
+                            seed ^ (0xB4B1_0000 + i as u64),
+                            &corners,
+                            *stroke_width,
+                            series,
+                            amp,
+                            zoom,
+                        ));
+                        let outline: Vec<(egui::Pos2, egui::Pos2)> =
+                            (0..4).map(|k| (corners[k], corners[(k + 1) % 4])).collect();
+                        painter.extend(rough_line_segments(
+                            seed ^ (0x0FBA_0000 + i as u64),
+                            &outline,
+                            *stroke_width * scale,
+                            series,
+                            amp,
+                            zoom,
+                        ));
+                    } else {
+                        painter.add(egui::Shape::convex_polygon(
+                            corners.to_vec(),
+                            series,
+                            egui::Stroke::NONE,
+                        ));
+                    }
                 }
             }
             preferz_core::ChartType::Line => {
                 let pts: Vec<egui::Pos2> =
                     (0..n).map(|i| p(center_x(i), y_of(values[i]))).collect();
-                if pts.len() >= 2 {
+                if rough {
+                    // 手绘折线：相邻数据点两两抖动连线（端点钉死在数据点上）
+                    let segs: Vec<(egui::Pos2, egui::Pos2)> =
+                        pts.windows(2).map(|w| (w[0], w[1])).collect();
+                    painter.extend(rough_line_segments(
+                        seed ^ 0x1C_11_1E,
+                        &segs,
+                        stroke_width * scale,
+                        series,
+                        amp,
+                        zoom,
+                    ));
+                } else if pts.len() >= 2 {
                     painter.add(egui::Shape::line(
                         pts.clone(),
                         egui::Stroke::new(stroke_width * scale, series),
@@ -921,5 +999,57 @@ impl PReferZApp {
             egui::FontId::proportional(12.0),
             egui::Color32::from_rgb(100, 200, 255),
         );
+    }
+}
+
+/// 暗色主题下把过暗的系列色往白色提亮一档：旧存档/显式黑色的柱线在暗底上
+/// 不可见的兜底。亮色主题原样返回；亮度 ≥ 0.35（含默认蓝 #1971c2）不动，
+/// 不改变正常数据的观感。提亮系数 0.5：纯黑 → 中灰（双主题均可见）。
+fn lighten_series_for_dark(c: egui::Color32, dark: bool) -> egui::Color32 {
+    if !dark {
+        return c;
+    }
+    let [r, g, b, a] = c.to_array();
+    let lum = (0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32) / 255.0;
+    if lum >= 0.35 {
+        return c;
+    }
+    let lift = |v: u8| (v as f32 + (255.0 - v as f32) * 0.5).round() as u8;
+    egui::Color32::from_rgba_unmultiplied(lift(r), lift(g), lift(b), a)
+}
+
+#[cfg(test)]
+mod chart_render_tests {
+    use super::*;
+
+    #[test]
+    fn lighten_series_keeps_normal_colors_in_light_theme() {
+        let blue = egui::Color32::from_rgb(0x11, 0x22, 0x33);
+        assert_eq!(lighten_series_for_dark(blue, false), blue);
+    }
+
+    #[test]
+    fn lighten_series_keeps_mid_luminance_in_dark_theme() {
+        // 默认蓝 #1971c2 亮度 ≈ 0.37 ≥ 0.35，暗色下不应被改动
+        let blue = egui::Color32::from_rgb(0x19, 0x71, 0xc2);
+        assert_eq!(lighten_series_for_dark(blue, true), blue);
+    }
+
+    #[test]
+    fn lighten_series_lifts_black_in_dark_theme() {
+        let lifted =
+            lighten_series_for_dark(egui::Color32::from_rgba_unmultiplied(0, 0, 0, 255), true);
+        let [r, g, b, _] = lifted.to_array();
+        assert!(
+            (0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32) / 255.0 >= 0.35,
+            "提亮后亮度应过阈值: {lifted:?}"
+        );
+    }
+
+    #[test]
+    fn lighten_series_preserves_alpha() {
+        let lifted =
+            lighten_series_for_dark(egui::Color32::from_rgba_unmultiplied(0, 0, 0, 128), true);
+        assert_eq!(lifted.to_array()[3], 128);
     }
 }

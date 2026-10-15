@@ -733,6 +733,8 @@ mod tests {
             values,
             color,
             stroke_width,
+            sloppiness,
+            ..
         } = &it.kind
         {
             assert_eq!(*chart_type, ChartType::Line);
@@ -744,6 +746,8 @@ mod tests {
             assert_eq!(values, &vec![12.0, -3.5, 40.0]);
             assert_eq!(*color, CHART_DEFAULT_COLOR);
             assert_eq_float(*stroke_width, 2.0);
+            // 新存档显式序列化手绘字段：图表默认 Architect
+            assert_eq!(*sloppiness, preferz_core::shape::Sloppiness::Architect);
         } else {
             panic!("应为 Chart kind");
         }
