@@ -3,13 +3,17 @@
 
 [中文readme](#chinese)
 
-A minimalist reference image aggregator desktop app written in Rust. Infinite canvas, pan/zoom, image import, Excalidraw-style hand-drawn shapes, freehand ink, text notes, flowcharts, charts, frame slides, undo/redo, and `.prz` project save/load.
+A minimalist reference image aggregator desktop app written in Rust. Infinite canvas, pan/zoom, image import, Excalidraw-style hand-drawn shapes, freehand ink, text notes, flowcharts, charts, frame slides, undo/redo, and `.prz` project save/load. Also ships a headless CLI (`--headless` / `--exec`) and an MCP server (`--mcp`) so AI agents can drive the canvas.
 
 For design / architecture details (crate layout, data models, phases), see [`.agents/specs/preferz-spec.md`](./.agents/specs/preferz-spec.md). Roadmap & delivery archive: [`.agents/plan.md`](./.agents/plan.md) / [`.agents/CHANGELOG.md`](./.agents/CHANGELOG.md).
 
 ---
 
-### Quick Start
+### Install
+
+The easiest way: grab a prebuilt binary from [GitHub Releases](https://github.com/Feihei/PReferZ/releases) and run it — no dependencies, no install steps.
+
+Or build from source (Rust stable >= 1.88):
 
 ```bash
 cargo run -p preferz             # run the app
@@ -17,6 +21,8 @@ cargo check --workspace          # fast type check
 cargo test --workspace           # unit tests
 cargo build --release -p preferz # release binary
 ```
+
+The binary is multi-mode (Blender-style): no args / a `.prz` path opens the GUI; `--mcp` / `--exec` / `--headless` run headless.
 
 ### Tech Stack
 
@@ -39,55 +45,16 @@ cargo build --release -p preferz # release binary
 - Align (6-way) / distribute (gap / centers) / arrange (linear, grid, optimal packing); group & ungroup; z-order (move forward/backward, bring to front/send to back)
 - Frame slides presentation (`F5`) with aspect-ratio / paper presets
 - Autosave (`.prz.autosave`) with restore prompt; every edit goes through undo/redo
+- Built-in help document (the `?` button at the bottom-left) — an editable sandbox canvas listing every shortcut and interaction
 - Dark / Light / Auto themes, English / 中文 UI
 - Always-on-top / frameless / background-transparent floating-board mode
+- Headless CLI & MCP server: `preferz --mcp` runs a stdio MCP server that proxies to a running GUI window (tools operate the opened canvas live), or falls back to headless mode; `--headless` / `--exec` provide a JSONL protocol for scripts and agents
 
 ### Basic Usage
 
-**Mouse**
+Pan with middle-drag, zoom with the scroll wheel, double-click empty canvas for a text note, right-click for the full context menu.
 
-| Action | Effect |
-| --- | --- |
-| Scroll wheel | Zoom at cursor |
-| Middle-button drag | Pan the canvas |
-| Left drag on an item | Move it (`Ctrl`+drag moves a copy, `Shift`+drag constrains to axis) |
-| Drag corner / edge handle | Scale (hold `Ctrl` to break aspect ratio) |
-| Drag rotation handle | Rotate |
-| Drag line / arrow endpoint | Move endpoint; snaps to nearby shape edges and stays bound to them |
-| `Alt`+click a polyline / polygon vertex | Delete that vertex |
-| `Alt`+drag an endpoint | Extend the line with a new vertex |
-| Left drag on empty canvas | Box-select |
-| Double-click empty canvas | Create a text note |
-| Double-click a shape (or press `Enter`) | Edit its text |
-| Right-click | Open context menu (arrange / align / distribute, group, mermaid, …) |
-
-**Keyboard**
-
-| Shortcut | Action |
-| --- | --- |
-| `Ctrl+N` | New canvas |
-| `Ctrl+O` | Open `.prz` project |
-| `Ctrl+I` | Import image onto canvas |
-| `Ctrl+S` / `Ctrl+Shift+S` | Save / save as |
-| `Ctrl+Z` / `Ctrl+Shift+Z` (or `Ctrl+Y`) | Undo / redo |
-| `Ctrl+C` / `Ctrl+X` / `Ctrl+V` | Copy / cut / paste (two-column text data opens a chart picker) |
-| `Ctrl+D` | Duplicate selection in place |
-| `Delete` | Delete selected items |
-| `Ctrl+G` / `Ctrl+Shift+G` | Group / ungroup |
-| `Ctrl+]` / `Ctrl+[` | Move forward / backward one layer |
-| `Ctrl+Shift+]` / `Ctrl+Shift+[` | Bring to front / send to back |
-| `V` `R` `D` `O` `A` `L` `P` | Tools: select / rectangle / diamond / ellipse / arrow / line / freehand (same tools also on number keys `1`–`7`) |
-| `Shift+P` / `F` | Polygon tool / frame tool |
-| `Shift+1` / `Shift+2` / `Shift+3` | Zoom to fit / zoom to selection / zoom to 100% |
-| `I` | Toggle color picker |
-| `T` / `N` | Toggle left toolbar / right properties panel visibility (slide animation) |
-| `C` | Enter crop mode (single image selected) — `Enter` apply, `Esc` cancel |
-| `Enter` | Edit text of selection / confirm crop |
-| `F5` | Toggle slide presentation (`→` `Space` `PgDn` next, `←` `PgUp` prev, `Home` / `End` first / last) |
-| `Ctrl+Arrows` | Create connected flowchart node (single rect / ellipse / diamond selected) |
-| `Alt+Arrows` | Navigate along connections |
-| `Ctrl+Shift+P` | Show context menu |
-| `Esc` | Cancel / close menu |
+For the complete list of mouse interactions and keyboard shortcuts, click the **`?`** button at the bottom-left of the canvas — it opens the built-in help document, a live canvas where every shortcut is listed (and which you can freely scribble on; changes are not saved).
 
 ### Autosave
 
@@ -99,6 +66,29 @@ The in-app settings panel covers the default style toggle (Sketch — hand-drawn
 
 Welcome page lists recent projects (persisted at `~/.preferz/recent.json`, up to 10 entries).
 
+### CLI & MCP
+
+The same binary doubles as a headless interface for scripts and AI agents (Blender-style multi-mode):
+
+```bash
+preferz --mcp                    # MCP stdio server (JSON-RPC 2.0)
+preferz --headless board.prz     # JSONL REPL on stdin/stdout, one JSON request per line
+preferz --exec '{"cmd":"add_shape","shape":"rect","x":0,"y":0,"w":10,"h":10}' board.prz
+```
+
+- **`--mcp` is a proxy bridge**: if a PReferZ GUI window is already open, the MCP server attaches to it and every tool call operates the opened canvas in real time (rendered as you watch); with no GUI running it falls back to a headless single-document server.
+- 15 tools mirror the JSONL commands one-to-one (`open` / `save` / `list` / `add_shape` / `add_text` / `add_mermaid` / `add_chart` / `move` / `undo` / …), all sharing the same undo channel.
+- Dual-stack MCP: speaks both the stateless 2026-07-28 spec and the legacy `initialize` handshake (≤ 2025-11-25).
+
+Run `preferz --help` for the full protocol reference.
+
+### Acknowledgements
+
+PReferZ's design and rendering take inspiration from two excellent open-source projects:
+
+- [BeeRef](https://github.com/rbreu/beeRef) — the reference-image aggregator concept that PReferZ builds on (`.prz` is PReferZ's own format and is not compatible with BeeRef's `.bee`)
+- [Excalidraw](https://github.com/excalidraw/excalidraw) — the hand-drawn style, rough.js-like stroke rendering, and the canvas-UX patterns it popularized
+
 ### License
 
 MIT. Bundled fonts: Source Han Sans CN (SIL OFL 1.1) and the 851 handwriting font (free for commercial use) — see [`assets/FONT_LICENSES.md`](./assets/FONT_LICENSES.md).
@@ -109,11 +99,15 @@ MIT. Bundled fonts: Source Han Sans CN (SIL OFL 1.1) and the 851 handwriting fon
 
 ## PReferZ
 
-Picture Reference Z - 一个用 Rust 编写的极简参考图聚合桌面应用。无限画布，平移/缩放，图片导入，Excalidraw 风格手绘图形，徒手笔迹，文本便签，流程图，图表，画框演示，撤销/重做，`.prz` 工程存档。
+Picture Reference Z - 一个用 Rust 编写的极简参考图聚合桌面应用。无限画布，平移/缩放，图片导入，Excalidraw 风格手绘图形，徒手笔迹，文本便签，流程图，图表，画框演示，撤销/重做，`.prz` 工程存档。同时内置无头 CLI（`--headless` / `--exec`）与 MCP 服务器（`--mcp`），可让 AI agent 直接操作画布。
 
 设计与架构细节（Crate 划分、数据模型、阶段计划）见 [`.agents/specs/preferz-spec.md`](./.agents/specs/preferz-spec.md)；路线图与交付归档见 [`.agents/plan.md`](./.agents/plan.md) / [`.agents/CHANGELOG.md`](./.agents/CHANGELOG.md)。
 
-### 快速开始
+### 安装
+
+最简单的方式：从 [GitHub Releases](https://github.com/Feihei/PReferZ/releases) 直接下载对应平台的二进制运行即可——无依赖、无需安装步骤。
+
+也可以从源码构建（Rust stable >= 1.88）：
 
 ```bash
 cargo run -p preferz             # 运行应用
@@ -121,6 +115,8 @@ cargo check --workspace          # 快速类型检查
 cargo test --workspace           # 单元测试
 cargo build --release -p preferz # 构建发布版本
 ```
+
+二进制为单文件多模式（Blender 式）：无参数或跟 `.prz` 路径打开 GUI；`--mcp` / `--exec` / `--headless` 进入无头模式。
 
 ### 技术栈
 
@@ -143,55 +139,16 @@ cargo build --release -p preferz # 构建发布版本
 - 对齐（6 向）/ 分布（等距 / 等心）/ 排列（线形、网格、最优装箱）；编组与解组；叠放顺序（上移/下移一层、置顶/置底）
 - 画框幻灯片演示（`F5`），比例 / 纸张预设
 - 自动保存（`.prz.autosave`）与恢复提示；所有编辑均可撤销/重做
+- 内置帮助文档（画布左下角 `?` 按钮）——一张可随意涂改的沙箱画布，完整列出所有快捷键与交互
 - 深色 / 浅色 / 跟随系统主题，中英双语界面
 - 窗口置顶 / 无边框 / 背景透明的悬浮看图板模式
+- 无头 CLI 与 MCP 服务器：`preferz --mcp` 启动 stdio MCP 服务器，GUI 已打开时自动代理（工具实时操作当前画布窗口），无 GUI 时降级为无头模式；`--headless` / `--exec` 提供面向脚本与 agent 的 JSONL 协议
 
 ### 基本用法
 
-**鼠标**
+中键拖拽平移、滚轮缩放、双击空白处新建文本便签、右键打开完整上下文菜单。
 
-| 操作 | 效果 |
-| --- | --- |
-| 滚轮 | 以光标位置为锚点缩放 |
-| 中键拖拽 | 平移画布 |
-| 左键拖拽元素 | 移动（`Ctrl`+拖动移动副本，`Shift`+拖动锁定水平/垂直轴） |
-| 拖拽角点/边缘手柄 | 缩放（按住 `Ctrl` 解除等比） |
-| 拖拽旋转手柄 | 旋转 |
-| 拖拽直线/箭头端点 | 移动端点；靠近图形边缘时吸附并保持绑定跟随 |
-| `Alt`+单击折线/多边形顶点 | 删除该顶点 |
-| `Alt`+拖拽端点 | 延伸出新顶点 |
-| 左键在空白处拖拽 | 框选 |
-| 双击空白处 | 新建文本便签 |
-| 双击图形（或按 `Enter`） | 编辑其文字 |
-| 右键 | 打开上下文菜单（排列/对齐/分布、编组、mermaid 等） |
-
-**键盘**
-
-| 快捷键 | 动作 |
-| --- | --- |
-| `Ctrl+N` | 新建画布 |
-| `Ctrl+O` | 打开 `.prz` 工程 |
-| `Ctrl+I` | 载入图片到画布 |
-| `Ctrl+S` / `Ctrl+Shift+S` | 保存 / 另存为 |
-| `Ctrl+Z` / `Ctrl+Shift+Z`（或 `Ctrl+Y`） | 撤销 / 重做 |
-| `Ctrl+C` / `Ctrl+X` / `Ctrl+V` | 复制 / 剪切 / 粘贴（两列文本数据会弹出图表选择浮层） |
-| `Ctrl+D` | 原位复制选中项 |
-| `Delete` | 删除选中项 |
-| `Ctrl+G` / `Ctrl+Shift+G` | 编组 / 解组 |
-| `Ctrl+]` / `Ctrl+[` | 上移 / 下移一层 |
-| `Ctrl+Shift+]` / `Ctrl+Shift+[` | 置于顶层 / 置于底层 |
-| `V` `R` `D` `O` `A` `L` `P` | 工具：选择 / 矩形 / 菱形 / 椭圆 / 箭头 / 直线 / 徒手（数字键 `1`–`7` 等效） |
-| `Shift+P` / `F` | 多边形工具 / 画框工具 |
-| `Shift+1` / `Shift+2` / `Shift+3` | 缩放适应画布 / 缩放到选中 / 缩放回 100% |
-| `I` | 切换取色器 |
-| `T` / `N` | 切换左侧工具栏 / 右侧属性栏显隐（带滑入滑出动画） |
-| `C` | 进入裁剪模式（仅单张图片可触发）——`Enter` 应用，`Esc` 取消 |
-| `Enter` | 编辑选中项文字 / 确认裁剪 |
-| `F5` | 切换幻灯片演示（`→` `Space` `PgDn` 下一页，`←` `PgUp` 上一页，`Home` / `End` 首末页） |
-| `Ctrl+方向键` | 创建连接的流程图节点（单选矩形 / 椭圆 / 菱形时） |
-| `Alt+方向键` | 沿连接箭头导航 |
-| `Ctrl+Shift+P` | 唤出上下文菜单 |
-| `Esc` | 取消当前操作 / 关闭菜单 |
+完整的鼠标交互与键盘快捷键列表，请点击画布左下角的 **`?`** 按钮打开内置帮助文档——它本身就是一张画布，所有快捷键都列在上面，还可以随意涂改试用（改动不会被保存）。
 
 ### 自动保存
 
@@ -202,6 +159,29 @@ cargo build --release -p preferz # 构建发布版本
 应用内设置面板提供：默认风格总开关（草绘——手绘抖动中档 + 手写字体，出厂默认；规整——精确线条 + 黑体）、排列间距、窗口置顶 / 无边框 / 背景不透明度、自动保存（开关 + 间隔）、新建画框默认比例、界面语言、主题（深色 / 浅色 / 跟随系统）。
 
 欢迎页会列出最近打开的工程（持久化于 `~/.preferz/recent.json`，最多 10 项）。
+
+### CLI 与 MCP
+
+同一个二进制兼作面向脚本与 AI agent 的无头接口（Blender 式多模式）：
+
+```bash
+preferz --mcp                    # MCP stdio 服务器（JSON-RPC 2.0）
+preferz --headless board.prz     # stdin/stdout 的 JSONL 会话，每行一个 JSON 请求
+preferz --exec '{"cmd":"add_shape","shape":"rect","x":0,"y":0,"w":10,"h":10}' board.prz
+```
+
+- **`--mcp` 是代理桥**：若已有 PReferZ GUI 窗口打开，MCP 服务器会挂到该实例上，每次工具调用都实时操作当前画布（边调边渲染）；无 GUI 运行时降级为无头单文档服务器。
+- 15 个工具与 JSONL 命令一一对应（`open` / `save` / `list` / `add_shape` / `add_text` / `add_mermaid` / `add_chart` / `move` / `undo` 等），共享同一 undo 通道。
+- MCP 双栈协议：同时支持 2026-07-28 最新无状态规范与旧版 `initialize` 握手（≤ 2025-11-25）。
+
+完整协议说明运行 `preferz --help` 查看。
+
+### 致谢
+
+PReferZ 的设计与渲染大量参考了两个优秀的开源项目：
+
+- [BeeRef](https://github.com/rbreu/beeRef) —— PReferZ 所做的参考图聚合这一产品形态的源头（`.prz` 是 PReferZ 自己的格式，与 BeeRef 的 `.bee` 不兼容）
+- [Excalidraw](https://github.com/excalidraw/excalidraw) —— 手绘风格、rough.js 式笔画渲染以及广为流行的画布交互范式
 
 ### 许可
 

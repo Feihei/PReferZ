@@ -84,12 +84,13 @@ fn add_rect(
 struct Card {
     x: f32,
     y: f32,
+    w: f32,
+    h: f32,
     title: &'static str,
     lines: &'static [&'static str],
 }
 
 impl Card {
-    const W: f32 = 408.0;
     const H: f32 = 260.0;
 
     fn render(&self, scene: &mut Scene) {
@@ -97,8 +98,8 @@ impl Card {
             scene,
             self.x,
             self.y,
-            Self::W,
-            Self::H,
+            self.w,
+            self.h,
             CARD_STROKE,
             2.0,
             CARD_FILL,
@@ -137,7 +138,7 @@ fn main() {
         0.0,
         0.0,
         960.0,
-        1176.0,
+        1476.0,
         PAPER_STROKE,
         1.0,
         PAPER_FILL,
@@ -188,11 +189,13 @@ fn main() {
         FontFamily::Normal,
     );
 
-    // —— 功能卡片（2 列 × 3 行）——
+    // —— 功能卡片（2 列 × 3 行 + 1 张全宽 CLI·MCP 卡）——
     let cards = [
         Card {
             x: 48.0,
             y: 264.0,
+            w: 408.0,
+            h: Card::H,
             title: "视图",
             lines: &[
                 "滚轮 缩放 · 中键拖拽 平移",
@@ -205,6 +208,8 @@ fn main() {
         Card {
             x: 504.0,
             y: 264.0,
+            w: 408.0,
+            h: Card::H,
             title: "工具",
             lines: &[
                 "V/1 选择 · R/2 矩形 · D/3 菱形",
@@ -217,6 +222,8 @@ fn main() {
         Card {
             x: 48.0,
             y: 548.0,
+            w: 408.0,
+            h: Card::H,
             title: "编辑",
             lines: &[
                 "Ctrl+A 全选 · Ctrl+Shift+A 取消全选",
@@ -230,6 +237,8 @@ fn main() {
         Card {
             x: 504.0,
             y: 548.0,
+            w: 408.0,
+            h: Card::H,
             title: "文件",
             lines: &[
                 "Ctrl+N 新建 · Ctrl+O 打开",
@@ -242,6 +251,8 @@ fn main() {
         Card {
             x: 48.0,
             y: 832.0,
+            w: 408.0,
+            h: Card::H,
             title: "撤销 · 层级",
             lines: &[
                 "Ctrl+Z 撤销 · Ctrl+Shift+Z / Ctrl+Y 重做",
@@ -253,6 +264,8 @@ fn main() {
         Card {
             x: 504.0,
             y: 832.0,
+            w: 408.0,
+            h: Card::H,
             title: "连接 · 面板",
             lines: &[
                 "Ctrl+方向键 沿该向克隆节点并连线",
@@ -261,6 +274,21 @@ fn main() {
                 "点击元素右上 ↗ 角标打开其链接",
                 "T 工具栏显隐 · N 属性栏显隐",
                 "右键菜单 查看全部功能",
+            ],
+        },
+        Card {
+            x: 48.0,
+            y: 1116.0,
+            w: 864.0,
+            h: 260.0,
+            title: "CLI · MCP（面向 agent / AI 编程客户端）",
+            lines: &[
+                "preferz --mcp 启动 MCP 服务器：GUI 已打开时自动代理，工具实时操作当前画布窗口",
+                "· 无已打开的 GUI 时自动降级为无头单文档模式，行为不变",
+                "preferz --headless 进入 JSONL 会话（stdin/stdout，每行一个 JSON）",
+                "preferz --exec '<json>' 执行单条命令后退出",
+                "15 个工具与命令一一对应：open / save / list / add_shape / add_text",
+                "  / add_mermaid / add_chart / move / undo / redo …（详见 preferz --help）",
             ],
         },
     ];
@@ -273,7 +301,7 @@ fn main() {
         &mut scene,
         "本窗口的内容可以随意涂改、试用——关闭重开会还原。",
         48.0,
-        1116.0,
+        1416.0,
         17.0,
         FAINT,
         FontFamily::Normal,
