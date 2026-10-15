@@ -1,3 +1,4 @@
+pub mod cli;
 pub mod i18n;
 pub mod interaction;
 pub mod keymap;

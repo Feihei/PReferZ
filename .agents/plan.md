@@ -43,7 +43,7 @@
 - [ ] ttf 字体体积优化（内嵌字体 deflate 压缩已做，全量子集是否够用待评估）
 - [ ] 放弃 `.bee` 兼容后可做的架构简化盘点（`PrzFile` 命名与 `prz.rs` 路径已改，schema 简化空间待盘）
 - [ ] 视口裁剪已有，LOD 缩略图（Phase 5+）待评估
-- [ ] preferz-cli 命令扩展（V1 已于 2026-10-14 交付、`--mcp` stdio MCP
+- [ ] CLI 命令扩展（V1 已于 2026-10-14 交付、`--mcp` stdio MCP
       服务器已交付（双栈协议 + add_mermaid/add_chart 工具，见 CHANGELOG）、
       GUI 内嵌监听 + `--mcp` 代理桥接已交付（2026-10-15，工具实时操作已打开
       窗口的画布；图片类操作仍不支持））：

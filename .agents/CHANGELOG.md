@@ -1634,6 +1634,39 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 
 ---
 
+## 单二进制合并：preferz-cli 并入 preferz（Blender 式多模式，2026-10-15）
+
+> 用户需求：只保留一个 exe——`preferz` 无参/双击 = GUI；`preferz --mcp` =
+> MCP（代理到活 GUI，无则降级 headless）；无头模式像 Blender（显式 flag），
+> MCP 模式像 OpenCADStudio。
+
+- **CLI 模块迁入 GUI crate**（`crates/preferz/src/cli/`：mod.rs + doc.rs +
+  mcp.rs）：`main.rs` 按 args 分流——无参 / 位置参数 `.prz` / `--help-doc`
+  → GUI；`--mcp` / `--exec` / `--headless` 任一出现 → `preferz::cli::run`，
+  eframe 不启动。协议核心早已下沉 core（RpcDoc），迁移零语义变化；
+  `cargo build` 重复编译同一份依赖的浪费随之消失。
+- **参数面**：`-h/--help`（合并 GUI + CLI 用法）、`-V/--version` 顶层处理；
+  `--exec` 隐含无头语义；互斥组合（mcp/exec、mcp/headless）显式报错。
+- **release 交互式 console 问题**：release 构建是 windows 子系统（无
+  console），agent 管道场景 std 句柄已是有效管道不受影响；但终端里交互式
+  敲 `preferz --headless` 会没有输入输出。解法：
+  `cli::console::attach_parent_console_if_interactive`（零新依赖，手写
+  kernel32 extern）——std 句柄无效时 `AttachConsole(parent)` +
+  `CreateFileA("CONIN$"/"CONOUT$")` + `SetStdHandle` 补挂；**必须在任何
+  std IO 之前调用**（Rust std 的 std 句柄是惰性经 `GetStdHandle` 获取的，
+  先 Set 再用即生效）。debug 构建（console 子系统）空操作。
+- **workspace 缩减为 3 crates**：删 `crates/preferz-cli`；MCP 集成测试
+  迁至 `crates/preferz/tests/mcp.rs`（`CARGO_BIN_EXE_preferz`）。
+- **Trae/agent 配置变更**：MCP 命令改指
+  `target\release\preferz.exe --mcp`（`preferz-cli.exe` 不再存在）。
+- 测试：集成测试 6/6 通过（代理转发 + 端口不可达降级 + 验活失败降级 +
+  headless 三件套，全部隔离 env 不受真实 GUI 干扰）；冒烟：`-V`、
+  `--headless` REPL（管道）、未知 flag 报错退出码 2、`--mcp` 降级路径
+  （无 GUI）与代理路径（stats 返回 GUI 画布状态）均实测通过。质量门：
+  fmt / `clippy -D warnings` 零告警，workspace 测试全绿
+
+---
+
 ## 决策点归档（D1–D6 / I1–I4 / L 系列）
 
 > 原列于 plan.md，G/I/H/K 交付后蒸馏归档于此，使 CHANGELOG 自包含、plan.md 仅保留前瞻内容。

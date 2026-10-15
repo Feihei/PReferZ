@@ -1,4 +1,4 @@
-//! CLI 侧的文档句柄：headless [`Session`] + 当前 `.prz` 文件连接 + 内嵌图片字节。
+//! CLI 模式的文档句柄：headless [`Session`] + 当前 `.prz` 文件连接 + 内嵌图片字节。
 //!
 //! 与 GUI 的分工：所有领域变更走 `session.push(Command)`（与 UI 同一条 undo 通道），
 //! 持久化复用 `preferz-fileio`，CLI 自身只持有"当前文件是谁"这层薄状态。

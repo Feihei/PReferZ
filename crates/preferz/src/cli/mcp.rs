@@ -15,10 +15,10 @@ use std::net::{Shutdown, TcpStream};
 use std::path::PathBuf;
 use std::time::Duration;
 
+use preferz_core::rpc::handle_message;
 use serde_json::Value;
 
-use crate::doc::CliDoc;
-use preferz_core::rpc::handle_message;
+use crate::cli::doc::CliDoc;
 
 /// token 验活的读超时：GUI 未响应即视为不可用。
 const AUTH_TIMEOUT: Duration = Duration::from_secs(2);

@@ -1,21 +1,63 @@
 // Release 构建用 windows 子系统（不弹黑色 cmd 窗口）；
 // debug 构建保留 console 子系统（方便看 panic 输出和 env_logger 日志）。
+// CLI 模式（--mcp/--exec/--headless）在 release 下的交互式 console 可见性
+// 由 cli::console::attach_parent_console_if_interactive 补挂解决。
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 // 二进制入口：业务模块统一由 lib.rs 导出，这里直接复用 lib，避免与 lib 重复编译同一份代码。
 use preferz::PReferZApp;
 
+/// Blender 式单二进制多模式：显式 CLI flag（--mcp / --exec / --headless）走
+/// 无头分支；无参 / 位置参数（.prz 路径，双击关联与链接 badge spawn 都走这条）
+/// / --help-doc 启动 GUI。
 fn main() -> eframe::Result<()> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+
+    // 顶层 -h/--help / -V/--version：合并帮助（GUI + CLI），与模式无关。
+    if args.iter().any(|a| a == "-h" || a == "--help") {
+        println!(
+            "PReferZ {} — visual reference board",
+            env!("CARGO_PKG_VERSION")
+        );
+        println!();
+        println!("USAGE:");
+        println!("    preferz [FILE]        open the GUI window (FILE: .prz to open)");
+        println!("    preferz --help-doc    open the built-in help document");
+        println!();
+        preferz::cli::print_help();
+        return Ok(());
+    }
+    if args.iter().any(|a| a == "-V" || a == "--version") {
+        println!("preferz {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+
+    // CLI 模式判定：任一显式 CLI flag 出现即走无头分支，eframe 不启动。
+    let cli_mode = args
+        .iter()
+        .any(|a| a == "--mcp" || a == "--exec" || a == "--headless");
+    if cli_mode {
+        let code = preferz::cli::run(&args);
+        if code != 0 {
+            std::process::exit(code);
+        }
+        return Ok(());
+    }
+
+    run_gui(&args)
+}
+
+fn run_gui(args: &[String]) -> eframe::Result<()> {
     // 字体定义构建已收口到 lib.rs（导出选区的离屏 egui Context 需要同一份定义）
     let font_definitions = preferz::app_font_definitions();
 
     // plan #25：`--help-doc` 启动帮助实例——新进程加载内嵌 help.prz（可编辑、
     // 不回存）。eframe 单进程只能跑一个事件循环，多实例走多进程而非 viewport。
-    let help_doc = std::env::args().any(|a| a == "--help-doc");
+    let help_doc = args.iter().any(|a| a == "--help-doc");
     // plan #6 / H2：位置参数视为待打开的 .prz 路径（链接 badge 在新窗口 spawn
     // 自身 exe + 路径参数）。首个非 `--` 开头的参数即路径；加载交给首帧的
     // pending_open_recent 流程（后台加载 + recent + 失败提示全复用）。
-    let open_path = std::env::args().skip(1).find(|a| !a.starts_with("--"));
+    let open_path = args.iter().find(|a| !a.starts_with("--"));
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()

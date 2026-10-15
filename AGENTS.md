@@ -5,21 +5,21 @@
 - **Rust** (stable, >= 1.88), edition 2021 — 1.88 起才稳定的 `slice::as_chunks` / `as_chunks_mut` 已在代码中使用
 - **GUI**: `egui` + `eframe` 0.36 (glow backend，显式关默认 features 绕开 wgpu)
 - **2D geometry**: `euclid` (parameterized `CanvasSpace` / `ScreenSpace`)
-- **Undo**: 全手写——`preferz-core::commands::Command` trait + `preferz_core::session::UndoStack`（GUI 与 `preferz-cli` 共用）；不依赖任何第三方 undo crate
+- **Undo**: 全手写——`preferz-core::commands::Command` trait + `preferz_core::session::UndoStack`（GUI 与 CLI 模式共用）；不依赖任何第三方 undo crate
 - **File I/O**: `rusqlite` (`.prz` SQLite + sqlar), `image`
 - **File dialog**: `rfd`; **clipboard**: `arboard`; **config**: 手写 JSON（`~/.preferz/config.json` + `recent.json`，serde_json + `std::env` 取 home，**无 confy / dirs 依赖**）
 - **字体**: 思源黑体（OFL）+ 851 远星夜行手写体（GB2312+ASCII 子集入库，原始 ttf 不进 git），经 `crates/preferz/build.rs` deflate 压缩嵌入、运行时解压（`flate2`）；重新生成子集的方法见 `assets/FONT_LICENSES.md`
-- **Workspace**: `crates/preferz` (GUI binary), `crates/preferz-cli` (headless JSONL/MCP binary), `crates/preferz-core`, `crates/preferz-fileio`
+- **Workspace**: `crates/preferz`（**单二进制多模式**：无参/位置参数 = GUI，`--mcp`/`--exec`/`--headless` = 无头 CLI，Blender 式）、`crates/preferz-core`, `crates/preferz-fileio`（两个 lib）
 
 ## Commands
 
 ```
 cargo check --workspace          # fast typecheck
 cargo test --workspace           # unit tests
-cargo run -p preferz             # run app
-cargo run -p preferz-cli         # headless JSONL REPL (stdin/stdout, 每行一个 JSON)
-cargo run -p preferz-cli -- --mcp  # stdio MCP server (JSON-RPC 2.0 双栈协议)
-cargo build --release -p preferz # release binary
+cargo run -p preferz             # run app（GUI；位置参数 = 打开 .prz）
+cargo run -p preferz -- --headless  # headless JSONL REPL (stdin/stdout, 每行一个 JSON)
+cargo run -p preferz -- --mcp    # stdio MCP server (JSON-RPC 2.0 双栈协议)
+cargo build --release -p preferz # release binary（GUI + CLI 同一个 exe）
 ```
 
 ## 必跑检查（提交前 / CI 强制）
@@ -38,21 +38,23 @@ cargo clippy --workspace --all-targets -- -D warnings   # 把警告当错误，�
 
 本地已安装 git pre-commit 钩子（`.git/hooks/pre-commit`），`git commit` 前自动跑 `cargo fmt --check`，不通过会阻止提交。注意 `.git/hooks/` 不入库，clone 到新机器后需重新放置该钩子（可运行 `cargo fmt --all --check` 替代）。
 
-## Architecture (4 crates)
+## Architecture (3 crates)
 
 ```
-preferz (GUI binary, eframe::App)
+preferz (single binary, eframe::App + headless CLI modes)
   ├── preferz-core        Item, Transform, Scene, Commands, Session(Scene+ViewportState+UndoStack),
-  │                       Arrange, ViewportState, snap, freedraw, chart, mermaid
+  │                       Arrange, ViewportState, snap, freedraw, chart, mermaid, rpc(JSONL/MCP 协议核心)
   └── preferz-fileio      PrzFile, ImageLoader, Exporter, schema
-preferz-cli (headless binary)
-  ├── preferz-core        Session + Commands（所有变更走同一条 undo 通道）
-  └── preferz-fileio      open/save 复用 PrzFile
 ```
 
 `PReferZApp` holds a single `preferz_core::Session { scene, viewport, undo_stack }`. `update()` dispatches each frame.
-`preferz-cli` 是无 egui 的 JSONL 接口：stdin 每行一个请求 `{"cmd": ...}`，stdout 每行一个响应；
-协议细节与命令集见 `crates/preferz-cli/src/main.rs` 顶部文档（`--help` 同源）。
+**单二进制多模式（Blender 式，2026-10-15 合并 preferz-cli）**：`main.rs` 按 args 分流——
+无参 / 位置参数 `.prz`（双击关联与链接 badge spawn）/ `--help-doc` → GUI；
+`--mcp` / `--exec` / `--headless` 任一出现 → `preferz::cli::run`（无头 JSONL / MCP stdio，
+eframe 不启动）。协议细节与命令集见 `crates/preferz/src/cli/mod.rs` 顶部文档（`--help` 同源）。
+release 构建的 windows 子系统（无 console）下，CLI 模式交互式调用由
+`cli::console::attach_parent_console_if_interactive` 补挂父 console（std 句柄已被
+管道重定向的 agent 场景自动跳过；必须发生在任何 std IO 之前）。
 JSONL 协议与 MCP stdio JSON-RPC 的**协议核心下沉在 `preferz-core/src/rpc/`**（手写，
 零新依赖，egui-free L1）：`RpcDoc` trait 抽象文档宿主（CLI `CliDoc` / GUI `GuiDoc`
 各自实现 open/save），`dispatch` / `handle_message` 泛型于 `&mut impl RpcDoc`。
@@ -61,7 +63,7 @@ JSONL 协议与 MCP stdio JSON-RPC 的**协议核心下沉在 `preferz-core/src/
 工具与 JSONL 命令一一对应（`tools/call` 直投 dispatch），共享同一 undo 通道。
 **`--mcp` 是代理桥（OpenCADStudio 模式）**：GUI 启动即内嵌本地 TCP 监听并写握手文件
 `~/.preferz/mcp-endpoint.json`（`{port, token, pid}`；config `mcp_listen` 默认开）；
-`preferz-cli --mcp` 探测到活实例则**纯转发**（工具实时操作已打开窗口的画布），无实例
+`preferz --mcp` 探测到活实例则**纯转发**（工具实时操作已打开窗口的画布），无实例
 则降级 headless 单文档模式。测试用 `PREFERZ_MCP_ENDPOINT` 环境变量隔离握手文件路径。
 **无头导出（PNG/SVG）不在 CLI 范围**——渲染依赖 binary 层 egui Context。
 

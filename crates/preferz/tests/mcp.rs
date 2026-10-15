@@ -1,4 +1,4 @@
-//! `--mcp` stdio 端到端集成测试：拉起 `preferz-cli --mcp` 子进程，
+﻿//! `--mcp` stdio 端到端集成测试：拉起 `preferz-cli --mcp` 子进程，
 //! 按真实客户端行为走一遍双栈协议（旧栈握手 → 工具调用 → undo/redo；
 //! 新栈 discover → _meta 校验 → -32022 拒绝）。
 //!
@@ -40,7 +40,7 @@ impl McpProc {
     /// spawn 并注入 `PREFERZ_MCP_ENDPOINT`（None = 隔离到不存在的路径，
     /// 保证 headless 降级，不受开发机上真实 GUI 影响）。
     fn spawn_env(args: &[&str], endpoint: Option<String>) -> Self {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_preferz-cli"));
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_preferz"));
         cmd.args(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
