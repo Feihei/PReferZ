@@ -1,4 +1,4 @@
-﻿//! `--mcp` stdio 端到端集成测试：拉起 `preferz-cli --mcp` 子进程，
+//! `--mcp` stdio 端到端集成测试：拉起 `preferz-cli --mcp` 子进程，
 //! 按真实客户端行为走一遍双栈协议（旧栈握手 → 工具调用 → undo/redo；
 //! 新栈 discover → _meta 校验 → -32022 拒绝）。
 //!
@@ -126,13 +126,15 @@ fn legacy_stack_full_session() {
     assert_eq!(resp["id"], 2);
     assert_eq!(resp["result"], json!({}));
 
-    // 3) tools/list：15 个工具 + 缓存元数据
+    // 3) tools/list：17 个工具 + 缓存元数据
     p.send(&rpc(3, "tools/list", json!({})));
     let resp = p.read();
     let tools = resp["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 15);
+    assert_eq!(tools.len(), 17);
     assert!(tools.iter().any(|t| t["name"] == "add_mermaid"));
     assert!(tools.iter().any(|t| t["name"] == "add_chart"));
+    assert!(tools.iter().any(|t| t["name"] == "add_image"));
+    assert!(tools.iter().any(|t| t["name"] == "arrange"));
 
     // 4) tools/call add_shape → 成功 result
     p.send(&rpc(
@@ -486,5 +488,94 @@ fn proxy_denied_token_falls_back_to_headless() {
     p.close_stdin();
     let _ = p.child.wait();
     let _ = std::fs::remove_file(&endpoint);
+    let _ = std::fs::remove_dir(dir);
+}
+
+/// add_image headless 往返：临时 PNG → tools/call add_image（w-only 宽高比）
+/// → save 落盘 → 新会话 open + list 确认 Pixmap 项与 sqlar 资产保真。
+#[test]
+fn headless_add_image_roundtrip_via_prz() {
+    let dir = std::env::temp_dir().join(format!(
+        "preferz-add-image-test-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let png_path = dir.join("pic.png");
+    let prz_path = dir.join("board.prz");
+
+    // 64×32 红色 PNG
+    let img = image::RgbaImage::from_pixel(64, 32, image::Rgba([255, 0, 0, 255]));
+    img.save(&png_path).expect("write temp png");
+
+    let tools_call = |id: i64, name: &str, args: Value| {
+        rpc(id, "tools/call", json!({ "name": name, "arguments": args }))
+    };
+    // 握手 + 通知（旧栈）
+    let handshake = |p: &mut McpProc| {
+        p.send(&rpc(
+            1,
+            "initialize",
+            json!({"protocolVersion": "2025-06-18"}),
+        ));
+        let resp = p.read();
+        assert_eq!(resp["result"]["protocolVersion"], "2025-06-18");
+        p.send(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"}));
+    };
+    // tools/call → 解出内层 JSONL 响应
+    let call = |p: &mut McpProc, v: Value| -> Value {
+        p.send(&v);
+        let resp = p.read();
+        assert_eq!(resp["result"]["isError"], false, "{resp}");
+        serde_json::from_str(resp["result"]["content"][0]["text"].as_str().unwrap())
+            .expect("inner JSONL response")
+    };
+
+    // 会话 1：导入（只给 w → 宽高比推 h）+ 保存
+    let mut p = McpProc::spawn(&["--mcp"]);
+    handshake(&mut p);
+    let inner = call(
+        &mut p,
+        tools_call(
+            2,
+            "add_image",
+            json!({"path": png_path.to_string_lossy(), "x": 5.0, "y": 6.0, "w": 128.0}),
+        ),
+    );
+    assert_eq!(inner["ok"], true, "{inner}");
+    assert_eq!(inner["width"], 64);
+    assert_eq!(inner["height"], 32);
+    assert_eq!(inner["w"], 128.0);
+    assert_eq!(inner["h"], 64.0, "h 应按 2:1 宽高比推出");
+    let inner = call(
+        &mut p,
+        tools_call(3, "save", json!({"path": prz_path.to_string_lossy()})),
+    );
+    assert_eq!(inner["ok"], true, "{inner}");
+    p.close_stdin();
+    let _ = p.child.wait();
+    assert!(prz_path.exists(), "save 应落盘");
+
+    // 会话 2：重新打开 → Pixmap 项仍在（sqlar 资产保真由 load 成功佐证）
+    let mut p2 = McpProc::spawn(&["--mcp"]);
+    handshake(&mut p2);
+    let inner = call(
+        &mut p2,
+        tools_call(2, "open", json!({"path": prz_path.to_string_lossy()})),
+    );
+    assert_eq!(inner["ok"], true, "{inner}");
+    assert_eq!(inner["items"], 1);
+    let inner = call(&mut p2, tools_call(3, "list", json!({"full": true})));
+    let items = inner["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["kind"]["Pixmap"]["original_size"], json!([64, 32]));
+    p2.close_stdin();
+    let _ = p2.child.wait();
+
+    let _ = std::fs::remove_file(&png_path);
+    let _ = std::fs::remove_file(&prz_path);
     let _ = std::fs::remove_dir(dir);
 }

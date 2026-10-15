@@ -287,8 +287,9 @@ fn main() {
                 "· 无已打开的 GUI 时自动降级为无头单文档模式，行为不变",
                 "preferz --headless 进入 JSONL 会话（stdin/stdout，每行一个 JSON）",
                 "preferz --exec '<json>' 执行单条命令后退出",
-                "15 个工具与命令一一对应：open / save / list / add_shape / add_text",
-                "  / add_mermaid / add_chart / move / undo / redo …（详见 preferz --help）",
+                "17 个工具与命令一一对应：open / save / list / add_shape / add_text",
+                "  / add_mermaid / add_chart / add_image / arrange / move / undo / redo",
+                "  …（详见 preferz --help）",
             ],
         },
     ];

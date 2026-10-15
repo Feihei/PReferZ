@@ -9,7 +9,7 @@
 //!
 //! - [`protocol`] / [`dispatch`]：JSONL 协议（`{"cmd": ...}` 请求/响应）
 //! - [`mcp`] / [`tools`]：MCP stdio JSON-RPC 2.0 双栈（2026-07-28 无状态
-//!   spec + ≤2025-11-25 旧栈握手兜底），15 个工具一一转投 JSONL dispatch
+//!   spec + ≤2025-11-25 旧栈握手兜底），17 个工具一一转投 JSONL dispatch
 
 mod dispatch;
 mod doc;
@@ -18,7 +18,7 @@ pub mod protocol;
 mod tools;
 
 pub use dispatch::dispatch;
-pub use doc::RpcDoc;
+pub use doc::{RpcDoc, RpcImage};
 pub use mcp::{handle_message, PROTOCOL_VERSION};
 pub use tools::tools_list_result;
 

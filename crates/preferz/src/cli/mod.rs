@@ -15,7 +15,7 @@
 //! 命令失败只产生 `{"ok": false, ...}`，不退出会话。
 //!
 //! MCP 模式：stdio JSON-RPC，双栈协议——新栈 2026-07-28 无状态 spec 与旧栈
-//! （≤2025-11-25 `initialize` 握手）按请求特征分流；15 个工具与 JSONL 命令
+//! （≤2025-11-25 `initialize` 握手）按请求特征分流；17 个工具与 JSONL 命令
 //! 一一对应，共享同一 undo 通道。协议核心在 preferz-core 的 `rpc` 模块，
 //! 代理与 headless 两种模式共享同一套语义。stdout 只走协议帧，日志走 stderr。
 //!
@@ -68,8 +68,8 @@ JSONL PROTOCOL (one JSON object per line):
 COMMANDS:
     ping, version, new, open, save, stats, list,
     select, select_all, deselect,
-    add_shape, add_text, add_item, add_mermaid, add_chart,
-    delete, move, undo, redo
+    add_shape, add_text, add_item, add_mermaid, add_chart, add_image,
+    arrange, delete, move, undo, redo
 
 NOTES:
     - list: {\"ids\": [..]} filters, \"full\": true returns full item JSON

@@ -1695,6 +1695,38 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 
 ---
 
+## MCP add_image / arrange 工具（2026-10-15）
+
+> 用户需求：MCP 缺图片工具，图片导入排版是核心场景。15 → 17 工具。
+
+- **`add_image` 工具**（`path` 必填 + `x`/`y` + `w`/`h`）：从磁盘导入图片为
+  `Pixmap` 项。尺寸缺省 = 原始；只给其一按宽高比推另一维。返回
+  `id` / 原始 `width`/`height` / 显示 `w`/`h`。
+  - 协议抽象：`RpcDoc` 新增 `load_image(path) -> RpcImage`（core 保持零
+    fileio 依赖，解码与资产注册归宿主）；`RpcImage { texture_id, filename,
+    width, height }`，texture_id 是宿主资产键，core 不解释。
+  - GUI `GuiDoc::load_image`：同步读 + 解码 + 纹理注册，资产接线与
+    `finish_import` 一致（纹理 + bytes/rgba/size 缓存），保存时写 sqlar。
+  - CLI `CliDoc::load_image`：headless 同样可导入——字节进 `images` 表
+    （保存原样写 sqlar），`next_image_texture_id` 避开现有元素与资产键。
+    此前 CLI 对图片只做 round-trip 保真，现在可以主动加图。
+  - item 创建走 `AddItem` undo 通道；**不经过主题色注入**（图片无描边）。
+- **`arrange` 命令**：暴露 GUI「布局整理」到协议——`mode`
+  （linear 排队 / grid 网格 / optimal MaxRects 装箱，默认 optimal）+
+  `spacing`（默认 16）+ `x`/`y` 锚点 + `ids` 过滤（缺省全场景）。
+  排除绑定文本（位置由容器实时决定，与 GUI 语义一致）；子场景法计算
+  （与 `arrange_selected` 同），位移包 `ArrangeItems` 一步 undo，
+  位移过小不记。
+- **同步面**：`tools.rs` 两工具 schema + 工具数 15→17（测试/文档注释/
+  CLI HELP/gen_help_doc 嵌入帮助已重新生成）；AGENTS.md 同步。
+- **测试**：core 5 个新单测（add_image 全缺省/单边宽高比/非法尺寸/
+  无资产结构化错误/undo；arrange linear 锚点 + undo 还原 + 错误路径）；
+  MCP 工具数断言 15→17；集成测试新增 `headless_add_image_roundtrip_via_prz`
+  （临时 PNG → add_image → save → 新会话 open + list 验证往返）。
+  质量门 fmt / clippy / 全量测试全绿。
+
+---
+
 ## 决策点归档（D1–D6 / I1–I4 / L 系列）
 
 > 原列于 plan.md，G/I/H/K 交付后蒸馏归档于此，使 CHANGELOG 自包含、plan.md 仅保留前瞻内容。

@@ -23,7 +23,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, OnceLock};
 
 use egui::Context;
-use preferz_core::rpc::{handle_message, RpcDoc};
+use preferz_core::rpc::{handle_message, RpcDoc, RpcImage};
 use preferz_fileio::{PrzFile, ViewportMeta};
 use serde_json::{json, Value};
 
@@ -334,6 +334,37 @@ impl RpcDoc for GuiDoc<'_> {
                 Err(e)
             }
         }
+    }
+
+    /// 同步读取 + 解码 + 纹理注册：与 `finish_import` 的资产接线一致
+    /// （纹理 + bytes/rgba/size 三缓存），但不在宿主里创建 item——由
+    /// dispatch 的 add_image 走 AddItem undo 通道创建。MCP 调用频度低，
+    /// 同步解码可接受（open_path 同语义）。
+    fn load_image(&mut self, path: &Path) -> Result<RpcImage, String> {
+        let bytes = std::fs::read(path).map_err(|e| format!("read image failed: {e}"))?;
+        let img = image::load_from_memory(&bytes).map_err(|e| format!("decode failed: {e}"))?;
+        let (width, height) = img.dimensions();
+        let rgba = img.to_rgba8().into_vec();
+
+        let texture_id = self.app.next_texture_id;
+        self.app.next_texture_id += 1;
+        let color_image =
+            egui::ColorImage::from_rgba_unmultiplied([width as usize, height as usize], &rgba);
+        let handle = self.ctx.load_texture(
+            format!("img_{}", texture_id),
+            color_image,
+            Default::default(),
+        );
+        self.app.texture_cache.insert(texture_id, handle);
+        self.app.image_data_cache.insert(texture_id, bytes);
+        self.app.rgba_pixel_cache.insert(texture_id, rgba);
+        self.app.rgba_size_cache.insert(texture_id, (width, height));
+        Ok(RpcImage {
+            texture_id,
+            filename: Some(path.to_string_lossy().to_string()),
+            width,
+            height,
+        })
     }
 }
 

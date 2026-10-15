@@ -4,10 +4,12 @@
 //! core 命令语义；headless 调用方没有"拖拽预览直改"阶段，故 `MoveItems`
 //! 等默认 preview 的命令必须显式 `with_preview_applied(false)`。
 
-use crate::commands::{AddItem, AddItems, DeleteItems, MoveItems};
+use crate::arrange::{plan_arrange, ArrangeMode};
+use crate::commands::{AddItem, AddItems, ArrangeItems, DeleteItems, MoveItems};
 use crate::item::{ChartType, Item, ItemId, ItemKind};
-use crate::rpc::doc::RpcDoc;
+use crate::rpc::doc::{RpcDoc, RpcImage};
 use crate::rpc::protocol::{self, ok, opt_bool, opt_f32, opt_str, parse_color, req_f32, req_str};
+use crate::scene::Scene;
 use crate::shape::{FontFamily, Sloppiness, StrokeStyle};
 use crate::spaces::CanvasVector;
 use crate::transform::Transform;
@@ -78,6 +80,8 @@ fn run(doc: &mut impl RpcDoc, cmd: &str, req: &Value) -> Result<Value, String> {
         "add_item" => add_item_raw(doc, req).map(|id| json!({ "id": id.to_string() })),
         "add_mermaid" => add_mermaid(doc, req),
         "add_chart" => add_chart(doc, req),
+        "add_image" => add_image(doc, req),
+        "arrange" => arrange(doc, req),
 
         "delete" => {
             let ids = target_ids(doc, req)?;
@@ -479,6 +483,138 @@ fn add_chart(doc: &mut impl RpcDoc, req: &Value) -> Result<Value, String> {
     Ok(json!({ "id": id.to_string(), "points": points }))
 }
 
+/// add_image：从文件路径导入图片为 `Pixmap` 项。参数：
+/// - `path`（必填）：图片文件绝对路径（png/jpg/gif/webp/bmp）；
+/// - `x` / `y`：画布落点（左上角，默认 0）；
+/// - `w` / `h`：显示尺寸（画布 px）。默认原始尺寸；只给其一按宽高比推另一维。
+///
+/// 解码由宿主 [`RpcDoc::load_image`] 同步完成；item 创建走 AddItem undo 通道。
+fn add_image(doc: &mut impl RpcDoc, req: &Value) -> Result<Value, String> {
+    let path = req_str(req, "path")?;
+    let img: RpcImage = doc.load_image(std::path::Path::new(path))?;
+    let (ow, oh) = (img.width as f32, img.height as f32);
+    if !(ow > 0.0 && oh > 0.0) {
+        return Err("decoded image has invalid dimensions".to_string());
+    }
+    // w/h 缺省语义：都缺 = 原始尺寸；只给其一 = 按宽高比推另一维。
+    let w_req = opt_number(req, "w")?;
+    let h_req = opt_number(req, "h")?;
+    let (w, h) = match (w_req, h_req) {
+        (Some(w), Some(h)) => (w, h),
+        (Some(w), None) => (w, w * oh / ow),
+        (None, Some(h)) => (h * ow / oh, h),
+        (None, None) => (ow, oh),
+    };
+    if !(w.is_finite() && h.is_finite() && w > 0.0 && h > 0.0) {
+        return Err("w/h must be finite positive numbers".to_string());
+    }
+    let x = opt_f32(req, "x", 0.0)?;
+    let y = opt_f32(req, "y", 0.0)?;
+    let item = Item::new_pixmap(
+        img.texture_id,
+        img.filename,
+        (img.width, img.height),
+        x,
+        y,
+        w / ow,
+        h / oh,
+    );
+    let id = item.id;
+    doc.session().push(Box::new(AddItem::new(item)));
+    Ok(json!({
+        "id": id.to_string(),
+        "width": img.width,
+        "height": img.height,
+        "w": w,
+        "h": h,
+    }))
+}
+
+/// 可选 number 字段（区分「缺省」与 0）。
+fn opt_number(req: &Value, key: &str) -> Result<Option<f32>, String> {
+    match req.get(key) {
+        Some(Value::Null) | None => Ok(None),
+        Some(Value::Number(n)) => n
+            .as_f64()
+            .map(|v| Some(v as f32))
+            .ok_or_else(|| format!("field '{key}' is not a finite number")),
+        Some(_) => Err(format!("field '{key}' must be a number")),
+    }
+}
+
+/// arrange：批量排列（linear 排队 / grid 网格 / optimal MaxRects 装箱）。
+/// 参数：
+/// - `mode`：`"linear"` / `"grid"` / `"optimal"`（默认 optimal）；
+/// - `spacing`：间距（画布 px，默认 16，非负）；
+/// - `x` / `y`：排列结果的锚点（默认 0,0，即计划出的新位置整体平移到锚点）；
+/// - `ids`（可选）：只排列这些元素；缺省排全部（排除绑定文本——它们
+///   位置由容器实时决定，不可独立移动，与 GUI 语义一致）。
+///
+/// 与 GUI 的「布局整理」共用 [`plan_arrange`]；位移包成 ArrangeItems 一步 undo。
+fn arrange(doc: &mut impl RpcDoc, req: &Value) -> Result<Value, String> {
+    let mode = match opt_str(req, "mode").unwrap_or("optimal") {
+        "linear" => ArrangeMode::Linear,
+        "grid" => ArrangeMode::Grid,
+        "optimal" => ArrangeMode::Optimal,
+        other => {
+            return Err(format!(
+                "unknown mode '{other}' (supported: linear, grid, optimal)"
+            ))
+        }
+    };
+    let spacing = opt_f32(req, "spacing", 16.0)?;
+    if !spacing.is_finite() || spacing < 0.0 {
+        return Err("spacing must be a finite non-negative number".to_string());
+    }
+    let ax = opt_f32(req, "x", 0.0)?;
+    let ay = opt_f32(req, "y", 0.0)?;
+    if !ax.is_finite() || !ay.is_finite() {
+        return Err("x/y must be finite numbers".to_string());
+    }
+
+    // 子场景法（与 GUI arrange_selected 同）：ids 过滤 + 排除绑定文本，
+    // plan_arrange 在子场景上计算，元素保留原 pos，新位置可直接映射回主场景。
+    let scene = &doc.session().scene;
+    let mut sub = Scene::new();
+    match protocol::opt_ids(req)? {
+        Some(ids) => {
+            for id in &ids {
+                if let Some(it) = scene.get_item(id) {
+                    if !scene.is_bound_text(it) {
+                        sub.add_item_preserve_z(it.clone());
+                    }
+                }
+            }
+        }
+        None => {
+            for it in scene.items_by_z_order() {
+                if !scene.is_bound_text(it) {
+                    sub.add_item_preserve_z(it.clone());
+                }
+            }
+        }
+    }
+    if sub.items.is_empty() {
+        return Err("nothing to arrange".to_string());
+    }
+
+    let mut moves = plan_arrange(&sub, mode, spacing);
+    if ax != 0.0 || ay != 0.0 {
+        for (_, _, new_pos) in &mut moves {
+            *new_pos += CanvasVector::new(ax, ay);
+        }
+    }
+    // 位移过小（含锚点恰好在位）不记，避免无意义 undo 条目。
+    moves.retain(|(_, old, new)| (*new - *old).length() > 1e-4);
+    let n = moves.len();
+    if n > 0 {
+        doc.session().push(Box::new(
+            ArrangeItems::new(moves).with_preview_applied(false),
+        ));
+    }
+    Ok(json!({ "arranged": n }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -694,5 +830,176 @@ mod tests {
         let list = handle(&mut doc, json!({"cmd": "list"}));
         assert_eq!(list["items"][0]["kind"], "frame");
         assert_eq!(list["items"][0]["number"], 1);
+    }
+
+    fn canned(w: u32, h: u32) -> RpcImage {
+        RpcImage {
+            texture_id: 7,
+            filename: Some("C:/pics/a.png".to_string()),
+            width: w,
+            height: h,
+        }
+    }
+
+    #[test]
+    fn add_image_creates_pixmap_and_undoes() {
+        let mut doc = TestDoc::new();
+        doc.canned_image = Some(canned(200, 100));
+
+        // 缺省尺寸 = 原始尺寸
+        let r = handle(
+            &mut doc,
+            json!({"cmd": "add_image", "path": "C:/pics/a.png", "x": 10.0, "y": 20.0}),
+        );
+        assert!(r["ok"].as_bool().unwrap(), "{r}");
+        assert_eq!(r["width"], 200);
+        assert_eq!(r["height"], 100);
+        assert_eq!(r["w"], 200.0);
+        assert_eq!(r["h"], 100.0);
+        let id = r["id"].as_str().unwrap().to_string();
+
+        let list = handle(&mut doc, json!({"cmd": "list", "ids": [id], "full": true}));
+        let item: Item = serde_json::from_value(list["items"][0].clone()).unwrap();
+        match &item.kind {
+            ItemKind::Pixmap {
+                texture_id,
+                filename,
+                original_size,
+                ..
+            } => {
+                assert_eq!(*texture_id, 7);
+                assert_eq!(filename.as_deref(), Some("C:/pics/a.png"));
+                assert_eq!(original_size.0, 200);
+                assert_eq!(original_size.1, 100);
+            }
+            other => panic!("expected pixmap, got {other:?}"),
+        }
+        assert_eq!(item.transform.pos.x, 10.0);
+        assert_eq!(item.transform.pos.y, 20.0);
+        assert!((item.transform.scale.x - 1.0).abs() < 1e-6);
+        assert!((item.transform.scale.y - 1.0).abs() < 1e-6);
+
+        // undo 后元素消失
+        assert!(handle(&mut doc, json!({"cmd": "undo"}))["performed"]
+            .as_bool()
+            .unwrap());
+        assert_eq!(doc.session.scene.items.len(), 0);
+    }
+
+    #[test]
+    fn add_image_single_side_keeps_aspect_ratio() {
+        let mut doc = TestDoc::new();
+        doc.canned_image = Some(canned(400, 200));
+
+        // 只给 w：h 按宽高比推（100 → 50）
+        let r = handle(
+            &mut doc,
+            json!({"cmd": "add_image", "path": "a.png", "w": 100.0}),
+        );
+        assert!(r["ok"].as_bool().unwrap(), "{r}");
+        assert_eq!(r["w"], 100.0);
+        assert_eq!(r["h"], 50.0);
+
+        // 只给 h：w 按宽高比推（60 → 120）
+        let r = handle(
+            &mut doc,
+            json!({"cmd": "add_image", "path": "a.png", "h": 60.0}),
+        );
+        assert!(r["ok"].as_bool().unwrap(), "{r}");
+        assert_eq!(r["w"], 120.0);
+        assert_eq!(r["h"], 60.0);
+
+        // 非法尺寸 → 结构化报错
+        let r = handle(
+            &mut doc,
+            json!({"cmd": "add_image", "path": "a.png", "w": 0.0}),
+        );
+        assert_eq!(r["ok"], false, "{r}");
+    }
+
+    #[test]
+    fn add_image_without_asset_is_structured_error() {
+        let mut doc = TestDoc::new();
+        let r = handle(&mut doc, json!({"cmd": "add_image", "path": "missing.png"}));
+        assert_eq!(r["ok"], false);
+        assert!(r["error"].as_str().unwrap().contains("load_image"));
+    }
+
+    #[test]
+    fn arrange_linear_moves_and_undoes() {
+        let mut doc = TestDoc::new();
+        let mut ids = Vec::new();
+        for (i, (x, y)) in [(500.0, 300.0), (0.0, 0.0), (100.0, 900.0)]
+            .iter()
+            .enumerate()
+        {
+            let r = handle(
+                &mut doc,
+                json!({"cmd": "add_shape", "shape": "rect", "x": x, "y": y,
+                       "w": 100.0 + i as f64, "h": 50.0}),
+            );
+            ids.push(r["id"].as_str().unwrap().to_string());
+        }
+
+        // ids 过滤 + linear + 锚点：按 z 序排成一行，起点 (100, 50)
+        let r = handle(
+            &mut doc,
+            json!({"cmd": "arrange", "mode": "linear", "spacing": 10.0,
+                   "x": 100.0, "y": 50.0, "ids": ids}),
+        );
+        assert!(r["ok"].as_bool().unwrap(), "{r}");
+        assert_eq!(r["arranged"], 3);
+
+        let list = handle(&mut doc, json!({"cmd": "list", "full": true}));
+        let items = list["items"].as_array().unwrap();
+        assert_eq!(items.len(), 3);
+        let mut xs = Vec::new();
+        for it in items {
+            let x = it["transform"]["pos"][0].as_f64().unwrap();
+            let y = it["transform"]["pos"][1].as_f64().unwrap();
+            assert!((y - 50.0).abs() < 1e-3, "y 应对齐锚点 50，got {y}");
+            xs.push(x);
+        }
+        xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        // 首元素锚在 100，后续依次 + 宽度 + spacing（宽度 100/101/102）
+        assert!((xs[0] - 100.0).abs() < 1e-3, "xs={xs:?}");
+        assert!((xs[1] - 210.0).abs() < 1e-3, "xs={xs:?}");
+        assert!((xs[2] - 321.0).abs() < 1e-3, "xs={xs:?}");
+
+        // 一步 undo 全部还原
+        assert!(handle(&mut doc, json!({"cmd": "undo"}))["performed"]
+            .as_bool()
+            .unwrap());
+        let list = handle(&mut doc, json!({"cmd": "list", "full": true}));
+        let ys: Vec<f64> = list["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|it| it["transform"]["pos"][1].as_f64().unwrap())
+            .collect();
+        assert!(
+            ys.contains(&300.0) && ys.contains(&0.0) && ys.contains(&900.0),
+            "undo 后应回到原位: {ys:?}"
+        );
+    }
+
+    #[test]
+    fn arrange_nothing_is_structured_error() {
+        let mut doc = TestDoc::new();
+        // 空场景
+        let r = handle(&mut doc, json!({"cmd": "arrange"}));
+        assert_eq!(r["ok"], false);
+        // 未知 mode
+        let r = handle(
+            &mut doc,
+            json!({"cmd": "add_shape", "shape": "rect", "w": 10.0, "h": 10.0}),
+        );
+        let _ = r;
+        let r = handle(&mut doc, json!({"cmd": "arrange", "mode": "spiral"}));
+        assert_eq!(r["ok"], false);
+        assert!(r["error"].as_str().unwrap().contains("unknown mode"));
+        // 非法 spacing
+        let r = handle(&mut doc, json!({"cmd": "arrange", "spacing": -1.0}));
+        assert_eq!(r["ok"], false);
     }
 }

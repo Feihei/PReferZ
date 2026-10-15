@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use preferz_core::rpc::RpcDoc;
+use preferz_core::rpc::{RpcDoc, RpcImage};
 use preferz_core::spaces::CanvasVector;
 use preferz_core::{Session, ViewportState};
 use preferz_fileio::{PrzFile, ViewportMeta};
@@ -110,6 +110,21 @@ impl CliDoc {
         self.path = Some(target_path.clone());
         Ok(target_path)
     }
+    /// 分配一个不与现有元素 / 资产键冲突的图片 texture_id。
+    fn next_image_texture_id(&self) -> u64 {
+        let mut next = 1u64;
+        for it in &self.session.scene.items {
+            if let preferz_core::ItemKind::Pixmap { texture_id, .. } = &it.kind {
+                next = next.max(texture_id.saturating_add(1));
+            }
+        }
+        for key in self.images.keys() {
+            if let Ok(v) = key.parse::<u64>() {
+                next = next.max(v.saturating_add(1));
+            }
+        }
+        next
+    }
 }
 
 impl RpcDoc for CliDoc {
@@ -123,6 +138,22 @@ impl RpcDoc for CliDoc {
 
     fn reset(&mut self) {
         CliDoc::reset(self)
+    }
+
+    /// 同步读取 + 解码图片字节：字节进 `images`（保存时写 sqlar），
+    /// 尺寸从解码结果取。headless 无纹理上传，texture_id 仅作资产键。
+    fn load_image(&mut self, path: &Path) -> Result<RpcImage, String> {
+        let bytes = std::fs::read(path).map_err(|e| format!("read image failed: {e}"))?;
+        let img = image::load_from_memory(&bytes).map_err(|e| format!("decode failed: {e}"))?;
+        let (width, height) = (img.width(), img.height());
+        let texture_id = self.next_image_texture_id();
+        self.images.insert(texture_id.to_string(), bytes);
+        Ok(RpcImage {
+            texture_id,
+            filename: Some(path.to_string_lossy().to_string()),
+            width,
+            height,
+        })
     }
 
     fn open_path(&mut self, path: &Path) -> Result<usize, String> {

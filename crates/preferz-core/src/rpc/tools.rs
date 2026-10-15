@@ -1,4 +1,4 @@
-//! MCP 工具表：15 个工具的 schema（`tools/list` 返回值）。
+//! MCP 工具表：17 个工具的 schema（`tools/list` 返回值）。
 //!
 //! 设计约定：
 //! - 表按名称**字典序排列**（2026-07-28 spec 要求工具列表确定性排序），新增工具
@@ -60,6 +60,28 @@ top-left corner at (x, y).",
                     "x": {"type": "number", "description": "Top-left x, default 0"},
                     "y": {"type": "number", "description": "Top-left y, default 0"}
                 }
+            }),
+            read_only: false,
+            destructive: false,
+        },
+        ToolDef {
+            name: "add_image",
+            description: "Import an image file from disk as a picture item. Decodes the file \
+(absolute path), registers the asset so save embeds it into the .prz. One undo \
+step. Returns the new item id and sizes (original width/height, displayed w/h).",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Absolute image file path (png/jpg/gif/webp/bmp)"
+                    },
+                    "x": {"type": "number", "description": "Top-left x, default 0"},
+                    "y": {"type": "number", "description": "Top-left y, default 0"},
+                    "w": {"type": "number", "description": "Display width in canvas px; default = original; giving only one of w/h keeps the aspect ratio"},
+                    "h": {"type": "number", "description": "Display height in canvas px; same default/aspect rule as w"}
+                },
+                "required": ["path"]
             }),
             read_only: false,
             destructive: false,
@@ -148,6 +170,33 @@ size w×h. One undo step. Returns the new item id.",
                     "color": {"type": "string", "description": "Color, \"#rrggbb\" or [r,g,b,a]; omitted = app theme default"}
                 },
                 "required": ["text"]
+            }),
+            read_only: false,
+            destructive: false,
+        },
+        ToolDef {
+            name: "arrange",
+            description: "Auto-arrange items (the GUI 'arrange' feature): linear row, grid, or \
+optimal MaxRects packing. Whole scene by default (bound texts excluded); pass \
+'ids' to arrange a subset. One undo step. Returns the moved count.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "mode": {
+                        "type": "string",
+                        "enum": ["linear", "grid", "optimal"],
+                        "description": "Arrangement strategy, default 'optimal' (space-saving MaxRects packing)"
+                    },
+                    "spacing": {"type": "number", "description": "Gap between items in canvas px, default 16"},
+                    "x": {"type": "number", "description": "Anchor: shift the planned result so it starts at x, default 0"},
+                    "y": {"type": "number", "description": "Anchor y, default 0"},
+                    "ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Arrange only these items; omitted = whole scene"
+                    }
+                },
+                "required": []
             }),
             read_only: false,
             destructive: false,
@@ -331,8 +380,8 @@ mod tests {
     }
 
     #[test]
-    fn has_exactly_fifteen_tools() {
-        assert_eq!(tools().len(), 15);
+    fn has_exactly_seventeen_tools() {
+        assert_eq!(tools().len(), 17);
     }
 
     #[test]
