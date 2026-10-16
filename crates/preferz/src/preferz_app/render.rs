@@ -286,6 +286,15 @@ impl PReferZApp {
         let amp = sloppiness.amp_scale();
         // 抖动幅度公式里的 zoom 取 item 局部→屏幕 scale（含 item scale + 视口 zoom）
         let zoom = scale;
+        // 图表文字字体跟随手绘档：手绘观感 → 851 手写体（与文字元素 Handwriting
+        // 族一致，子集缺字回落思源黑体）；Off → 思源黑体（Excalidraw 同规则）。
+        let chart_font = |size: f32| {
+            if rough {
+                egui::FontId::new(size, egui::FontFamily::Name(HANDWRITING_FONT_FAMILY.into()))
+            } else {
+                egui::FontId::proportional(size)
+            }
+        };
 
         let painter = ui.painter();
         // 局部 → 屏幕点
@@ -344,8 +353,7 @@ impl PReferZApp {
             } else {
                 format!("{val:.1}")
             };
-            let galley =
-                painter.layout_no_wrap(tick, egui::FontId::proportional(10.0 * scale), label_col);
+            let galley = painter.layout_no_wrap(tick, chart_font(10.0 * scale), label_col);
             let pos = p(plot_x0 - 6.0, ly) - egui::vec2(galley.size().x, galley.size().y * 0.5);
             painter.galley(pos, galley, label_col);
         }
@@ -378,11 +386,7 @@ impl PReferZApp {
             if lb.is_empty() {
                 continue;
             }
-            let galley = painter.layout_no_wrap(
-                lb.clone(),
-                egui::FontId::proportional(11.0 * scale),
-                label_col,
-            );
+            let galley = painter.layout_no_wrap(lb.clone(), chart_font(11.0 * scale), label_col);
             let pos = p(center_x(i), plot_y1 + 6.0) - egui::vec2(galley.size().x * 0.5, 0.0);
             painter.galley(pos, galley, label_col);
         }
