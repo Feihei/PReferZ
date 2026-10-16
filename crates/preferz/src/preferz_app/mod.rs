@@ -2233,16 +2233,16 @@ impl PReferZApp {
                             "4",
                         ),
                         (
-                            Tool::Linear,
-                            tool_icons::ToolIcon::Glyph("╱"),
-                            T::ToolLine,
-                            "6",
-                        ),
-                        (
                             Tool::Elbow,
                             tool_icons::ToolIcon::ElbowArrow,
                             T::ToolElbow,
                             "5",
+                        ),
+                        (
+                            Tool::Linear,
+                            tool_icons::ToolIcon::Glyph("╱"),
+                            T::ToolLine,
+                            "6",
                         ),
                         (
                             Tool::Freehand,
