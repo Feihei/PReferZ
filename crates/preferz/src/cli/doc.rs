@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use preferz_core::rpc::{RpcDoc, RpcImage};
+use preferz_core::rpc::{RpcDoc, RpcImage, ScreenshotReply};
 use preferz_core::spaces::CanvasVector;
 use preferz_core::{Session, ViewportState};
 use preferz_fileio::{PrzFile, ViewportMeta};
@@ -162,5 +162,15 @@ impl RpcDoc for CliDoc {
 
     fn save_path(&mut self, target: Option<&Path>) -> Result<PathBuf, String> {
         CliDoc::save(self, target)
+    }
+
+    /// headless 无渲染器（无 egui Context / 无窗口），截图恒不可用——
+    /// 与「无头导出不在 CLI 范围」同一约束，结构化报错给 LLM 明确指引。
+    fn capture_screenshot(&mut self, _max_width: Option<u32>) -> Result<ScreenshotReply, String> {
+        Err(
+            "screenshot requires a running GUI instance (headless mode has no renderer); \
+             open the PReferZ GUI first and call again through the proxy bridge"
+                .to_string(),
+        )
     }
 }

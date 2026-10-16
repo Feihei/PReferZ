@@ -300,7 +300,7 @@ mod tests {
         .unwrap();
         let result = result_of(&resp);
         let tools = result["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 17);
+        assert_eq!(tools.len(), 18);
         let mut names: Vec<&str> = tools
             .iter()
             .map(|t| t["name"].as_str().expect("tool name"))

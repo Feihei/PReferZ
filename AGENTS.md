@@ -59,8 +59,9 @@ JSONL 协议与 MCP stdio JSON-RPC 的**协议核心下沉在 `preferz-core/src/
 零新依赖，egui-free L1）：`RpcDoc` trait 抽象文档宿主（CLI `CliDoc` / GUI `GuiDoc`
 各自实现 open/save），`dispatch` / `handle_message` 泛型于 `&mut impl RpcDoc`。
 双栈协议——新栈 2026-07-28 无状态 spec（`server/discover` + `_meta` 协议版本校验回
--32022 + `resultType`）与旧栈（≤2025-11-25 `initialize` 握手）按请求特征分流；17 个
-工具与 JSONL 命令一一对应（`tools/call` 直投 dispatch），共享同一 undo 通道。
+-32022 + `resultType`）与旧栈（≤2025-11-25 `initialize` 握手）按请求特征分流；18 个
+工具与 JSONL 命令一一对应（`tools/call` 直投 dispatch），共享同一 undo 通道
+（`screenshot` 例外：GUI 侧两拍异步截图，见 `mcp_serve.rs`；headless 恒报结构化错误）。
 **`--mcp` 是代理桥（OpenCADStudio 模式）**：GUI 启动即内嵌本地 TCP 监听并写握手文件
 `~/.preferz/mcp-endpoint.json`（`{port, token, pid}`；config `mcp_listen` 默认开）；
 `preferz --mcp` 探测到活实例则**纯转发**（工具实时操作已打开窗口的画布），无实例

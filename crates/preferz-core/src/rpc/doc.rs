@@ -18,6 +18,18 @@ pub struct RpcImage {
     pub height: u32,
 }
 
+/// 一次截图的结果：PNG 编码字节 + 像素尺寸。
+///
+/// core 不解释像素内容，只透传宿主编码好的 PNG（GUI = egui 视口截图，
+/// headless = 无渲染器，恒为结构化错误）。字节经 MCP image content 通道
+/// 回给 LLM 客户端；JSONL 文本协议只回尺寸元数据，不内嵌 base64。
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScreenshotReply {
+    pub png: Vec<u8>,
+    pub width: u32,
+    pub height: u32,
+}
+
 /// dispatch 只认这层接口，不关心宿主是 CLI 进程还是 GUI 窗口。
 ///
 /// 实现方负责"当前文件是谁"这层薄状态与持久化（复用 preferz-fileio），
@@ -44,4 +56,8 @@ pub trait RpcDoc {
     /// 保存。`None` = 存回当前文件（从未保存过则报错，要求显式路径）；
     /// `Some(p)` 且与当前路径不同 = 另存为。返回实际保存路径。
     fn save_path(&mut self, target: Option<&Path>) -> Result<PathBuf, String>;
+
+    /// 截取当前视口为 PNG。渲染依赖宿主（GUI = egui 窗口截图；headless 无
+    /// 渲染器恒报错）。`max_width`（可选）：输出宽度上限，超出按比例降采样。
+    fn capture_screenshot(&mut self, max_width: Option<u32>) -> Result<ScreenshotReply, String>;
 }

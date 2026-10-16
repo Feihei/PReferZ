@@ -1,4 +1,4 @@
-//! MCP 工具表：17 个工具的 schema（`tools/list` 返回值）。
+//! MCP 工具表：18 个工具的 schema（`tools/list` 返回值）。
 //!
 //! 设计约定：
 //! - 表按名称**字典序排列**（2026-07-28 spec 要求工具列表确定性排序），新增工具
@@ -303,6 +303,25 @@ if never saved); with a different 'path' performs save-as.",
             destructive: false,
         },
         ToolDef {
+            name: "screenshot",
+            description: "Capture the visible GUI window viewport as a PNG image, returned as \
+MCP image content. Use this to visually verify what the canvas actually looks \
+like after making changes. Requires a running GUI instance (headless mode has \
+no renderer and always errors); the window must not be minimized.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "max_width": {
+                        "type": "number",
+                        "description": "Optional output width cap in px; wider captures are \
+            proportionally downscaled to limit payload size"
+                    }
+                }
+            }),
+            read_only: true,
+            destructive: false,
+        },
+        ToolDef {
             name: "select",
             description: "Set the selection to the given item ids. An empty array deselects \
 everything. To select all items: call list first, then pass its ids.",
@@ -380,8 +399,8 @@ mod tests {
     }
 
     #[test]
-    fn has_exactly_seventeen_tools() {
-        assert_eq!(tools().len(), 17);
+    fn has_exactly_eighteen_tools() {
+        assert_eq!(tools().len(), 18);
     }
 
     #[test]

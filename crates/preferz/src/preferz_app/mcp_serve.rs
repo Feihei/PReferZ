@@ -21,9 +21,10 @@ use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
 
-use egui::Context;
-use preferz_core::rpc::{handle_message, RpcDoc, RpcImage};
+use egui::{ColorImage, Context, Event, UserData, ViewportCommand};
+use preferz_core::rpc::{handle_message, RpcDoc, RpcImage, ScreenshotReply};
 use preferz_fileio::{PrzFile, ViewportMeta};
 use serde_json::{json, Value};
 
@@ -366,6 +367,17 @@ impl RpcDoc for GuiDoc<'_> {
             height,
         })
     }
+
+    /// 同步 capture 契约下无法实现：截图回图在后续帧的 `Event::Screenshot`
+    /// 才到达。真实截图请求由 `poll_mcp` 截获走两拍异步（MCP `tools/call`
+    /// 框架）；裸 JSONL `{"cmd":"screenshot"}` 会落到这里，结构化报错指路。
+    fn capture_screenshot(&mut self, _max_width: Option<u32>) -> Result<ScreenshotReply, String> {
+        Err(
+            "screenshot is only available via the MCP 'screenshot' tool \
+             (tools/call framing)"
+                .to_string(),
+        )
+    }
 }
 
 // ─────────────────────────── 主题默认色注入 ───────────────────────────
@@ -426,6 +438,185 @@ pub(crate) fn inject_theme_defaults(line: &str, default_stroke: &StrokeStyle) ->
     serde_json::to_string(&req).unwrap_or_else(|_| line.to_string())
 }
 
+// ─────────────────────────── MCP 截图（两拍异步） ───────────────────────────
+
+/// 一条等待回图的截图请求（两拍异步的"拍间"状态）。
+///
+/// `poll_mcp` 截获 `tools/call screenshot` 后：发
+/// `ViewportCommand::Screenshot`（`UserData` = token）并入队；本帧渲染完成后
+/// eframe（glow）把像素推回下一帧的 `Event::Screenshot`，
+/// `harvest_screenshots` 按 token 匹配 → PNG 编码 → 回包。超时兜底：窗口
+/// 最小化时 eframe 不渲染、事件永不到达，回结构化错误而非挂死连接线程。
+pub(crate) struct PendingScreenshot {
+    token: u64,
+    req_id: Value,
+    max_width: Option<u32>,
+    reply: Sender<String>,
+    deadline: Instant,
+}
+
+/// 截图超时上限。可见窗口下一帧即回图，只有最小化/不渲染才等满。
+const SCREENSHOT_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// `poll_mcp` 对一行请求的识别结果。
+#[derive(Debug)]
+enum ScreenshotIntent {
+    /// 非截图请求：走常规 `handle_message` 同步路径。
+    None,
+    /// 合法截图请求：发 ViewportCommand 后等回图帧。
+    Capture {
+        req_id: Value,
+        max_width: Option<u32>,
+    },
+    /// 是截图请求但参数非法：立即回 isError 帧（不占用等待队列）。
+    Reject { req_id: Value, message: String },
+}
+
+/// 识别一行是否为 `tools/call screenshot` 并校验参数。坏帧（非 JSON 等）
+/// 返回 [`ScreenshotIntent::None`] 原样透传给 `handle_message` 报协议错误。
+fn parse_screenshot_intent(line: &str) -> ScreenshotIntent {
+    let Ok(req) = serde_json::from_str::<Value>(line) else {
+        return ScreenshotIntent::None;
+    };
+    if req.get("method").and_then(Value::as_str) != Some("tools/call") {
+        return ScreenshotIntent::None;
+    }
+    if req
+        .get("params")
+        .and_then(|p| p.get("name"))
+        .and_then(Value::as_str)
+        != Some("screenshot")
+    {
+        return ScreenshotIntent::None;
+    }
+    let req_id = req.get("id").cloned().unwrap_or(Value::Null);
+    // max_width：可省略；给了必须是正有限数（u32 范围内）。
+    let raw = req
+        .get("params")
+        .and_then(|p| p.get("arguments"))
+        .and_then(|a| a.get("max_width"));
+    let max_width = match raw {
+        None | Some(Value::Null) => None,
+        Some(v) => match v.as_f64() {
+            Some(n) if n.is_finite() && n > 0.0 && n <= f64::from(u32::MAX) => Some(n as u32),
+            _ => {
+                return ScreenshotIntent::Reject {
+                    req_id,
+                    message: "'max_width' must be a positive finite number".to_string(),
+                }
+            }
+        },
+    };
+    ScreenshotIntent::Capture { req_id, max_width }
+}
+
+/// 手写 base64（标准字母表 + padding）：PNG 字节 → MCP image content。
+/// 零新依赖惯例，正确性由 round-trip 单测把关。
+fn base64_encode(data: &[u8]) -> String {
+    const TBL: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    let (chunks, rem) = data.as_chunks::<3>();
+    for c in chunks {
+        let n = (u32::from(c[0]) << 16) | (u32::from(c[1]) << 8) | u32::from(c[2]);
+        for shift in [18, 12, 6, 0] {
+            out.push(TBL[((n >> shift) & 63) as usize] as char);
+        }
+    }
+    match *rem {
+        [a] => {
+            let n = u32::from(a) << 16;
+            out.push(TBL[((n >> 18) & 63) as usize] as char);
+            out.push(TBL[((n >> 12) & 63) as usize] as char);
+            out.push('=');
+            out.push('=');
+        }
+        [a, b] => {
+            let n = (u32::from(a) << 16) | (u32::from(b) << 8);
+            out.push(TBL[((n >> 18) & 63) as usize] as char);
+            out.push(TBL[((n >> 12) & 63) as usize] as char);
+            out.push(TBL[((n >> 6) & 63) as usize] as char);
+            out.push('=');
+        }
+        _ => {}
+    }
+    out
+}
+
+/// `Event::Screenshot` 的帧缓冲 RGBA（glow `glReadPixels` + Y 翻转，已含
+/// 背景合成）→ PNG 字节。可选 `max_width` 等比降采样（Triangle 滤镜）控制
+/// 回给 LLM 的体积。
+fn encode_screenshot_png(
+    image: &ColorImage,
+    max_width: Option<u32>,
+) -> Result<ScreenshotReply, String> {
+    let (w, h) = (image.size[0] as u32, image.size[1] as u32);
+    if w == 0 || h == 0 {
+        return Err("screenshot is empty (window not rendered?)".to_string());
+    }
+    let mut rgba: Vec<u8> = Vec::with_capacity(image.pixels.len() * 4);
+    for c in &image.pixels {
+        rgba.extend_from_slice(&[c.r(), c.g(), c.b(), c.a()]);
+    }
+    let (w, h, rgba) = match max_width {
+        Some(max_w) if max_w > 0 && w > max_w => {
+            let src = image::RgbaImage::from_raw(w, h, rgba)
+                .ok_or_else(|| "screenshot buffer size mismatch".to_string())?;
+            let new_h = ((h as f32 * max_w as f32 / w as f32) as u32).max(1);
+            let resized =
+                image::imageops::resize(&src, max_w, new_h, image::imageops::FilterType::Triangle);
+            (max_w, new_h, resized.into_raw())
+        }
+        _ => (w, h, rgba),
+    };
+    let mut png = Vec::new();
+    let encoder = image::codecs::png::PngEncoder::new(std::io::Cursor::new(&mut png));
+    image::ImageEncoder::write_image(encoder, &rgba, w, h, image::ExtendedColorType::Rgba8)
+        .map_err(|e| format!("png encode failed: {e}"))?;
+    Ok(ScreenshotReply {
+        png,
+        width: w,
+        height: h,
+    })
+}
+
+/// 截图成功 → MCP result：image content（base64 PNG）+ 尺寸摘要 text。
+fn screenshot_result_frame(req_id: &Value, shot: &ScreenshotReply) -> String {
+    json!({
+        "jsonrpc": "2.0",
+        "id": req_id,
+        "result": {
+            "content": [
+                {
+                    "type": "image",
+                    "data": base64_encode(&shot.png),
+                    "mimeType": "image/png",
+                },
+                {
+                    "type": "text",
+                    "text": format!("{}x{} PNG, {} bytes", shot.width, shot.height, shot.png.len()),
+                },
+            ],
+            "isError": false,
+            "resultType": "complete",
+        },
+    })
+    .to_string()
+}
+
+/// 截图失败 → isError result（工具级失败语义，会话不被单次调用杀死）。
+fn screenshot_error_frame(req_id: &Value, message: &str) -> String {
+    json!({
+        "jsonrpc": "2.0",
+        "id": req_id,
+        "result": {
+            "content": [ { "type": "text", "text": message } ],
+            "isError": true,
+            "resultType": "complete",
+        },
+    })
+    .to_string()
+}
+
 // ─────────────────────────── 逻辑钩子接线 ───────────────────────────
 
 impl PReferZApp {
@@ -437,26 +628,94 @@ impl PReferZApp {
         // 每帧无条件填充（OnceLock 幂等）：连接线程要靠它 request_repaint
         // 唤醒休眠的事件循环；若等"有请求时"才填，首个请求恰好无人唤醒。
         serve.set_ctx(ctx);
-        let requests = serve.poll();
-        if requests.is_empty() {
+        for req in serve.poll() {
+            // 截图请求截获：不走同步 handle_message——回图在后续帧
+            // （ViewportCommand::Screenshot → 渲染完成 → Event::Screenshot）。
+            match parse_screenshot_intent(&req.line) {
+                ScreenshotIntent::Capture { req_id, max_width } => {
+                    let token = self.next_screenshot_token;
+                    self.next_screenshot_token += 1;
+                    ctx.send_viewport_cmd(ViewportCommand::Screenshot(UserData::new(token)));
+                    self.mcp_pending_shots.push(PendingScreenshot {
+                        token,
+                        req_id,
+                        max_width,
+                        reply: req.reply,
+                        deadline: Instant::now() + SCREENSHOT_TIMEOUT,
+                    });
+                    ctx.request_repaint();
+                }
+                ScreenshotIntent::Reject { req_id, message } => {
+                    let _ = req.reply.send(screenshot_error_frame(&req_id, &message));
+                }
+                ScreenshotIntent::None => {
+                    // 主题默认色注入（在借用 self 之前取出快照）。
+                    let default_stroke = self.default_stroke;
+                    let line = inject_theme_defaults(&req.line, &default_stroke);
+                    let mut doc = GuiDoc {
+                        app: self,
+                        ctx: ctx.clone(),
+                    };
+                    let resp = handle_message(&mut doc, &line);
+                    let text = match resp {
+                        Some(v) => serde_json::to_string(&v).unwrap_or_default(),
+                        None => String::new(),
+                    };
+                    let _ = req.reply.send(text);
+                }
+            }
+        }
+        // 收割等待中的截图（无论本帧有没有新请求）。
+        self.harvest_screenshots(ctx);
+    }
+
+    /// 匹配本帧到达的 `Event::Screenshot` 与等待队列：按 token 命中 → PNG
+    /// 编码回包；超时（窗口最小化时 eframe 不渲染、事件永不到达）→ 结构化
+    /// 错误回包；都没等到 → 留在队列等下一帧。
+    fn harvest_screenshots(&mut self, ctx: &Context) {
+        if self.mcp_pending_shots.is_empty() {
             return;
         }
-        for req in requests {
-            // 主题默认色注入（在借用 self 之前取出快照）。
-            let default_stroke = self.default_stroke;
-            let line = inject_theme_defaults(&req.line, &default_stroke);
-            let mut doc = GuiDoc {
-                app: self,
-                ctx: ctx.clone(),
+        let arrived: Vec<(u64, Arc<ColorImage>)> = ctx.input(|i| {
+            i.raw
+                .events
+                .iter()
+                .filter_map(|e| match e {
+                    Event::Screenshot {
+                        user_data, image, ..
+                    } => {
+                        let token = user_data
+                            .data
+                            .as_ref()
+                            .and_then(|a| a.downcast_ref::<u64>())
+                            .copied()?;
+                        Some((token, image.clone()))
+                    }
+                    _ => None,
+                })
+                .collect()
+        });
+        let now = Instant::now();
+        let mut remaining = Vec::new();
+        for pending in self.mcp_pending_shots.drain(..) {
+            let reply_line = match arrived.iter().find(|(t, _)| *t == pending.token) {
+                Some((_, image)) => match encode_screenshot_png(image, pending.max_width) {
+                    Ok(shot) => screenshot_result_frame(&pending.req_id, &shot),
+                    Err(e) => screenshot_error_frame(&pending.req_id, &e),
+                },
+                None if now >= pending.deadline => screenshot_error_frame(
+                    &pending.req_id,
+                    "screenshot timed out: the window is minimized or not rendering; \
+                     restore it and retry",
+                ),
+                None => {
+                    remaining.push(pending);
+                    continue;
+                }
             };
-            let resp = handle_message(&mut doc, &line);
-            let text = match resp {
-                Some(v) => serde_json::to_string(&v).unwrap_or_default(),
-                None => String::new(),
-            };
-            let _ = req.reply.send(text);
+            let _ = pending.reply.send(reply_line);
         }
-        ctx.request_repaint();
+        self.mcp_pending_shots = remaining;
     }
 }
 
@@ -541,5 +800,135 @@ mod tests {
         let line = r#"{"jsonrpc":"2.0","id":6,"method":"tools/list"}"#;
         assert_eq!(inject_theme_defaults(line, &ds), line);
         assert_eq!(inject_theme_defaults("not json", &ds), "not json");
+    }
+
+    #[test]
+    fn base64_known_vectors() {
+        assert_eq!(base64_encode(b""), "");
+        assert_eq!(base64_encode(b"f"), "Zg==");
+        assert_eq!(base64_encode(b"fo"), "Zm8=");
+        assert_eq!(base64_encode(b"foo"), "Zm9v");
+        assert_eq!(base64_encode(b"foob"), "Zm9vYg==");
+        assert_eq!(base64_encode(b"fooba"), "Zm9vYmE=");
+        assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
+    }
+
+    #[test]
+    fn screenshot_intent_parsing() {
+        // 合法：无参 / 带 max_width / arguments 省略
+        let line = r#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"screenshot","arguments":{"max_width":1024}}}"#;
+        match parse_screenshot_intent(line) {
+            ScreenshotIntent::Capture { req_id, max_width } => {
+                assert_eq!(req_id, json!(7));
+                assert_eq!(max_width, Some(1024));
+            }
+            other => panic!("expected Capture, got {other:?}"),
+        }
+        let line = r#"{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"screenshot","arguments":{}}}"#;
+        match parse_screenshot_intent(line) {
+            ScreenshotIntent::Capture { req_id, max_width } => {
+                assert_eq!(req_id, json!(8));
+                assert_eq!(max_width, None);
+            }
+            other => panic!("expected Capture, got {other:?}"),
+        }
+        let line =
+            r#"{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"screenshot"}}"#;
+        assert!(matches!(
+            parse_screenshot_intent(line),
+            ScreenshotIntent::Capture {
+                max_width: None,
+                ..
+            }
+        ));
+
+        // 非法 max_width → Reject（0 / 负数 / 非数字 / 超 u32 范围）
+        for bad in ["0", "-1", "\"wide\"", "4294967296"] {
+            let line = format!(
+                r#"{{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{{"name":"screenshot","arguments":{{"max_width":{bad}}}}}}}"#
+            );
+            assert!(
+                matches!(
+                    parse_screenshot_intent(&line),
+                    ScreenshotIntent::Reject { .. }
+                ),
+                "max_width={bad}"
+            );
+        }
+
+        // 非 screenshot 工具 / 非 tools/call / 坏帧 → None（透传 handle_message）
+        let line = r#"{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"add_shape","arguments":{}}}"#;
+        assert!(matches!(
+            parse_screenshot_intent(line),
+            ScreenshotIntent::None
+        ));
+        let line = r#"{"jsonrpc":"2.0","id":12,"method":"tools/list"}"#;
+        assert!(matches!(
+            parse_screenshot_intent(line),
+            ScreenshotIntent::None
+        ));
+        assert!(matches!(
+            parse_screenshot_intent("not json"),
+            ScreenshotIntent::None
+        ));
+    }
+
+    #[test]
+    fn screenshot_png_encode_and_downscale() {
+        // 2x1 纯色图（红、蓝）
+        let img = ColorImage::from_rgba_unmultiplied([2, 1], &[255, 0, 0, 255, 0, 0, 255, 255]);
+        let shot = encode_screenshot_png(&img, None).unwrap();
+        assert_eq!((shot.width, shot.height), (2, 1));
+        // PNG 魔数
+        assert_eq!(
+            &shot.png[..8],
+            &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]
+        );
+        // 解码回读像素
+        let decoded = image::load_from_memory(&shot.png).unwrap().to_rgba8();
+        assert_eq!(decoded.get_pixel(0, 0).0, [255, 0, 0, 255]);
+        assert_eq!(decoded.get_pixel(1, 0).0, [0, 0, 255, 255]);
+
+        // max_width 降采样：4x2 → 2x1 等比（红蓝各两列）
+        let img = ColorImage::from_rgba_unmultiplied(
+            [4, 2],
+            &[
+                255, 0, 0, 255, 0, 0, 255, 255, 255, 0, 0, 255, 0, 0, 255, 255, //
+                255, 0, 0, 255, 0, 0, 255, 255, 255, 0, 0, 255, 0, 0, 255, 255,
+            ],
+        );
+        let shot = encode_screenshot_png(&img, Some(2)).unwrap();
+        assert_eq!((shot.width, shot.height), (2, 1));
+
+        // 空图 → 结构化错误
+        let img = ColorImage::new([0, 0], Vec::new());
+        assert!(encode_screenshot_png(&img, None).is_err());
+    }
+
+    #[test]
+    fn screenshot_frames_are_valid_mcp_results() {
+        let shot = ScreenshotReply {
+            png: vec![1, 2, 3],
+            width: 320,
+            height: 240,
+        };
+        let frame: Value =
+            serde_json::from_str(&screenshot_result_frame(&json!(42), &shot)).unwrap();
+        assert_eq!(frame["jsonrpc"], "2.0");
+        assert_eq!(frame["id"], 42);
+        let result = &frame["result"];
+        assert_eq!(result["isError"], false);
+        assert_eq!(result["resultType"], "complete");
+        assert_eq!(result["content"][0]["type"], "image");
+        assert_eq!(result["content"][0]["mimeType"], "image/png");
+        assert_eq!(result["content"][0]["data"], base64_encode(&[1, 2, 3]));
+        assert_eq!(result["content"][1]["type"], "text");
+        assert_eq!(result["content"][1]["text"], "320x240 PNG, 3 bytes");
+
+        let frame: Value =
+            serde_json::from_str(&screenshot_error_frame(&json!(43), "boom")).unwrap();
+        assert_eq!(frame["id"], 43);
+        assert_eq!(frame["result"]["isError"], true);
+        assert_eq!(frame["result"]["content"][0]["text"], "boom");
     }
 }

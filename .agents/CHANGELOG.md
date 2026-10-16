@@ -1749,6 +1749,37 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 
 ---
 
+## MCP screenshot 工具：视口截图回传 LLM 视觉确认（2026-10-16）
+
+> 动机：很多 LLM 客户端已有视觉能力，给 agent 一个「看一眼画布」的工具，
+> 画完即可自查成果，形成闭环。
+
+- **第 18 个 MCP 工具 `screenshot`**（readOnly，字典序插在 save/select 之间）：
+  截取 GUI 窗口视口为 PNG，按 MCP 标准 image content（base64）回传，附
+  `{w}x{h} PNG, {n} bytes` 摘要 text。可选 `max_width` 等比降采样控制体积。
+- **实现路径**：egui 0.36 原生 `ViewportCommand::Screenshot(UserData)` →
+  eframe glow 后端渲染完成后 `glReadPixels`（Y 翻转）→ 下一帧
+  `Event::Screenshot { image }`——零 GDI、零离屏光栅化，截到的就是用户所见。
+- **两拍异步**（`mcp_serve.rs`）：`poll_mcp` 截获 `tools/call screenshot` →
+  发 ViewportCommand（UserData=自增 token）入等待队列、暂不回包；后续帧
+  `harvest_screenshots` 按 token 匹配回图 → 手写 base64 编码 → 组 MCP result
+  回包。超时 3s 兜底：窗口最小化时 eframe 不渲染、事件永不到达，回结构化
+  错误（连接线程不挂死）。
+- **分层归属**：core `RpcDoc` 新增 `capture_screenshot(max_width)` 返回
+  `ScreenshotReply { png, width, height }`；GUI 截图能力在 binary 层，
+  `CliDoc` headless 恒报结构化错误（「无头导出不在 CLI 范围」同约束）；
+  JSONL dispatch 的 `screenshot` 命令只回尺寸元数据（文本协议不内嵌像素）；
+  代理桥纯转发零改动。
+- **零新依赖**：base64 编码手写 ~30 行（标准向量单测），PNG 编码复用已有
+  `image` crate，降采样用 `imageops::resize`（Triangle）。
+- **测试**：core 工具表排序/计数 17→18、dispatch 元数据与报错路径；GUI 侧
+  intent 解析、base64 标准向量、PNG 编码+降采样回读、MCP 帧构造。全量 411 项
+  通过，`cargo fmt --check` / `clippy -D warnings` 零警告。
+- **限制**：截图内容为整个窗口（含侧栏/状态栏）——LLM 看到的即用户所见；
+  最小化窗口下不可用（超时报错提示恢复窗口重试）。
+
+---
+
 ## 决策点归档（D1–D6 / I1–I4 / L 系列）
 
 > 原列于 plan.md，G/I/H/K 交付后蒸馏归档于此，使 CHANGELOG 自包含、plan.md 仅保留前瞻内容。

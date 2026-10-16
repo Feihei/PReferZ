@@ -113,6 +113,23 @@ fn run(doc: &mut impl RpcDoc, cmd: &str, req: &Value) -> Result<Value, String> {
         "undo" => Ok(json!({ "performed": doc.session().undo() })),
         "redo" => Ok(json!({ "performed": doc.session().redo() })),
 
+        // 截图：JSONL 文本协议只回尺寸元数据（PNG 字节走 MCP image content
+        // 通道）；headless 宿主无渲染器，`capture_screenshot` 返回结构化错误。
+        "screenshot" => {
+            let max_width = opt_number(req, "max_width")?.map(|v| v as u32);
+            if let Some(w) = max_width {
+                if w == 0 {
+                    return Err("max_width must be a positive number".to_string());
+                }
+            }
+            let shot = doc.capture_screenshot(max_width)?;
+            Ok(json!({
+                "width": shot.width,
+                "height": shot.height,
+                "bytes": shot.png.len(),
+            }))
+        }
+
         other => Err(format!("unknown command '{other}'")),
     }
 }
@@ -713,6 +730,33 @@ mod tests {
         let r = handle(&mut doc, json!({"cmd": "open", "path": "x.prz"}));
         assert!(!r["ok"].as_bool().unwrap());
         let r = handle(&mut doc, json!({"cmd": "save"}));
+        assert!(!r["ok"].as_bool().unwrap());
+    }
+
+    #[test]
+    fn screenshot_metadata_and_structured_error() {
+        use crate::rpc::doc::ScreenshotReply;
+
+        let mut doc = TestDoc::new();
+        // 无 canned → 结构化错误（headless 语义）
+        let r = handle(&mut doc, json!({"cmd": "screenshot"}));
+        assert!(!r["ok"].as_bool().unwrap());
+        assert!(r["error"].as_str().unwrap().contains("screenshot"));
+
+        // canned + max_width 降采样：JSONL 只回尺寸元数据，不内嵌像素
+        doc.canned_screenshot = Some(ScreenshotReply {
+            png: vec![1, 2, 3],
+            width: 800,
+            height: 600,
+        });
+        let r = handle(&mut doc, json!({"cmd": "screenshot", "max_width": 400}));
+        assert!(r["ok"].as_bool().unwrap(), "{r}");
+        assert_eq!(r["width"], 400);
+        assert_eq!(r["height"], 300);
+        assert_eq!(r["bytes"], 3);
+
+        // 非法 max_width → 结构化错误
+        let r = handle(&mut doc, json!({"cmd": "screenshot", "max_width": 0}));
         assert!(!r["ok"].as_bool().unwrap());
     }
 

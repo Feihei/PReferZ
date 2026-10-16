@@ -126,15 +126,16 @@ fn legacy_stack_full_session() {
     assert_eq!(resp["id"], 2);
     assert_eq!(resp["result"], json!({}));
 
-    // 3) tools/list：17 个工具 + 缓存元数据
+    // 3) tools/list：18 个工具 + 缓存元数据
     p.send(&rpc(3, "tools/list", json!({})));
     let resp = p.read();
     let tools = resp["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 17);
+    assert_eq!(tools.len(), 18);
     assert!(tools.iter().any(|t| t["name"] == "add_mermaid"));
     assert!(tools.iter().any(|t| t["name"] == "add_chart"));
     assert!(tools.iter().any(|t| t["name"] == "add_image"));
     assert!(tools.iter().any(|t| t["name"] == "arrange"));
+    assert!(tools.iter().any(|t| t["name"] == "screenshot"));
 
     // 4) tools/call add_shape → 成功 result
     p.send(&rpc(

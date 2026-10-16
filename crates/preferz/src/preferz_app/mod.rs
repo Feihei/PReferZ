@@ -474,6 +474,12 @@ pub struct PReferZApp {
     /// agent 客户端的工具调用实时操作本窗口的画布。
     /// `None` = config 关闭或启动失败（端口/握手文件）。
     mcp: Option<mcp_serve::McpServe>,
+    /// MCP 截图等待队列：`poll_mcp` 截获 screenshot 请求后先发
+    /// `ViewportCommand::Screenshot`，回图在后续帧的 `Event::Screenshot` 到达，
+    /// 匹配 token 后回包（两拍异步，见 `mcp_serve::PendingScreenshot`）。
+    mcp_pending_shots: Vec<mcp_serve::PendingScreenshot>,
+    /// MCP 截图 token 计数（与 egui `UserData` 配对匹配回图帧）。
+    next_screenshot_token: u64,
 }
 
 /// 保存提示对话框的触发场景#[derive(Clone, Copy, PartialEq)]
@@ -992,6 +998,8 @@ impl PReferZApp {
             } else {
                 None
             },
+            mcp_pending_shots: Vec::new(),
+            next_screenshot_token: 1,
         }
     }
 
@@ -2213,16 +2221,16 @@ impl PReferZApp {
                             "2",
                         ),
                         (
-                            Tool::Shape(ShapeType::Ellipse),
-                            tool_icons::ToolIcon::Glyph("◯"),
-                            T::ToolEllipse,
-                            "4",
-                        ),
-                        (
                             Tool::Shape(ShapeType::Diamond),
                             tool_icons::ToolIcon::Glyph("◇"),
                             T::ToolDiamond,
                             "3",
+                        ),
+                        (
+                            Tool::Shape(ShapeType::Ellipse),
+                            tool_icons::ToolIcon::Glyph("◯"),
+                            T::ToolEllipse,
+                            "4",
                         ),
                         (
                             Tool::Linear,

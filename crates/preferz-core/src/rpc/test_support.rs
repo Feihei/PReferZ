@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
-use super::doc::{RpcDoc, RpcImage};
+use super::doc::{RpcDoc, RpcImage, ScreenshotReply};
 use crate::session::Session;
 
 pub(crate) struct TestDoc {
@@ -13,6 +13,8 @@ pub(crate) struct TestDoc {
     /// add_image 测试用：预置的图片资产加载结果；None 时 load_image 报错
     /// （core 测试无法触碰真实文件系统）。
     pub canned_image: Option<RpcImage>,
+    /// screenshot 测试用：预置的截图结果；None 时 capture_screenshot 报错。
+    pub canned_screenshot: Option<ScreenshotReply>,
 }
 
 impl TestDoc {
@@ -21,6 +23,7 @@ impl TestDoc {
             session: Session::new(),
             path: None,
             canned_image: None,
+            canned_screenshot: None,
         }
     }
 }
@@ -52,5 +55,21 @@ impl RpcDoc for TestDoc {
 
     fn save_path(&mut self, _target: Option<&Path>) -> Result<PathBuf, String> {
         Err("save is not available in core tests".to_string())
+    }
+
+    fn capture_screenshot(&mut self, max_width: Option<u32>) -> Result<ScreenshotReply, String> {
+        let mut shot = self
+            .canned_screenshot
+            .clone()
+            .ok_or_else(|| "screenshot is not available in core tests".to_string())?;
+        // max_width 降采样语义与 GUI 实现同源：仅宽度超限时等比缩小。
+        if let Some(max_w) = max_width {
+            if shot.width > max_w {
+                let ratio = max_w as f32 / shot.width as f32;
+                shot.height = ((shot.height as f32 * ratio) as u32).max(1);
+                shot.width = max_w;
+            }
+        }
+        Ok(shot)
     }
 }
