@@ -1727,6 +1727,28 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 
 ---
 
+## 修复：窗口最小化时 MCP 请求挂起（2026-10-16）
+
+> add_image/arrange 实地测试（代理桥 + GUI）中发现：窗口最小化后所有 MCP
+> 请求无响应，代理桩无限干等；恢复窗口后队列才续跑。
+
+- **根因**（eframe 0.36.2 `glow_integration.rs`）：窗口最小化/隐藏时 eframe
+  不跑 UI pass（`!show_ui` 分支走 `update_logic_only` → 只调 `App::logic`，
+  paint 完全跳过），`poll_mcp` 挂在 `ui()` 每帧轮询上不再执行。
+- **修复**：eframe 0.36 为"隐藏窗口仍需运转逻辑"提供了官方钩子
+  `App::logic`（epi.rs 文档明确：UI 隐藏时也会被调用，任何线程的
+  `request_repaint` 都能唤醒它——MCP 连接线程本来就靠这个唤醒）。
+  把 `poll_mcp` 从 `ui()` 挪到 `logic()`：可见时 `logic` 在 `ui` 之前
+  每帧调用一次（行为不变）；最小化时请求照常处理。
+- **实测**（PowerShell TcpClient 直连内嵌 TCP + Win32 ShowWindow）：
+  最小化状态下 stats / add_shape / list 全部即时响应（100–330ms），
+  undo 后 stats 确认画布复原。全量测试 406 项通过。
+- **注意**：`GuiDoc::load_image` / `open_path` 在 logic 阶段注册纹理
+  （`ctx.load_texture`）是安全的——仅写入纹理管理器数据，GPU 上传推迟到
+  下一次实际 paint。flash 提示等 UI 状态也自然延后到窗口可见时渲染。
+
+---
+
 ## 决策点归档（D1–D6 / I1–I4 / L 系列）
 
 > 原列于 plan.md，G/I/H/K 交付后蒸馏归档于此，使 CHANGELOG 自包含、plan.md 仅保留前瞻内容。

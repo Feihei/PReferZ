@@ -426,10 +426,12 @@ pub(crate) fn inject_theme_defaults(line: &str, default_stroke: &StrokeStyle) ->
     serde_json::to_string(&req).unwrap_or_else(|_| line.to_string())
 }
 
-// ─────────────────────────── UI 接线 ───────────────────────────
+// ─────────────────────────── 逻辑钩子接线 ───────────────────────────
 
 impl PReferZApp {
-    /// `ui()` 每帧调用：处理 MCP 请求（在 poll_background 之后）。
+    /// `App::logic()` 每帧调用（含最小化/隐藏窗口——eframe 0.36 在 UI pass
+    /// 不跑时仍调 logic，`request_repaint` 可唤醒）：处理 MCP 请求。
+    /// 放在 logic 而非 ui，保证 agent 在窗口最小化时也能操作画布。
     pub(crate) fn poll_mcp(&mut self, ctx: &Context) {
         let Some(serve) = &self.mcp else { return };
         // 每帧无条件填充（OnceLock 幂等）：连接线程要靠它 request_repaint

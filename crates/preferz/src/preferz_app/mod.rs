@@ -1350,6 +1350,15 @@ fn edge_anchor_local(dir: FlowDir, w: f32, h: f32) -> (f32, f32) {
 }
 
 impl eframe::App for PReferZApp {
+    /// 隐藏/最小化窗口时的逻辑钩子（eframe 0.36）：UI pass 完全不跑，但
+    /// `logic` 仍会被调用（任何线程的 `request_repaint` 都能唤醒）。
+    /// MCP 请求处理放在这里，agent 在窗口最小化时也能继续操作画布，
+    /// 请求不再滞留 mpsc 队列到窗口恢复。可见时 `logic` 在 `ui` 之前
+    /// 每帧调用一次，语义与原来放 `ui()` 开头等价。
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.poll_mcp(ctx);
+    }
+
     /// 透明窗口底色：完全透明。
     ///
     /// eframe 默认 `clear_color` 是固定的半透明 `(12,12,12,180)`（alpha≈0.706），会给
@@ -1415,9 +1424,6 @@ impl eframe::App for PReferZApp {
 
         // poll 后台任务结果（导入/加载/保存/导出）。
         self.poll_background(ctx);
-
-        // 内嵌 MCP：处理代理桥转发的 agent 请求（操作本窗口 Session 实时渲染）。
-        self.poll_mcp(ctx);
 
         // 自动保存计时（plan #5）：变更后 N 秒无操作写 .prz.autosave
         self.tick_autosave(ctx);
