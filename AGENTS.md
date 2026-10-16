@@ -102,47 +102,24 @@ JSONL 协议与 MCP stdio JSON-RPC 的**协议核心下沉在 `preferz-core/src/
 
 ## 发布流程
 
-使用 `cargo-release` + GitHub Actions 自动化发布。
+手动流程（**不用** `cargo-release` / `scripts/release.ps1`——项目 `publish = false`
+不发 crates.io，cargo-release 的 crates.io 版本冲突检查无意义且本地网络不通）。
 
-### 前置条件
+### 发布步骤（v0.4.0 起的惯例）
 
-- `cargo install cargo-release`（已安装 v1.1.4）
-- 有权限 push 到 `origin` 远程仓库
-- 本地网络环境限制：需要设置 `CARGO_NET_OFFLINE=true`（见下方说明）
+1. 确保工作区干净、`release-notes/vX.Y.Z.md` 已提交（`release.yml` 强依赖，
+   缺失会构建失败）
+2. 手动 bump 版本：根 `Cargo.toml` `[workspace.package] version`（三个 crate
+   均 `version.workspace = true`，一处 bump 全同步）；跑 `cargo check` 更新
+   `Cargo.lock`
+3. 提交：`chore: release vX.Y.Z`（先例 `e0549ca`）
+4. 手动打轻量 tag：`git tag vX.Y.Z`，然后 `git push && git push --tags`
+5. push 触发 GitHub Actions `.github/workflows/release.yml`，构建三平台产物并创建 GitHub Release
 
-### 发布步骤
+### 残留配置（未清理，无害）
 
-确保当前工作区干净（无未提交更改）后，运行发布脚本：
-
-```powershell
-.\scripts\release.ps1 patch          # 发布 patch 版本（0.1.0 → 0.1.1，推荐）
-.\scripts\release.ps1 minor          # 发布 minor 版本（0.1.0 → 0.2.0）
-.\scripts\release.ps1 major          # 发布 major 版本（0.1.0 → 1.0.0）
-.\scripts\release.ps1 0.2.0          # 直接指定版本号
-.\scripts\release.ps1 patch -DryRun  # 仅预览，不实际发布
-```
-
-或者手动执行（不通过脚本）：
-
-```bash
-CARGO_NET_OFFLINE=true cargo release patch --no-confirm
-```
-
-### 发布流程说明
-
-1. 脚本先运行 `cargo fmt --all --check` + `cargo clippy` 确保代码质量
-2. `cargo release` 自动执行：版本 bump → 提交 → 打 tag → push
-3. push 触发 GitHub Actions `.github/workflows/release.yml`，构建三平台产物并创建 GitHub Release
-
-### 关于 `CARGO_NET_OFFLINE=true`
-
-本项目 `publish = false`（不发布到 crates.io），但 `cargo-release` 在版本 bump 阶段会尝试访问 `index.crates.io` 检查版本冲突。本地网络无法直连 crates.io，且该检查对不发布的项目无意义，因此设置 `CARGO_NET_OFFLINE=true` 跳过。
-
-对应配置：
-
-- `Cargo.toml` — `[workspace.metadata.release]` 段
-- `scripts/release.ps1` — 发布脚本
-- `.github/workflows/release.yml` — GitHub Actions 构建 + Release
+- `Cargo.toml` — `[workspace.metadata.release]` 段（cargo-release 专用，不再使用）
+- `scripts/release.ps1` — 旧发布脚本（不再使用）
 
 ## Docs
 
@@ -154,6 +131,6 @@ Documentation follows the llaia layout, all under `.agents/`:
 | `.agents/CHANGELOG.md` | Delivery archive of all completed work, 唯一归档处：每项的实现要点、测试计数、决策点（§D / §I / §L 系列）。 |
 | `.agents/specs/` | Design specs: `preferz-spec.md` (full design spec with phases, data models, API details), `shapes-and-frame-slides-design.md`, `linear-object-design.md` |
 | `.agents/adr/` | Architecture decision records (NNNN-title, one decision each) |
-| `.agents/release-notes/` | Per-version release notes, one file per tag: `v0.1.1.md` ↔ tag `v0.1.1` (`TEMPLATE.md` + `README.md` for the convention). Must be committed **before** tagging — `release.yml` reads `${GITHUB_REF_NAME}.md` as the Release body and fails the build if absent. `release.ps1` checks it up front. |
+| `.agents/release-notes/` | Per-version release notes, one file per tag: `v0.1.1.md` ↔ tag `v0.1.1` (`TEMPLATE.md` + `README.md` for the convention). Must be committed **before** tagging — `release.yml` reads `${GITHUB_REF_NAME}.md` as the Release body and fails the build if absent. |
 
 Read `.agents/specs/preferz-spec.md` before implementing any feature beyond a bug fix. Completed work goes to `.agents/CHANGELOG.md`; upcoming plans live directly in `.agents/plan.md` (no separate plan docs — one plan in flight at a time).
