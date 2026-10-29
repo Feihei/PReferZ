@@ -8,6 +8,8 @@
 //!
 //! - 握手文件缺失 / 连接失败 / token 不符 → 降级为 headless stdio MCP
 //!   （旧行为不变），stderr 说明降级原因，stdout 只走协议帧。
+//! - 连接/验活失败时顺手删除陈旧握手文件（GUI 崩溃残留）：仍有存活的待命
+//!   GUI 实例会自动认领，下次 `--mcp` 即可连上，无需人工清理。
 //! - 测试隔离：环境变量 `PREFERZ_MCP_ENDPOINT` 覆盖握手文件路径。
 
 use std::io::{self, BufRead, BufReader, Write};
@@ -35,22 +37,37 @@ fn endpoint_path() -> Option<PathBuf> {
 }
 
 /// 读握手文件 + connect + token 验活。任何一步失败都返回 `None`（降级）。
+///
+/// **陈旧文件自愈**：connect 失败 = 文件指向的监听已死（GUI 正常退出会删文件，
+/// 残留即崩溃产物）；验活失败 = 文件内容与活监听不符（端口被无关进程复用等）。
+/// 两种情况都顺手删除握手文件——仍有存活的待命 GUI 实例会在 1s 内自动认领
+/// （见 GUI 侧 `McpServe::tick`），下次 `--mcp` 即可达，本次降级 headless。
+/// 正常运行的 GUI 不可能验活失败（token 与文件同源写出），不会误删健康文件。
 pub(crate) fn try_connect_gui() -> Option<TcpStream> {
-    let raw = std::fs::read_to_string(endpoint_path()?).ok()?;
+    let path = endpoint_path()?;
+    let raw = std::fs::read_to_string(&path).ok()?;
     let data: Value = serde_json::from_str(&raw).ok()?;
     let port = data.get("port")?.as_u64()? as u16;
     let token = data.get("token")?.as_str()?.to_string();
 
-    let mut stream = TcpStream::connect(("127.0.0.1", port)).ok()?;
+    let mut stream = match TcpStream::connect(("127.0.0.1", port)) {
+        Ok(s) => s,
+        Err(_) => {
+            let _ = std::fs::remove_file(&path);
+            return None;
+        }
+    };
     stream.set_read_timeout(Some(AUTH_TIMEOUT)).ok()?;
     // auth 帧：GUI 校验 token 后回 "ok" 或关闭连接。
     writeln!(stream, "{{\"token\":\"{token}\"}}").ok()?;
     let mut line = String::new();
     // 用 clone + 独立 BufReader，读完即弃，避免缓冲吃掉后续协议帧。
-    BufReader::new(stream.try_clone().ok()?)
+    let auth_ok = BufReader::new(stream.try_clone().ok()?)
         .read_line(&mut line)
-        .ok()?;
-    if line.trim() != "ok" {
+        .ok()
+        .is_some_and(|_| line.trim() == "ok");
+    if !auth_ok {
+        let _ = std::fs::remove_file(&path);
         return None;
     }
     stream.set_read_timeout(None).ok()?;

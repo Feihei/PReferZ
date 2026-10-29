@@ -351,6 +351,13 @@ pub enum T {
     StyleToggleToClean,
     /// HUD 风格切换按钮 hover 提示：当前规整，点击切到草绘。
     StyleToggleToSketch,
+    // ── HUD MCP 桥接徽标（OpenCADStudio 式单一天选窗口）──
+    /// MCP 徽标 hover 提示：本窗口正被 agent 控制（{0} = 端口）。
+    McpActiveHint,
+    /// MCP 徽标 hover 提示：待命（另一窗口控制中，控制方退出后自动认领）。
+    McpStandbyHint,
+    /// MCP 徽标 hover 提示：用户已手动关闭。
+    McpDisabledHint,
     // ── 编组/解组（plan #13）──
     /// 编组成功提示。
     FlashGrouped,
@@ -708,6 +715,13 @@ fn translate_en(key: T) -> &'static str {
         T::ThemeToggleHint => "Toggle light / dark theme",
         T::StyleToggleToClean => "Switch to clean style (precise lines + sans font)",
         T::StyleToggleToSketch => "Switch to sketch style (hand-drawn lines + handwriting font)",
+        T::McpActiveHint => {
+            "MCP bridge active on port {0} - agents control this window; click to release"
+        }
+        T::McpStandbyHint => {
+            "MCP standby - another window is under agent control; click to take over here"
+        }
+        T::McpDisabledHint => "MCP bridge off - click to let agents control this window",
         T::FlashGrouped => "Grouped",
         T::FlashUngrouped => "Ungrouped",
         T::MenuGroup => "Group",
@@ -1025,6 +1039,9 @@ fn translate_zh(key: T) -> &'static str {
         T::ThemeToggleHint => "切换明暗主题",
         T::StyleToggleToClean => "切换为规整（精确线条 + 黑体）",
         T::StyleToggleToSketch => "切换为草绘（手绘抖动 + 手写体）",
+        T::McpActiveHint => "MCP 桥接中（端口 {0}）——agent 正控制本窗口，点击释放",
+        T::McpStandbyHint => "MCP 待命——另一窗口正被控制（其退出后本窗口自动接管），点击立即切换",
+        T::McpDisabledHint => "MCP 已关闭——点击允许 agent 控制本窗口",
         T::FlashGrouped => "已编组",
         T::FlashUngrouped => "已解组",
         T::MenuGroup => "编组",

@@ -492,6 +492,50 @@ fn proxy_denied_token_falls_back_to_headless() {
     let _ = std::fs::remove_dir(dir);
 }
 
+#[test]
+fn stale_endpoint_file_cleaned_on_connect_failure() {
+    // 握手文件指向死端口（GUI 崩溃残留）→ --mcp 降级 headless，且顺手删除
+    // 陈旧文件：仍有存活的待命 GUI 实例会在 1s 内自动认领（GUI 侧 tick，
+    // 由 mcp_serve 单测覆盖），下次 --mcp 即可连上，无需人工清理。
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind to reserve port");
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+
+    let dir = std::env::temp_dir().join(format!(
+        "preferz-cli-stale-test-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let endpoint = dir.join("mcp-endpoint.json");
+    std::fs::write(
+        &endpoint,
+        json!({ "port": port, "token": "aa00aa00aa00aa00aa00aa00aa00aa00", "pid": 0 }).to_string(),
+    )
+    .expect("write endpoint file");
+
+    let mut p = McpProc::spawn_env(&["--mcp"], Some(endpoint.to_string_lossy().into_owned()));
+    p.send(&rpc(
+        1,
+        "initialize",
+        json!({"protocolVersion": "2025-11-25"}),
+    ));
+    let resp = p.read();
+    assert_eq!(resp["result"]["protocolVersion"], "2025-11-25", "{resp}");
+    assert!(resp["result"]["fake_gui"].is_null());
+    // 响应已回（try_connect_gui 必然已跑完）→ 陈旧文件应已被清理
+    assert!(
+        !endpoint.exists(),
+        "stale endpoint file should be removed by --mcp fallback"
+    );
+    p.close_stdin();
+    let _ = p.child.wait();
+    let _ = std::fs::remove_dir(dir);
+}
+
 /// add_image headless 往返：临时 PNG → tools/call add_image（w-only 宽高比）
 /// → save 落盘 → 新会话 open + list 确认 Pixmap 项与 sqlar 资产保真。
 #[test]

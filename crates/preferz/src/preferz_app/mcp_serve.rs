@@ -2,14 +2,22 @@
 //! 把 agent 客户端（如 Trae MCP 通道）的请求转发到这里，经 core 的
 //! `rpc::handle_message` 直接操作**已打开窗口**的 `Session`，画布实时渲染。
 //!
-//! 握手（OpenCADStudio 模式）：
-//! - 启动时写 `~/.preferz/mcp-endpoint.json`：`{"port","token","pid"}`；
-//!   token 防本机无关进程误连（pid 仅参考，验活靠 connect + token）。
+//! 握手（OpenCADStudio 模式，单一天选窗口）：
+//! - 握手文件 `~/.preferz/mcp-endpoint.json`：`{"port","token","pid"}`，是
+//!   「哪个窗口正被 agent 控制」的**唯一事实源**；token 防本机无关进程误连
+//!   （pid 仅参考，验活靠 connect + token）。
+//! - **多实例三态**（每窗口 HUD 有 MCP 徽标可见可切换）：
+//!   `Active`（持有握手文件，`--mcp` 连这里）/ `Standby`（监听在跑但不持有
+//!   文件，文件空出时 1s 内自动认领）/ `Disabled`（用户手动关闭，不自动认领）。
+//!   任意时刻至多一个 Active。启动时文件空闲/陈旧则认领、他人活跃则待命
+//!   （新窗口不再抢占既有控制权）；用户在待命窗口点开开关 = 显式接管（覆写
+//!   文件，原 Active 下一秒 tick 自动让位）。
 //! - 连接线程先收一行 `{"token":"..."}`，校验通过回 `ok` 才进入转发循环；
 //!   每个请求经 mpsc 投递 UI 线程，`ui()` 每帧轮询处理（复用 dispatch 语义，
 //!   所有变更走同一条 undo 通道），回复经 per-request 通道回连接线程。
 //! - 退出（Drop）时删除握手文件——仅当文件内容仍是本实例的 token
-//!   （多实例场景后启动者覆盖文件，先退出者不得误删后来者的文件）。
+//!   （多实例：Active 退出后待命者自动认领，先退出者不得误删后来者的文件）。
+//!   已建立的 `--mcp` 代理连接不因让位断开（文件只裁决新连接）。
 //!
 //! 线程唤醒：连接线程通过 `ctx_slot`（首帧由 `ui()` 填充的 `OnceLock`）
 //! `request_repaint()` 唤醒可能休眠的 egui 事件循环。
@@ -17,7 +25,7 @@
 //! 测试隔离：环境变量 `PREFERZ_MCP_ENDPOINT` 覆盖握手文件路径（与 CLI 代理桩同源）。
 
 use std::io::{BufRead, BufReader, Write};
-use std::net::TcpListener;
+use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, OnceLock};
@@ -64,6 +72,61 @@ fn remove_endpoint_file_if_owned(path: &Path, token: &str) {
     }
 }
 
+/// 握手文件里解析出的另一实例端点信息。
+#[derive(Debug, Clone, PartialEq)]
+struct EndpointInfo {
+    port: u16,
+    token: String,
+}
+
+/// 读并解析握手文件。缺失 / 不可读 / 坏 JSON → `None`（视作空闲，可认领覆盖）。
+fn read_endpoint(path: &Path) -> Option<EndpointInfo> {
+    let raw = std::fs::read_to_string(path).ok()?;
+    let data: Value = serde_json::from_str(&raw).ok()?;
+    Some(EndpointInfo {
+        port: data.get("port")?.as_u64()? as u16,
+        token: data.get("token")?.as_str()?.to_string(),
+    })
+}
+
+/// 探测另一实例是否存活：connect + token 验活。连接被拒 = 监听已死（GUI 进程
+/// 退出时监听必然关闭），是最可靠的陈旧文件信号；本机 connect 立即返回。
+fn owner_alive(info: &EndpointInfo) -> bool {
+    use std::net::SocketAddr;
+    let addr = SocketAddr::from(([127, 0, 0, 1], info.port));
+    let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_millis(300)) else {
+        return false;
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(300)));
+    let Ok(mut reader) = stream.try_clone().map(BufReader::new) else {
+        return false;
+    };
+    if writeln!(stream, "{{\"token\":\"{}\"}}", info.token).is_err() {
+        return false;
+    }
+    let mut line = String::new();
+    reader.read_line(&mut line).is_ok() && line.trim() == "ok"
+}
+
+/// 握手文件相对本实例的归属态（`tick` 状态机的输入）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EndpointState {
+    /// 缺失 / 不可读 / 坏 JSON：空闲，可认领。
+    Free,
+    /// 内容是本实例的 token。
+    Mine,
+    /// 另一实例持有（活跃控制方）。
+    Other,
+}
+
+fn read_endpoint_state(path: &Path, my_token: &str) -> EndpointState {
+    match read_endpoint(path) {
+        None => EndpointState::Free,
+        Some(info) if info.token == my_token => EndpointState::Mine,
+        Some(_) => EndpointState::Other,
+    }
+}
+
 // ─────────────────────────── 服务器 ───────────────────────────
 
 /// 一条从连接线程投递到 UI 线程的请求：原始 JSON 行 + 回包通道。
@@ -75,6 +138,9 @@ pub(crate) struct McpRequest {
 
 /// GUI 内嵌 MCP 服务器句柄。`PReferZApp` 持有 `Option<McpServe>`；
 /// Drop 删除握手文件。
+///
+/// **三态**：`active`（持有握手文件，被 agent 控制）× `user_disabled`
+/// （用户手动关闭，抑制自动认领）组合出 Active / Standby / Disabled。
 pub(crate) struct McpServe {
     /// UI 线程每帧 `try_recv` 的请求队列。
     rx: Receiver<McpRequest>,
@@ -82,21 +148,47 @@ pub(crate) struct McpServe {
     ctx_slot: Arc<OnceLock<Context>>,
     endpoint_path: PathBuf,
     token: String,
+    /// 本实例监听端口（写握手文件用）。
+    port: u16,
+    /// 当前是否持有握手文件（Active 态）。
+    active: bool,
+    /// 用户手动关闭：文件空出也不自动认领（Standby 与 Disabled 的分界）。
+    user_disabled: bool,
+    /// 上次 tick 时刻（状态机轮询节流）。
+    last_tick: Instant,
 }
 
+/// 状态机轮询周期：让位 / 认领 / 自愈的最大延迟。
+const ENDPOINT_POLL_INTERVAL: Duration = Duration::from_secs(1);
+
 impl McpServe {
-    /// 启动监听并写握手文件。失败返回 `None`（端口/文件系统问题，记日志即可，
-    /// 不影响 GUI 其余功能）。
+    /// 启动监听并按握手文件现状决定初始态（Active 认领 / Standby 待命）。
+    /// 失败返回 `None`（端口/文件系统问题，记日志即可，不影响 GUI 其余功能）。
     pub(crate) fn start() -> Option<McpServe> {
         let endpoint_path = endpoint_file_path()?;
         let listener = TcpListener::bind(("127.0.0.1", 0)).ok()?;
         let port = listener.local_addr().ok()?.port();
         // token：uuid v4 简单格式 = 32 hex 字符（无 rand 依赖，core 已带 uuid）。
         let token = ItemId::new_v4().simple().to_string();
-        if write_endpoint_file(&endpoint_path, port, &token).is_err() {
-            log::warn!("MCP 监听握手文件写入失败: {}", endpoint_path.display());
-            return None;
-        }
+
+        // 启动归属决策：文件空闲/陈旧 → 认领（写失败 = MCP 整体不可用，同旧行为）；
+        // 他人活跃 → 待命（新窗口不抢占既有控制权）；他人已死 → 清陈旧 + 认领。
+        let active = match read_endpoint(&endpoint_path) {
+            None => write_endpoint_file(&endpoint_path, port, &token)
+                .map_err(|e| log::warn!("MCP 握手文件写入失败: {e}"))
+                .is_ok(),
+            Some(info) if info.token == token => true, // 不可能（新 token），防御性收敛
+            Some(info) => {
+                if owner_alive(&info) {
+                    false // Standby
+                } else {
+                    let _ = std::fs::remove_file(&endpoint_path);
+                    write_endpoint_file(&endpoint_path, port, &token)
+                        .map_err(|e| log::warn!("MCP 握手文件写入失败: {e}"))
+                        .is_ok()
+                }
+            }
+        };
 
         let (tx, rx) = mpsc::channel::<McpRequest>();
         let ctx_slot: Arc<OnceLock<Context>> = Arc::new(OnceLock::new());
@@ -124,6 +216,10 @@ impl McpServe {
             ctx_slot,
             endpoint_path,
             token,
+            port,
+            active,
+            user_disabled: false,
+            last_tick: Instant::now(),
         })
     }
 
@@ -139,6 +235,74 @@ impl McpServe {
             out.push(req);
         }
         out
+    }
+
+    /// 状态机 tick（`poll_mcp` 每帧调，内部 1s 节流）：多实例归属收敛。
+    pub(crate) fn tick(&mut self) {
+        if self.last_tick.elapsed() < ENDPOINT_POLL_INTERVAL {
+            return;
+        }
+        self.last_tick = Instant::now();
+        let state = read_endpoint_state(&self.endpoint_path, &self.token);
+        self.apply_state(state);
+    }
+
+    /// 状态转移（纯逻辑，单测直接驱动）：
+    /// - Free + Active：文件被外力删了 → 重写自愈；
+    /// - Free + Standby（非用户关闭）：控制方退出 → 自动认领（方案 2 退化兜底）；
+    /// - Free + Disabled：用户关的 → 不动；
+    /// - Mine：文件是我们的（含启动竞态收敛）→ 置 Active；
+    /// - Other + Active：别的窗口接管了 → 自动让位成 Standby。
+    fn apply_state(&mut self, state: EndpointState) {
+        match state {
+            EndpointState::Free => {
+                if self.active {
+                    if write_endpoint_file(&self.endpoint_path, self.port, &self.token).is_err() {
+                        log::warn!("MCP 握手文件自愈重写失败: {}", self.endpoint_path.display());
+                    }
+                } else if !self.user_disabled {
+                    self.claim();
+                }
+            }
+            EndpointState::Mine => self.active = true,
+            EndpointState::Other => self.active = false,
+        }
+    }
+
+    /// 写握手文件夺/得控制权（待命认领与用户显式接管共用；`--mcp` 只认文件）。
+    /// 显式接管时原 Active 实例下一秒 tick 读到 Other 自动让位。
+    fn claim(&mut self) {
+        match write_endpoint_file(&self.endpoint_path, self.port, &self.token) {
+            Ok(()) => {
+                self.active = true;
+                self.user_disabled = false;
+            }
+            Err(e) => log::warn!("MCP 握手文件写入失败: {e}"),
+        }
+    }
+
+    /// HUD 开关：打开 = 显式接管（无条件覆写文件）。
+    pub(crate) fn toggle_on(&mut self) {
+        self.claim();
+    }
+
+    /// HUD 开关：关闭 = 释放文件并标记用户关闭（不再自动认领）。
+    pub(crate) fn toggle_off(&mut self) {
+        remove_endpoint_file_if_owned(&self.endpoint_path, &self.token);
+        self.active = false;
+        self.user_disabled = true;
+    }
+
+    pub(crate) fn is_active(&self) -> bool {
+        self.active
+    }
+
+    pub(crate) fn is_disabled(&self) -> bool {
+        self.user_disabled
+    }
+
+    pub(crate) fn port(&self) -> u16 {
+        self.port
     }
 }
 
@@ -624,10 +788,12 @@ impl PReferZApp {
     /// 不跑时仍调 logic，`request_repaint` 可唤醒）：处理 MCP 请求。
     /// 放在 logic 而非 ui，保证 agent 在窗口最小化时也能操作画布。
     pub(crate) fn poll_mcp(&mut self, ctx: &Context) {
-        let Some(serve) = &self.mcp else { return };
+        let Some(serve) = &mut self.mcp else { return };
         // 每帧无条件填充（OnceLock 幂等）：连接线程要靠它 request_repaint
         // 唤醒休眠的事件循环；若等"有请求时"才填，首个请求恰好无人唤醒。
         serve.set_ctx(ctx);
+        // 多实例归属状态机（1s 节流）：让位 / 认领 / 自愈。
+        serve.tick();
         for req in serve.poll() {
             // 截图请求截获：不走同步 handle_message——回图在后续帧
             // （ViewportCommand::Screenshot → 渲染完成 → Event::Screenshot）。
@@ -743,6 +909,166 @@ mod tests {
         remove_endpoint_file_if_owned(&path, "aaaa");
         assert!(!path.exists());
         let _ = std::fs::remove_dir(&dir);
+    }
+
+    /// 构造不绑真实监听的状态机测试实例（字段私有，同模块可直构）。
+    fn test_serve(path: PathBuf) -> McpServe {
+        let (_tx, rx) = mpsc::channel();
+        McpServe {
+            rx,
+            ctx_slot: Arc::new(OnceLock::new()),
+            endpoint_path: path,
+            token: "0123456789abcdef0123456789abcdef".to_string(),
+            port: 40000,
+            active: false,
+            user_disabled: false,
+            last_tick: Instant::now(),
+        }
+    }
+
+    fn temp_endpoint_dir(tag: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!(
+            "preferz-mcp-state-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("mcp-endpoint.json");
+        (dir, path)
+    }
+
+    #[test]
+    fn read_endpoint_state_classifies_files() {
+        let (dir, path) = temp_endpoint_dir("classify");
+        let mine = "0123456789abcdef0123456789abcdef";
+
+        // 缺失 / 坏 JSON → Free
+        assert_eq!(read_endpoint_state(&path, mine), EndpointState::Free);
+        std::fs::write(&path, "not json at all").unwrap();
+        assert_eq!(read_endpoint_state(&path, mine), EndpointState::Free);
+
+        // 自己的 token → Mine；他人的 → Other
+        write_endpoint_file(&path, 1234, mine).unwrap();
+        assert_eq!(read_endpoint_state(&path, mine), EndpointState::Mine);
+        write_endpoint_file(&path, 1234, "ffffffffffffffffffffffffffffffff").unwrap();
+        assert_eq!(read_endpoint_state(&path, mine), EndpointState::Other);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn standby_claims_free_file() {
+        // 方案 2 退化兜底：控制方退出（文件消失）→ 待命实例自动认领。
+        let (dir, path) = temp_endpoint_dir("standby-claim");
+        let mut s = test_serve(path.clone());
+        s.apply_state(EndpointState::Free);
+        assert!(s.active);
+        assert!(!s.user_disabled);
+        let info = read_endpoint(&path).expect("file claimed");
+        assert_eq!(info.token, s.token);
+        assert_eq!(info.port, 40000);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn disabled_stays_off_on_free_file() {
+        // 用户手动关闭 → 不自动认领。
+        let (dir, path) = temp_endpoint_dir("disabled");
+        let mut s = test_serve(path.clone());
+        s.user_disabled = true;
+        s.apply_state(EndpointState::Free);
+        assert!(!s.active);
+        assert!(!path.exists(), "disabled instance must not write the file");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn other_owner_demotes_active() {
+        // 被别的实例接管（用户在它那边打开开关）→ 自动让位，仍可再认领。
+        let (dir, path) = temp_endpoint_dir("demote");
+        let mut s = test_serve(path.clone());
+        s.active = true;
+        s.apply_state(EndpointState::Other);
+        assert!(!s.active);
+        assert!(!s.user_disabled, "demotion must keep reclaim eligibility");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn active_self_heals_missing_file() {
+        // 文件被外力删除 → Active 重写自愈。
+        let (dir, path) = temp_endpoint_dir("self-heal");
+        let mut s = test_serve(path.clone());
+        s.active = true;
+        s.apply_state(EndpointState::Free);
+        assert!(s.active);
+        let info = read_endpoint(&path).expect("file rewritten");
+        assert_eq!(info.token, s.token);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mine_state_activates() {
+        // 启动竞态收敛：文件已是我们的但本地还以为不是 → 置 Active。
+        let (dir, path) = temp_endpoint_dir("mine");
+        let mut s = test_serve(path.clone());
+        s.apply_state(EndpointState::Mine);
+        assert!(s.active);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn toggle_off_then_on_roundtrip() {
+        // HUD 开关：关 = 释放 + 禁自动认领；开 = 显式接管 + 恢复认领资格。
+        let (dir, path) = temp_endpoint_dir("toggle");
+        let mut s = test_serve(path.clone());
+        s.active = true;
+        write_endpoint_file(&path, s.port, &s.token).unwrap();
+
+        s.toggle_off();
+        assert!(!s.active && s.is_disabled());
+        assert!(!path.exists(), "toggle_off must release the file");
+        // 关闭期间文件空出也不回认领
+        s.apply_state(EndpointState::Free);
+        assert!(!s.active && !path.exists());
+
+        s.toggle_on();
+        assert!(s.active && !s.is_disabled());
+        let info = read_endpoint(&path).expect("toggle_on claims the file");
+        assert_eq!(info.token, s.token);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn owner_alive_probes_real_listener() {
+        // 活监听 + 同 token → 存活；死端口 → 不存活。
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let token = "abcdef01abcdef01abcdef01abcdef01".to_string();
+        std::thread::spawn(move || {
+            if let Ok((stream, _)) = listener.accept() {
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                let _ = reader.read_line(&mut line);
+                let mut stream = stream;
+                let _ = writeln!(stream, "ok");
+            }
+        });
+        let info = EndpointInfo {
+            port,
+            token: token.clone(),
+        };
+        assert!(owner_alive(&info));
+
+        let dead = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let dead_port = dead.local_addr().unwrap().port();
+        drop(dead);
+        assert!(!owner_alive(&EndpointInfo {
+            port: dead_port,
+            token,
+        }));
     }
 
     #[test]

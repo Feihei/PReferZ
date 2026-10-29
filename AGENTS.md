@@ -62,10 +62,15 @@ JSONL 协议与 MCP stdio JSON-RPC 的**协议核心下沉在 `preferz-core/src/
 -32022 + `resultType`）与旧栈（≤2025-11-25 `initialize` 握手）按请求特征分流；18 个
 工具与 JSONL 命令一一对应（`tools/call` 直投 dispatch），共享同一 undo 通道
 （`screenshot` 例外：GUI 侧两拍异步截图，见 `mcp_serve.rs`；headless 恒报结构化错误）。
-**`--mcp` 是代理桥（OpenCADStudio 模式）**：GUI 启动即内嵌本地 TCP 监听并写握手文件
-`~/.preferz/mcp-endpoint.json`（`{port, token, pid}`；config `mcp_listen` 默认开）；
-`preferz --mcp` 探测到活实例则**纯转发**（工具实时操作已打开窗口的画布），无实例
-则降级 headless 单文档模式。测试用 `PREFERZ_MCP_ENDPOINT` 环境变量隔离握手文件路径。
+**`--mcp` 是代理桥（OpenCADStudio 模式，单一天选窗口）**：GUI 启动即内嵌本地 TCP
+监听，握手文件 `~/.preferz/mcp-endpoint.json`（`{port, token, pid}`；config
+`mcp_listen` 默认开）是「哪个窗口被 agent 控制」的唯一事实源。多实例三态状态机
+（`McpServe::tick` 每 1s 收敛）：`Active`（持有文件）/ `Standby`（文件空出自动认领）/
+`Disabled`（用户手动关，不自动认领）；启动时文件空闲/陈旧才认领（新窗口不抢占），
+HUD MCP 徽标可见可点击切换，显式接管时原 Active 自动让位。`preferz --mcp` 探测到
+活实例则**纯转发**（工具实时操作已打开窗口的画布），无实例则降级 headless 单文档
+模式；连接/验活失败顺手删除陈旧握手文件（崩溃残留自愈，配合待命实例认领）。
+测试用 `PREFERZ_MCP_ENDPOINT` 环境变量隔离握手文件路径。
 **无头导出（PNG/SVG）不在 CLI 范围**——渲染依赖 binary 层 egui Context。
 
 `PReferZApp` is defined in `crates/preferz/src/preferz_app/` — `mod.rs` keeps the struct + shared types/constants + `ui()` dispatch, with per-cluster method groups split into sibling submodules (`export`/`config`/`background_ops`/`render`/`present`/`text_edit`/`context_menu`/`file_io`/`actions`/`settings`/`drag`/`props`); each does `use super::*;` to reach the parent's private vocabulary.

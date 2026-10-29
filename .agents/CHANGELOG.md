@@ -1809,6 +1809,39 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 
 ---
 
+## MCP 多实例归属：单一天选窗口 + HUD 徽标切换（2026-10-29）
+
+> 用户需求：`preferz --mcp` 只应连一个确定的窗口。原实现握手文件是隐式
+> last-writer-wins——后启动的窗口无条件覆写文件抢占控制权，用户既不知道
+> `--mcp` 连的是谁，也无法选择；控制方退出后存活实例也不认领。参考
+> OpenCADStudio 的每窗口 MCP 开关模型重做（不采用多端点目录 + `--target`
+> 方案，过重）。
+
+- **三态状态机（`McpServe`，握手文件 = 唯一事实源）**：`Active`（持有文件，
+  `--mcp` 连这里）/ `Standby`（监听在跑但不持有文件，文件空出时 `tick` 1s 内
+  自动认领）/ `Disabled`（用户手动关闭，`user_disabled` 抑制自动认领）。
+  任意时刻至多一个 Active。`tick` 挂在 `poll_mcp`（含最小化时 `logic` 钩子），
+  1s 节流；状态转移抽成 `apply_state` 纯逻辑直测。
+- **启动归属决策**：文件空闲/坏 JSON → 认领；他人活跃（connect + token 探活，
+  300ms 超时）→ 待命——**新窗口不再抢占既有控制权**（修掉原 last-writer-wins）；
+  他人已死（连接被拒）→ 清陈旧 + 认领。
+- **HUD MCP 徽标（左下 HUD 第一行，风格切换按钮之后）**：painter 画点 +
+  "MCP" 文本——绿点 = Active（hover 显示端口）、灰点 = Standby、空心点 =
+  Disabled；点按切换，打开 = 显式接管（无条件覆写文件，原 Active 下一秒
+  tick 读到 Other 自动让位），关闭 = 释放文件。i18n 三态 hover 文案各一条。
+  已建立的 `--mcp` 代理连接不因让位断开（文件只裁决新连接）。
+- **CLI 陈旧文件自愈（`try_connect_gui`）**：connect 失败（监听已死 = 崩溃
+  残留）或验活失败（token 与活监听不符 = 端口被复用）时顺手删除握手文件
+  ——存活待命实例 1s 内自动认领，下次 `--mcp` 即可达；正常 GUI 的 token
+  与文件同源写出，验活必过，不会误删健康文件。
+- Drop 语义不变（token 归属校验删除）；config `mcp_listen` 仍是功能总开关
+  （关 = 无监听无徽标），开关状态本身为运行时态、不持久化。
+- 测试：mcp_serve 单测 8 新增（状态机五转移 + toggle 往返 + 文件态分类 +
+  owner_alive 探活），集成测试 1 新增（陈旧文件被 `--mcp` 降级路径清理）。
+  质量门：fmt / `clippy -D warnings` 零告警，workspace 420 测试全绿。
+
+---
+
 ## 决策点归档（D1–D6 / I1–I4 / L 系列）
 
 > 原列于 plan.md，G/I/H/K 交付后蒸馏归档于此，使 CHANGELOG 自包含、plan.md 仅保留前瞻内容。

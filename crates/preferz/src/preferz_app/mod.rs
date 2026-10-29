@@ -2502,6 +2502,65 @@ impl PReferZApp {
                                 );
                                 self.persist_config();
                             }
+                            // —— MCP 桥接徽标（OpenCADStudio 式单一天选窗口）：
+                            // 绿点=本窗口正被 agent 控制、灰点=待命（另一窗口控制中，
+                            // 其退出后本窗口 1s 内自动认领）、空心=用户已关闭。
+                            // 点按切换（打开 = 显式接管，原控制窗口自动让位）。
+                            // 状态机见 mcp_serve::McpServe::tick；config 关闭 MCP
+                            // 功能时 self.mcp 为 None，不渲染。
+                            if let Some(mcp) = self.mcp.as_ref() {
+                                let (active, disabled, port) =
+                                    (mcp.is_active(), mcp.is_disabled(), mcp.port());
+                                ui.add_space(2.0);
+                                let hint = if active {
+                                    fill(t(self.lang, T::McpActiveHint), &[port.to_string()])
+                                } else if disabled {
+                                    t(self.lang, T::McpDisabledHint).to_string()
+                                } else {
+                                    t(self.lang, T::McpStandbyHint).to_string()
+                                };
+                                let (badge_rect, resp) = ui.allocate_exact_size(
+                                    egui::vec2(46.0, 20.0),
+                                    egui::Sense::click(),
+                                );
+                                let resp = resp.on_hover_text(hint);
+                                if ui.is_rect_visible(badge_rect) {
+                                    let painter = ui.painter();
+                                    let gal = ui.visuals().strong_text_color();
+                                    let dot = badge_rect.left_center() + egui::vec2(7.0, 0.0);
+                                    if active {
+                                        painter.circle_filled(
+                                            dot,
+                                            4.0,
+                                            egui::Color32::from_rgb(0x3f, 0xb9, 0x50),
+                                        );
+                                    } else if disabled {
+                                        painter.circle_stroke(
+                                            dot,
+                                            4.0,
+                                            egui::Stroke::new(1.4, gal.gamma_multiply(0.6)),
+                                        );
+                                    } else {
+                                        painter.circle_filled(dot, 4.0, gal.gamma_multiply(0.45));
+                                    }
+                                    painter.text(
+                                        badge_rect.center() + egui::vec2(5.0, 0.0),
+                                        egui::Align2::CENTER_CENTER,
+                                        "MCP",
+                                        egui::TextStyle::Body.resolve(ui.style()),
+                                        ui.style().interact(&resp).text_color(),
+                                    );
+                                }
+                                if resp.clicked() {
+                                    if let Some(mcp) = self.mcp.as_mut() {
+                                        if active {
+                                            mcp.toggle_off();
+                                        } else {
+                                            mcp.toggle_on();
+                                        }
+                                    }
+                                }
+                            }
                         });
                         ui.separator();
                         // —— 第二行：缩放（− / 百分比 / +）——
