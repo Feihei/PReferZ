@@ -4077,14 +4077,18 @@ mod tests {
         assert!(app.dirty, "自动保存不清除未保存标记");
         assert_eq!(app.current_file, Some(prz.clone()), "当前文件不变");
 
-        // 等后台写盘完成 → poll 消费结果：静默（无 current_file / dirty 变化）
-        for _ in 0..100 {
-            if app.bg_ops.save_rx.is_none() {
-                break;
-            }
+        // 等后台写盘完成 → poll 消费结果：静默（无 current_file / dirty 变化）。
+        // 用截止时间而非固定轮数（原 100×20ms ≈ 2s 在 CI 慢机上偶发超时，
+        // 2026-10-29 的 CI 失败即此）。
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while app.bg_ops.save_rx.is_some() && std::time::Instant::now() < deadline {
             std::thread::sleep(std::time::Duration::from_millis(20));
             app.poll_background(&ctx);
         }
+        assert!(
+            app.bg_ops.save_rx.is_none(),
+            "后台备份应在 30s 内完成（线程未回包？）"
+        );
         assert!(auto.exists(), ".autosave 应已写盘");
         assert!(app.dirty);
         assert_eq!(app.current_file, Some(prz.clone()));
