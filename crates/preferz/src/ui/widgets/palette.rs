@@ -10,6 +10,7 @@ use eframe::egui;
 use preferz_core::shape::FillStyle;
 
 use crate::i18n::{t, Lang, T};
+use crate::ui::chrome;
 
 /// 单色系五档（明 → 暗），对应 Excalidraw `COLOR_PALETTE` 的 shade 元组。
 pub type ColorTuple = [&'static str; 5];
@@ -137,13 +138,17 @@ fn themed_color(hex: &str, dark: bool) -> egui::Color32 {
     egui::Color32::from_rgb(r, g, b)
 }
 
-/// 单个色板格子（小方块，选中描白框）。
+/// 单个色板格子（小方块，选中描白框；hover 显示统一底色高亮）。
 fn swatch(ui: &mut egui::Ui, color: egui::Color32, selected: bool, size: f32) -> bool {
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::click());
     if resp.clicked() {
         return true;
     }
     let painter = ui.painter();
+    // 色块本身盖在最上层，hover 反馈只能用外扩一圈的底色（与浮层同配方）。
+    if resp.hovered() {
+        painter.rect_filled(rect.expand(3.0), 5.0, chrome::hover_tint(ui));
+    }
     painter.rect_filled(rect.expand(1.0), 3.0, color);
     if selected {
         painter.rect_stroke(
@@ -327,21 +332,21 @@ fn palette_popup(
 }
 
 /// 展开箭头按钮：手绘一个「›」chevron（不依赖字体字形，避免豆腐块），点击弹完整调色板。
+/// hover / press 用统一底色高亮（无描边），与浮层其它控件一致。
 fn expand_button(ui: &mut egui::Ui) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::click());
-    let visuals = ui.visuals();
-    let bg = if resp.hovered() {
-        visuals.widgets.hovered.bg_fill
-    } else if resp.clicked() {
-        visuals.widgets.active.bg_fill
+    let bg = if resp.is_pointer_button_down_on() {
+        Some(chrome::press_tint(ui))
+    } else if resp.hovered() {
+        Some(chrome::hover_tint(ui))
     } else {
-        visuals.widgets.inactive.bg_fill
+        None
     };
-    let stroke = visuals.widgets.inactive.bg_stroke;
-    let fg = visuals.text_color();
+    let fg = ui.visuals().text_color();
     let painter = ui.painter();
-    painter.rect_filled(rect, 3.0, bg);
-    painter.rect_stroke(rect, 3.0, stroke, egui::StrokeKind::Middle);
+    if let Some(bg) = bg {
+        painter.rect_filled(rect, 4.0, bg);
+    }
     // 「›」：两条线段构成的右尖括号
     let c = rect.center();
     let chevron = egui::Stroke::new(1.4_f32, fg);
@@ -390,6 +395,9 @@ fn follow_swatch(ui: &mut egui::Ui, border: egui::Color32, active: bool, lang: L
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::click());
     let clicked = resp.clicked();
     let painter = ui.painter();
+    if resp.hovered() {
+        painter.rect_filled(rect.expand(3.0), 5.0, chrome::hover_tint(ui));
+    }
     painter.rect_filled(rect.expand(1.0), 3.0, border);
     // 图标前景按底色亮度取黑/白，保证任意边框色下都看得见
     let lum = (border.r() as u32 * 299 + border.g() as u32 * 587 + border.b() as u32 * 114) / 1000;
@@ -589,6 +597,7 @@ pub fn fill_style_picker(
             if resp.clicked() && current != style {
                 result = Some(style);
             }
+            let hovered = resp.hovered();
             resp.on_hover_text(t(lang, tip));
             let painter = ui.painter();
             if selected {
@@ -597,6 +606,9 @@ pub fn fill_style_picker(
                     3.0,
                     ui.visuals().selection.bg_fill.gamma_multiply(0.4),
                 );
+            } else if hovered {
+                // hover 底色与浮层其它控件统一（白边换底色）。
+                painter.rect_filled(rect, 3.0, chrome::hover_tint(ui));
             }
             draw_fill_icon(painter, rect, style, fg);
         }

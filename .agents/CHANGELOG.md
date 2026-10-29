@@ -1825,10 +1825,11 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 - **启动归属决策**：文件空闲/坏 JSON → 认领；他人活跃（connect + token 探活，
   300ms 超时）→ 待命——**新窗口不再抢占既有控制权**（修掉原 last-writer-wins）；
   他人已死（连接被拒）→ 清陈旧 + 认领。
-- **HUD MCP 徽标（左下 HUD 第一行，风格切换按钮之后）**：painter 画点 +
-  "MCP" 文本——绿点 = Active（hover 显示端口）、灰点 = Standby、空心点 =
-  Disabled；点按切换，打开 = 显式接管（无条件覆写文件，原 Active 下一秒
-  tick 读到 Other 自动让位），关闭 = 释放文件。i18n 三态 hover 文案各一条。
+- **MCP 开关（初版挂左下 HUD 第一行；同日随后与语言/明暗/风格一起迁入
+  左侧栏，见下一节）**：painter 画点 + "MCP" 文本——绿点 = Active（hover
+  显示端口）、灰点 = Standby、空心点 = Disabled；点按切换，打开 = 显式接管
+  （无条件覆写文件，原 Active 下一秒 tick 读到 Other 自动让位），关闭 =
+  释放文件。i18n 三态 hover 文案各一条。
   已建立的 `--mcp` 代理连接不因让位断开（文件只裁决新连接）。
 - **CLI 陈旧文件自愈（`try_connect_gui`）**：connect 失败（监听已死 = 崩溃
   残留）或验活失败（token 与活监听不符 = 端口被复用）时顺手删除握手文件
@@ -1839,6 +1840,45 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 - 测试：mcp_serve 单测 8 新增（状态机五转移 + toggle 往返 + 文件态分类 +
   owner_alive 探活），集成测试 1 新增（陈旧文件被 `--mcp` 降级路径清理）。
   质量门：fmt / `clippy -D warnings` 零告警，workspace 420 测试全绿。
+
+---
+
+## 左下 HUD 瘦身：缩放独留，四个全局开关移入左侧栏（2026-10-29）
+
+> 用户需求：左下 HUD 只留缩放百分比与加减号；语言/明暗/风格/MCP 四个开关
+> 放到左侧栏、帮助按钮之上；帮助文档补 MCP 开关说明。
+
+- **HUD**：删除第一行整块（语言/明暗/默认风格/MCP）与分隔线，`render_hud`
+  只剩一个缩放胶囊（− / 百分比输入 / +），Area 锚点/透传语义不变。
+- **左侧栏**：工具按钮组之后新增分隔线 + 全局开关组（`render_lang_switch`
+  / `render_theme_switch` / `render_style_switch` / `render_mcp_switch`），
+  再接原有分隔线与帮助按钮。统一走 `sidebar_switch_button`（28×28 命中区、
+  hover 底色、悬停提示），图标沿用 HUD 时代的 painter 手绘（月牙/太阳、
+  铅笔/尺寸线），语言按钮显示切换目标语言短名。
+- **MCP 开关跟随迁移**：改为 28×28 图标 —— "MCP" 文本居中 + **右上角**状态
+  点（绿实心 Active / 灰实心 Standby / 空心 Disabled；放右上角以区别于工具
+  按钮右下角的快捷键角标），三态 hover 文案与点击语义（显式接管/释放）不变。
+- **帮助文档（`assets/help.prz`）**：CLI·MCP 卡片加两行 MCP 开关说明（左侧栏
+  位置 + 三态点含义 + 多窗口切换/让位），卡高 260→350，纸张 1476→1560、
+  页脚下移；`examples/gen_help_doc.rs` 重新生成 61 个 item。
+- **浮层 hover 统一为底色高亮（`chrome::use_tint_hover` / `hover_tint`）**：
+  原先工具/帮助按钮靠 egui 默认 `bg_stroke` 白边提示 hover，与新增开关的
+  底色高亮观感不一致（白边在透明浮层上像多画一圈框）。现统一配方
+  `window_fill` 向 `strong_text_color` 混 12%（按下 18%）、三态 `bg_stroke`
+  置 NONE；工具按钮未选中时不再显式 `.fill(TRANSPARENT)`（`Button::fill`
+  会盖掉三态背景），缩放 HUD 的 − / + 用 `ui.scope` 局部套用（中间的
+  TextEdit 保持原边框）。
+- **右侧属性栏 hover 一并统一（`use_tint_hover_keep_rest`）**：面板内标准控件
+  （按钮 / 下拉 / 滑块 / 可选项）此前仍是 egui 默认的 `hovered.bg_stroke`
+  白边（dark gray150 / light gray105）；现只替换 hover / press 三态为底色
+  高亮、去掉描边，**静止态保留**主题默认填充（面板控件需要有底色，与浮层
+  的"静止全透明"区分）。唯一 TextEdit（超链接输入）用 `restore_input_stroke`
+  局部恢复 hovered/active 描边——egui 输入框静止态本就无边框，焦点全靠它。
+- **调色板 / 填充样式 / 箭头选择器的自绘 hover 补齐**：`swatch` /
+  `follow_swatch`（色块 + 外扩一圈 tint）、`expand_button`（chevron 由
+  "灰底 + 边框"改为静止无框、hover 底色）、`fill_style_picker`（原来**完全
+  无 hover 反馈**）、`arrowhead_icon`（原用 `widgets.hovered.bg_fill` 灰块）。
+- 质量门：fmt / `clippy -D warnings` 零告警，preferz lib 144 测试全绿。
 
 ---
 

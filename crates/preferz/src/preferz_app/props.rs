@@ -30,7 +30,7 @@ fn arrowhead_selector(
 }
 
 /// 画一个「线段 + 端头」小图标（与画布渲染同参数：头长 10px、半张角 30°），
-/// 选中/悬停时加高亮底色，返回是否被点击。
+/// 选中/悬停时加高亮底色（hover 用浮层统一的 `chrome::hover_tint`），返回是否被点击。
 fn arrowhead_icon(
     ui: &mut egui::Ui,
     selected: bool,
@@ -41,7 +41,7 @@ fn arrowhead_icon(
     let bg = if selected {
         Some(ui.visuals().selection.bg_fill)
     } else if resp.hovered() {
-        Some(ui.visuals().widgets.hovered.bg_fill)
+        Some(chrome::hover_tint(ui))
     } else {
         None
     };
@@ -147,6 +147,11 @@ impl PReferZApp {
             .interactable(true)
             .show(ctx, |ui| {
                 chrome::floating_bar_frame(ui.style()).show(ui, |ui| {
+                    // 面板内标准控件（按钮 / 下拉 / 滑块 / 可选项）hover 统一为
+                    // 底色高亮、去掉主题默认的白边；静止态保留原填充（面板控件
+                    // 需要有底色）。唯一 TextEdit（超链接输入）自行恢复描边，见
+                    // render_link_section。
+                    chrome::use_tint_hover_keep_rest(ui);
                     // 宽度钳死在 PROPS_BAR_WIDTH：ScrollArea 不收缩宽度时会吃满
                     // Area 的可用宽度（面板被撑到两倍宽，滑出动画的位移量也对不上，
                     // 按 N 收不起来）。min+max 同锁。
@@ -493,12 +498,18 @@ impl PReferZApp {
                 .get_temp_mut_or_insert_with(buf_id, || current.clone())
                 .clone()
         });
-        let resp = ui.add(
-            egui::TextEdit::singleline(&mut buf)
-                .id(egui::Id::new("link_input"))
-                .hint_text(t(lang, T::LinkPlaceholder))
-                .desired_width(f32::INFINITY),
-        );
+        let resp = ui
+            .scope(|ui| {
+                // 面板已统一 tint hover（无描边），输入框需要局部恢复焦点描边。
+                chrome::restore_input_stroke(ui);
+                ui.add(
+                    egui::TextEdit::singleline(&mut buf)
+                        .id(egui::Id::new("link_input"))
+                        .hint_text(t(lang, T::LinkPlaceholder))
+                        .desired_width(f32::INFINITY),
+                )
+            })
+            .inner;
         self.link_input_focused = resp.has_focus();
         let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
         let mut settled = false;
@@ -640,6 +651,8 @@ impl PReferZApp {
             .interactable(true)
             .show(ctx, |ui| {
                 chrome::floating_bar_frame(ui.style()).show(ui, |ui| {
+                    // hover 视觉统一（同 render_props_panel）。
+                    chrome::use_tint_hover_keep_rest(ui);
                     // 宽度钳死在 PROPS_BAR_WIDTH（同 render_props_panel：防止
                     // ScrollArea 不收缩宽度时吃满 Area 可用宽度把面板撑宽）。
                     ui.set_min_width(chrome::PROPS_BAR_WIDTH);

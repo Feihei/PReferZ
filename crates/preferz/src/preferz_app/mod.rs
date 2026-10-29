@@ -2173,9 +2173,9 @@ impl PReferZApp {
         }
     }
 
-    /// 悬浮 HUD：左下角两行胶囊（第一行 语言/明暗/风格，第二行 缩放）+ 底部居中 flash toast。
-    ///
-    /// 悬浮工具栏（左上角固定位置浮层）：9 个绘图工具垂直排列，圆角倒角 + 柔和阴影。
+    /// 悬浮工具栏（左上角固定位置浮层）：9 个绘图工具垂直排列，圆角倒角 + 柔和阴影；
+    /// 其下分隔线接入全局开关组（语言/明暗/默认风格/MCP，2026-10-29 自左下 HUD
+    /// 移入）与帮助按钮。缩放仍留在左下 HUD（见 `render_hud`）。
     ///
     /// Excalidraw 风格：`Area` + `Order::Foreground` 悬浮在画布之上，不占位、不推挤
     /// 画布；`interactable(true)` 让按钮可点，画布 `pointer_on_canvas` 守卫自动排除
@@ -2200,6 +2200,9 @@ impl PReferZApp {
             .interactable(true)
             .show(ctx, |ui| {
                 chrome::floating_bar_frame(ui.style()).show(ui, |ui| {
+                    // 悬浮层 hover 统一为「底色变化、无描边」（工具/开关/帮助）：
+                    // egui 默认的 bg_stroke 白边在透明浮层上像多画一圈框。
+                    chrome::use_tint_hover(ui);
                     // 图标必须在内嵌 SourceHanSansCN-Regular.ttf 的 cmap 中有字形，
                     // 否则走 fallback 渲染，风格/字重与其他图标不一致（可用字形已用脚本核验）。
                     // 无字形图标的工具（Select/Elbow）用 painter 手绘（见 ui/tool_icons.rs）。
@@ -2265,13 +2268,14 @@ impl PReferZApp {
                     ];
                     for (tool, icon, key, badge) in tools {
                         let is_active = self.tool == tool;
-                        let btn = egui::Button::new(icon.label())
-                            .min_size(egui::vec2(chrome::TOOL_BTN_SIZE, chrome::TOOL_BTN_SIZE))
-                            .fill(if is_active {
-                                ui.visuals().selection.bg_fill
-                            } else {
-                                egui::Color32::TRANSPARENT
-                            });
+                        // 未选中时不显式 fill：让 `use_tint_hover` 的 hover 底色
+                        // 透出（Button::fill 会覆盖三态背景）。选中态用 selection
+                        // 实心填充，hover 时保持选中色不变。
+                        let mut btn = egui::Button::new(icon.label())
+                            .min_size(egui::vec2(chrome::TOOL_BTN_SIZE, chrome::TOOL_BTN_SIZE));
+                        if is_active {
+                            btn = btn.fill(ui.visuals().selection.bg_fill);
+                        }
                         let resp = ui.add(btn);
                         // 手绘图标用 interact 态文字色：hover/active 时随 egui 变色，
                         // 与字形图标行为一致。
@@ -2301,6 +2305,14 @@ impl PReferZApp {
                         }
                         ui.add_space(chrome::TOOL_BTN_GAP);
                     }
+                    // —— 全局开关组（2026-10-29 自左下 HUD 移入，置于帮助按钮之上）：
+                    // 语言 / 明暗 / 默认风格 / MCP 桥接。四项与工具按钮同列竖排，
+                    // 分隔线区隔工具组；文字说明全部交给悬停提示。
+                    ui.separator();
+                    self.render_lang_switch(ui);
+                    self.render_theme_switch(ui, ctx);
+                    self.render_style_switch(ui);
+                    self.render_mcp_switch(ui);
                     // 帮助按钮（plan #25，自右下角 HUD 移入工具栏最下方）：
                     // 与工具按钮同风格，分隔线区隔；spawn 独立实例打开内嵌
                     // help.prz——真 App 全功能（可编辑），但改动不回存。
@@ -2311,8 +2323,7 @@ impl PReferZApp {
                     let help_resp = ui
                         .add(
                             egui::Button::new("")
-                                .min_size(egui::vec2(chrome::TOOL_BTN_SIZE, chrome::TOOL_BTN_SIZE))
-                                .fill(egui::Color32::TRANSPARENT),
+                                .min_size(egui::vec2(chrome::TOOL_BTN_SIZE, chrome::TOOL_BTN_SIZE)),
                         )
                         .on_hover_text(t(self.lang, T::OpenHelp));
                     ui.painter().text(
@@ -2329,18 +2340,203 @@ impl PReferZApp {
             });
     }
 
+    /// 侧栏开关按钮骨架：固定 28×28 命中区 + hover 底色 + 悬停提示。
+    /// 返回 `Response` 供调用方处理点击；`paint` 收到 (painter, rect, 前景色,
+    /// 底色)——底色在 hover 时是混合高亮色，主题月牙要靠它"挖除"出弧口。
+    fn sidebar_switch_button(
+        &self,
+        ui: &mut egui::Ui,
+        hint: String,
+        paint: impl FnOnce(&egui::Painter, egui::Rect, egui::Color32, egui::Color32),
+    ) -> egui::Response {
+        // 比工具按钮（32）略小：四项成组，视觉上不与工具混淆。
+        const SIZE: f32 = 28.0;
+        let (rect, resp) = ui.allocate_exact_size(egui::vec2(SIZE, SIZE), egui::Sense::click());
+        let resp = resp.on_hover_text(hint);
+        if ui.is_rect_visible(rect) {
+            let fg = ui.style().interact(&resp).text_color();
+            let bar_bg = ui.visuals().window_fill;
+            let bg = if resp.hovered() {
+                // 与工具栏按钮同配方（chrome::hover_tint）：浮层内一律底色高亮。
+                let c = chrome::hover_tint(ui);
+                ui.painter().rect_filled(rect, 4.0, c);
+                c
+            } else {
+                bar_bg
+            };
+            paint(ui.painter(), rect, fg, bg);
+        }
+        resp
+    }
+
+    /// 语言切换（侧栏，2026-10-29 自左下 HUD 移入）：
+    /// 按钮显示**切换目标**语言的短名（与 HUD 语义一致），悬停显示全名。
+    fn render_lang_switch(&mut self, ui: &mut egui::Ui) {
+        let lang = self.lang;
+        let resp = self.sidebar_switch_button(
+            ui,
+            lang.toggled().display_name().to_string(),
+            |p, rect, fg, _bg| {
+                p.text(
+                    rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    lang.toggled().short_name(),
+                    egui::FontId::proportional(13.0),
+                    fg,
+                );
+            },
+        );
+        if resp.clicked() {
+            self.lang = lang.toggled();
+            self.persist_config();
+        }
+    }
+
+    /// 明暗主题切换（侧栏）：light 画月牙、dark 画太阳（沿用 HUD 手绘配方，
+    /// 嵌入字体无可靠月牙字形）。Auto 下按当前生效外观显示，点击显式切相反态。
+    fn render_theme_switch(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let dark_now = self.theme.is_dark(ctx);
+        let hint = t(self.lang, T::ThemeToggleHint).to_string();
+        let resp = self.sidebar_switch_button(ui, hint, |p, rect, fg, bg| {
+            let c = rect.center();
+            if dark_now {
+                // 太阳：实心圆 + 8 道射线
+                p.circle_filled(c, 3.4, fg);
+                for k in 0..8usize {
+                    let a = std::f32::consts::TAU * k as f32 / 8.0;
+                    let (dy, dx) = a.sin_cos();
+                    p.line_segment(
+                        [
+                            c + egui::vec2(dx * 5.2, dy * 5.2),
+                            c + egui::vec2(dx * 7.6, dy * 7.6),
+                        ],
+                        egui::Stroke::new(1.4_f32, fg),
+                    );
+                }
+            } else {
+                // 月牙：实心圆 + 右上偏置的底色圆挖除
+                p.circle_filled(c + egui::vec2(-0.6, 0.4), 5.8, fg);
+                p.circle_filled(c + egui::vec2(3.4, -2.0), 5.0, bg);
+            }
+        });
+        if resp.clicked() {
+            self.theme = if dark_now {
+                ThemeMode::Light
+            } else {
+                ThemeMode::Dark
+            };
+            self.default_stroke.color = self.theme.default_stroke_color(ctx);
+            self.persist_config();
+        }
+    }
+
+    /// 默认风格切换（侧栏）：显示**切换目标**——当前草绘→45° 直线（规整），
+    /// 当前规整→铅笔（草绘）。点击逻辑与设置面板「默认风格总开关」一致：
+    /// 覆盖新建默认档并持久化。
+    fn render_style_switch(&mut self, ui: &mut egui::Ui) {
+        let sketch_now = self.default_style == DefaultStylePreset::Sketch;
+        let hint = t(
+            self.lang,
+            if sketch_now {
+                T::StyleToggleToClean
+            } else {
+                T::StyleToggleToSketch
+            },
+        )
+        .to_string();
+        let resp = self.sidebar_switch_button(ui, hint, |p, rect, fg, _bg| {
+            // 20×20 图标坐标系居中到按钮内
+            let o = rect.center() - egui::vec2(10.0, 10.0);
+            let q = |x: f32, y: f32| o + egui::vec2(x, y);
+            if sketch_now {
+                // 规整目标：45° 斜线 + 垂直端刻度（尺寸线样式）
+                p.line_segment([q(5.0, 15.0), q(15.0, 5.0)], egui::Stroke::new(1.6_f32, fg));
+                p.line_segment([q(3.4, 13.4), q(6.6, 16.6)], egui::Stroke::new(1.4_f32, fg));
+                p.line_segment([q(13.4, 3.4), q(16.6, 6.6)], egui::Stroke::new(1.4_f32, fg));
+            } else {
+                // 草绘目标：45° 铅笔（双线笔身 + 实心笔尖三角）
+                p.line_segment([q(5.0, 13.0), q(13.0, 5.0)], egui::Stroke::new(1.4_f32, fg));
+                p.line_segment([q(7.2, 15.2), q(15.2, 7.2)], egui::Stroke::new(1.4_f32, fg));
+                p.line_segment([q(13.0, 5.0), q(15.2, 7.2)], egui::Stroke::new(1.4_f32, fg));
+                p.add(egui::Shape::convex_polygon(
+                    vec![q(5.0, 13.0), q(7.2, 15.2), q(3.7, 16.5)],
+                    fg,
+                    egui::Stroke::NONE,
+                ));
+            }
+        });
+        if resp.clicked() {
+            let preset = if sketch_now {
+                DefaultStylePreset::Clean
+            } else {
+                DefaultStylePreset::Sketch
+            };
+            self.default_style = preset;
+            preset.apply_to(&mut self.default_sloppiness, &mut self.default_font_family);
+            self.persist_config();
+        }
+    }
+
+    /// MCP 桥接开关（侧栏，OpenCADStudio 式单一天选窗口）：右上角状态点——
+    /// 绿实心=本窗口正被 agent 控制、灰实心=待命（另一窗口控制中，其退出后
+    /// 本窗口 1s 内自动认领）、空心=用户已关闭。点按切换（打开 = 显式接管，
+    /// 原控制窗口自动让位）。状态机见 `mcp_serve::McpServe::tick`。
+    /// config 关闭 MCP 功能时 `self.mcp` 为 None，整项不渲染。
+    fn render_mcp_switch(&mut self, ui: &mut egui::Ui) {
+        let Some((active, disabled, port)) = self
+            .mcp
+            .as_ref()
+            .map(|m| (m.is_active(), m.is_disabled(), m.port()))
+        else {
+            return;
+        };
+        let hint = if active {
+            fill(t(self.lang, T::McpActiveHint), &[port.to_string()])
+        } else if disabled {
+            t(self.lang, T::McpDisabledHint).to_string()
+        } else {
+            t(self.lang, T::McpStandbyHint).to_string()
+        };
+        let resp = self.sidebar_switch_button(ui, hint, |p, rect, fg, _bg| {
+            p.text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "MCP",
+                egui::FontId::proportional(9.5),
+                fg,
+            );
+            // 状态点放右上角：与工具按钮右下角的快捷键角标区分开。
+            let dot = rect.right_top() + egui::vec2(-4.5, 4.5);
+            if active {
+                p.circle_filled(dot, 3.0, egui::Color32::from_rgb(0x3f, 0xb9, 0x50));
+            } else if disabled {
+                p.circle_stroke(dot, 3.0, egui::Stroke::new(1.2, fg.gamma_multiply(0.6)));
+            } else {
+                p.circle_filled(dot, 3.0, fg.gamma_multiply(0.45));
+            }
+        });
+        if resp.clicked() {
+            if let Some(mcp) = self.mcp.as_mut() {
+                if active {
+                    mcp.toggle_off();
+                } else {
+                    mcp.toggle_on();
+                }
+            }
+        }
+    }
+
     /// 替代原底部 `TopBottomPanel` 状态栏，让画布吃满窗口高度。
-    /// 左下角合并 HUD（2026-10-08）：第一行 语言/明暗/默认风格，第二行 缩放。
+    /// 左下角 HUD（2026-10-08 起；2026-10-29 收缩为单个缩放胶囊）：只留
+    /// − / 百分比 / +，语言、明暗、默认风格、MCP 四个开关移入左侧栏
+    /// （见 `render_toolbar`，置于帮助按钮之上）。
     /// 原缩放 HUD 挂右下角，被撑满窗口的属性侧栏遮挡（Excalidraw 同样把缩放
-    /// 控件放左下）。两行合并进同一个 Area 垂直堆叠，而非两个锚定 Area 硬编码
-    /// 偏移——行高随字体/主题变化自动跟随。
-    /// 用 `egui::Area` 而非 `Window`：无标题栏、不可拖动、不抢焦点，纯浮层。
-    /// `interactable(true)` 让按钮可点；HUD 未覆盖的区域仍透传给画布，
-    /// 画布的 `pointer_on_canvas` 守卫会自动排除被浮层遮挡的部分。
+    /// 控件放左下）。用 `egui::Area` 而非 `Window`：无标题栏、不可拖动、
+    /// 不抢焦点，纯浮层。`interactable(true)` 让按钮可点；HUD 未覆盖的区域
+    /// 仍透传给画布，画布的 `pointer_on_canvas` 守卫会自动排除被浮层遮挡的部分。
     fn render_hud(&mut self, ctx: &egui::Context) {
         // 每帧复位；缩放输入框若持焦会置真（供 handle_shortcuts 守卫）。
         self.zoom_hud_focused = false;
-        let lang = self.lang;
         egui::Area::new(egui::Id::new("hud_bottom_left"))
             .anchor(egui::Align2::LEFT_BOTTOM, egui::vec2(12.0, -12.0))
             .order(egui::Order::Foreground)
@@ -2348,228 +2544,23 @@ impl PReferZApp {
             .show(ctx, |ui| {
                 // 行内布局 + 关闭 wrap：窄屏/缩放数值下也保持单行、宽度自适应内容。
                 ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
-                // —— 单块弹层（2026-10-08 按用户反馈由两块合并）：第一行
-                // 语言切换/主题切换/默认风格，分隔线之下第二行 缩放。
-                // 宽度收紧到内容（帧宽 = 最宽行），不再设最小宽度。
+                // 胶囊底框（与工具栏同款 popup 外观），宽度收紧到内容。
                 egui::Frame::popup(ui.style())
                     .inner_margin(egui::Margin::symmetric(10, 5))
                     .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            if ui
-                                .small_button(lang.toggled().short_name())
-                                .on_hover_text(lang.toggled().display_name())
-                                .clicked()
-                            {
-                                self.lang = lang.toggled();
-                                self.persist_config();
-                            }
-                            // 主题切换（验收反馈 3）：light 画黑色月牙、dark 画
-                            // 白色太阳（字体无可靠月牙字形，用形状手绘）。Auto 下
-                            // 按**当前生效外观**显示；点击显式切到相反态，副作用与
-                            // 设置面板 theme_changed 一致（默认描边色随主题翻转+持久化）。
-                            ui.add_space(2.0);
-                            let dark_now = self.theme.is_dark(ctx);
-                            let gal = ui.visuals().strong_text_color();
-                            let (icon_rect, resp) = ui
-                                .allocate_exact_size(egui::vec2(20.0, 20.0), egui::Sense::click());
-                            let resp = resp.on_hover_text(t(self.lang, T::ThemeToggleHint));
-                            if ui.is_rect_visible(icon_rect) {
-                                let painter = ui.painter();
-                                let center = icon_rect.center();
-                                let mut bg = ui.visuals().window_fill;
-                                if resp.hovered() {
-                                    // hover 底色（同时用作月牙"挖除"色，保证抠弧无痕）
-                                    let mix = |a: u8, b: u8| -> u8 {
-                                        ((a as f32) * 0.88 + (b as f32) * 0.12) as u8
-                                    };
-                                    bg = egui::Color32::from_rgb(
-                                        mix(bg.r(), gal.r()),
-                                        mix(bg.g(), gal.g()),
-                                        mix(bg.b(), gal.b()),
-                                    );
-                                    painter.rect_filled(icon_rect, 4.0, bg);
-                                }
-                                if dark_now {
-                                    // 太阳：实心圆 + 8 道射线
-                                    painter.circle_filled(center, 3.4, gal);
-                                    for k in 0..8usize {
-                                        let a = std::f32::consts::TAU * k as f32 / 8.0;
-                                        let (dy, dx) = a.sin_cos();
-                                        painter.line_segment(
-                                            [
-                                                center + egui::vec2(dx * 5.2, dy * 5.2),
-                                                center + egui::vec2(dx * 7.6, dy * 7.6),
-                                            ],
-                                            egui::Stroke::new(1.4_f32, gal),
-                                        );
-                                    }
-                                } else {
-                                    // 月牙：实心圆 + 右上偏置的背景色圆挖除
-                                    painter.circle_filled(center + egui::vec2(-0.6, 0.4), 5.8, gal);
-                                    painter.circle_filled(center + egui::vec2(3.4, -2.0), 5.0, bg);
-                                }
-                            }
-                            if resp.clicked() {
-                                self.theme = if dark_now {
-                                    ThemeMode::Light
-                                } else {
-                                    ThemeMode::Dark
-                                };
-                                self.default_stroke.color = self.theme.default_stroke_color(ctx);
-                                self.persist_config();
-                            }
-                            // 默认风格切换：与主题按钮同模式的手绘 icon（嵌入字体无
-                            // 铅笔等 dingbat 字形，字符 icon 会渲染成豆腐块）。
-                            // 按现有惯例显示**切换目标**：当前草绘→45° 直线（规整），
-                            // 当前规整→铅笔（草绘）。点击逻辑与设置面板「默认风格
-                            // 总开关」逐字一致：覆盖新建默认档并持久化。
-                            ui.add_space(2.0);
-                            let sketch_now = self.default_style == DefaultStylePreset::Sketch;
-                            let gal = ui.visuals().strong_text_color();
-                            let (icon_rect, resp) = ui
-                                .allocate_exact_size(egui::vec2(20.0, 20.0), egui::Sense::click());
-                            let resp = resp.on_hover_text(t(
-                                self.lang,
-                                if sketch_now {
-                                    T::StyleToggleToClean
-                                } else {
-                                    T::StyleToggleToSketch
-                                },
-                            ));
-                            if ui.is_rect_visible(icon_rect) {
-                                let painter = ui.painter();
-                                if resp.hovered() {
-                                    // hover 底色（与主题按钮同配方）
-                                    let bg0 = ui.visuals().window_fill;
-                                    let mix = |a: u8, b: u8| -> u8 {
-                                        ((a as f32) * 0.88 + (b as f32) * 0.12) as u8
-                                    };
-                                    let bg = egui::Color32::from_rgb(
-                                        mix(bg0.r(), gal.r()),
-                                        mix(bg0.g(), gal.g()),
-                                        mix(bg0.b(), gal.b()),
-                                    );
-                                    painter.rect_filled(icon_rect, 4.0, bg);
-                                }
-                                // 局部坐标（0..20）→ 画布坐标
-                                let o = icon_rect.left_top();
-                                let p = |x: f32, y: f32| o + egui::vec2(x, y);
-                                if sketch_now {
-                                    // 规整目标：45° 斜线 + 垂直端刻度（尺寸线样式）
-                                    painter.line_segment(
-                                        [p(5.0, 15.0), p(15.0, 5.0)],
-                                        egui::Stroke::new(1.6_f32, gal),
-                                    );
-                                    painter.line_segment(
-                                        [p(3.4, 13.4), p(6.6, 16.6)],
-                                        egui::Stroke::new(1.4_f32, gal),
-                                    );
-                                    painter.line_segment(
-                                        [p(13.4, 3.4), p(16.6, 6.6)],
-                                        egui::Stroke::new(1.4_f32, gal),
-                                    );
-                                } else {
-                                    // 草绘目标：45° 铅笔（双线笔身 + 实心笔尖三角）
-                                    painter.line_segment(
-                                        [p(5.0, 13.0), p(13.0, 5.0)],
-                                        egui::Stroke::new(1.4_f32, gal),
-                                    );
-                                    painter.line_segment(
-                                        [p(7.2, 15.2), p(15.2, 7.2)],
-                                        egui::Stroke::new(1.4_f32, gal),
-                                    );
-                                    painter.line_segment(
-                                        [p(13.0, 5.0), p(15.2, 7.2)],
-                                        egui::Stroke::new(1.4_f32, gal),
-                                    );
-                                    painter.add(egui::Shape::convex_polygon(
-                                        vec![p(5.0, 13.0), p(7.2, 15.2), p(3.7, 16.5)],
-                                        gal,
-                                        egui::Stroke::NONE,
-                                    ));
-                                }
-                            }
-                            if resp.clicked() {
-                                let preset = if sketch_now {
-                                    DefaultStylePreset::Clean
-                                } else {
-                                    DefaultStylePreset::Sketch
-                                };
-                                self.default_style = preset;
-                                preset.apply_to(
-                                    &mut self.default_sloppiness,
-                                    &mut self.default_font_family,
-                                );
-                                self.persist_config();
-                            }
-                            // —— MCP 桥接徽标（OpenCADStudio 式单一天选窗口）：
-                            // 绿点=本窗口正被 agent 控制、灰点=待命（另一窗口控制中，
-                            // 其退出后本窗口 1s 内自动认领）、空心=用户已关闭。
-                            // 点按切换（打开 = 显式接管，原控制窗口自动让位）。
-                            // 状态机见 mcp_serve::McpServe::tick；config 关闭 MCP
-                            // 功能时 self.mcp 为 None，不渲染。
-                            if let Some(mcp) = self.mcp.as_ref() {
-                                let (active, disabled, port) =
-                                    (mcp.is_active(), mcp.is_disabled(), mcp.port());
-                                ui.add_space(2.0);
-                                let hint = if active {
-                                    fill(t(self.lang, T::McpActiveHint), &[port.to_string()])
-                                } else if disabled {
-                                    t(self.lang, T::McpDisabledHint).to_string()
-                                } else {
-                                    t(self.lang, T::McpStandbyHint).to_string()
-                                };
-                                let (badge_rect, resp) = ui.allocate_exact_size(
-                                    egui::vec2(46.0, 20.0),
-                                    egui::Sense::click(),
-                                );
-                                let resp = resp.on_hover_text(hint);
-                                if ui.is_rect_visible(badge_rect) {
-                                    let painter = ui.painter();
-                                    let gal = ui.visuals().strong_text_color();
-                                    let dot = badge_rect.left_center() + egui::vec2(7.0, 0.0);
-                                    if active {
-                                        painter.circle_filled(
-                                            dot,
-                                            4.0,
-                                            egui::Color32::from_rgb(0x3f, 0xb9, 0x50),
-                                        );
-                                    } else if disabled {
-                                        painter.circle_stroke(
-                                            dot,
-                                            4.0,
-                                            egui::Stroke::new(1.4, gal.gamma_multiply(0.6)),
-                                        );
-                                    } else {
-                                        painter.circle_filled(dot, 4.0, gal.gamma_multiply(0.45));
-                                    }
-                                    painter.text(
-                                        badge_rect.center() + egui::vec2(5.0, 0.0),
-                                        egui::Align2::CENTER_CENTER,
-                                        "MCP",
-                                        egui::TextStyle::Body.resolve(ui.style()),
-                                        ui.style().interact(&resp).text_color(),
-                                    );
-                                }
-                                if resp.clicked() {
-                                    if let Some(mcp) = self.mcp.as_mut() {
-                                        if active {
-                                            mcp.toggle_off();
-                                        } else {
-                                            mcp.toggle_on();
-                                        }
-                                    }
-                                }
-                            }
-                        });
-                        ui.separator();
-                        // —— 第二行：缩放（− / 百分比 / +）——
+                        // —— 缩放（− / 百分比 / +）——
+                        // − / + 用与工具栏一致的 hover 底色（scope 收窄，避开
+                        // 中间的 TextEdit——否则连带抹掉输入框边框）。
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 2.0;
 
                             // − 缩小（以视口中心为锚点，乘法步进）
                             if ui
-                                .small_button("-")
+                                .scope(|ui| {
+                                    chrome::use_tint_hover(ui);
+                                    ui.small_button("-")
+                                })
+                                .inner
                                 .on_hover_text(t(self.lang, T::ZoomOut))
                                 .clicked()
                             {
@@ -2625,7 +2616,11 @@ impl PReferZApp {
                             }
                             // + 放大
                             if ui
-                                .small_button("+")
+                                .scope(|ui| {
+                                    chrome::use_tint_hover(ui);
+                                    ui.small_button("+")
+                                })
+                                .inner
                                 .on_hover_text(t(self.lang, T::ZoomIn))
                                 .clicked()
                             {

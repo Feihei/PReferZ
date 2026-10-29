@@ -349,7 +349,7 @@ pub enum T {
     ThemeToggleHint,
     /// HUD 风格切换按钮 hover 提示：当前草绘，点击切到规整。
     StyleToggleToClean,
-    /// HUD 风格切换按钮 hover 提示：当前规整，点击切到草绘。
+    /// 侧栏默认风格切换按钮 hover 提示：当前规整，点击切到草绘。
     StyleToggleToSketch,
     // ── HUD MCP 桥接徽标（OpenCADStudio 式单一天选窗口）──
     /// MCP 徽标 hover 提示：本窗口正被 agent 控制（{0} = 端口）。
