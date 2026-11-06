@@ -41,12 +41,12 @@
 > 代码已交付并归档（见 CHANGELOG §依赖大版本升级：egui/eframe 0.36 → 0.37）；
 > headless 测试覆盖不到以下 GUI 侧行为，需人工 `cargo run -p preferz` 过一遍。
 
-- [ ] GUI 启动与首屏渲染正常（glow 后端、窗口缩放/拖动）
-- [ ] 思源黑体 + 851 手写体字形显示正常（0.37 字体栈 `FontData` 结构重写）
-- [ ] TextEdit 复制 / 粘贴正常（0.37 起 eframe `clipboard` feature 须显式开）
-- [ ] 界面图标 emoji 恢复单色（已开 `egui/monochrome_emoji_fonts`；若有零星 emoji 仍彩色，说明该字符不在内嵌单色字体覆盖范围）
-- [ ] MCP `screenshot` 工具实测回图（0.37 改为 `Context::request_screenshot` 回调链路）
-- [ ] 滚轮缩放文字密集文档（`assets/help.prz`）手感：已实现字号量化（1% 对数栅格，实测重排成本 ~7.4 → ~1.8 ms/帧），需人工确认视觉上无字号跳变
+- [x] GUI 启动与首屏渲染正常（glow 后端、窗口缩放/拖动）
+- [x] 思源黑体 + 851 手写体字形显示正常（0.37 字体栈 `FontData` 结构重写）
+- [x] TextEdit 复制 / 粘贴正常（0.37 起 eframe `clipboard` feature 须显式开）
+- [x] 界面图标 emoji 恢复单色（已开 `egui/monochrome_emoji_fonts`；若有零星 emoji 仍彩色，说明该字符不在内嵌单色字体覆盖范围）
+- [x] MCP `screenshot` 工具实测回图（0.37 改为 `Context::request_screenshot` 回调链路）
+- [x] 滚轮缩放文字密集文档（`assets/help.prz`）手感：已实现字号量化（1% 对数栅格，实测重排成本 ~7.4 → ~1.8 ms/帧），需人工确认视觉上无字号跳变
 
 ---
 
