@@ -1882,6 +1882,60 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 
 ---
 
+## 依赖大版本升级：egui/eframe 0.36 → 0.37（2026-11-05）
+
+> 单次 bump、不留兼容写法，**不改用户可见功能**。前置收益/成本评估已拍板：
+> preferz-core / preferz-fileio 零破坏，binary 层 2 处硬错误 + 22 处弃用警告。
+
+- **版本**：`egui` / `eframe` 0.36.2 → 0.37.0；MSRV 抬到 **Rust ≥ 1.95**
+  （本机 1.99.1，CI 用 `dtolnay/rust-toolchain@stable`，无 CI 风险）。
+- **截图链路重写（唯一硬错误）**：egui 0.37 删除 `egui::Event::Screenshot` 与
+  `egui::UserData`，`ViewportCommand::Screenshot` 改收 `ScreenshotCallback`。改为
+  `Context::request_screenshot(cb)` 挂一次性回调——eframe 在**下一帧渲染完成后**于
+  绘制阶段触发它，回调里直接 PNG 编码 + MCP result 组帧回包。
+  - 回包仲裁：新增 `Arc<AtomicBool>`，`compare_exchange(false→true)` 的成功者
+    才有权回包（截图回调 vs 3s 超时兜底竞争），杜绝同 id 双回包。
+  - `PendingScreenshot` 队列退化为**纯超时兜底**（`next_screenshot_token` 字段删除）。
+  - 裸 JSONL `{"cmd":"screenshot"}` 仍走 core 的 `capture_screenshot` → 结构化报错
+    指路到 MCP `tools/call`（同步 capture 契约下无法实现，语义不变）。
+- **22 处弃用 API 清理**（编译器弃用警告逐条改写，零 `#[allow]`）：
+  `Id::new` → `Id::unique`（20 处）、`Ui::id()` → `Ui::scope_id()`（2 处，
+  HUD 缩放输入框 + 调色板）、`TextEdit::horizontal_align` → `align(Align2::CENTER_TOP)`（1 处）。
+- **字体 API 破坏**：`FontData.font` 从 `Cow<'static,[u8]>` 改为
+  `Arc<dyn AsRef<[u8]> + Send + Sync>`，`into_owned()` 消失 → 测试改用
+  `FontData::bytes()`；`app_font_definitions()` / `set_fonts` 结构未变。
+- **eframe features 补齐**：0.37 起 `clipboard`（egui-winit 系统剪贴板）由
+  「无条件传递」改为显式 feature，必须开（TextEdit 复制/粘贴依赖它）；
+  `system_fonts` 是 0.37 新增默认项，一并显式开启（引入
+  egui_system_font_provider / fontique / skrifa）。
+- **单色 emoji 回归修复**：0.37 把内嵌单色 emoji 字体（NotoEmoji-Regular /
+  emoji-icon-font）从默认里拿掉、改为 `monochrome_emoji_fonts` feature；不开时
+  egui 图标字符回落到系统彩色 emoji 字体（Windows = Segoe UI Emoji），界面图标变彩色。
+  已在根 `Cargo.toml` 的 egui 依赖显式开启该 feature（`cargo tree` 确认
+  `epaint feature "monochrome_emoji_fonts"` 已启用），回退链恢复为
+  `["egui-icons", "NotoEmoji-Regular", "emoji-icon-font"]`（仍在系统字体之前）。
+- **缩放手感：0.37 文字排版成本上升（已知特性，未改代码）**。0.37 文本栈换成
+  harfrust/skrifa 后，每次「新字号」都要重新整形；而滚轮平滑把一格滚轮摊到多帧、
+  每帧字号都不同 → 每帧全量重排。实测（release，`assets/help.prz`：61 项 / 52 项文本 /
+  1224 字）：同字号缓存命中帧 0.02 ms，逐帧变字号帧 **~7.4 ms（worst 12.9 ms）**；
+  调试构建则 ~215 ms/帧。故「元素多（尤其文字多）→ 缩放发涩」成立，属 0.37 上游成本，
+  非本项目回归。
+- **缩放发涩缓解：字号量化（已实施）**。`render.rs` 的 `quantized_font_size` 把文字
+  绘制字号吸附到 **1% 对数栅格**（锚点 16px），相对误差 ≤0.5%（24px 字号约 0.12px，
+  不可见）。滚轮平滑相邻帧仅差 ~0.2%，量化后连续多帧复用同一字号，重新命中
+  egui 的 galley / 字形缓存。同一 `assets/help.prz` 实测（release，60 帧连续缩放）：
+  平均帧 **7.48 ms → 1.81 ms（约 4×）**，不同字号 240 → 43。作用点只覆盖 item 文本的
+  排版（`draw_text_item` 的 `make_font_id`），编辑 overlay 的 TextEdit 仍用精确字号
+  （差异 ≤0.5%，进出编辑态无感）。附带单测 2 项（栅格误差 / 相邻帧字号复用）。
+- **剪贴板行为不变**：egui-winit 0.37 的 `clipboard_shortcuts` 默认 true，与 0.36
+  一致 → keymap 的 `Ctrl+C/X/V` 走 `on_release` 释放沿的硬约束继续成立。
+- **质量门**：`cargo fmt --all --check` 通过、`clippy --workspace --all-targets -D warnings`
+  零告警、`cargo test --workspace` 422 项全绿（preferz 146 / core 253 / 其余 23）。
+- **待人工复验**（GUI 侧行为，headless 测试覆盖不到）：GUI 启动与首屏渲染、
+  思源黑体 + 手写体字形显示、TextEdit 复制粘贴、MCP `screenshot` 工具实测回图。
+
+---
+
 ## 决策点归档（D1–D6 / I1–I4 / L 系列）
 
 > 原列于 plan.md，G/I/H/K 交付后蒸馏归档于此，使 CHANGELOG 自包含、plan.md 仅保留前瞻内容。

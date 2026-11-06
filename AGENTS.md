@@ -2,8 +2,8 @@
 
 ## Stack
 
-- **Rust** (stable, >= 1.88), edition 2021 — 1.88 起才稳定的 `slice::as_chunks` / `as_chunks_mut` 已在代码中使用
-- **GUI**: `egui` + `eframe` 0.36 (glow backend，显式关默认 features 绕开 wgpu)
+- **Rust** (stable, >= 1.95), edition 2021 — 1.88 起才稳定的 `slice::as_chunks` / `as_chunks_mut` 已在代码中使用；egui/eframe 0.37 的 MSRV 即 1.95
+- **GUI**: `egui` + `eframe` 0.37 (glow backend，显式关默认 features 绕开 wgpu；`clipboard` / `system_fonts` 两个 feature 需**显式**开启；`egui/monochrome_emoji_fonts` 也需显式开，否则 0.37 不再内嵌单色 emoji 字体，图标 emoji 会回落到系统彩色字体)
 - **2D geometry**: `euclid` (parameterized `CanvasSpace` / `ScreenSpace`)
 - **Undo**: 全手写——`preferz-core::commands::Command` trait + `preferz_core::session::UndoStack`（GUI 与 CLI 模式共用）；不依赖任何第三方 undo crate
 - **File I/O**: `rusqlite` (`.prz` SQLite + sqlar), `image`
@@ -84,9 +84,10 @@ HUD MCP 徽标可见可点击切换，显式接管时原 Active 自动让位。`
 - **Three coordinate systems**: `ScreenSpace` (pixels), `Viewport` (screen/zoom), `CanvasSpace` (world). Use `euclid` types — never cast between them with raw `f32`.
 - **Coordinate boundary is sealed at `ViewportEgui`.** `preferz_core::ViewportState` (and all core geometry) speaks only egui-free `Screen*`/`Canvas*` euclid types. The single `egui::Pos2 ↔ ScreenPoint` / `egui::Rect ↔ ScreenRect` conversion seam lives in the binary's `viewport.rs` (`ViewportEgui` trait: `pos2_to_canvas`/`canvas_to_pos2`/`canvas_rect_to_egui`/`set_screen_rect_egui`/`pan_by_screen_egui`/`zoom_at_egui`). Do not push `egui` types into core; convert at this trait, once, on the L2 input / L3 paint edges.
 - **Texture ownership**: `egui::TextureHandle` lives on `egui::Context`. Create/release textures inside `update()`. Do not hold bare `TextureId` across frames without registration.
+- **Screenshots go through `Context::request_screenshot(cb)`.** egui 0.37 删除了 `egui::Event::Screenshot` 与 `egui::UserData`，`ViewportCommand::Screenshot` 改收 `ScreenshotCallback`。回调在**下一帧渲染完成后**于绘制阶段触发，回调里直接做 PNG 编码并回包；`PendingScreenshot` 队列退化为纯超时兜底（3s），回包权由 `Arc<AtomicBool>` compare_exchange 仲裁，保证同一请求 id 只回一帧。
 - **Undo "preview" mode**: interactive drag/scale rotates items directly, then `push(cmd)` on release with `skip_first_redo: true`. `skip_first_redo` 是全手写 `Command` impl 上的字段（本项目不依赖任何第三方 undo crate），语义：预览已改过状态，首次 redo 跳过以免二次应用。
 - **`.prz` is the only format**（`.bee` 兼容层已移除，commit `62692a8`）：`.prz` 为 SQLite，含 `items`（5 列，主键为 UUID 字符串，transform 存单列 JSON）、`sqlar`（`name` / `sz` 未压缩大小 / `data` 压缩 blob）、`metadata`（`format` 恒为 `prz`、视口状态、`next_z`）。与 BeeRef `.bee` **不兼容**：后者 items 为 9 列、INTEGER 主键、transform 分列存储，且会写 `PRAGMA user_version`；详见 spec §5.4。`BeeFile::open()` 校验 `metadata.format == 'prz'`，不符直接报错。
-- **All shortcuts dispatch through `keymap.rs` (`Action` 查表).** 新增动作用 `Action` 变体 + `default_binds()` + 进 `Action::ALL`，不直接 `ctx.input` 查键。硬约束：`Ctrl+C/X/V` 必须用 `on_release` 释放沿（egui-winit 拦截 `is_copy/is_paste_command` 按下沿）；修饰键严格匹配；`Esc` 有硬兜底；egui 0.36 的 `Event::Key.key` 是逻辑键，`Shift+数字` 类绑定靠 `physical_key` 回退命中。设置面板**不做**键鼠改绑 UI（ADR-0007 / D6），派发架构保留。
+- **All shortcuts dispatch through `keymap.rs` (`Action` 查表).** 新增动作用 `Action` 变体 + `default_binds()` + 进 `Action::ALL`，不直接 `ctx.input` 查键。硬约束：`Ctrl+C/X/V` 必须用 `on_release` 释放沿（egui-winit 拦截 `is_copy/is_paste_command` 按下沿）；修饰键严格匹配；`Esc` 有硬兜底；egui 0.37 的 `Event::Key.key` 是逻辑键，`Shift+数字` 类绑定靠 `physical_key` 回退命中。设置面板**不做**键鼠改绑 UI（ADR-0007 / D6），派发架构保留。
 - **All user-visible strings go through i18n**：`t(self.lang, T::X)` / `fill(...)`，不硬编码中英文文案（历史上曾因此出过 EN 界面弹中文的 bug）；英文表禁 CJK，`i18n::tests::english_table_contains_no_cjk` 回归把关。
 - **`.prz` 向后兼容（I4 决策）**：`ItemKind` 新增字段一律 `#[serde(default)]`，不动 `USER_VERSION`（kind 整体存 JSON blob，通常零迁移）；items 表加列用 `pragma_table_info` 检测 + `ALTER TABLE` 就地迁移（先例：`group_id`）。
 - **Image decode runs on background threads** (`std::thread::spawn`), post result via channel, call `egui_ctx.request_repaint()`.

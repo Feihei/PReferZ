@@ -27,11 +27,12 @@
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
-use egui::{ColorImage, Context, Event, UserData, ViewportCommand};
+use egui::{ColorImage, Context};
 use preferz_core::rpc::{handle_message, RpcDoc, RpcImage, ScreenshotReply};
 use preferz_fileio::{PrzFile, ViewportMeta};
 use serde_json::{json, Value};
@@ -532,8 +533,8 @@ impl RpcDoc for GuiDoc<'_> {
         })
     }
 
-    /// 同步 capture 契约下无法实现：截图回图在后续帧的 `Event::Screenshot`
-    /// 才到达。真实截图请求由 `poll_mcp` 截获走两拍异步（MCP `tools/call`
+    /// 同步 capture 契约下无法实现：截图回图要等渲染完成后的回调才到达。
+    /// 真实截图请求由 `poll_mcp` 截获走两拍异步（MCP `tools/call`
     /// 框架）；裸 JSONL `{"cmd":"screenshot"}` 会落到这里，结构化报错指路。
     fn capture_screenshot(&mut self, _max_width: Option<u32>) -> Result<ScreenshotReply, String> {
         Err(
@@ -606,20 +607,25 @@ pub(crate) fn inject_theme_defaults(line: &str, default_stroke: &StrokeStyle) ->
 
 /// 一条等待回图的截图请求（两拍异步的"拍间"状态）。
 ///
-/// `poll_mcp` 截获 `tools/call screenshot` 后：发
-/// `ViewportCommand::Screenshot`（`UserData` = token）并入队；本帧渲染完成后
-/// eframe（glow）把像素推回下一帧的 `Event::Screenshot`，
-/// `harvest_screenshots` 按 token 匹配 → PNG 编码 → 回包。超时兜底：窗口
-/// 最小化时 eframe 不渲染、事件永不到达，回结构化错误而非挂死连接线程。
+/// `poll_mcp` 截获 `tools/call screenshot` 后：调 `Context::request_screenshot`
+/// 挂一次性回调（egui 0.37 用 `ScreenshotCallback` 取代了旧的
+/// `Event::Screenshot` 加 `UserData` token 配对）。eframe 在**下一帧渲染完成后**
+/// 回调它——回调里直接做 PNG 编码并回包（glow 后端下回调发生在 UI 线程的绘制阶段）。
+///
+/// `claimed` 是「谁有权回包」的仲裁标志：回调与超时兜底竞争同一个原子量，
+/// 保证只回一次包（否则连接线程会收到两帧同 id 的响应）。
+///
+/// 超时兜底：窗口彻底不渲染（关闭中）时回调永不到达，回结构化错误而非挂死
+/// 连接线程。
 pub(crate) struct PendingScreenshot {
-    token: u64,
     req_id: Value,
-    max_width: Option<u32>,
     reply: Sender<String>,
+    /// 回包仲裁：`false → true` 的成功者才有权回包。
+    claimed: Arc<AtomicBool>,
     deadline: Instant,
 }
 
-/// 截图超时上限。可见窗口下一帧即回图，只有最小化/不渲染才等满。
+/// 截图超时上限。可见窗口下一帧即回图，只有不渲染才等满。
 const SCREENSHOT_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// `poll_mcp` 对一行请求的识别结果。
@@ -706,7 +712,7 @@ fn base64_encode(data: &[u8]) -> String {
     out
 }
 
-/// `Event::Screenshot` 的帧缓冲 RGBA（glow `glReadPixels` + Y 翻转，已含
+/// 截图回调拿到的帧缓冲 RGBA（glow `glReadPixels` + Y 翻转，已含
 /// 背景合成）→ PNG 字节。可选 `max_width` 等比降采样（Triangle 滤镜）控制
 /// 回给 LLM 的体积。
 fn encode_screenshot_png(
@@ -796,17 +802,33 @@ impl PReferZApp {
         serve.tick();
         for req in serve.poll() {
             // 截图请求截获：不走同步 handle_message——回图在后续帧
-            // （ViewportCommand::Screenshot → 渲染完成 → Event::Screenshot）。
+            // （request_screenshot → 渲染完成 → 回调拿到像素）。
             match parse_screenshot_intent(&req.line) {
                 ScreenshotIntent::Capture { req_id, max_width } => {
-                    let token = self.next_screenshot_token;
-                    self.next_screenshot_token += 1;
-                    ctx.send_viewport_cmd(ViewportCommand::Screenshot(UserData::new(token)));
+                    // 回包仲裁标志：截图回调与超时兜底竞争同一个原子量，
+                    // 保证同一个请求 id 只回一帧。
+                    let claimed = Arc::new(AtomicBool::new(false));
+                    let cb_claimed = claimed.clone();
+                    let cb_req_id = req_id.clone();
+                    let cb_reply = req.reply.clone();
+                    ctx.request_screenshot(move |image| {
+                        // 回调在绘制阶段触发（UI 线程）：PNG 编码后直接回包。
+                        if cb_claimed
+                            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                            .is_err()
+                        {
+                            return; // 超时兜底已回过包
+                        }
+                        let frame = match encode_screenshot_png(&image, max_width) {
+                            Ok(shot) => screenshot_result_frame(&cb_req_id, &shot),
+                            Err(e) => screenshot_error_frame(&cb_req_id, &e),
+                        };
+                        let _ = cb_reply.send(frame);
+                    });
                     self.mcp_pending_shots.push(PendingScreenshot {
-                        token,
                         req_id,
-                        max_width,
                         reply: req.reply,
+                        claimed,
                         deadline: Instant::now() + SCREENSHOT_TIMEOUT,
                     });
                     ctx.request_repaint();
@@ -832,54 +854,38 @@ impl PReferZApp {
             }
         }
         // 收割等待中的截图（无论本帧有没有新请求）。
-        self.harvest_screenshots(ctx);
+        self.harvest_screenshots();
     }
 
-    /// 匹配本帧到达的 `Event::Screenshot` 与等待队列：按 token 命中 → PNG
-    /// 编码回包；超时（窗口最小化时 eframe 不渲染、事件永不到达）→ 结构化
-    /// 错误回包；都没等到 → 留在队列等下一帧。
-    fn harvest_screenshots(&mut self, ctx: &Context) {
+    /// 清理等待队列：已回包的条目直接丢弃；超时未回包的（窗口彻底不渲染，
+    /// egui 回调永不到达）→ 结构化错误回包。
+    fn harvest_screenshots(&mut self) {
         if self.mcp_pending_shots.is_empty() {
             return;
         }
-        let arrived: Vec<(u64, Arc<ColorImage>)> = ctx.input(|i| {
-            i.raw
-                .events
-                .iter()
-                .filter_map(|e| match e {
-                    Event::Screenshot {
-                        user_data, image, ..
-                    } => {
-                        let token = user_data
-                            .data
-                            .as_ref()
-                            .and_then(|a| a.downcast_ref::<u64>())
-                            .copied()?;
-                        Some((token, image.clone()))
-                    }
-                    _ => None,
-                })
-                .collect()
-        });
         let now = Instant::now();
         let mut remaining = Vec::new();
         for pending in self.mcp_pending_shots.drain(..) {
-            let reply_line = match arrived.iter().find(|(t, _)| *t == pending.token) {
-                Some((_, image)) => match encode_screenshot_png(image, pending.max_width) {
-                    Ok(shot) => screenshot_result_frame(&pending.req_id, &shot),
-                    Err(e) => screenshot_error_frame(&pending.req_id, &e),
-                },
-                None if now >= pending.deadline => screenshot_error_frame(
+            // 截图回调已回包 → 无需再管。
+            if pending.claimed.load(Ordering::Acquire) {
+                continue;
+            }
+            if now < pending.deadline {
+                remaining.push(pending);
+                continue;
+            }
+            // 超时：抢到仲裁权才回包（可能与回调同帧竞争）。
+            if pending
+                .claimed
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                let _ = pending.reply.send(screenshot_error_frame(
                     &pending.req_id,
-                    "screenshot timed out: the window is minimized or not rendering; \
+                    "screenshot timed out: the window is not rendering; \
                      restore it and retry",
-                ),
-                None => {
-                    remaining.push(pending);
-                    continue;
-                }
-            };
-            let _ = pending.reply.send(reply_line);
+                ));
+            }
         }
         self.mcp_pending_shots = remaining;
     }

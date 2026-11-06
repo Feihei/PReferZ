@@ -41,20 +41,27 @@ euclid = { version = "0.22", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 
 # GUI
-# eframe 0.36 默认含 wgpu 渲染后端，但 wgpu 30 在本机 windows 0.62/MSVC 下编译失败
+# eframe 默认含 wgpu 渲染后端，但 wgpu 30 在本机 windows 0.62/MSVC 下编译失败
 # （wgpu-hal dx12 绑定 trait bound 不满足）。项目零 wgpu 引用、约定用 glow 后端，故显式关默认
-# features：保留原默认项（accesskit/default_fonts/links/wayland/web_screen_reader/x11），
+# features：保留原默认项（accesskit/clipboard/default_fonts/links/wayland/web_screen_reader/x11），
 # 把渲染后端从 wgpu 换成 glow，既绕开损坏的传递依赖又对齐既定后端。
-eframe = { version = "0.36", default-features = false, features = [
+# 注：eframe 0.37 起 `clipboard` 从「无条件传递」改为显式 feature（egui-winit 的系统剪贴板
+# 读写），TextEdit 的复制/粘贴依赖它，故必须显式开。
+eframe = { version = "0.37", default-features = false, features = [
     "accesskit",
+    "clipboard",
     "default_fonts",
     "glow",
     "links",
+    "system_fonts",
     "wayland",
     "web_screen_reader",
     "x11",
 ] }
-egui = "0.36"
+# 0.37 把内嵌的单色 emoji 字体（NotoEmoji-Regular / emoji-icon-font）改为可选 feature；
+# 不开时 emoji 会回落到系统彩色 emoji 字体（Windows 即 Segoe UI Emoji），界面图标随之变彩色。
+# 显式开启以保持 0.36 的单色观感（同时把这两个字体排回系统字体回退之前）。
+egui = { version = "0.37", features = ["monochrome_emoji_fonts"] }
 
 # File I/O
 rusqlite = { version = "0.40", features = ["bundled"] }

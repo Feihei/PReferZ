@@ -2,6 +2,21 @@
 //! 方法体逐字搬迁；`use super::*;` 取 mod.rs 的模块级词汇与私有项（子模块可访问父模块私有）。
 use super::*;
 
+/// 把绘制字号吸附到 1% 对数栅格。
+///
+/// egui 0.37 的文字整形（harfrust）对**新字号**是全量成本：滚轮平滑缩放会把
+/// 一格滚轮摊到多帧、每帧字号都略有不同，于是每帧都要把所有可见文本重排一遍
+/// （实测 release 下 help 文档 ~7 ms/帧，同字号缓存命中仅 ~0.02 ms）。量化后
+/// 相邻帧大多复用同一字号，重排次数降到每 ~5 帧一次；相对误差 ≤0.5%，视觉不可见。
+fn quantized_font_size(size: f32) -> f32 {
+    const BASE: f32 = 16.0;
+    const RATIO: f32 = 1.01;
+    if !(size.is_finite() && size > 0.0) {
+        return size;
+    }
+    BASE * RATIO.powf((size / BASE).log(RATIO).round())
+}
+
 impl PReferZApp {
     /// 绘制 Text item：可选背景色 + 文字。Edit 与 Present 两条渲染路径共用。
     ///
@@ -38,7 +53,9 @@ impl PReferZApp {
             egui::Color32::from_rgba_premultiplied(color[0], color[1], color[2], color[3]);
         let zoom = self.session.viewport.zoom;
         // 字体族：Handwriting → 内嵌 851远星夜行手写体；Normal → Proportional（思源黑体）
+        // 字号先量化再排版：缩放中相邻帧尽量复用同一字号，见 `quantized_font_size`。
         let make_font_id = |size: f32| {
+            let size = quantized_font_size(size);
             if *font_family == FontFamily::Handwriting {
                 egui::FontId::new(size, egui::FontFamily::Name(HANDWRITING_FONT_FAMILY.into()))
             } else {
@@ -666,7 +683,7 @@ impl PReferZApp {
                         egui::Color32::WHITE,
                     );
                     // 点击角标 → 进入编号编辑（Phase D：编号冲突自动顺移）。
-                    let badge_id = egui::Id::new(("frame_badge", item.id));
+                    let badge_id = egui::Id::unique(("frame_badge", item.id));
                     if ui
                         .interact(badge_rect, badge_id, egui::Sense::click())
                         .clicked()
@@ -723,7 +740,7 @@ impl PReferZApp {
                 );
                 self.link_badge_rects.push((item.id, badge_rect));
                 // 点击 badge → 登记待打开（ui() 输入段统一执行，press 已被守卫让开拖拽）
-                let badge_id = egui::Id::new(("link_badge", item.id));
+                let badge_id = egui::Id::unique(("link_badge", item.id));
                 if ui
                     .interact(badge_rect, badge_id, egui::Sense::click())
                     .clicked()
@@ -1055,5 +1072,26 @@ mod chart_render_tests {
         let lifted =
             lighten_series_for_dark(egui::Color32::from_rgba_unmultiplied(0, 0, 0, 128), true);
         assert_eq!(lifted.to_array()[3], 128);
+    }
+
+    #[test]
+    fn quantized_font_size_snaps_to_lattice_within_half_percent() {
+        assert_eq!(quantized_font_size(16.0), 16.0);
+        for size in [7.0f32, 14.0, 20.0, 42.0, 120.0] {
+            let q = quantized_font_size(size);
+            assert!((q / size - 1.0).abs() <= 0.005 + 1e-4, "{size} → {q}");
+        }
+    }
+
+    #[test]
+    fn quantized_font_size_reuses_size_across_zoom_frames() {
+        // 滚轮平滑缩放相邻帧约 0.2%：40 帧内应只有少数几个不同字号
+        let mut sizes = std::collections::BTreeSet::new();
+        let mut zoom = 1.0f32;
+        for _ in 0..40 {
+            zoom *= 1.002;
+            sizes.insert(quantized_font_size(20.0 * zoom).to_bits());
+        }
+        assert!(sizes.len() <= 12, "不同字号 {} 过多", sizes.len());
     }
 }

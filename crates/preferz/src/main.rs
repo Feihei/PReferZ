@@ -121,7 +121,7 @@ mod tests {
     #[test]
     fn decompressed_font_matches_original_ttf() {
         let defs = preferz::app_font_definitions();
-        let font = defs.font_data["SourceHanSansCN"].font.clone().into_owned();
+        let font = defs.font_data["SourceHanSansCN"].bytes();
         // sfnt 魔数 0x00010000 = TrueType outlines
         assert_eq!(&font[..4], &[0x00, 0x01, 0x00, 0x00], "sfnt 魔数不符");
     }
@@ -130,10 +130,7 @@ mod tests {
     #[test]
     fn decompressed_handwriting_font_matches_original_ttf() {
         let defs = preferz::app_font_definitions();
-        let font = defs.font_data[preferz::HANDWRITING_FONT_FAMILY]
-            .font
-            .clone()
-            .into_owned();
+        let font = defs.font_data[preferz::HANDWRITING_FONT_FAMILY].bytes();
         assert_eq!(&font[..4], &[0x00, 0x01, 0x00, 0x00], "sfnt 魔数不符");
     }
 

@@ -119,13 +119,18 @@ impl PReferZApp {
         ));
         let old_viewport = std::mem::replace(&mut self.session.viewport, vp);
 
-        let layer_id = egui::LayerId::new(egui::Order::Middle, egui::Id::new("export_offscreen"));
+        let layer_id =
+            egui::LayerId::new(egui::Order::Middle, egui::Id::unique("export_offscreen"));
         let builder = egui::UiBuilder {
             max_rect: Some(target),
             layer_id: Some(layer_id),
             ..egui::UiBuilder::default()
         };
-        let mut ui = egui::Ui::new(ctx.clone(), egui::Id::new("export_offscreen_ui"), builder);
+        let mut ui = egui::Ui::new(
+            ctx.clone(),
+            egui::Id::unique("export_offscreen_ui"),
+            builder,
+        );
 
         // 逐 item 收集：记录每项画完后的 PaintList 长度边界，切出各自的形状区间
         let mut items_shapes: Vec<Vec<egui::epaint::ClippedShape>> =
@@ -494,10 +499,10 @@ mod tests {
             screen_rect: Some(target),
             ..egui::RawInput::default()
         });
-        let layer_id = egui::LayerId::new(egui::Order::Middle, egui::Id::new("t"));
+        let layer_id = egui::LayerId::new(egui::Order::Middle, egui::Id::unique("t"));
         let ui = egui::Ui::new(
             ctx.clone(),
-            egui::Id::new("t_ui"),
+            egui::Id::unique("t_ui"),
             egui::UiBuilder {
                 max_rect: Some(target),
                 layer_id: Some(layer_id),

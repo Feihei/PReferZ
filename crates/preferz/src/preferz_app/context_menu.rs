@@ -4,7 +4,7 @@ use super::*;
 
 impl PReferZApp {
     pub(crate) fn render_context_menu(&mut self, ctx: &egui::Context) {
-        let menu_id = egui::Id::new("context_menu");
+        let menu_id = egui::Id::unique("context_menu");
         let pos = self.context_menu_pos;
         let has_selection = !self.session.scene.selection.is_empty();
         let primary_pressed = ctx.input(|i| i.pointer.primary_pressed());

@@ -137,7 +137,7 @@ impl PReferZApp {
             + chrome::BAR_MARGIN
             + 32.0;
         let offset_x = -chrome::BAR_MARGIN + (1.0 - self.props_anim) * slide_dist;
-        egui::Area::new(egui::Id::new("props_panel"))
+        egui::Area::new(egui::Id::unique("props_panel"))
             .anchor(
                 egui::Align2::RIGHT_TOP,
                 egui::vec2(offset_x, chrome::BAR_MARGIN),
@@ -492,7 +492,7 @@ impl PReferZApp {
             return;
         };
         let current = item.link.clone().unwrap_or_default();
-        let buf_id = egui::Id::new("link_input_buf").with(id);
+        let buf_id = egui::Id::unique("link_input_buf").with(id);
         let mut buf = ui.ctx().memory_mut(|m| {
             m.data
                 .get_temp_mut_or_insert_with(buf_id, || current.clone())
@@ -504,7 +504,7 @@ impl PReferZApp {
                 chrome::restore_input_stroke(ui);
                 ui.add(
                     egui::TextEdit::singleline(&mut buf)
-                        .id(egui::Id::new("link_input"))
+                        .id(egui::Id::unique("link_input"))
                         .hint_text(t(lang, T::LinkPlaceholder))
                         .desired_width(f32::INFINITY),
                 )
@@ -641,7 +641,7 @@ impl PReferZApp {
             + chrome::BAR_MARGIN
             + 32.0;
         let offset_x = -chrome::BAR_MARGIN + (1.0 - self.props_anim) * slide_dist;
-        egui::Area::new(egui::Id::new("defaults_panel"))
+        egui::Area::new(egui::Id::unique("defaults_panel"))
             .anchor(
                 egui::Align2::RIGHT_TOP,
                 egui::vec2(offset_x, chrome::BAR_MARGIN),

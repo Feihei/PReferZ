@@ -407,7 +407,7 @@ impl PReferZApp {
             None => {
                 // 显示模式提示
                 if let Some(p) = pos {
-                    egui::Area::new(egui::Id::new("color_picker_hint"))
+                    egui::Area::new(egui::Id::unique("color_picker_hint"))
                         .order(egui::Order::Foreground)
                         .fixed_pos(p + egui::vec2(16.0, 16.0))
                         .show(ctx, |ui| {
@@ -423,7 +423,7 @@ impl PReferZApp {
             }
         };
         let pos = pos.unwrap_or(sample.screen_pos);
-        egui::Area::new(egui::Id::new("color_picker_overlay"))
+        egui::Area::new(egui::Id::unique("color_picker_overlay"))
             .order(egui::Order::Foreground)
             .fixed_pos(pos + egui::vec2(16.0, 16.0))
             .show(ctx, |ui| {

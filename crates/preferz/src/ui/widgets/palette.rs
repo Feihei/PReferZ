@@ -294,7 +294,7 @@ fn palette_popup(
     section(ui, t(lang, T::PaletteHex));
     // 用 temp 数据按 popup id 缓存输入串：未聚焦时以 current 回填，聚焦（正在打字）
     // 时保留用户输入，避免每帧重置光标。popup 关闭后 temp 自然失效，重开时再回填。
-    let id = ui.id().with("palette_hex");
+    let id = ui.scope_id().with("palette_hex");
     let focused_key = id.with("focus");
     let was_focused = ui
         .ctx()

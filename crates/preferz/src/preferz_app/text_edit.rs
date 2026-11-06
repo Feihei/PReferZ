@@ -235,7 +235,7 @@ impl PReferZApp {
         };
 
         let mut area =
-            egui::Area::new(egui::Id::new("text_edit_area")).order(egui::Order::Foreground);
+            egui::Area::new(egui::Id::unique("text_edit_area")).order(egui::Order::Foreground);
         if let Some(r) = container_screen_rect {
             // 绑定文本：居中于容器（先按预估高度定位，渲染后再由 min_width 撑开）。
             let w = (r.width() - 16.0).max(60.0);
@@ -402,7 +402,7 @@ impl PReferZApp {
         let mut cancel = false;
 
         let mut buf = self.frame_number_buf.clone();
-        egui::Area::new(egui::Id::new("frame_number_edit_area"))
+        egui::Area::new(egui::Id::unique("frame_number_edit_area"))
             .order(egui::Order::Foreground)
             .fixed_pos(sr.min)
             .show(ctx, |ui| {

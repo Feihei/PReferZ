@@ -188,7 +188,7 @@ impl PReferZApp {
             });
 
         // 页码指示（右下角）
-        egui::Area::new(egui::Id::new("present_page_indicator"))
+        egui::Area::new(egui::Id::unique("present_page_indicator"))
             .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-28.0, -20.0))
             .order(egui::Order::Foreground)
             .show(ctx, |ui| {

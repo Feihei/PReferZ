@@ -474,12 +474,10 @@ pub struct PReferZApp {
     /// agent 客户端的工具调用实时操作本窗口的画布。
     /// `None` = config 关闭或启动失败（端口/握手文件）。
     mcp: Option<mcp_serve::McpServe>,
-    /// MCP 截图等待队列：`poll_mcp` 截获 screenshot 请求后先发
-    /// `ViewportCommand::Screenshot`，回图在后续帧的 `Event::Screenshot` 到达，
-    /// 匹配 token 后回包（两拍异步，见 `mcp_serve::PendingScreenshot`）。
+    /// MCP 截图等待队列：`poll_mcp` 截获 screenshot 请求后调
+    /// `Context::request_screenshot` 挂一次性回调，eframe 在下一帧渲染完成后
+    /// 回调它并直接回包；本队列只用于超时兜底（见 `mcp_serve::PendingScreenshot`）。
     mcp_pending_shots: Vec<mcp_serve::PendingScreenshot>,
-    /// MCP 截图 token 计数（与 egui `UserData` 配对匹配回图帧）。
-    next_screenshot_token: u64,
 }
 
 /// 保存提示对话框的触发场景#[derive(Clone, Copy, PartialEq)]
@@ -999,7 +997,6 @@ impl PReferZApp {
                 None
             },
             mcp_pending_shots: Vec::new(),
-            next_screenshot_token: 1,
         }
     }
 
@@ -1485,8 +1482,11 @@ impl eframe::App for PReferZApp {
             let rect = ui.max_rect();
             self.session.viewport.set_screen_rect_egui(rect);
 
-            let response =
-                ui.interact(rect, egui::Id::new("canvas"), egui::Sense::click_and_drag());
+            let response = ui.interact(
+                rect,
+                egui::Id::unique("canvas"),
+                egui::Sense::click_and_drag(),
+            );
 
             // 画布背景：随主题翻转（D2），并应用 bg_alpha（单张半透明底，铺满整个面板）
             let bg_alpha_u8 = (self.bg_alpha * 255.0).round() as u8;
@@ -2190,7 +2190,7 @@ impl PReferZApp {
         let width = chrome::TOOL_BTN_SIZE + 2.0 * chrome::BAR_INNER_MARGIN as f32;
         let slide_dist = width + chrome::BAR_MARGIN + 16.0;
         let offset_x = chrome::BAR_MARGIN - (1.0 - self.toolbar_anim) * slide_dist;
-        egui::Area::new(egui::Id::new("toolbar"))
+        egui::Area::new(egui::Id::unique("toolbar"))
             .anchor(
                 egui::Align2::LEFT_TOP,
                 egui::vec2(offset_x, chrome::BAR_MARGIN),
@@ -2537,7 +2537,7 @@ impl PReferZApp {
     fn render_hud(&mut self, ctx: &egui::Context) {
         // 每帧复位；缩放输入框若持焦会置真（供 handle_shortcuts 守卫）。
         self.zoom_hud_focused = false;
-        egui::Area::new(egui::Id::new("hud_bottom_left"))
+        egui::Area::new(egui::Id::unique("hud_bottom_left"))
             .anchor(egui::Align2::LEFT_BOTTOM, egui::vec2(12.0, -12.0))
             .order(egui::Order::Foreground)
             .interactable(true)
@@ -2568,7 +2568,7 @@ impl PReferZApp {
                             }
                             // 百分比输入：temp 缓存输入串，未聚焦时以当前缩放回填，
                             // 聚焦（正在打字）时保留用户输入，避免每帧重置光标。
-                            let id = ui.id().with("hud_zoom_input");
+                            let id = ui.scope_id().with("hud_zoom_input");
                             let focused_key = id.with("focus");
                             let was_focused = ui
                                 .ctx()
@@ -2588,7 +2588,7 @@ impl PReferZApp {
                                         .desired_width(40.0)
                                         .char_limit(5)
                                         .margin(egui::vec2(2.0, 2.0))
-                                        .horizontal_align(egui::Align::Center),
+                                        .align(egui::Align2::CENTER_TOP),
                                 )
                                 .on_hover_text(t(self.lang, T::ZoomHint));
                             ui.label("%");
@@ -2645,7 +2645,7 @@ impl PReferZApp {
         // `state.size = Some(content_ui.min_size())`）。若沿用固定 Id，新文案会
         // 按上一条（可能已被收缩过的）宽度排版，居中位置也慢一帧。换新 Id 则走
         // 一次 sizing pass，结束时 egui 自带 `request_repaint()`，真实宽度立刻到位。
-        egui::Area::new(egui::Id::new(("flash_toast", self.flash_seq)))
+        egui::Area::new(egui::Id::unique(("flash_toast", self.flash_seq)))
             .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -16.0))
             .order(egui::Order::Foreground)
             .interactable(false)

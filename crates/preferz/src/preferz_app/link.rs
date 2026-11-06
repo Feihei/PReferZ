@@ -48,7 +48,7 @@ impl PReferZApp {
     /// 输入框（输入框本帧渲染时认领焦点，见 props.rs 的 `link_input` Id）。
     pub(crate) fn focus_link_input(&mut self, ctx: &egui::Context) {
         self.props_visible = true;
-        ctx.memory_mut(|m| m.request_focus(egui::Id::new("link_input")));
+        ctx.memory_mut(|m| m.request_focus(egui::Id::unique("link_input")));
         ctx.request_repaint();
     }
 
