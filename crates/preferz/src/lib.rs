@@ -94,21 +94,23 @@ fn load_handwriting_font() -> Vec<u8> {
     buf
 }
 
-/// 加载内嵌帮助文档（plan #25）：`.prz` SQLite 原始字节。
+/// 加载内嵌帮助文档（plan #25）：`.prz` SQLite 原始字节，按界面语言选择版本。
 ///
-/// build.rs 编译期 deflate 压缩 `assets/help.prz` 后嵌入，运行时 inflate 还原。
-/// 供 `--help-doc` 帮助实例经 `PrzFile::from_bytes` 内存直载——帮助内容与
-/// 二进制同版本，永远和当前 ItemKind schema 一致。
-/// `HELP_DOC_RAW_SIZE` 由 build.rs 注入，用于预分配缓冲。
-pub fn help_doc_prz_bytes() -> Vec<u8> {
+/// build.rs 编译期 deflate 压缩 `assets/help.prz`（中文）与 `assets/help-en.prz`
+/// （英文，同布局文本翻译）后嵌入，运行时 inflate 还原。供 `--help-doc` 帮助
+/// 实例经 `PrzFile::from_bytes` 内存直载——帮助内容与二进制同版本，永远和当前
+/// ItemKind schema 一致。`HELP_DOC_RAW_SIZE` / `HELP_DOC_EN_RAW_SIZE` 由
+/// build.rs 注入，用于预分配缓冲。
+pub fn help_doc_prz_bytes(lang: i18n::Lang) -> Vec<u8> {
     use std::io::Read;
-    const COMPRESSED: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/help.prz.zlib"));
-    let mut buf = Vec::with_capacity(
-        env!("HELP_DOC_RAW_SIZE")
-            .parse()
-            .expect("HELP_DOC_RAW_SIZE 应为 usize"),
-    );
-    flate2::read::ZlibDecoder::new(COMPRESSED)
+    const COMPRESSED_ZH: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/help.prz.zlib"));
+    const COMPRESSED_EN: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/help-en.prz.zlib"));
+    let (compressed, raw_size) = match lang {
+        i18n::Lang::Zh => (COMPRESSED_ZH, env!("HELP_DOC_RAW_SIZE")),
+        i18n::Lang::En => (COMPRESSED_EN, env!("HELP_DOC_EN_RAW_SIZE")),
+    };
+    let mut buf = Vec::with_capacity(raw_size.parse().expect("帮助文档 RAW_SIZE 应为 usize"));
+    flate2::read::ZlibDecoder::new(compressed)
         .read_to_end(&mut buf)
         .expect("解压内嵌帮助文档失败");
     buf

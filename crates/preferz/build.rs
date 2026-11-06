@@ -14,12 +14,17 @@ const HANDWRITING_FONT_SRC: &str = "../../assets/851LakeusNightWriting-Regular.t
 
 const HANDWRITING_FONT_ZLIB: &str = "851LakeusNightWriting-Regular.ttf.zlib";
 
-/// 内嵌帮助文档源文件（plan #25）：`--help-doc` 实例启动时加载。
+/// 内嵌帮助文档源文件（plan #25）：`--help-doc` 实例启动时按界面语言加载。
 /// 正式内容在 PReferZ 里绘制后「另存为」覆盖此文件，重编译即生效；
 /// 占位内容用 `cargo run -p preferz --example gen_help_doc` 生成。
 const HELP_DOC_SRC: &str = "../../assets/help.prz";
 
 const HELP_DOC_ZLIB: &str = "help.prz.zlib";
+
+/// 英文版帮助文档（与 [`HELP_DOC_SRC`] 同布局，文本原位翻译；英文界面用）。
+const HELP_DOC_EN_SRC: &str = "../../assets/help-en.prz";
+
+const HELP_DOC_EN_ZLIB: &str = "help-en.prz.zlib";
 
 fn main() {
     // 仅 Windows 目标嵌入 exe 资源图标（Linux/macOS 无需此步骤）。
@@ -42,6 +47,7 @@ fn main() {
         "HANDWRITING_FONT_RAW_SIZE",
     );
     compress_file(HELP_DOC_SRC, HELP_DOC_ZLIB, "HELP_DOC_RAW_SIZE");
+    compress_file(HELP_DOC_EN_SRC, HELP_DOC_EN_ZLIB, "HELP_DOC_EN_RAW_SIZE");
 }
 
 /// 把任意资源文件 deflate 压缩后写进 OUT_DIR，并把原始字节数经

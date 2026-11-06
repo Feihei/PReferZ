@@ -1936,6 +1936,25 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 
 ---
 
+## 帮助文档双语：英文界面打开英文版（2026-11-06）
+
+> 此前帮助文档只有中文版 `assets/help.prz`，英文界面点帮助也弹中文内容。
+
+- **help-en.prz**：`assets/help-en.prz` 与中文版同布局（61 item 逐一对应，几何/
+  样式不动），仅 `Text.content` 原位翻译为英文（52 条文本全部映射，无遗留 CJK）；
+  中文版手绘调好的排版直接继承
+- **按语言加载**：`help_doc_prz_bytes(lang)` 接收 `Lang` 选择中/英嵌入产物
+  （build.rs 新增 `HELP_DOC_EN_SRC`/`HELP_DOC_EN_ZLIB`/`HELP_DOC_EN_RAW_SIZE`，
+  同一 deflate 管线）；`load_embedded_help` 传 `self.lang`
+- **语言来源零传参**：帮助子进程 spawn 时仍只带 `--help-doc`——语言切换在
+  侧栏点击即 `persist_config()` 落盘共享 `config.json`，子进程 `Self::new()`
+  读到的即是用户当前所选语言
+- 测试：`decompressed_help_doc_is_sqlite` 扩为中英两版各自校验 SQLite 魔数；
+  新增 `both_help_docs_load_via_przfile`（两版都过 `from_bytes → load_scene`
+  真实加载链路，防翻译脚本破坏 schema）；全量 fmt / clippy 零告警，423 通过
+
+---
+
 ## 决策点归档（D1–D6 / I1–I4 / L 系列）
 
 > 原列于 plan.md，G/I/H/K 交付后蒸馏归档于此，使 CHANGELOG 自包含、plan.md 仅保留前瞻内容。

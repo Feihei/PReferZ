@@ -1023,9 +1023,11 @@ impl PReferZApp {
     }
 
     /// 从内嵌字节装载帮助场景：解压 → 内存库直载 → 纹理上传 + 视口还原。
+    /// 版本按当前界面语言选择（帮助实例的 config 与主窗口共享，语言切换
+    /// 即时落盘，故子进程启动时读到的即是用户所选语言）。
     fn load_embedded_help(&mut self, ctx: &egui::Context) {
-        let result =
-            PrzFile::from_bytes(crate::help_doc_prz_bytes()).and_then(|prz| prz.load_scene());
+        let result = PrzFile::from_bytes(crate::help_doc_prz_bytes(self.lang))
+            .and_then(|prz| prz.load_scene());
         match result {
             Ok((mut scene, images, viewport_meta)) => {
                 self.install_loaded_assets(ctx, &mut scene, &images);

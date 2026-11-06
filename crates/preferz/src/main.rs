@@ -134,16 +134,36 @@ mod tests {
         assert_eq!(&font[..4], &[0x00, 0x01, 0x00, 0x00], "sfnt 魔数不符");
     }
 
-    /// 内嵌帮助文档（plan #25）解压产物必须是 SQLite 文件（.prz 的载体格式）。
-    /// 防两类问题：assets/help.prz 被替换后 build.rs 未重跑（产物陈旧）；
-    /// 或压缩/解压链路损坏。
+    /// 内嵌帮助文档（plan #25）解压产物必须是 SQLite 文件（.prz 的载体格式），
+    /// 中英文两版各自校验。防两类问题：assets 下的 help*.prz 被替换后 build.rs
+    /// 未重跑（产物陈旧）；或压缩/解压链路损坏。
     #[test]
     fn decompressed_help_doc_is_sqlite() {
-        let bytes = preferz::help_doc_prz_bytes();
-        assert!(
-            bytes.starts_with(b"SQLite format 3\0"),
-            "help.prz 应为 SQLite 文件，实际头部: {:?}",
-            &bytes[..bytes.len().min(16)]
-        );
+        for (lang, name) in [
+            (preferz::i18n::Lang::Zh, "help.prz"),
+            (preferz::i18n::Lang::En, "help-en.prz"),
+        ] {
+            let bytes = preferz::help_doc_prz_bytes(lang);
+            assert!(
+                bytes.starts_with(b"SQLite format 3\0"),
+                "{name} 应为 SQLite 文件，实际头部: {:?}",
+                &bytes[..bytes.len().min(16)]
+            );
+        }
+    }
+
+    /// 中英文帮助文档都必须能经真实加载链路（from_bytes → load_scene）完整
+    /// 读回场景——英文版是构建期从中文版文本翻译生成的，防止翻译脚本破坏
+    /// schema 或丢 item。
+    #[test]
+    fn both_help_docs_load_via_przfile() {
+        for lang in [preferz::i18n::Lang::Zh, preferz::i18n::Lang::En] {
+            let prz = preferz_fileio::PrzFile::from_bytes(preferz::help_doc_prz_bytes(lang))
+                .unwrap_or_else(|e| panic!("lang {lang:?}: from_bytes 失败: {e}"));
+            let (scene, _, _) = prz
+                .load_scene()
+                .unwrap_or_else(|e| panic!("lang {lang:?}: load_scene 失败: {e}"));
+            assert!(!scene.items.is_empty(), "lang {lang:?}: 帮助场景为空");
+        }
     }
 }
