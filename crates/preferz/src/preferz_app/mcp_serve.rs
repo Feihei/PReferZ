@@ -6,12 +6,17 @@
 //! - 握手文件 `~/.preferz/mcp-endpoint.json`：`{"port","token","pid"}`，是
 //!   「哪个窗口正被 agent 控制」的**唯一事实源**；token 防本机无关进程误连
 //!   （pid 仅参考，验活靠 connect + token）。
-//! - **多实例三态**（每窗口 HUD 有 MCP 徽标可见可切换）：
+//! - **多实例三态**（每窗口侧栏有 MCP 徽标可见可切换）：
 //!   `Active`（持有握手文件，`--mcp` 连这里）/ `Standby`（监听在跑但不持有
 //!   文件，文件空出时 1s 内自动认领）/ `Disabled`（用户手动关闭，不自动认领）。
 //!   任意时刻至多一个 Active。启动时文件空闲/陈旧则认领、他人活跃则待命
-//!   （新窗口不再抢占既有控制权）；用户在待命窗口点开开关 = 显式接管（覆写
-//!   文件，原 Active 下一秒 tick 自动让位）。
+//!   （新窗口不再抢占既有控制权）。
+//! - **抢占一律先问**（2026-11-07）：从**存活**实例手里夺控制权只有两条路
+//!   （启动时发现他人活跃 / 用户在待命窗口点徽标），两条都只登记
+//!   [`TakeoverRequest`] 并弹确认框，用户点「接管本窗口」才写握手文件——
+//!   不再有「新窗口一开，正被 agent 操作的老窗口就静默失去控制」的隐式切换。
+//!   「文件空出（老控制方已退出）后自动认领」保留：那不是从活实例手里抢，
+//!   且会 flash 提示，不再是无声状态跳变。
 //! - 连接线程先收一行 `{"token":"..."}`，校验通过回 `ok` 才进入转发循环；
 //!   每个请求经 mpsc 投递 UI 线程，`ui()` 每帧轮询处理（复用 dispatch 语义，
 //!   所有变更走同一条 undo 通道），回复经 per-request 通道回连接线程。
@@ -90,23 +95,53 @@ fn read_endpoint(path: &Path) -> Option<EndpointInfo> {
     })
 }
 
-/// 探测另一实例是否存活：connect + token 验活。连接被拒 = 监听已死（GUI 进程
-/// 退出时监听必然关闭），是最可靠的陈旧文件信号；本机 connect 立即返回。
-fn owner_alive(info: &EndpointInfo) -> bool {
+/// 探活的分段超时：connect 在本机要么立刻成功要么立刻被拒（RST），
+/// 300ms 只兜住监听 backlog 满的极端情况；握手回 `ok` 的读超时给足
+/// 800ms——窗口在高负载下可能晚一点响应，误判成「已死」会导致静默夺权。
+const PROBE_CONNECT_TIMEOUT: Duration = Duration::from_millis(300);
+const PROBE_READ_TIMEOUT: Duration = Duration::from_millis(800);
+
+/// 探活三态。
+///
+/// `Dead` 只在**有明确证据**时给出：连接被拒（GUI 退出时监听必然关闭，这是
+/// 最可靠的陈旧文件信号）或对端明确回绝/断开。读超时一类说不准的情况归
+/// `Unknown`——此时不静默认领，转而请用户确认（`Alive` 与 `Unknown` 都当
+/// 「有人在」处理）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OwnerProbe {
+    /// 活监听 + token 匹配。
+    Alive,
+    /// 监听已死（或端口被别的进程复用，验活回 denied）。
+    Dead,
+    /// 连上了但握手没走完：无法判定存亡。
+    Unknown,
+}
+
+fn probe_owner(info: &EndpointInfo) -> OwnerProbe {
     use std::net::SocketAddr;
     let addr = SocketAddr::from(([127, 0, 0, 1], info.port));
-    let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_millis(300)) else {
-        return false;
+    let Ok(mut stream) = TcpStream::connect_timeout(&addr, PROBE_CONNECT_TIMEOUT) else {
+        return OwnerProbe::Dead;
     };
-    let _ = stream.set_read_timeout(Some(Duration::from_millis(300)));
+    let _ = stream.set_read_timeout(Some(PROBE_READ_TIMEOUT));
     let Ok(mut reader) = stream.try_clone().map(BufReader::new) else {
-        return false;
+        return OwnerProbe::Unknown;
     };
     if writeln!(stream, "{{\"token\":\"{}\"}}", info.token).is_err() {
-        return false;
+        return OwnerProbe::Unknown;
     }
     let mut line = String::new();
-    reader.read_line(&mut line).is_ok() && line.trim() == "ok"
+    match reader.read_line(&mut line) {
+        Ok(n) if n > 0 => {
+            if line.trim() == "ok" {
+                OwnerProbe::Alive
+            } else {
+                OwnerProbe::Dead // denied：端口已被别的进程复用，文件是陈旧的
+            }
+        }
+        Ok(_) => OwnerProbe::Dead,     // 对端直接关连接：accept 线程不在了
+        Err(_) => OwnerProbe::Unknown, // 超时 / 读错误：说不准，别静默夺权
+    }
 }
 
 /// 握手文件相对本实例的归属态（`tick` 状态机的输入）。
@@ -125,6 +160,59 @@ fn read_endpoint_state(path: &Path, my_token: &str) -> EndpointState {
         None => EndpointState::Free,
         Some(info) if info.token == my_token => EndpointState::Mine,
         Some(_) => EndpointState::Other,
+    }
+}
+
+/// 一个等待用户确认的接管目标：另一个**存活**实例正持有握手文件。
+///
+/// 只承载提示所需的展示信息（端口）。未经确认绝不写握手文件——这是
+/// 「不静默切换控制权」的唯一执行点。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TakeoverRequest {
+    /// 对方监听端口（提示文案用）。
+    pub(crate) port: u16,
+}
+
+/// 状态机产生的一次性用户可见事件，由 `poll_mcp` 取走转成 flash 提示。
+///
+/// 三态切换过去是无声的：控制权易手时两个窗口的徽标悄悄变色，用户既不知道
+/// 发生了什么，也不知道 agent 的下一步操作落到了哪个窗口。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum McpNotice {
+    /// 原控制窗口已退出，本窗口自动认领了握手文件。
+    AutoClaimed,
+    /// 另一窗口接管，本窗口让位进入待命（已建立的 agent 连接不受影响）。
+    LostToOther,
+    /// 用户确认接管，控制权已切到本窗口。
+    TookOver,
+}
+
+/// 写握手文件并报告成败（失败只记日志：GUI 其余功能照常）。
+fn claim_file(path: &Path, port: u16, token: &str) -> bool {
+    write_endpoint_file(path, port, token)
+        .map_err(|e| log::warn!("MCP 握手文件写入失败: {e}"))
+        .is_ok()
+}
+
+/// 启动归属决策（`start()` 与单测共用），返回 `(是否持有握手文件, 待确认接管)`：
+///
+/// - 无文件 / 坏 JSON → 直接认领（没人在，谈不上切换）；
+/// - 文件是自己的（新 token 下不可能，防御性收敛）→ 认领；
+/// - 他人**存活或存亡不明** → 不写文件，只登记待确认接管（**不再静默抢夺**）；
+/// - 他人已死 → 清陈旧 + 认领（崩溃残留自愈，无活实例可打扰）。
+fn decide_startup(path: &Path, port: u16, token: &str) -> (bool, Option<TakeoverRequest>) {
+    match read_endpoint(path) {
+        None => (claim_file(path, port, token), None),
+        Some(info) if info.token == token => (true, None),
+        Some(info) => match probe_owner(&info) {
+            OwnerProbe::Dead => {
+                let _ = std::fs::remove_file(path);
+                (claim_file(path, port, token), None)
+            }
+            OwnerProbe::Alive | OwnerProbe::Unknown => {
+                (false, Some(TakeoverRequest { port: info.port }))
+            }
+        },
     }
 }
 
@@ -155,6 +243,12 @@ pub(crate) struct McpServe {
     active: bool,
     /// 用户手动关闭：文件空出也不自动认领（Standby 与 Disabled 的分界）。
     user_disabled: bool,
+    /// 待用户确认的接管请求。非空 → 弹确认框（`render_mcp_takeover_prompt`），
+    /// 确认才写握手文件。只有「启动时发现他人活跃」与「用户点徽标申请接管」
+    /// 两个入口会置位；tick 不会自己造一个出来（否则每秒打断用户）。
+    takeover_prompt: Option<TakeoverRequest>,
+    /// 待上报的一次性状态事件（flash），`poll_mcp` 每帧取走。
+    notice: Option<McpNotice>,
     /// 上次 tick 时刻（状态机轮询节流）。
     last_tick: Instant,
 }
@@ -172,24 +266,9 @@ impl McpServe {
         // token：uuid v4 简单格式 = 32 hex 字符（无 rand 依赖，core 已带 uuid）。
         let token = ItemId::new_v4().simple().to_string();
 
-        // 启动归属决策：文件空闲/陈旧 → 认领（写失败 = MCP 整体不可用，同旧行为）；
-        // 他人活跃 → 待命（新窗口不抢占既有控制权）；他人已死 → 清陈旧 + 认领。
-        let active = match read_endpoint(&endpoint_path) {
-            None => write_endpoint_file(&endpoint_path, port, &token)
-                .map_err(|e| log::warn!("MCP 握手文件写入失败: {e}"))
-                .is_ok(),
-            Some(info) if info.token == token => true, // 不可能（新 token），防御性收敛
-            Some(info) => {
-                if owner_alive(&info) {
-                    false // Standby
-                } else {
-                    let _ = std::fs::remove_file(&endpoint_path);
-                    write_endpoint_file(&endpoint_path, port, &token)
-                        .map_err(|e| log::warn!("MCP 握手文件写入失败: {e}"))
-                        .is_ok()
-                }
-            }
-        };
+        // 启动归属决策：文件空闲/陈旧 → 认领；他人活跃（或存亡不明）→ 待命 +
+        // 登记接管请求（**不静默切换**，等用户确认）。见 `decide_startup`。
+        let (active, takeover_prompt) = decide_startup(&endpoint_path, port, &token);
 
         let (tx, rx) = mpsc::channel::<McpRequest>();
         let ctx_slot: Arc<OnceLock<Context>> = Arc::new(OnceLock::new());
@@ -220,6 +299,8 @@ impl McpServe {
             port,
             active,
             user_disabled: false,
+            takeover_prompt,
+            notice: None,
             last_tick: Instant::now(),
         })
     }
@@ -250,10 +331,12 @@ impl McpServe {
 
     /// 状态转移（纯逻辑，单测直接驱动）：
     /// - Free + Active：文件被外力删了 → 重写自愈；
-    /// - Free + Standby（非用户关闭）：控制方退出 → 自动认领（方案 2 退化兜底）；
+    /// - Free + Standby（非用户关闭）：控制方**已退出** → 自动认领 + flash 提示
+    ///   （无活实例可打扰，不算静默抢占）；
     /// - Free + Disabled：用户关的 → 不动；
     /// - Mine：文件是我们的（含启动竞态收敛）→ 置 Active；
-    /// - Other + Active：别的窗口接管了 → 自动让位成 Standby。
+    /// - Other + Active：别的窗口确认接管了 → 让位成 Standby + flash 提示。
+    ///   tick 从不主动弹接管确认框：那会在用户专心干活时每秒打断一次。
     fn apply_state(&mut self, state: EndpointState) {
         match state {
             EndpointState::Free => {
@@ -263,35 +346,85 @@ impl McpServe {
                     }
                 } else if !self.user_disabled {
                     self.claim();
+                    if self.active {
+                        // 对方的窗口先退出了：接管询问已无意义，别让陈旧弹窗
+                        // 留在屏幕上说「另一窗口正被控制」。
+                        self.takeover_prompt = None;
+                        self.notice = Some(McpNotice::AutoClaimed);
+                    }
                 }
             }
-            EndpointState::Mine => self.active = true,
-            EndpointState::Other => self.active = false,
-        }
-    }
-
-    /// 写握手文件夺/得控制权（待命认领与用户显式接管共用；`--mcp` 只认文件）。
-    /// 显式接管时原 Active 实例下一秒 tick 读到 Other 自动让位。
-    fn claim(&mut self) {
-        match write_endpoint_file(&self.endpoint_path, self.port, &self.token) {
-            Ok(()) => {
+            EndpointState::Mine => {
                 self.active = true;
-                self.user_disabled = false;
+                self.takeover_prompt = None;
             }
-            Err(e) => log::warn!("MCP 握手文件写入失败: {e}"),
+            EndpointState::Other => {
+                if self.active {
+                    self.active = false;
+                    self.notice = Some(McpNotice::LostToOther);
+                }
+            }
         }
     }
 
-    /// HUD 开关：打开 = 显式接管（无条件覆写文件）。
-    pub(crate) fn toggle_on(&mut self) {
-        self.claim();
+    /// 写握手文件夺取控制权（待命认领与用户确认接管共用；`--mcp` 只认文件）。
+    /// 显式接管时原 Active 实例下一秒 tick 读到 Other 自动让位，
+    /// **其已建立的 `--mcp` 代理连接不受影响**（文件只裁决新连接），
+    /// 所以正在跑的那条 agent 会话不会被这里掐断。
+    fn claim(&mut self) {
+        if claim_file(&self.endpoint_path, self.port, &self.token) {
+            self.active = true;
+            self.user_disabled = false;
+        }
     }
 
-    /// HUD 开关：关闭 = 释放文件并标记用户关闭（不再自动认领）。
+    /// 徽标点击「打开」语义：**先问再切**。
+    ///
+    /// 有存活（或存亡不明）的他人持有 → 只登记接管请求，等确认框；
+    /// 文件空闲/陈旧/已是本实例 → 立即认领（没有活实例可打扰）。
+    pub(crate) fn request_takeover(&mut self) {
+        if self.active {
+            return;
+        }
+        // 他人持有且不是「有证据证明已死」→ 拦下来问用户。
+        let blocked = read_endpoint(&self.endpoint_path)
+            .filter(|info| info.token != self.token && probe_owner(info) != OwnerProbe::Dead);
+        match blocked {
+            Some(info) => self.takeover_prompt = Some(TakeoverRequest { port: info.port }),
+            None => self.claim(),
+        }
+    }
+
+    /// 用户确认接管：写握手文件，原 Active 下一秒让位。
+    pub(crate) fn confirm_takeover(&mut self) {
+        self.takeover_prompt = None;
+        self.claim();
+        if self.active {
+            self.notice = Some(McpNotice::TookOver);
+        }
+    }
+
+    /// 用户拒绝接管（含关掉确认框）：保持原状态，什么都不动。
+    pub(crate) fn decline_takeover(&mut self) {
+        self.takeover_prompt = None;
+    }
+
+    /// 待确认的接管目标（`None` = 无弹窗）。
+    pub(crate) fn takeover_prompt(&self) -> Option<TakeoverRequest> {
+        self.takeover_prompt
+    }
+
+    /// 取走一次性状态事件（flash 提示）。
+    pub(crate) fn take_notice(&mut self) -> Option<McpNotice> {
+        self.notice.take()
+    }
+
+    /// 徽标点击「关闭」语义：释放文件并标记用户关闭（不再自动认领）。
     pub(crate) fn toggle_off(&mut self) {
         remove_endpoint_file_if_owned(&self.endpoint_path, &self.token);
         self.active = false;
         self.user_disabled = true;
+        self.takeover_prompt = None;
     }
 
     pub(crate) fn is_active(&self) -> bool {
@@ -794,13 +927,30 @@ impl PReferZApp {
     /// 不跑时仍调 logic，`request_repaint` 可唤醒）：处理 MCP 请求。
     /// 放在 logic 而非 ui，保证 agent 在窗口最小化时也能操作画布。
     pub(crate) fn poll_mcp(&mut self, ctx: &Context) {
-        let Some(serve) = &mut self.mcp else { return };
-        // 每帧无条件填充（OnceLock 幂等）：连接线程要靠它 request_repaint
-        // 唤醒休眠的事件循环；若等"有请求时"才填，首个请求恰好无人唤醒。
-        serve.set_ctx(ctx);
-        // 多实例归属状态机（1s 节流）：让位 / 认领 / 自愈。
-        serve.tick();
-        for req in serve.poll() {
+        let (reqs, notice, port) = {
+            let Some(serve) = self.mcp.as_mut() else {
+                return;
+            };
+            // 每帧无条件填充（OnceLock 幂等）：连接线程要靠它 request_repaint
+            // 唤醒休眠的事件循环；若等"有请求时"才填，首个请求恰好无人唤醒。
+            serve.set_ctx(ctx);
+            // 多实例归属状态机（1s 节流）：让位 / 认领 / 自愈。
+            serve.tick();
+            (serve.poll(), serve.take_notice(), serve.port())
+        };
+        // 状态跳变不再无声：认领 / 让位 / 接管各弹一条 flash。
+        if let Some(notice) = notice {
+            let msg = match notice {
+                McpNotice::AutoClaimed => t(self.lang, T::FlashMcpAutoClaimed).to_string(),
+                McpNotice::LostToOther => t(self.lang, T::FlashMcpLostToOther).to_string(),
+                McpNotice::TookOver => fill(
+                    t(self.lang, T::FlashMcpTookOver),
+                    std::slice::from_ref(&port.to_string()),
+                ),
+            };
+            self.flash(msg);
+        }
+        for req in reqs {
             // 截图请求截获：不走同步 handle_message——回图在后续帧
             // （request_screenshot → 渲染完成 → 回调拿到像素）。
             match parse_screenshot_intent(&req.line) {
@@ -928,8 +1078,37 @@ mod tests {
             port: 40000,
             active: false,
             user_disabled: false,
+            takeover_prompt: None,
+            notice: None,
             last_tick: Instant::now(),
         }
+    }
+
+    /// 起一个「活着的别家 GUI」桩监听：任何连接都读一行、回 `ok`（同
+    /// `handle_connection` 的验活语义）。线程随测试进程结束自然退出。
+    fn spawn_stub_instance() -> u16 {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let Ok(mut reader) = stream.try_clone().map(BufReader::new) else {
+                    continue;
+                };
+                let mut line = String::new();
+                let _ = reader.read_line(&mut line);
+                let mut stream = stream;
+                let _ = writeln!(stream, "ok");
+            }
+        });
+        port
+    }
+
+    /// 已被释放的本机端口（bind 后立刻 drop）——用来模拟「崩溃残留」的陈旧文件。
+    fn dead_port() -> u16 {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        port
     }
 
     fn temp_endpoint_dir(tag: &str) -> (std::path::PathBuf, std::path::PathBuf) {
@@ -966,12 +1145,13 @@ mod tests {
 
     #[test]
     fn standby_claims_free_file() {
-        // 方案 2 退化兜底：控制方退出（文件消失）→ 待命实例自动认领。
+        // 退化兜底：控制方退出（文件消失）→ 待命实例自动认领，并 flash 告知。
         let (dir, path) = temp_endpoint_dir("standby-claim");
         let mut s = test_serve(path.clone());
         s.apply_state(EndpointState::Free);
         assert!(s.active);
         assert!(!s.user_disabled);
+        assert_eq!(s.take_notice(), Some(McpNotice::AutoClaimed));
         let info = read_endpoint(&path).expect("file claimed");
         assert_eq!(info.token, s.token);
         assert_eq!(info.port, 40000);
@@ -992,13 +1172,16 @@ mod tests {
 
     #[test]
     fn other_owner_demotes_active() {
-        // 被别的实例接管（用户在它那边打开开关）→ 自动让位，仍可再认领。
+        // 被别的实例接管（用户在它那边确认接管）→ 让位，仍可再认领，并 flash 告知。
         let (dir, path) = temp_endpoint_dir("demote");
         let mut s = test_serve(path.clone());
         s.active = true;
         s.apply_state(EndpointState::Other);
         assert!(!s.active);
         assert!(!s.user_disabled, "demotion must keep reclaim eligibility");
+        assert_eq!(s.take_notice(), Some(McpNotice::LostToOther));
+        // 被动让位不弹接管框：tick 不打扰用户
+        assert!(s.takeover_prompt().is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1027,7 +1210,7 @@ mod tests {
 
     #[test]
     fn toggle_off_then_on_roundtrip() {
-        // HUD 开关：关 = 释放 + 禁自动认领；开 = 显式接管 + 恢复认领资格。
+        // 徽标开关：关 = 释放 + 禁自动认领；开 = 申请接管（无活实例时立即认领）。
         let (dir, path) = temp_endpoint_dir("toggle");
         let mut s = test_serve(path.clone());
         s.active = true;
@@ -1040,41 +1223,152 @@ mod tests {
         s.apply_state(EndpointState::Free);
         assert!(!s.active && !path.exists());
 
-        s.toggle_on();
+        s.request_takeover();
         assert!(s.active && !s.is_disabled());
-        let info = read_endpoint(&path).expect("toggle_on claims the file");
+        assert!(
+            s.takeover_prompt().is_none(),
+            "no live owner -> claim at once"
+        );
+        let info = read_endpoint(&path).expect("takeover claims the file");
         assert_eq!(info.token, s.token);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn owner_alive_probes_real_listener() {
-        // 活监听 + 同 token → 存活；死端口 → 不存活。
-        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let port = listener.local_addr().unwrap().port();
+    fn probe_owner_reports_three_states() {
+        // 活监听 + token 匹配 → Alive；已释放端口 → Dead。
+        let port = spawn_stub_instance();
         let token = "abcdef01abcdef01abcdef01abcdef01".to_string();
-        std::thread::spawn(move || {
-            if let Ok((stream, _)) = listener.accept() {
-                let mut reader = BufReader::new(stream.try_clone().unwrap());
-                let mut line = String::new();
-                let _ = reader.read_line(&mut line);
-                let mut stream = stream;
-                let _ = writeln!(stream, "ok");
-            }
-        });
         let info = EndpointInfo {
             port,
             token: token.clone(),
         };
-        assert!(owner_alive(&info));
+        assert_eq!(probe_owner(&info), OwnerProbe::Alive);
 
-        let dead = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let dead_port = dead.local_addr().unwrap().port();
-        drop(dead);
-        assert!(!owner_alive(&EndpointInfo {
-            port: dead_port,
-            token,
-        }));
+        assert_eq!(
+            probe_owner(&EndpointInfo {
+                port: dead_port(),
+                token,
+            }),
+            OwnerProbe::Dead
+        );
+    }
+
+    #[test]
+    fn startup_claims_when_file_missing_or_stale() {
+        // 没有活实例可打扰 → 直接认领（不弹窗）。
+        let (dir, path) = temp_endpoint_dir("startup-claim");
+        let token = "0123456789abcdef0123456789abcdef";
+        let (active, prompt) = decide_startup(&path, 40000, token);
+        assert!(active, "missing file -> claim");
+        assert!(prompt.is_none());
+        assert_eq!(read_endpoint(&path).unwrap().token, token);
+
+        // 崩溃残留（端口已死）→ 清陈旧 + 认领。
+        std::fs::remove_file(&path).unwrap();
+        write_endpoint_file(&path, dead_port(), "ffffffffffffffffffffffffffffffff").unwrap();
+        let (active, prompt) = decide_startup(&path, 40000, token);
+        assert!(active, "stale file -> claim");
+        assert!(prompt.is_none());
+        assert_eq!(read_endpoint(&path).unwrap().token, token);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn startup_asks_before_stealing_from_live_instance() {
+        // 旧窗口正被 agent 操作 → 只登记接管请求，**不写握手文件**。
+        let (dir, path) = temp_endpoint_dir("startup-conflict");
+        let other_port = spawn_stub_instance();
+        write_endpoint_file(&path, other_port, "ffffffffffffffffffffffffffffffff").unwrap();
+        let (active, prompt) = decide_startup(&path, 40000, "0123456789abcdef0123456789abcdef");
+        assert!(!active, "must not steal silently");
+        assert_eq!(prompt, Some(TakeoverRequest { port: other_port }));
+        // 文件仍是旧窗口的：agent 的 --mcp 依旧连它
+        assert_eq!(
+            read_endpoint(&path).unwrap().token,
+            "ffffffffffffffffffffffffffffffff"
+        );
+        assert_eq!(read_endpoint(&path).unwrap().port, other_port);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn request_takeover_defers_then_confirm_switches() {
+        // 待命窗口点徽标 + 对方存活 → 弹确认框；确认后才真正切走控制权。
+        let (dir, path) = temp_endpoint_dir("takeover-confirm");
+        let other_port = spawn_stub_instance();
+        write_endpoint_file(&path, other_port, "ffffffffffffffffffffffffffffffff").unwrap();
+        let mut s = test_serve(path.clone());
+
+        s.request_takeover();
+        assert!(!s.active, "deferred until the user confirms");
+        assert_eq!(
+            s.takeover_prompt(),
+            Some(TakeoverRequest { port: other_port })
+        );
+        assert_eq!(read_endpoint(&path).unwrap().port, other_port);
+
+        s.confirm_takeover();
+        assert!(s.active);
+        assert!(s.takeover_prompt().is_none());
+        assert_eq!(s.take_notice(), Some(McpNotice::TookOver));
+        let info = read_endpoint(&path).expect("file switched to us");
+        assert_eq!(info.token, s.token);
+        assert_eq!(info.port, s.port);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn decline_takeover_keeps_standby_then_auto_claims_when_owner_leaves() {
+        let (dir, path) = temp_endpoint_dir("takeover-decline");
+        let other_port = spawn_stub_instance();
+        write_endpoint_file(&path, other_port, "ffffffffffffffffffffffffffffffff").unwrap();
+        let mut s = test_serve(path.clone());
+        s.request_takeover();
+        s.decline_takeover();
+        assert!(!s.active && s.takeover_prompt().is_none());
+        assert!(!s.is_disabled(), "declining must not disable the bridge");
+        // 文件归旧窗口，本实例什么都没动
+        assert_eq!(read_endpoint(&path).unwrap().port, other_port);
+
+        // 旧窗口退出（文件消失）→ 自动认领（无活实例，不弹窗）
+        s.apply_state(EndpointState::Free);
+        assert!(s.active && s.takeover_prompt().is_none());
+        assert_eq!(s.take_notice(), Some(McpNotice::AutoClaimed));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stale_prompt_cleared_when_other_window_leaves() {
+        // 确认框还挂着，对方窗口先退出了 → 自动认领并收起弹窗（别留陈旧提示）。
+        let (dir, path) = temp_endpoint_dir("prompt-stale");
+        let other_port = spawn_stub_instance();
+        write_endpoint_file(&path, other_port, "ffffffffffffffffffffffffffffffff").unwrap();
+        let mut s = test_serve(path.clone());
+        s.request_takeover();
+        assert!(s.takeover_prompt().is_some());
+
+        std::fs::remove_file(&path).unwrap(); // 对方退出（Drop 删文件）
+        s.apply_state(EndpointState::Free);
+        assert!(s.active);
+        assert!(
+            s.takeover_prompt().is_none(),
+            "stale prompt must be dropped"
+        );
+        assert_eq!(s.take_notice(), Some(McpNotice::AutoClaimed));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn request_takeover_claims_when_owner_is_dead() {
+        // 文件指向已死端口（崩溃残留）→ 无活实例，直接认领，不打扰用户。
+        let (dir, path) = temp_endpoint_dir("takeover-stale");
+        write_endpoint_file(&path, dead_port(), "ffffffffffffffffffffffffffffffff").unwrap();
+        let mut s = test_serve(path.clone());
+        s.request_takeover();
+        assert!(s.active && s.takeover_prompt().is_none());
+        assert_eq!(read_endpoint(&path).unwrap().token, s.token);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

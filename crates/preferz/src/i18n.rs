@@ -358,6 +358,22 @@ pub enum T {
     McpStandbyHint,
     /// MCP 徽标 hover 提示：用户已手动关闭。
     McpDisabledHint,
+    /// MCP 接管确认弹窗标题。
+    McpTakeoverTitle,
+    /// MCP 接管确认弹窗正文（{0} = 对方监听端口）。
+    McpTakeoverPrompt,
+    /// MCP 接管确认弹窗小字提醒：接管后原窗口转待命、其进行中的调用可能中断。
+    McpTakeoverNote,
+    /// MCP 接管确认弹窗：确认接管按钮。
+    McpTakeoverConfirm,
+    /// MCP 接管确认弹窗：拒绝按钮（保持待命）。
+    McpTakeoverDecline,
+    /// 原控制窗口已退出、本窗口自动认领后的提示。
+    FlashMcpAutoClaimed,
+    /// 控制权被另一窗口接管的提示（本窗口让位）。
+    FlashMcpLostToOther,
+    /// 用户确认接管后的提示（{0} = 本窗口端口）。
+    FlashMcpTookOver,
     // ── 编组/解组（plan #13）──
     /// 编组成功提示。
     FlashGrouped,
@@ -719,9 +735,23 @@ fn translate_en(key: T) -> &'static str {
             "MCP bridge active on port {0} - agents control this window; click to release"
         }
         T::McpStandbyHint => {
-            "MCP standby - another window is under agent control; click to take over here"
+            "MCP standby - another window is under agent control; click to ask for a takeover"
         }
         T::McpDisabledHint => "MCP bridge off - click to let agents control this window",
+        T::McpTakeoverTitle => "MCP control",
+        T::McpTakeoverPrompt => {
+            "Another PReferZ window (port {0}) is under agent control. Switch control to this window?"
+        }
+        T::McpTakeoverNote => {
+            "The other window drops to standby. Agent calls it is running right now may be interrupted."
+        }
+        T::McpTakeoverConfirm => "Take over here",
+        T::McpTakeoverDecline => "Stay on standby",
+        T::FlashMcpAutoClaimed => "Previous MCP window is gone - this window took over",
+        T::FlashMcpLostToOther => {
+            "Another window took over MCP control; this window is on standby"
+        }
+        T::FlashMcpTookOver => "MCP control switched to this window (port {0})",
         T::FlashGrouped => "Grouped",
         T::FlashUngrouped => "Ungrouped",
         T::MenuGroup => "Group",
@@ -1040,8 +1070,18 @@ fn translate_zh(key: T) -> &'static str {
         T::StyleToggleToClean => "切换为规整（精确线条 + 黑体）",
         T::StyleToggleToSketch => "切换为草绘（手绘抖动 + 手写体）",
         T::McpActiveHint => "MCP 桥接中（端口 {0}）——agent 正控制本窗口，点击释放",
-        T::McpStandbyHint => "MCP 待命——另一窗口正被控制（其退出后本窗口自动接管），点击立即切换",
+        T::McpStandbyHint => "MCP 待命——另一窗口正被控制，点击申请接管（其退出后本窗口自动接管）",
         T::McpDisabledHint => "MCP 已关闭——点击允许 agent 控制本窗口",
+        T::McpTakeoverTitle => "MCP 控制权",
+        T::McpTakeoverPrompt => {
+            "另一个 PReferZ 窗口（端口 {0}）正被 agent 控制。要把控制权切到本窗口吗？"
+        }
+        T::McpTakeoverNote => "接管后原窗口转为待命；它正在执行的 agent 调用可能中断。",
+        T::McpTakeoverConfirm => "接管本窗口",
+        T::McpTakeoverDecline => "保持待命",
+        T::FlashMcpAutoClaimed => "原 MCP 控制窗口已退出，本窗口已接管",
+        T::FlashMcpLostToOther => "另一窗口已接管 MCP 控制，本窗口转为待命",
+        T::FlashMcpTookOver => "MCP 控制已切到本窗口（端口 {0}）",
         T::FlashGrouped => "已编组",
         T::FlashUngrouped => "已解组",
         T::MenuGroup => "编组",

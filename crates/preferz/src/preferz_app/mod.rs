@@ -987,7 +987,11 @@ impl PReferZApp {
             link_badge_rects: Vec::new(),
             pending_link_open: None,
             link_input_focused: false,
-            mcp: if cfg.mcp_listen {
+            // 单测不启动内嵌监听：一个测试进程里会有几十个 App 实例同时存在，
+            // 它们会互相争抢同一个握手文件（真机上是「多窗口」语义，在这里只会
+            // 变成新实例弹接管确认框、盖住合成事件要点的画布）。MCP 的状态机与
+            // 连接处理由 `mcp_serve` 单测直接驱动，不依赖 `new()` 这条入口。
+            mcp: if cfg.mcp_listen && !cfg!(test) {
                 let serve = mcp_serve::McpServe::start();
                 if serve.is_none() {
                     log::warn!("内嵌 MCP 监听启动失败（端口或握手文件不可写）");
@@ -2007,6 +2011,15 @@ impl eframe::App for PReferZApp {
         // 保存提示对话框（关闭/新建时若 dirty 弹出
         self.render_save_prompt(ctx);
 
+        // MCP 接管确认（新窗口启动撞上正被 agent 操作的旧窗口 / 点徽标申请接管）
+        if self
+            .mcp
+            .as_ref()
+            .is_some_and(|m| m.takeover_prompt().is_some())
+        {
+            self.render_mcp_takeover_prompt(ctx);
+        }
+
         // 自动保存恢复提示（plan #5）：打开 .prz 时检测到较新备份
         if self.pending_autosave_restore.is_some() {
             self.render_autosave_restore_prompt(ctx);
@@ -2481,8 +2494,9 @@ impl PReferZApp {
 
     /// MCP 桥接开关（侧栏，OpenCADStudio 式单一天选窗口）：右上角状态点——
     /// 绿实心=本窗口正被 agent 控制、灰实心=待命（另一窗口控制中，其退出后
-    /// 本窗口 1s 内自动认领）、空心=用户已关闭。点按切换（打开 = 显式接管，
-    /// 原控制窗口自动让位）。状态机见 `mcp_serve::McpServe::tick`。
+    /// 本窗口 1s 内自动认领）、空心=用户已关闭。点按切换：打开 = **申请**接管
+    /// （另一存活窗口持有时先弹确认框，确认后才切；无活实例则立即接管），
+    /// 关闭 = 释放。状态机见 `mcp_serve::McpServe::tick`。
     /// config 关闭 MCP 功能时 `self.mcp` 为 None，整项不渲染。
     fn render_mcp_switch(&mut self, ui: &mut egui::Ui) {
         let Some((active, disabled, port)) = self
@@ -2522,8 +2536,57 @@ impl PReferZApp {
                 if active {
                     mcp.toggle_off();
                 } else {
-                    mcp.toggle_on();
+                    // 申请接管：另一存活窗口正被控制时只弹确认框，不静默切。
+                    mcp.request_takeover();
                 }
+            }
+        }
+    }
+
+    /// MCP 接管确认弹窗：**任何从存活实例手里夺控制权的路径都不静默**——
+    /// 新窗口启动时发现另一实例持有握手文件、或用户在待命/关闭态点徽标申请
+    /// 接管，都走这里；点「接管本窗口」才写文件（原 Active 下一秒 tick 让位，
+    /// 其已建立的 agent 连接不受影响）。「保持待命」= 什么都不动。
+    fn render_mcp_takeover_prompt(&mut self, ctx: &egui::Context) {
+        let Some(req) = self.mcp.as_ref().and_then(|m| m.takeover_prompt()) else {
+            return;
+        };
+        let mut confirm = false;
+        let mut decline = false;
+        let port = req.port.to_string();
+        egui::Window::new(t(self.lang, T::McpTakeoverTitle))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.set_min_width(340.0);
+                ui.vertical_centered(|ui| {
+                    ui.add_space(8.0);
+                    ui.label(fill(t(self.lang, T::McpTakeoverPrompt), &[port]));
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new(t(self.lang, T::McpTakeoverNote))
+                            .small()
+                            .weak(),
+                    );
+                    ui.add_space(12.0);
+                    ui.horizontal(|ui| {
+                        if ui.button(t(self.lang, T::McpTakeoverConfirm)).clicked() {
+                            confirm = true;
+                        }
+                        if ui.button(t(self.lang, T::McpTakeoverDecline)).clicked() {
+                            decline = true;
+                        }
+                    });
+                    ui.add_space(8.0);
+                });
+            });
+        if let Some(mcp) = self.mcp.as_mut() {
+            if confirm {
+                mcp.confirm_takeover();
+            } else if decline || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                // Esc 等同「保持待命」：不再给一个关不掉的弹窗。
+                mcp.decline_takeover();
             }
         }
     }

@@ -66,8 +66,12 @@ JSONL 协议与 MCP stdio JSON-RPC 的**协议核心下沉在 `preferz-core/src/
 监听，握手文件 `~/.preferz/mcp-endpoint.json`（`{port, token, pid}`；config
 `mcp_listen` 默认开）是「哪个窗口被 agent 控制」的唯一事实源。多实例三态状态机
 （`McpServe::tick` 每 1s 收敛）：`Active`（持有文件）/ `Standby`（文件空出自动认领）/
-`Disabled`（用户手动关，不自动认领）；启动时文件空闲/陈旧才认领（新窗口不抢占），
-HUD MCP 徽标可见可点击切换，显式接管时原 Active 自动让位。`preferz --mcp` 探测到
+`Disabled`（用户手动关，不自动认领）；启动时文件空闲/陈旧才认领（新窗口不抢占）。
+**从存活实例手里夺控制权一律先问**（`TakeoverRequest` + `render_mcp_takeover_prompt`）：
+启动撞上他人活跃、或在待命窗口点徽标，都只登记接管请求并弹确认框，用户点「接管本窗口」
+才写握手文件——不做静默切换（旧行为会让正被 agent 操作的老窗口无声失去控制）。探活三态
+`probe_owner`：只有「连接被拒 / 对端回绝」才算死（清陈旧 + 认领），读超时一律当存亡不明、
+仍去问用户。`--mcp` 探测到
 活实例则**纯转发**（工具实时操作已打开窗口的画布），无实例则降级 headless 单文档
 模式；连接/验活失败顺手删除陈旧握手文件（崩溃残留自愈，配合待命实例认领）。
 测试用 `PREFERZ_MCP_ENDPOINT` 环境变量隔离握手文件路径。
