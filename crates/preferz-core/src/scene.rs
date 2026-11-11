@@ -77,8 +77,9 @@ impl Scene {
 
     /// 查询 `query` 在画布空间下离哪个 item 轮廓最近（用于端点吸附）。
     ///
-    /// 跳过 `exclude_id`（被拖动的线自身）与绑定文本（`is_bound_text`，其位置由容器
-    /// 决定，不参与吸附）。返回 `(item_id, 最近轮廓点, 距离)`，仅当距离 < `threshold`
+    /// 跳过 `exclude_id`（被拖动的线自身）、**线类 / 自由笔迹**（不是可绑定元素，
+    /// 见 [`snap::is_bindable`]）与绑定文本（`is_bound_text`，其位置由容器决定，
+    /// 不参与吸附）。返回 `(item_id, 最近轮廓点, 距离)`，仅当距离 < `threshold`
     /// 时才返回 `Some`。
     pub fn find_snap_target(
         &self,
@@ -88,7 +89,7 @@ impl Scene {
     ) -> Option<(ItemId, CanvasPoint, f32)> {
         let mut best: Option<(ItemId, CanvasPoint, f32)> = None;
         for item in &self.items {
-            if &item.id == exclude_id || self.is_bound_text(item) {
+            if &item.id == exclude_id || !snap::is_bindable(item) || self.is_bound_text(item) {
                 continue;
             }
             let np = snap::nearest_outline_point(item, query);
@@ -98,6 +99,16 @@ impl Scene {
             }
         }
         best
+    }
+
+    /// 合法的端点绑定目标：目标存在、类型可绑定、且不是绑定文本。
+    ///
+    /// 旧存档 / 历史版本可能把一条线写成 `target`（吸附候选曾包含线类）。这类
+    /// 脏绑定一律按「无绑定」处理：线类 `base_size()` 是两点包围盒、anchor 又
+    /// 可能落在派生路由之外，用它解析 heading / elbow 取向会得到 90° 翻转。
+    fn binding_target(&self, id: &ItemId) -> Option<&Item> {
+        self.get_item(id)
+            .filter(|it| snap::is_bindable(it) && !self.is_bound_text(it))
     }
 
     /// 联动重算绑定端点：对每条 Polyline，若其起点/终点绑定到 `moved_ids` 中的
@@ -143,7 +154,7 @@ impl Scene {
             }
             // 起点（points[0]）
             if let Some(b) = start_binding {
-                match self.get_item(&b.target) {
+                match self.binding_target(&b.target) {
                     Some(shape) if moved.contains(&b.target) => {
                         let other = points.get(last).copied().unwrap_or((0.0, 0.0));
                         let query = line.local_to_canvas().transform_point(euclid::Point2D::<
@@ -173,14 +184,14 @@ impl Scene {
                             }
                         }
                     }
-                    // 绑定目标已不存在（被删除）→ 清除悬空绑定
+                    // 绑定目标已不存在，或不是可绑定元素（线类等脏绑定）→ 清除
                     None => dead.push((line.id, 0)),
                     _ => {}
                 }
             }
             // 终点（points[last]）
             if let Some(b) = end_binding {
-                match self.get_item(&b.target) {
+                match self.binding_target(&b.target) {
                     Some(shape) if moved.contains(&b.target) => {
                         let other = points.first().copied().unwrap_or((0.0, 0.0));
                         let query = line.local_to_canvas().transform_point(euclid::Point2D::<
@@ -276,7 +287,7 @@ impl Scene {
             .or_else(|| end.and_then(|b| b.anchor.map(|a| (b.target, a))));
         match anchor {
             Some((target_id, a)) => self
-                .get_item(&target_id)
+                .binding_target(&target_id)
                 .map(|t| {
                     let size = t.base_size();
                     elbow_axis_from_anchor((size.x, size.y), a)
@@ -373,7 +384,10 @@ impl Scene {
             let Some(anchor) = b.anchor else {
                 return (fallback, false);
             };
-            let Some(target) = self.get_item(&b.target) else {
+            // 脏绑定（target 是线类 / 自由笔迹 / 已删除）按自由端处理：绝不能
+            // 拿线类 base_size 与越界 anchor 去推外法线（会解析出 90° 翻转的
+            // 插座腿，用户反馈的 U 形回折即由此而来）。
+            let Some(target) = self.binding_target(&b.target) else {
                 return (fallback, false);
             };
             // 障碍 = 目标旋转 AABB 膨胀（仅矩形族可碰撞节点；线类/文字不作障碍）。
@@ -797,6 +811,77 @@ impl Scene {
             }
         }
     }
+
+    /// 清理非法端点绑定（加载存档后调用）：目标不存在、指向线类 / 自由笔迹、
+    /// 或指向绑定文本时把该端 binding 置 `None`；受影响的 elbow 随后重算
+    /// `elbow_axis`（脏绑定曾按线类 base_size 把取向解析成 90° 翻转）。
+    ///
+    /// 历史版本 `find_snap_target` 把线类也当吸附候选，多个连接器共用起点时
+    /// 端点可能吸附到相邻 elbow 的**存储对角线**轮廓（距离 0，比矩形边缘更
+    /// 近），写出越界 anchor 与错误取向。这类文件加载后由此自愈——不改存档
+    /// 格式、不动合法绑定。返回清理掉的绑定数量。
+    pub fn sanitize_invalid_bindings(&mut self) -> usize {
+        // 预先收集合法目标 id：遍历 &mut items 期间不能再不可变借用 self。
+        let valid: HashSet<ItemId> = self
+            .items
+            .iter()
+            .filter(|it| snap::is_bindable(it) && !self.is_bound_text(it))
+            .map(|it| it.id)
+            .collect();
+        let mut cleared = 0usize;
+        let mut elbows = Vec::new();
+        for line in &mut self.items {
+            let is_line = matches!(
+                &line.kind,
+                ItemKind::Shape {
+                    shape_type: ShapeType::Polyline | ShapeType::Elbow,
+                    ..
+                }
+            );
+            let is_elbow = matches!(
+                &line.kind,
+                ItemKind::Shape {
+                    shape_type: ShapeType::Elbow,
+                    ..
+                }
+            );
+            if !is_line {
+                continue;
+            }
+            let ItemKind::Shape {
+                start_binding,
+                end_binding,
+                ..
+            } = &mut line.kind
+            else {
+                continue;
+            };
+            let mut touched = false;
+            if start_binding
+                .as_ref()
+                .is_some_and(|b| !valid.contains(&b.target))
+            {
+                *start_binding = None;
+                cleared += 1;
+                touched = true;
+            }
+            if end_binding
+                .as_ref()
+                .is_some_and(|b| !valid.contains(&b.target))
+            {
+                *end_binding = None;
+                cleared += 1;
+                touched = true;
+            }
+            if touched && is_elbow {
+                elbows.push(line.id);
+            }
+        }
+        for id in elbows {
+            self.refresh_elbow_axis(id);
+        }
+        cleared
+    }
 }
 
 #[cfg(test)]
@@ -818,6 +903,32 @@ mod tests {
 
     fn text(container: ItemId) -> Item {
         Item::new_text_in("hello".into(), 50.0, 30.0, 20.0, [255; 4], container)
+    }
+
+    /// elbow 的**存储点集是两点对角线**（渲染时才派生成正交折线）——这正是
+    /// 端点误吸附时那条「指向上/下矩形的斜提示线」的由来。
+    fn elbow_connector() -> Item {
+        Item::new_elbow(
+            vec![(0.0, 0.0), (100.0, 100.0)],
+            (100.0, 100.0),
+            None,
+            None,
+            0.0,
+            0.0,
+            StrokeStyle::default(),
+        )
+    }
+
+    fn horizontal_elbow() -> Item {
+        Item::new_elbow(
+            vec![(100.0, 30.0), (200.0, 30.0)],
+            (100.0, 1.0),
+            None,
+            None,
+            0.0,
+            0.0,
+            StrokeStyle::default(),
+        )
     }
 
     #[test]
@@ -905,6 +1016,155 @@ mod tests {
         // 容器删除后（孤儿引用）→ 不再视为绑定文本
         scene.remove_item(&sid);
         assert!(!scene.is_bound_text(scene.get_item(&t_id).unwrap()));
+    }
+
+    /// 端点吸附候选必须排除线类（对齐 Excalidraw `isBindableElement`）。
+    /// 复现场景：多个 elbow 共用起点，拖回起点时查询点正好落在相邻 elbow
+    /// 的**存储对角线**上（距离 0），比矩形边缘更近。
+    #[test]
+    fn find_snap_target_skips_linear_items() {
+        let rect = shape(); // 100×60 于原点
+        let rect_id = rect.id;
+        let line = elbow_connector(); // 存储对角线 (0,0)→(100,100)
+        let line_id = line.id;
+        let mut scene = Scene::new();
+        scene.add_item(rect);
+        scene.add_item(line);
+
+        let q = crate::spaces::CanvasPoint::new(50.0, 50.0);
+        // 先确认线确实更近，否则本测试没有区分度
+        let d_line = q.distance_to(crate::snap::nearest_outline_point(
+            scene.get_item(&line_id).unwrap(),
+            q,
+        ));
+        assert!(d_line < 1e-3, "线轮廓距离应为 0，实为 {d_line}");
+
+        let hit = scene
+            .find_snap_target(&crate::item::ItemId::nil(), q, 20.0)
+            .expect("矩形边缘 10px 内应命中");
+        assert_eq!(hit.0, rect_id, "不能把线类当吸附目标");
+    }
+
+    /// 脏绑定（target = 另一条线、anchor 越界）在路由层必须等价于无绑定，
+    /// 不能按线类 base_size 推出朝下的插座腿（用户反馈的 U 形回折）。
+    #[test]
+    fn linear_binding_is_ignored_when_routing() {
+        let mut target_rect = shape();
+        target_rect.transform.pos = CanvasVector::new(200.0, 0.0);
+        let target_id = target_rect.id;
+        let neighbour = elbow_connector();
+        let neighbour_id = neighbour.id;
+        let mut conn = horizontal_elbow();
+        conn.set_start_binding(Some(crate::item::EndpointBinding {
+            target: neighbour_id,
+            anchor: Some((5.0, 180.0)), // 超出 neighbour base_size 高度
+        }));
+        conn.set_end_binding(Some(crate::item::EndpointBinding {
+            target: target_id,
+            anchor: Some((0.0, 30.0)),
+        }));
+        if let crate::item::ItemKind::Shape { elbow_axis, .. } = &mut conn.kind {
+            *elbow_axis = Some(crate::shape::ElbowAxis::VerticalFirst);
+        }
+        let conn_id = conn.id;
+        let mut scene = Scene::new();
+        scene.add_item(target_rect);
+        scene.add_item(neighbour);
+        scene.add_item(conn);
+
+        let dirty = scene.elbow_route_local(&scene.get_item(&conn_id).unwrap().clone());
+        scene
+            .get_item_mut(&conn_id)
+            .unwrap()
+            .set_start_binding(None);
+        let clean = scene.elbow_route_local(&scene.get_item(&conn_id).unwrap().clone());
+        assert_eq!(dirty, clean, "指向线类的脏绑定必须按自由端处理");
+        assert!(dirty.len() >= 2, "路由至少保留两端点");
+    }
+
+    /// 取向解析同样只认可绑定目标，脏锚点不得把水平连接判成 VerticalFirst。
+    #[test]
+    fn resolve_elbow_axis_ignores_linear_target() {
+        let line = elbow_connector();
+        let line_id = line.id;
+        let mut scene = Scene::new();
+        scene.add_item(line);
+        let pts = vec![(100.0, 30.0), (200.0, 36.0)];
+        let dirty = crate::item::EndpointBinding {
+            target: line_id,
+            anchor: Some((5.0, 180.0)),
+        };
+        let stored = Some(crate::shape::ElbowAxis::VerticalFirst);
+        let with_dirty = scene.resolve_elbow_axis(&pts, stored, Some(&dirty), None);
+        let without = scene.resolve_elbow_axis(&pts, stored, None, None);
+        assert_eq!(with_dirty, without);
+        assert_eq!(with_dirty, crate::shape::ElbowAxis::HorizontalFirst);
+    }
+
+    /// 加载自愈：清掉指向线类的脏绑定、重算 elbow 取向，合法绑定不动。
+    #[test]
+    fn sanitize_invalid_bindings_clears_linear_target_and_refreshes_axis() {
+        let left = shape();
+        let left_id = left.id;
+        let mut right = shape();
+        right.transform.pos = CanvasVector::new(200.0, 0.0);
+        let right_id = right.id;
+        let neighbour = elbow_connector();
+        let neighbour_id = neighbour.id;
+        let mut conn = horizontal_elbow();
+        conn.set_start_binding(Some(crate::item::EndpointBinding {
+            target: neighbour_id,
+            anchor: Some((5.0, 180.0)),
+        }));
+        conn.set_end_binding(Some(crate::item::EndpointBinding {
+            target: right_id,
+            anchor: Some((0.0, 30.0)),
+        }));
+        if let crate::item::ItemKind::Shape { elbow_axis, .. } = &mut conn.kind {
+            *elbow_axis = Some(crate::shape::ElbowAxis::VerticalFirst);
+        }
+        let conn_id = conn.id;
+        let mut ok = elbow_connector();
+        ok.set_start_binding(Some(crate::item::EndpointBinding {
+            target: left_id,
+            anchor: Some((100.0, 30.0)),
+        }));
+        let ok_id = ok.id;
+        let mut scene = Scene::new();
+        scene.add_item(left);
+        scene.add_item(right);
+        scene.add_item(neighbour);
+        scene.add_item(conn);
+        scene.add_item(ok);
+
+        assert_eq!(scene.sanitize_invalid_bindings(), 1);
+        match &scene.get_item(&conn_id).unwrap().kind {
+            crate::item::ItemKind::Shape {
+                start_binding,
+                end_binding,
+                elbow_axis,
+                ..
+            } => {
+                assert!(start_binding.is_none(), "脏绑定应被清掉");
+                assert_eq!(end_binding.as_ref().unwrap().target, right_id);
+                assert_eq!(
+                    *elbow_axis,
+                    Some(crate::shape::ElbowAxis::HorizontalFirst),
+                    "清掉脏绑定后取向应由合法端锚点重算"
+                );
+            }
+            _ => panic!("expected Shape"),
+        }
+        match &scene.get_item(&ok_id).unwrap().kind {
+            crate::item::ItemKind::Shape { start_binding, .. } => {
+                assert_eq!(
+                    start_binding.as_ref().unwrap().target,
+                    left_id,
+                    "合法绑定不得被误清"
+                );
+            }
+            _ => panic!("expected Shape"),
+        }
     }
 
     #[test]

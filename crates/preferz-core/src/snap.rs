@@ -8,6 +8,27 @@ use crate::item::{Item, ItemKind, ItemLocalSpace};
 use crate::shape::ShapeType;
 use crate::spaces::{CanvasPoint, CanvasVector};
 
+/// 端点吸附 / 绑定的合法目标（对齐 Excalidraw `isBindableElement` 白名单）。
+///
+/// 线性对象（Polyline / Elbow）与自由笔迹**不是**可绑定元素：它们的轮廓是
+/// 派生路由 / 顶点串而非稳定的"边"，局部锚点在目标重路由或移动后没有稳定
+/// 语义。历史版本把线类也放进吸附候选，用户将连接器端点拖回多个连接器共用
+/// 的起点时，会吸附到相邻 elbow 的**存储对角线**上（距离 0，比矩形边缘更
+/// 近），写出越界 anchor，进而把 elbow 取向 / 首段 heading 解析成 90° 翻转。
+pub fn is_bindable(item: &Item) -> bool {
+    match &item.kind {
+        ItemKind::Shape { shape_type, .. } => matches!(
+            shape_type,
+            ShapeType::Rectangle | ShapeType::Ellipse | ShapeType::Diamond
+        ),
+        ItemKind::Pixmap { .. }
+        | ItemKind::Text { .. }
+        | ItemKind::Frame { .. }
+        | ItemKind::Chart { .. } => true,
+        ItemKind::Freedraw { .. } => false,
+    }
+}
+
 /// 把一段线段离散为 `n` 条边（首尾相连）。
 fn ellipse_ring(r: crate::spaces::CanvasRect, n: usize) -> Vec<(CanvasPoint, CanvasPoint)> {
     let (x0, y0, x1, y1) = (r.min_x(), r.min_y(), r.max_x(), r.max_y());

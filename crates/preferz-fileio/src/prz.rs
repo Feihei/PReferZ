@@ -339,6 +339,11 @@ impl PrzFile {
         // 3) 读取视口元数据
         let viewport = self.load_viewport_meta()?;
 
+        // 4) 端点绑定自愈：历史版本允许把线类当吸附目标，写出的脏绑定会让
+        // elbow 取向 / 首段 heading 翻转。加载时清掉非法绑定并重算受影响
+        // elbow 的取向，合法绑定与存档格式均不变。
+        scene.sanitize_invalid_bindings();
+
         Ok((scene, images, viewport))
     }
 
@@ -1107,6 +1112,84 @@ mod tests {
         assert_eq!(scene.items.len(), 1);
         assert_eq!(scene.items[0].id, a_id);
         assert_eq!(scene.items[0].group_id, None, "旧文件加载后应未编组");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// 历史版本把线类当成端点吸附目标写进存档（多个连接器共用起点时，
+    /// 端点会吸到相邻 elbow 的存储对角线上）。加载时必须自愈：清掉脏
+    /// 绑定、重算 elbow 取向，合法绑定与存档格式保持不变。
+    #[test]
+    fn load_sanitizes_linear_endpoint_binding() {
+        let path = tmp_path("linear_binding.prz");
+        let mut scene = Scene::new();
+        let rect = Item::new_shape(
+            ShapeType::Rectangle,
+            (100.0, 60.0),
+            200.0,
+            0.0,
+            StrokeStyle::default(),
+            None,
+        );
+        let rect_id = rect.id;
+        let neighbour = Item::new_elbow(
+            vec![(0.0, 0.0), (100.0, 100.0)],
+            (100.0, 100.0),
+            None,
+            None,
+            0.0,
+            0.0,
+            StrokeStyle::default(),
+        );
+        let neighbour_id = neighbour.id;
+        let mut conn = Item::new_elbow(
+            vec![(100.0, 30.0), (200.0, 30.0)],
+            (100.0, 1.0),
+            None,
+            Some(ArrowHeadStyle::Arrow),
+            0.0,
+            0.0,
+            StrokeStyle::default(),
+        );
+        conn.set_start_binding(Some(preferz_core::item::EndpointBinding {
+            target: neighbour_id,
+            anchor: Some((5.0, 180.0)),
+        }));
+        conn.set_end_binding(Some(preferz_core::item::EndpointBinding {
+            target: rect_id,
+            anchor: Some((0.0, 30.0)),
+        }));
+        if let ItemKind::Shape { elbow_axis, .. } = &mut conn.kind {
+            *elbow_axis = Some(preferz_core::shape::ElbowAxis::VerticalFirst);
+        }
+        let conn_id = conn.id;
+        scene.add_item(rect);
+        scene.add_item(neighbour);
+        scene.add_item(conn);
+        {
+            let mut prz = PrzFile::create(&path).unwrap();
+            prz.save_scene(&scene, &HashMap::new(), ViewportMeta::default())
+                .unwrap();
+        }
+
+        let prz = PrzFile::open(&path).unwrap();
+        let (loaded, _, _) = prz.load_scene().unwrap();
+        match &loaded.get_item(&conn_id).unwrap().kind {
+            ItemKind::Shape {
+                start_binding,
+                end_binding,
+                elbow_axis,
+                ..
+            } => {
+                assert!(start_binding.is_none(), "指向线类的绑定应在加载时清掉");
+                assert_eq!(end_binding.as_ref().unwrap().target, rect_id);
+                assert_eq!(
+                    *elbow_axis,
+                    Some(preferz_core::shape::ElbowAxis::HorizontalFirst),
+                    "取向应由剩余合法锚点重算"
+                );
+            }
+            _ => panic!("expected Shape"),
+        }
         let _ = std::fs::remove_file(&path);
     }
 }
