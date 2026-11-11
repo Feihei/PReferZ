@@ -2,14 +2,20 @@
 //!
 //! 分层模型（对齐 Excalidraw `elbowArrow.ts` master）：
 //! - 任一端**绑定** → A\* 网格避障：障碍 = 两端绑定形状的旋转 AABB 四边膨胀
-//!   [`ELBOW_PADDING`]（对齐 Excalidraw `BASE_PADDING`）；首/末段 = 沿锚点边
-//!   法线的"插座腿"（dongle）。**不做全场景绕行**（Excalidraw master 亦未做，
-//!   issue #8635 开放中）。
+//!   有效 padding（标称 [`ELBOW_PADDING`]，对齐 Excalidraw `BASE_PADDING`；
+//!   两端间隙不足时按实际间距自适应收缩，见 [`effective_padding`]）；首/末段
+//!   = 沿锚点边法线的"插座腿"（dongle），长度恒等于有效 padding。**不做全场景
+//!   绕行**（Excalidraw master 亦未做，issue #8635 开放中）。
 //! - 两端自由（且无障碍）→ 确定性 L/Z/S（`elbow_mid_offset` bar 语义，旧档
 //!   视觉不变）。
 //! - `fixed_segments`（阶段 D）：固定段按坐标锚定进路由——锚点间子路由用 A\*
 //!   （有障碍）或确定性最小连接（无障碍）缝合；固定段本身原样插入。
-//! - A\* 失败 / 退化 → 整体回退确定性规则。
+//! - A\* 失败 / 退化 → 回退确定性规则，**但保留插座腿**（缝合站点取 sv/ev）。
+//! - **跳变根治（2026-11-11）**：固定 40px 腿长在两端间隙 < 80px 时把虚拟
+//!   节点送进对方膨胀 AABB，A\* 必败并静默回退成丢弃插座腿的 Z —— 拖动跨过
+//!   80px 即整条换形态（用户可见 180° 掉头）。现 padding 与腿长同步随间隙
+//!   连续收缩，虚拟节点恒落在自身障碍边界线上、两障碍间恒留通道；间隙充足
+//!   时 padding 仍为标称值，输出与旧实现逐点一致。
 //!
 //! 网格是**非均匀网格**（Excalidraw `calculateGrid` 同思路）：坐标 = 两端虚拟
 //! 节点 + 障碍边线 ± union 外扩，取 x/y 笛卡尔交点为节点，规模 O(k²)（典型
@@ -23,9 +29,15 @@ use serde::{Deserialize, Serialize};
 use crate::item::elbow_polyline_offset;
 use crate::shape::ElbowAxis;
 
-/// 绑定端首/末"插座腿"长度（画布 px，对齐 Excalidraw `BASE_PADDING`）：
-/// 离开/进入绑定形状时沿锚点边法线先走这一段，再进入自由路由。
+/// 绑定端首/末"插座腿"长度与障碍膨胀量的**标称上限**（画布 px，对齐
+/// Excalidraw `BASE_PADDING`）：离开/进入绑定形状时沿锚点边法线先走这一段，
+/// 再进入自由路由。两端绑定形状靠得比 2× 本值更近时，路由按实际间隙收缩该值
+/// （[`effective_padding`]）；间隙充足时恒为本值，旧档视觉不变。
 pub const ELBOW_PADDING: f32 = 40.0;
+
+/// 自适应收缩时留出的通道余量（画布 px）：两障碍膨胀后至少留 2× 本值的空隙，
+/// 避免浮点边界判定把通道吃掉、A\* 首/末步再次被判成落在障碍内部。
+const ELBOW_GAP_CLEARANCE: f32 = 1.0;
 
 /// 路由坐标精度阈值（与 `elbow_polyline_offset` 同量级）。
 const EPS: f32 = 1e-3;
@@ -64,7 +76,10 @@ pub struct ElbowRouteInput<'a> {
     /// 无障碍无固定段时确定性 Z 的 bar 偏移（`elbow_mid_offset`，用户意图）。
     pub offset: f32,
     pub fixed_segments: &'a [ElbowFixedSegment],
-    /// 障碍 AABB `(min_x, min_y, max_x, max_y)`（绑定形状膨胀后）。空 = 无避障。
+    /// 障碍 AABB `(min_x, min_y, max_x, max_y)`：**调用方按 [`ELBOW_PADDING`]
+    /// 膨胀后**的禁入区（唯一生产者 `Scene::elbow_route_local`）。路由层按有效
+    /// padding 重新膨胀（[`reinflate_obstacles`]）——标称值生效时是恒等变换。
+    /// 空 = 无避障。
     pub obstacles: &'a [(f32, f32, f32, f32)],
 }
 
@@ -82,15 +97,35 @@ pub fn elbow_route(input: &ElbowRouteInput) -> Vec<(f32, f32)> {
     if input.obstacles.is_empty() {
         return join_chain_deterministic(input);
     }
-    // A\* 层：绑定端加插座腿——起点沿出发 heading 外推、终点沿进入 heading
-    // 内推（`end_heading` 指向端点，虚拟节点在其后方 P 处，落在膨胀边界外）。
-    let sv = virtual_node(start, input.start_heading, input.start_bound, 1.0);
-    let ev = virtual_node(end, input.end_heading, input.end_bound, -1.0);
+    // 自由端存储取向可能与端点连线垂直（如 VerticalFirst + 纯水平连接），
+    // 此时 heading = (0,0)，A\* 的方向编码为 0、末步约束整体失效（末段可能
+    // 从任意方向进入端点）。用 start→end 主方向兜底；确定性层仍消费原
+    // heading，旧档视觉不变。
+    let main = unit_dir((end.0 - start.0, end.1 - start.1));
+    let sh = if dir_code(input.start_heading) == 0 {
+        main
+    } else {
+        input.start_heading
+    };
+    let eh = if dir_code(input.end_heading) == 0 {
+        main
+    } else {
+        input.end_heading
+    };
+    // 有效 padding 与插座腿同步随两端间隙收缩：sv/ev 恒落在自身障碍边界线
+    // 上、两障碍之间恒留通道，不再有"间隙 < 2×40 就 A\* 必败"的硬阈值。
+    let padding = effective_padding(input.obstacles);
+    let inflated = reinflate_obstacles(input.obstacles, padding);
+    let obstacles: &[(f32, f32, f32, f32)] = &inflated;
+    let sv = virtual_node(start, sh, input.start_bound, padding, 1.0);
+    let ev = virtual_node(end, eh, input.end_bound, padding, -1.0);
+    // 所有失败/退化路径统一回退到"保留插座腿"的缝合层，不再整条退化成 Z。
+    let fallback = || join_chain_with_sockets(input, sv, ev, sh, eh);
     if manhattan(sv, ev) < EPS {
-        return join_chain_deterministic(input);
+        return fallback();
     }
     let Some(stations) = chain_stations(start, input.fixed_segments, ev) else {
-        return join_chain_deterministic(input);
+        return fallback();
     };
     let mut out: Vec<(f32, f32)> = vec![start];
     if input.start_bound {
@@ -98,14 +133,16 @@ pub fn elbow_route(input: &ElbowRouteInput) -> Vec<(f32, f32)> {
     }
     // 逐站点 A\*：出发方向 = 上一段延续方向；终点进入方向 = 下一站约束。
     let mut cur = sv;
-    let mut cur_heading = input.start_heading;
+    let mut cur_heading = sh;
     let mut failed = false;
     for st in &stations {
         let (target, arrival) = match st {
-            Station::Anchor(a) => (*a, None),
-            Station::End(e) => (*e, Some(input.end_heading)),
+            // 固定段进入端也要约束：到达方向若与段方向反平行，接入段本体
+            // 就会形成 180° 回折（merge_collinear 还会静默删掉共线回折点）。
+            Station::Anchor(a) => (*a, anchor_arrival(input.fixed_segments, *a)),
+            Station::End(e) => (*e, Some(eh)),
         };
-        match astar(cur, target, cur_heading, arrival, input.obstacles) {
+        match astar(cur, target, cur_heading, arrival, obstacles) {
             Some(mut seg) => {
                 seg.remove(0); // 首点 == cur，避免重合
                 out.extend(seg);
@@ -115,32 +152,19 @@ pub fn elbow_route(input: &ElbowRouteInput) -> Vec<(f32, f32)> {
                 break;
             }
         }
-        match st {
-            Station::Anchor(a) => {
-                // 插入固定段本体（a 到段另一端），继续沿段方向出发。
-                let seg = input
-                    .fixed_segments
-                    .iter()
-                    .find(|s| s.start == *a || s.end == *a)
-                    .copied();
-                let Some(seg) = seg else {
-                    failed = true;
-                    break;
-                };
-                let (from, to) = if seg.start == *a {
-                    (seg.start, seg.end)
-                } else {
-                    (seg.end, seg.start)
-                };
-                out.push(to);
-                cur = to;
-                cur_heading = unit_dir((to.0 - from.0, to.1 - from.1));
-            }
-            Station::End(_) => {}
+        if let Station::Anchor(a) = st {
+            // 插入固定段本体（a 到段另一端），继续沿段方向出发。
+            let Some((from, to)) = fixed_segment_from(input.fixed_segments, *a) else {
+                failed = true;
+                break;
+            };
+            out.push(to);
+            cur = to;
+            cur_heading = unit_dir((to.0 - from.0, to.1 - from.1));
         }
     }
     if failed {
-        return join_chain_deterministic(input);
+        return fallback();
     }
     if input.end_bound {
         out.push(ev);
@@ -149,64 +173,178 @@ pub fn elbow_route(input: &ElbowRouteInput) -> Vec<(f32, f32)> {
     let out = merge_collinear(out);
     // 端点不变量兜底（异常即回退，绝不输出变形路径）。
     if out.len() < 2 || out[0] != start || *out.last().unwrap() != end {
-        return join_chain_deterministic(input);
+        return fallback();
     }
     out
 }
 
-/// 绑定端虚拟节点：`sign=1`（起点）沿 heading 外推插座腿长度；`sign=-1`
-/// （终点）沿进入 heading 反向内推（虚拟节点在端点后方 P 处、膨胀边界外）。
-fn virtual_node(p: (f32, f32), heading: (f32, f32), bound: bool, sign: f32) -> (f32, f32) {
+/// 绑定端虚拟节点：`sign=1`（起点）沿 heading 外推 `padding`；`sign=-1`
+/// （终点）沿进入 heading 反向内推（虚拟节点在端点后方 padding 处，恰落在
+/// 自身膨胀障碍的边界线上——`padding` 与障碍膨胀量同源，这是无硬阈值的关键）。
+fn virtual_node(
+    p: (f32, f32),
+    heading: (f32, f32),
+    bound: bool,
+    padding: f32,
+    sign: f32,
+) -> (f32, f32) {
     if bound {
         (
-            p.0 + heading.0 * ELBOW_PADDING * sign,
-            p.1 + heading.1 * ELBOW_PADDING * sign,
+            p.0 + heading.0 * padding * sign,
+            p.1 + heading.1 * padding * sign,
         )
     } else {
         p
     }
 }
 
-/// 确定性缝合链（无障碍层 / A\* 失败回退）：固定段原样插入，锚点间用最小
-/// 正交连接（Z/L）；无固定段 = 现行 `elbow_polyline_offset`（旧档视觉不变）。
-fn join_chain_deterministic(input: &ElbowRouteInput) -> Vec<(f32, f32)> {
-    let (start, end) = (input.start, input.end);
-    let start_axis = axis_of(input.start_heading);
-    if input.fixed_segments.is_empty() {
-        return elbow_polyline_offset(&[start, end], input.offset, start_axis);
+/// 有效 padding（跳变根治）：`obstacles` 是调用方按标称值膨胀后的禁入区，
+/// 先收回原始形状 AABB 量出两两之间的分离量，再取 `min(标称, sep/2 - 余量)`。
+/// 只有一个障碍（或没有）时不存在"对方形状"，恒用标称值；分离量连续变化
+/// → padding 连续变化 → 路径不再跨阈值整条换形态。
+fn effective_padding(obstacles: &[(f32, f32, f32, f32)]) -> f32 {
+    let raw: Vec<(f32, f32, f32, f32)> = obstacles
+        .iter()
+        .map(|&(x0, y0, x1, y1)| {
+            (
+                x0 + ELBOW_PADDING,
+                y0 + ELBOW_PADDING,
+                x1 - ELBOW_PADDING,
+                y1 - ELBOW_PADDING,
+            )
+        })
+        .collect();
+    let mut sep = f32::INFINITY;
+    for (i, a) in raw.iter().enumerate() {
+        for b in raw.iter().skip(i + 1) {
+            // 两 AABB 在 x 或 y 任一轴上分离即可走线；取较宽松的一轴。
+            let gx = (b.0 - a.2).max(a.0 - b.2);
+            let gy = (b.1 - a.3).max(a.1 - b.3);
+            sep = sep.min(gx.max(gy).max(0.0));
+        }
     }
-    let Some(stations) = chain_stations(start, input.fixed_segments, end) else {
-        return elbow_polyline_offset(&[start, end], input.offset, start_axis);
+    if !sep.is_finite() {
+        return ELBOW_PADDING;
+    }
+    ((sep - 2.0 * ELBOW_GAP_CLEARANCE) * 0.5).clamp(0.0, ELBOW_PADDING)
+}
+
+/// 按有效 padding 重新膨胀障碍。标称值生效时直接返回原数组——恒等变换，
+/// 避免 `x0 + P - P` 的浮点扰动渗进网格坐标（间隙充足的常规/旧档场景逐点
+/// 保持改动前的输出）。
+fn reinflate_obstacles(
+    obstacles: &[(f32, f32, f32, f32)],
+    padding: f32,
+) -> Vec<(f32, f32, f32, f32)> {
+    if (padding - ELBOW_PADDING).abs() < EPS {
+        return obstacles.to_vec();
+    }
+    obstacles
+        .iter()
+        .map(|&(x0, y0, x1, y1)| {
+            (
+                x0 + ELBOW_PADDING - padding,
+                y0 + ELBOW_PADDING - padding,
+                x1 - ELBOW_PADDING + padding,
+                y1 - ELBOW_PADDING + padding,
+            )
+        })
+        .collect()
+}
+
+/// 固定段在锚点 `a` 处的进入/离开方向（供 A\* 末步约束）；段不存在返回 None。
+fn anchor_arrival(fixed: &[ElbowFixedSegment], a: (f32, f32)) -> Option<(f32, f32)> {
+    let (from, to) = fixed_segment_from(fixed, a)?;
+    Some(unit_dir((to.0 - from.0, to.1 - from.1)))
+}
+
+/// 找出以 `a` 为端点的固定段，返回 `(a, 另一端)`（方向按路由行进方向）。
+fn fixed_segment_from(
+    fixed: &[ElbowFixedSegment],
+    a: (f32, f32),
+) -> Option<((f32, f32), (f32, f32))> {
+    let seg = fixed.iter().find(|s| s.start == a || s.end == a).copied()?;
+    Some(if seg.start == a {
+        (seg.start, seg.end)
+    } else {
+        (seg.end, seg.start)
+    })
+}
+
+/// 确定性缝合链（无障碍层）：固定段原样插入，锚点间用最小正交连接（Z/L）；
+/// 无固定段 = 现行 `elbow_polyline_offset`（旧档视觉不变）。
+fn join_chain_deterministic(input: &ElbowRouteInput) -> Vec<(f32, f32)> {
+    deterministic_between(
+        input.start,
+        input.end,
+        input,
+        axis_of(input.start_heading),
+        axis_of(input.end_heading),
+    )
+}
+
+/// A\* 失败 / 退化时的回退：**保留插座腿**。确定性缝合只在两个虚拟节点之间
+/// 进行，再首尾各接一段 `start→sv` / `ev→end`。旧实现直接对整条 start→end
+/// 走 Z，把绑定端的垂直进出段全丢了——间隙跨过 80px 时首段方向突然反转，
+/// 正是用户看到的 180° 掉头。
+fn join_chain_with_sockets(
+    input: &ElbowRouteInput,
+    sv: (f32, f32),
+    ev: (f32, f32),
+    sh: (f32, f32),
+    eh: (f32, f32),
+) -> Vec<(f32, f32)> {
+    let middle = deterministic_between(sv, ev, input, axis_of(sh), axis_of(eh));
+    let mut out: Vec<(f32, f32)> = vec![input.start];
+    if input.start_bound {
+        out.push(sv);
+    }
+    out.extend(middle.iter().skip(1)); // middle[0] == sv
+    if input.end_bound {
+        out.push(ev); // middle.last() == ev，重复点由 merge 去掉
+    }
+    out.push(input.end);
+    let out = merge_collinear(out);
+    // 两形状贴在一起且 padding→0 时全部点重合，merge 会压成单点；单点会让
+    // 箭头方向取 NaN。保底输出两点（与历史退化行为一致）。
+    if out.len() < 2 {
+        vec![input.start, input.end]
+    } else {
+        out
+    }
+}
+
+/// `a`→`b` 的确定性缝合，首尾轴由调用方给定（无障碍层 / 回退层共用）。
+fn deterministic_between(
+    a: (f32, f32),
+    b: (f32, f32),
+    input: &ElbowRouteInput,
+    from_axis: ElbowAxis,
+    to_axis: ElbowAxis,
+) -> Vec<(f32, f32)> {
+    if input.fixed_segments.is_empty() {
+        return elbow_polyline_offset(&[a, b], input.offset, from_axis);
+    }
+    let Some(stations) = chain_stations(a, input.fixed_segments, b) else {
+        return elbow_polyline_offset(&[a, b], input.offset, from_axis);
     };
-    let mut out: Vec<(f32, f32)> = vec![start];
-    let mut prev = start;
-    let mut prev_axis = start_axis;
+    let mut out: Vec<(f32, f32)> = vec![a];
+    let mut prev = a;
+    let mut prev_axis = from_axis;
     for st in &stations {
         match st {
-            Station::Anchor(a) => {
-                let seg = input
-                    .fixed_segments
-                    .iter()
-                    .find(|s| s.start == *a || s.end == *a)
-                    .copied();
-                let Some(seg) = seg else { break };
-                let (from, to) = if seg.start == *a {
-                    (seg.start, seg.end)
-                } else {
-                    (seg.end, seg.start)
+            Station::Anchor(anchor) => {
+                let Some((from, to)) = fixed_segment_from(input.fixed_segments, *anchor) else {
+                    break;
                 };
-                out.extend(minimal_join(prev, from, prev_axis, Some(seg.axis())));
+                let seg_axis = axis_of((to.0 - from.0, to.1 - from.1));
+                out.extend(minimal_join(prev, from, prev_axis, Some(seg_axis)));
                 out.push(to);
                 prev = to;
-                prev_axis = seg.axis();
+                prev_axis = seg_axis;
             }
             Station::End(e) => {
-                out.extend(minimal_join(
-                    prev,
-                    *e,
-                    prev_axis,
-                    Some(axis_of(input.end_heading)),
-                ));
+                out.extend(minimal_join(prev, *e, prev_axis, Some(to_axis)));
                 prev = *e;
             }
         }
@@ -297,6 +435,26 @@ fn unit_dir(d: (f32, f32)) -> (f32, f32) {
         (d.0.signum(), 0.0)
     } else {
         (0.0, d.1.signum())
+    }
+}
+
+/// 方向编码：0 = 无（起点 / 零 heading），1..4 = +x/-x/+y/-y。A\* 的方向
+/// 约束与 `elbow_route` 的零 heading 兜底共用同一套编码。
+fn dir_code(d: (f32, f32)) -> u8 {
+    if d.0.abs() >= d.1.abs() {
+        if d.0 > 0.0 {
+            1
+        } else if d.0 < 0.0 {
+            2
+        } else {
+            0
+        }
+    } else if d.1 > 0.0 {
+        3
+    } else if d.1 < 0.0 {
+        4
+    } else {
+        0
     }
 }
 
@@ -409,24 +567,6 @@ fn astar(
         })
     };
 
-    // 方向编码：0=无（起点），1..4 = +x/-x/+y/-y。
-    let dir_code = |d: (f32, f32)| -> u8 {
-        if d.0.abs() >= d.1.abs() {
-            if d.0 > 0.0 {
-                1
-            } else if d.0 < 0.0 {
-                2
-            } else {
-                0
-            }
-        } else if d.1 > 0.0 {
-            3
-        } else if d.1 < 0.0 {
-            4
-        } else {
-            0
-        }
-    };
     let start_dir = dir_code(start_heading);
     let end_dir = end_heading.map(dir_code);
     let is_reverse = |a: u8, b: u8| matches!((a, b), (1, 2) | (2, 1) | (3, 4) | (4, 3));
@@ -594,6 +734,64 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// 相邻两段不得反向重叠（180° 回折 / 尖刺）。
+    fn assert_no_reversal(pts: &[(f32, f32)]) {
+        for w in pts.windows(3) {
+            let d1 = (w[1].0 - w[0].0, w[1].1 - w[0].1);
+            let d2 = (w[2].0 - w[1].0, w[2].1 - w[1].1);
+            assert!(d1.0 * d2.0 + d1.1 * d2.1 >= -1e-3, "180° 回折: {:?}", pts);
+        }
+    }
+
+    /// 与 `Scene::elbow_route_local` 同款：形状 AABB 按标称值膨胀后的禁入区。
+    fn inflated_rect(x: f32, y: f32, w: f32, h: f32) -> (f32, f32, f32, f32) {
+        (
+            x - ELBOW_PADDING,
+            y - ELBOW_PADDING,
+            x + w + ELBOW_PADDING,
+            y + h + ELBOW_PADDING,
+        )
+    }
+
+    /// 锚点边 → 外法线（终点进入方向 = 外法线取反）。
+    fn edge_normal(edge: char) -> (f32, f32) {
+        match edge {
+            'L' => (-1.0, 0.0),
+            'R' => (1.0, 0.0),
+            'T' => (0.0, -1.0),
+            _ => (0.0, 1.0),
+        }
+    }
+
+    /// 100×60 形状上四条边的锚点。
+    fn anchor_of(edge: char, ox: f32, oy: f32) -> (f32, f32) {
+        match edge {
+            'L' => (ox, oy + 30.0),
+            'R' => (ox + 100.0, oy + 30.0),
+            'T' => (ox + 50.0, oy),
+            _ => (ox + 50.0, oy + 60.0),
+        }
+    }
+
+    /// 两个 100×60 绑定形状：A 在原点，B 在 `(bx, by)`，两端按边取锚点。
+    fn route_two_bound(edges: (char, char), bx: f32, by: f32) -> Vec<(f32, f32)> {
+        let (a, b) = (anchor_of(edges.0, 0.0, 0.0), anchor_of(edges.1, bx, by));
+        let n = edge_normal(edges.1);
+        let obstacles = [
+            inflated_rect(0.0, 0.0, 100.0, 60.0),
+            inflated_rect(bx, by, 100.0, 60.0),
+        ];
+        route(
+            a,
+            b,
+            edge_normal(edges.0),
+            (-n.0, -n.1),
+            (true, true),
+            &[],
+            &obstacles,
+        )
     }
 
     #[test]
@@ -767,5 +965,173 @@ mod tests {
         let json = serde_json::to_string(&seg).unwrap();
         let back: ElbowFixedSegment = serde_json::from_str(&json).unwrap();
         assert_eq!(seg, back);
+    }
+
+    // ────────── 跳变根治（自适应 padding + 保留插座腿的回退） ──────────
+
+    #[test]
+    fn adaptive_padding_removes_80px_topology_jump() {
+        // R→L 水平连接：旧实现在 gap = 2×ELBOW_PADDING 处 A\* 从"必败回退"
+        // 翻到"成功绕行"，路径拓扑突变、首段方向反转。现在 padding 随间隙
+        // 连续收缩，跨过 80px 时输出始终是干净的两点直线。
+        for gap in [
+            10.0, 20.0, 40.0, 60.0, 78.0, 79.0, 80.0, 81.0, 82.0, 100.0, 160.0, 200.0,
+        ] {
+            let out = route_two_bound(('R', 'L'), 100.0 + gap, 0.0);
+            assert_eq!(out.len(), 2, "gap={gap} 路径拓扑跳变：{out:?}");
+            assert_eq!(out[0], (100.0, 30.0));
+            assert_eq!(out[1], (100.0 + gap, 30.0));
+        }
+    }
+
+    #[test]
+    fn narrow_gap_astar_keeps_dongle_legs() {
+        // L→L：间隙 60 < 80，旧实现 ev 落进对方膨胀 AABB → A\* 必败、回退成
+        // 穿过形状的 2 点直线。现在 padding 收缩到 29，A\* 有解且保留首段
+        // 沿左边缘外法线（-x）离开的插座腿。
+        let out = route_two_bound(('L', 'L'), 160.0, 0.0);
+        assert_orthogonal_endpoint_preserving(&out, (0.0, 30.0), (160.0, 30.0));
+        assert!(out.len() > 2, "窄间隙仍应走绕行路径：{out:?}");
+        assert!(
+            out[1].0 < 0.0 && (out[1].1 - 30.0).abs() < 1e-3,
+            "首段应沿 -x 离开左边缘：{out:?}"
+        );
+        assert_no_reversal(&out);
+    }
+
+    #[test]
+    fn effective_padding_tracks_gap_continuously() {
+        let pad_at = |gap: f32| {
+            effective_padding(&[
+                inflated_rect(0.0, 0.0, 100.0, 60.0),
+                inflated_rect(100.0 + gap, 0.0, 100.0, 60.0),
+            ])
+        };
+        assert_eq!(pad_at(0.0), 0.0);
+        assert_eq!(pad_at(40.0), 19.0);
+        assert_eq!(pad_at(80.0), 39.0);
+        assert_eq!(pad_at(82.0), ELBOW_PADDING);
+        assert_eq!(pad_at(200.0), ELBOW_PADDING);
+        // 0/1 个障碍时没有"对方形状"可撞，恒用标称值。
+        assert_eq!(effective_padding(&[]), ELBOW_PADDING);
+        assert_eq!(
+            effective_padding(&[inflated_rect(0.0, 0.0, 100.0, 60.0)]),
+            ELBOW_PADDING
+        );
+        // 连续性：间隙每变 1px，padding 最多变 0.5px 且单调不减。
+        let mut prev = pad_at(0.0);
+        for gap in 1..=200 {
+            let p = pad_at(gap as f32);
+            assert!((p - prev).abs() <= 0.5 + 1e-3, "gap={gap} padding 跳变");
+            assert!(p >= prev, "gap={gap} padding 应单调不减");
+            prev = p;
+        }
+    }
+
+    #[test]
+    fn nominal_padding_reinflation_is_identity() {
+        // 间隙充足时障碍重膨胀必须是恒等变换——常规场景 / 旧档逐点不变。
+        let obs = [
+            inflated_rect(0.0, 0.0, 100.0, 60.0),
+            inflated_rect(300.0, 0.0, 100.0, 60.0),
+        ];
+        let pad = effective_padding(&obs);
+        assert_eq!(pad, ELBOW_PADDING);
+        assert_eq!(reinflate_obstacles(&obs, pad), obs.to_vec());
+    }
+
+    #[test]
+    fn astar_fallback_stitches_from_virtual_nodes() {
+        // 单个薄障碍包住 sv → A\* 首步全堵。旧回退对 start→end 走 Z，
+        // bar 在 x=200；新回退以 sv=(140,30) / ev=end(300,80) 缝合，
+        // bar 移到 x=220（插座腿参与确定性 L/Z/S 的取轴与居中）。
+        let obstacles = [(139.0, -20.0, 141.0, 100.0)];
+        let out = route(
+            (100.0, 30.0),
+            (300.0, 80.0),
+            (1.0, 0.0),
+            (1.0, 0.0),
+            (true, false),
+            &[],
+            &obstacles,
+        );
+        assert_orthogonal_endpoint_preserving(&out, (100.0, 30.0), (300.0, 80.0));
+        assert!(
+            out.iter().any(|&(x, _)| (x - 220.0).abs() < 1e-3),
+            "回退应以 sv/ev 作缝合站点：{out:?}"
+        );
+        assert_no_reversal(&out);
+    }
+
+    #[test]
+    fn degenerate_endpoints_keep_two_points() {
+        // 两形状边界相接（sep=0 → padding=0）且首尾端点重合：merge 会把所有
+        // 点压成单点，箭头方向将取 NaN。保底输出两点（与历史退化行为一致）。
+        let obstacles = [
+            inflated_rect(0.0, 0.0, 100.0, 60.0),
+            inflated_rect(100.0, 0.0, 100.0, 60.0),
+        ];
+        let out = route(
+            (100.0, 30.0),
+            (100.0, 30.0),
+            (1.0, 0.0),
+            (1.0, 0.0),
+            (true, true),
+            &[],
+            &obstacles,
+        );
+        assert_eq!(out, vec![(100.0, 30.0), (100.0, 30.0)]);
+    }
+
+    #[test]
+    fn zero_free_end_heading_uses_main_direction() {
+        // 自由端存储取向与连线垂直时会给出 (0,0)，A\* 的方向编码为 0 令
+        // 末步约束整体失效。兜底后应与显式给主方向 heading 的结果一致。
+        let obstacles = [inflated_rect(0.0, 0.0, 100.0, 60.0)];
+        let zero = route(
+            (100.0, 30.0),
+            (300.0, 30.0),
+            (1.0, 0.0),
+            (0.0, 0.0),
+            (true, false),
+            &[],
+            &obstacles,
+        );
+        let explicit = route(
+            (100.0, 30.0),
+            (300.0, 30.0),
+            (1.0, 0.0),
+            (1.0, 0.0),
+            (true, false),
+            &[],
+            &obstacles,
+        );
+        assert_eq!(zero, explicit);
+        assert_no_reversal(&zero);
+    }
+
+    #[test]
+    fn anchor_sweep_has_no_reversal_and_preserves_invariants() {
+        // 16 种锚点边组合 × 13 种水平间距 × 3 种垂直错位：端点、正交性、
+        // 无 180° 回折的批量属性回归（对应跳变诊断时的网格扫描）。
+        for ea in ['L', 'R', 'T', 'B'] {
+            for eb in ['L', 'R', 'T', 'B'] {
+                for bx in [
+                    60.0, 80.0, 100.0, 120.0, 140.0, 160.0, 170.0, 180.0, 190.0, 200.0, 240.0,
+                    300.0, 400.0,
+                ] {
+                    for by in [-120.0, 0.0, 120.0] {
+                        let out = route_two_bound((ea, eb), bx, by);
+                        assert!(out.len() >= 2, "{ea}{eb} bx={bx} by={by} 单点路径");
+                        assert_orthogonal_endpoint_preserving(
+                            &out,
+                            anchor_of(ea, 0.0, 0.0),
+                            anchor_of(eb, bx, by),
+                        );
+                        assert_no_reversal(&out);
+                    }
+                }
+            }
+        }
     }
 }
