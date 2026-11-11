@@ -522,6 +522,10 @@ impl Scene {
     /// - `Text.container_id` 会按 old→new 映射改写：容器也在本次复制集内则指向
     ///   新容器（复制封闭图形时其绑定文字跟着走），否则置 `None` 退化为自由文本
     ///   （不能让副本文字仍绑在没被复制的原件容器上）；
+    /// - **端点吸附**（`Shape.start_binding`/`end_binding`，plan #5）：目标也在本次
+    ///   复制集内则改绑到副本目标（`anchor` 是目标局部坐标，原样保留）；否则置
+    ///   `None` 退化为自由端点。不能让副本线继续吸附没被复制的原件——否则原件
+    ///   移动会把副本端点一起拽走，删除原件还会连带清空副本的绑定；
     /// - `group_id`（plan #13）：整组被复制时副本共享一个**新**组 id（组结构保留）；
     ///   组只有部分成员被复制时副本退化为未编组（避免点击副本选中原组）。
     ///
@@ -569,6 +573,26 @@ impl Scene {
             if let crate::item::ItemKind::Text { container_id, .. } = &mut dup.kind {
                 if let Some(old_cid) = *container_id {
                     *container_id = id_map.get(&old_cid).copied();
+                }
+            }
+            // 端点吸附与 container_id 同语义：目标在复制集内 → 改绑副本目标；
+            // 不在 → 清空（悬空绑定会让副本线被原件联动拽走 / 被删原件连带解绑）。
+            // anchor 是绑定目标的局部坐标，副本目标尺寸不变，原样保留。
+            if let ItemKind::Shape {
+                start_binding,
+                end_binding,
+                ..
+            } = &mut dup.kind
+            {
+                for slot in [start_binding, end_binding] {
+                    if let Some(b) = *slot {
+                        *slot = id_map.get(&b.target).copied().map(|target| {
+                            crate::item::EndpointBinding {
+                                target,
+                                anchor: b.anchor,
+                            }
+                        });
+                    }
                 }
             }
             out.push(dup);
@@ -958,6 +982,92 @@ mod tests {
             crate::item::ItemKind::Text { container_id, .. } => assert_eq!(*container_id, None),
             _ => panic!("expected Text"),
         }
+    }
+
+    /// 两端带绑定的 elbow（锚点刻意取不同值，验证重映射时原样保留）。
+    fn bound_elbow(a: ItemId, b: ItemId) -> Item {
+        let mut line = Item::new_elbow(
+            vec![(0.0, 0.0), (200.0, 0.0)],
+            (200.0, 0.0),
+            None,
+            None,
+            0.0,
+            0.0,
+            StrokeStyle::default(),
+        );
+        if let ItemKind::Shape {
+            start_binding,
+            end_binding,
+            ..
+        } = &mut line.kind
+        {
+            *start_binding = Some(crate::item::EndpointBinding {
+                target: a,
+                anchor: Some((100.0, 30.0)),
+            });
+            *end_binding = Some(crate::item::EndpointBinding {
+                target: b,
+                anchor: Some((0.0, 15.0)),
+            });
+        }
+        line
+    }
+
+    fn scene_with_bound_elbow() -> (Scene, ItemId, ItemId, ItemId) {
+        let mut b = shape();
+        b.transform.pos = CanvasVector::new(300.0, 0.0);
+        let a = shape();
+        let (a_id, b_id) = (a.id, b.id);
+        let line = bound_elbow(a_id, b_id);
+        let line_id = line.id;
+        let mut scene = Scene::new();
+        scene.add_item(a);
+        scene.add_item(b);
+        scene.add_item(line);
+        (scene, a_id, b_id, line_id)
+    }
+
+    /// 形状与吸附线一起复制：副本线两端必须改绑到**副本**形状，锚点不变。
+    /// 回归「复制后吸附关系丢失」（副本曾继续指向原件 uuid）。
+    #[test]
+    fn duplicate_items_remaps_endpoint_bindings_within_set() {
+        let (scene, a_id, b_id, line_id) = scene_with_bound_elbow();
+        let dups = scene.duplicate_items(&[a_id, b_id, line_id], CanvasVector::new(10.0, 20.0));
+        assert_eq!(dups.len(), 3);
+        let (new_a, new_b) = (dups[0].id, dups[1].id);
+        assert_ne!(new_a, a_id);
+        assert_ne!(new_b, b_id);
+        let s = dups[2].start_binding().expect("副本起点仍应吸附");
+        let e = dups[2].end_binding().expect("副本终点仍应吸附");
+        assert_eq!(s.target, new_a, "起点应改绑副本 A");
+        assert_eq!(e.target, new_b, "终点应改绑副本 B");
+        assert_eq!(s.anchor, Some((100.0, 30.0)));
+        assert_eq!(e.anchor, Some((0.0, 15.0)));
+        // 原场景未被改动（副本尚未入场景）
+        let orig = scene.get_item(&line_id).unwrap();
+        assert_eq!(orig.start_binding().map(|b| b.target), Some(a_id));
+        assert_eq!(orig.end_binding().map(|b| b.target), Some(b_id));
+    }
+
+    /// 只复制吸附线（目标形状都不在复制集）→ 两端退化为自由端点，
+    /// 不能留下指向原件形状的悬空绑定。
+    #[test]
+    fn duplicate_items_drops_endpoint_bindings_outside_set() {
+        let (scene, _, _, line_id) = scene_with_bound_elbow();
+        let dups = scene.duplicate_items(&[line_id], CanvasVector::zero());
+        assert_eq!(dups[0].start_binding(), None);
+        assert_eq!(dups[0].end_binding(), None);
+    }
+
+    /// 混合：只有起点目标在复制集内 → 起点改绑副本、终点清空。
+    #[test]
+    fn duplicate_items_remaps_only_bound_targets_inside_set() {
+        let (scene, a_id, _, line_id) = scene_with_bound_elbow();
+        let dups = scene.duplicate_items(&[a_id, line_id], CanvasVector::zero());
+        let s = dups[1].start_binding().expect("起点目标在复制集内");
+        assert_eq!(s.target, dups[0].id);
+        assert_eq!(s.anchor, Some((100.0, 30.0)));
+        assert_eq!(dups[1].end_binding(), None, "终点目标不在复制集内");
     }
 
     fn frame(number: u32, x: f32, y: f32, w: f32, h: f32) -> Item {
