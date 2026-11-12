@@ -3328,6 +3328,227 @@ mod tests {
         assert_eq!(fill("a {0} b {1}", &["X".to_string()]), "a X b {1}");
     }
 
+    /// 回归「Ctrl+D 复制形状 + 吸附 elbow 后吸附丢失」：走完整 App 层链路
+    /// （选区收集 → duplicate_items → 入场景 → push AddItems），副本线两端
+    /// 必须改绑到副本形状，anchor 原样保留。
+    #[test]
+    fn duplicate_in_place_preserves_elbow_bindings() {
+        use preferz_core::item::{EndpointBinding, Item, ItemKind};
+        use preferz_core::shape::{ShapeType, StrokeStyle};
+
+        let mut app = PReferZApp::new();
+        let mk_rect = |x: f32| {
+            Item::new_shape(
+                ShapeType::Rectangle,
+                (100.0, 60.0),
+                x,
+                0.0,
+                StrokeStyle::default(),
+                None,
+            )
+        };
+        let a = mk_rect(0.0);
+        let b = mk_rect(300.0);
+        let (a_id, b_id) = (a.id, b.id);
+        let mut line = Item::new_elbow(
+            vec![(0.0, 0.0), (200.0, 0.0)],
+            (200.0, 1.0),
+            None,
+            None,
+            100.0,
+            30.0,
+            StrokeStyle::default(),
+        );
+        line.set_start_binding(Some(EndpointBinding {
+            target: a_id,
+            anchor: Some((100.0, 30.0)),
+        }));
+        line.set_end_binding(Some(EndpointBinding {
+            target: b_id,
+            anchor: Some((0.0, 30.0)),
+        }));
+        let line_id = line.id;
+        app.session.scene.add_item(a);
+        app.session.scene.add_item(b);
+        app.session.scene.add_item(line);
+        for id in [a_id, b_id, line_id] {
+            app.session.scene.select(id);
+        }
+
+        app.duplicate_in_place();
+
+        let dups: Vec<&Item> = app
+            .session
+            .scene
+            .items
+            .iter()
+            .filter(|it| it.id != a_id && it.id != b_id && it.id != line_id)
+            .collect();
+        assert_eq!(dups.len(), 3, "应复制出 2 个矩形 + 1 条 elbow");
+        let dup_line = dups
+            .iter()
+            .find(|it| {
+                matches!(
+                    &it.kind,
+                    ItemKind::Shape {
+                        shape_type: ShapeType::Elbow,
+                        ..
+                    }
+                )
+            })
+            .expect("副本 elbow 应存在");
+        let sb = dup_line.start_binding().expect("副本起点仍应吸附");
+        let eb = dup_line.end_binding().expect("副本终点仍应吸附");
+        assert_ne!(sb.target, a_id, "不得仍指向原件 A");
+        assert_ne!(eb.target, b_id, "不得仍指向原件 B");
+        assert!(dups.iter().any(|it| it.id == sb.target), "起点应指向副本 A");
+        assert!(dups.iter().any(|it| it.id == eb.target), "终点应指向副本 B");
+        assert_eq!(sb.anchor, Some((100.0, 30.0)));
+        assert_eq!(eb.anchor, Some((0.0, 30.0)));
+
+        // 用户复现的第二步：复制后把副本集整体拖开整理布局。此时绑定目标
+        // 与线同在移动组内，端点必须保持吸附（否则等于「复制丢了吸附」）。
+        let (dup_a_id, dup_b_id, dup_line_id, snap) = {
+            let (points, axis) = match &dup_line.kind {
+                ItemKind::Shape {
+                    points, elbow_axis, ..
+                } => (points.clone(), *elbow_axis),
+                _ => unreachable!(),
+            };
+            (
+                sb.target,
+                eb.target,
+                dup_line.id,
+                LineSnapState {
+                    line_id: dup_line.id,
+                    start_points: points,
+                    start_start_binding: dup_line.start_binding(),
+                    start_end_binding: dup_line.end_binding(),
+                    start_axis: axis,
+                },
+            )
+        };
+        let start_canvas = app
+            .session
+            .viewport
+            .pos2_to_canvas(egui::pos2(100.0, 100.0));
+        let start_transforms: Vec<(ItemId, preferz_core::Transform)> =
+            [dup_a_id, dup_b_id, dup_line_id]
+                .iter()
+                .filter_map(|id| app.session.scene.get_item(id).map(|it| (*id, it.transform)))
+                .collect();
+        app.drag = DragState::MoveItems {
+            start_canvas,
+            start_transforms,
+            line_snaps: vec![snap],
+            duplicate_ids: None,
+            original_ids: vec![],
+            pending_deselect: None,
+        };
+        app.update_drag_preview(egui::pos2(180.0, 150.0), false, false);
+
+        let after = app.session.scene.get_item(&dup_line_id).unwrap();
+        assert!(
+            after.start_binding().is_some(),
+            "副本集整体移动后起点仍应吸附"
+        );
+        assert!(
+            after.end_binding().is_some(),
+            "副本集整体移动后终点仍应吸附"
+        );
+        assert_eq!(after.start_binding().unwrap().target, dup_a_id);
+        assert_eq!(after.end_binding().unwrap().target, dup_b_id);
+    }
+
+    /// 反向不变量：**只拖动一条线**（绑定目标不在移动组内）时，仍按 plan #14
+    /// 语义解绑；上一条修复不能把「单独拖线脱离吸附」一起改掉。
+    #[test]
+    fn moving_bound_line_alone_still_detaches_endpoints() {
+        use preferz_core::item::{EndpointBinding, Item, ItemKind};
+        use preferz_core::shape::{ShapeType, StrokeStyle};
+
+        let mut app = PReferZApp::new();
+        let a = Item::new_shape(
+            ShapeType::Rectangle,
+            (100.0, 60.0),
+            0.0,
+            0.0,
+            StrokeStyle::default(),
+            None,
+        );
+        let b = Item::new_shape(
+            ShapeType::Rectangle,
+            (100.0, 60.0),
+            300.0,
+            0.0,
+            StrokeStyle::default(),
+            None,
+        );
+        let (a_id, b_id) = (a.id, b.id);
+        let mut line = Item::new_elbow(
+            vec![(0.0, 0.0), (200.0, 0.0)],
+            (200.0, 1.0),
+            None,
+            None,
+            100.0,
+            30.0,
+            StrokeStyle::default(),
+        );
+        line.set_start_binding(Some(EndpointBinding {
+            target: a_id,
+            anchor: Some((100.0, 30.0)),
+        }));
+        line.set_end_binding(Some(EndpointBinding {
+            target: b_id,
+            anchor: Some((0.0, 30.0)),
+        }));
+        let line_id = line.id;
+        app.session.scene.add_item(a);
+        app.session.scene.add_item(b);
+        app.session.scene.add_item(line);
+        app.session.scene.select(line_id);
+
+        let (points, axis, start_tf) = {
+            let it = app.session.scene.get_item(&line_id).unwrap();
+            let (points, axis) = match &it.kind {
+                ItemKind::Shape {
+                    points, elbow_axis, ..
+                } => (points.clone(), *elbow_axis),
+                _ => unreachable!(),
+            };
+            (points, axis, it.transform)
+        };
+        let start_canvas = app
+            .session
+            .viewport
+            .pos2_to_canvas(egui::pos2(100.0, 100.0));
+        app.drag = DragState::MoveItems {
+            start_canvas,
+            start_transforms: vec![(line_id, start_tf)],
+            line_snaps: vec![LineSnapState {
+                line_id,
+                start_points: points,
+                start_start_binding: Some(EndpointBinding {
+                    target: a_id,
+                    anchor: Some((100.0, 30.0)),
+                }),
+                start_end_binding: Some(EndpointBinding {
+                    target: b_id,
+                    anchor: Some((0.0, 30.0)),
+                }),
+                start_axis: axis,
+            }],
+            duplicate_ids: None,
+            original_ids: vec![],
+            pending_deselect: None,
+        };
+        // 拖得足够远，端点附近无吸附目标 → 应解绑
+        app.update_drag_preview(egui::pos2(400.0, 320.0), false, false);
+        let after = app.session.scene.get_item(&line_id).unwrap();
+        assert!(after.start_binding().is_none(), "单独拖线时起点应脱离吸附");
+        assert!(after.end_binding().is_none(), "单独拖线时终点应脱离吸附");
+    }
+
     // ───────── UI 级事件复现（真 egui Context + 合成 RawInput 驱动完整 App::ui） ─────────
 
     /// 驱动一帧完整的 App::ui（真 egui pass 生命周期：run_ui = begin_pass + end_pass）。

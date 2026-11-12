@@ -652,6 +652,38 @@ impl PReferZApp {
                 for ls in line_snaps {
                     let last = ls.start_points.len().saturating_sub(1);
                     for endpoint in [0usize, last] {
+                        // 组移动 / Ctrl+拖动复制：该端绑定的目标**也在移动组内**时，
+                        // 线是跟着目标一起走，不是被单独拖离。此时不做端点吸附
+                        // 预览——find_snap_target 会过滤掉组内目标，必然「未命中」，
+                        // snap_active 下就静默解绑（Ctrl+D / Ctrl+拖动复制后把副本
+                        // 拖开整理位置，吸附会全部丢失）。保留快照绑定与基准端点，
+                        // 统一交给下方 resolve_bindings(&ids) 按 anchor 重算。
+                        let orig = if endpoint == 0 {
+                            ls.start_start_binding
+                        } else {
+                            ls.start_end_binding
+                        };
+                        if orig.is_some_and(|b| moved.contains(&b.target)) {
+                            if let Some(item) = self.session.scene.get_item_mut(&ls.line_id) {
+                                if let ItemKind::Shape {
+                                    points,
+                                    start_binding,
+                                    end_binding,
+                                    ..
+                                } = &mut item.kind
+                                {
+                                    if let Some(p) = points.get_mut(endpoint) {
+                                        *p = ls.start_points[endpoint];
+                                    }
+                                    if endpoint == 0 {
+                                        *start_binding = orig;
+                                    } else {
+                                        *end_binding = orig;
+                                    }
+                                }
+                            }
+                            continue;
+                        }
                         // 端点当前画布位置（points 尚为初始值，transform 已随组移动）
                         let qc = self
                             .session
