@@ -2,6 +2,26 @@
 //! 方法体逐字搬迁；`use super::*;` 取 mod.rs 的模块级词汇与私有项（子模块可访问父模块私有）。
 use super::*;
 
+/// 进入「编辑已有文字」时预置全选选区：直接输入即可整段替换，不必先手动
+/// Ctrl+A / 逐字删（Enter 改形状内绑定文字的主要场景）。
+///
+/// egui 0.37 的 `TextEdit` 没有 `select_all_on_focus` builder 开关，改走
+/// `TextEditState`：与 `request_focus` **同帧**写入 cursor range，`ui.add`
+/// 结束时的 state 落盘之后由这里覆盖，下一帧渲染即显示整段高亮。若等
+/// `gained_focus()` 再设，会多空一帧（焦点变更在帧末才生效）。
+///
+/// 只对非空 buffer 生效（新建文本为空，选中无意义）。
+fn select_all_on_focus(ctx: &egui::Context, response: &egui::Response, buffer: &str) {
+    if buffer.is_empty() {
+        return;
+    }
+    let mut state = egui::TextEdit::load_state(ctx, response.id).unwrap_or_default();
+    state
+        .cursor
+        .set_char_range(Some(egui::text::CCursorRange::select_all_str(buffer)));
+    egui::TextEdit::store_state(ctx, response.id, state);
+}
+
 impl PReferZApp {
     /// 在画布落点起一段**自由文本**（plan #22：文字工具的落点手势）。
     /// 取代旧的「双击空白 / 双击线 → 新建文本便签」——新建文本从此只有工具入口。
@@ -278,6 +298,8 @@ impl PReferZApp {
                             ctx.input(|i| i.pointer.any_down() || i.pointer.any_click());
                         if !click_pending {
                             response.request_focus();
+                            // 编辑已有文字 → 默认全选，直接输入即整段替换。
+                            select_all_on_focus(ui.ctx(), &response, &edit.buffer);
                             edit.first_frame = false;
                         }
                     }
@@ -306,6 +328,8 @@ impl PReferZApp {
                             ctx.input(|i| i.pointer.any_down() || i.pointer.any_click());
                         if !click_pending {
                             response.request_focus();
+                            // 编辑已有文字 → 默认全选，直接输入即整段替换。
+                            select_all_on_focus(ui.ctx(), &response, &edit.buffer);
                             edit.first_frame = false;
                         }
                     }
@@ -457,6 +481,65 @@ impl PReferZApp {
                 t(self.lang, T::FlashFrameRenumbered),
                 &[new_number.to_string()],
             ));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_raw_input() -> egui::RawInput {
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(400.0, 200.0),
+            )),
+            ..Default::default()
+        }
+    }
+
+    /// 预置选区必须覆盖整段文本（含 CJK；egui 的 CCursor 按字符而非字节计）。
+    #[test]
+    fn select_all_on_focus_covers_whole_buffer() {
+        let ctx = egui::Context::default();
+        let id = egui::Id::unique("preferz-select-all-test");
+        let text = "旧文字 ABC";
+        let mut out = ctx.run_ui(test_raw_input(), |ui| {
+            let mut buffer = text.to_string();
+            let response = ui.add(egui::TextEdit::multiline(&mut buffer).id(id));
+            assert_eq!(response.id, id);
+            select_all_on_focus(ui.ctx(), &response, &buffer);
+        });
+        // 无渲染器：字体图集等纹理增量无法上 GPU，显式清掉避免 Drop panic
+        out.textures_delta.clear();
+
+        let state = egui::TextEdit::load_state(&ctx, id).expect("state stored");
+        let range = state.cursor.char_range().expect("selection set");
+        assert_eq!(
+            range,
+            egui::text::CCursorRange::select_all_str(text),
+            "编辑已有文字必须整段选中"
+        );
+    }
+
+    /// 新建文本（空 buffer）不应凭空造选区。
+    #[test]
+    fn select_all_on_focus_skips_empty_buffer() {
+        let ctx = egui::Context::default();
+        let id = egui::Id::unique("preferz-select-all-empty-test");
+        let mut out = ctx.run_ui(test_raw_input(), |ui| {
+            let mut buffer = String::new();
+            let response = ui.add(egui::TextEdit::multiline(&mut buffer).id(id));
+            select_all_on_focus(ui.ctx(), &response, &buffer);
+        });
+        out.textures_delta.clear();
+
+        if let Some(state) = egui::TextEdit::load_state(&ctx, id) {
+            assert!(
+                state.cursor.char_range().is_none_or(|r| r.is_empty()),
+                "新建文本不应预置全选"
+            );
         }
     }
 }

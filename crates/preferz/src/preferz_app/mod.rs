@@ -989,7 +989,7 @@ impl PReferZApp {
             link_input_focused: false,
             // 单测不启动内嵌监听：一个测试进程里会有几十个 App 实例同时存在，
             // 它们会互相争抢同一个握手文件（真机上是「多窗口」语义，在这里只会
-            // 变成新实例弹接管确认框、盖住合成事件要点的画布）。MCP 的状态机与
+            // 让实例们互相把对方判成「他人活跃」而默认关闭 MCP）。MCP 的状态机与
             // 连接处理由 `mcp_serve` 单测直接驱动，不依赖 `new()` 这条入口。
             mcp: if cfg.mcp_listen && !cfg!(test) {
                 let serve = mcp_serve::McpServe::start();
@@ -2011,7 +2011,7 @@ impl eframe::App for PReferZApp {
         // 保存提示对话框（关闭/新建时若 dirty 弹出
         self.render_save_prompt(ctx);
 
-        // MCP 接管确认（新窗口启动撞上正被 agent 操作的旧窗口 / 点徽标申请接管）
+        // MCP 接管确认（仅由「用户手动点徽标开启」触发；启动不再弹窗）
         if self
             .mcp
             .as_ref()
@@ -2494,9 +2494,10 @@ impl PReferZApp {
 
     /// MCP 桥接开关（侧栏，OpenCADStudio 式单一天选窗口）：右上角状态点——
     /// 绿实心=本窗口正被 agent 控制、灰实心=待命（另一窗口控制中，其退出后
-    /// 本窗口 1s 内自动认领）、空心=用户已关闭。点按切换：打开 = **申请**接管
-    /// （另一存活窗口持有时先弹确认框，确认后才切；无活实例则立即接管），
-    /// 关闭 = 释放。状态机见 `mcp_serve::McpServe::tick`。
+    /// 本窗口 1s 内自动认领）、空心=用户已关闭。启动时若另一窗口活跃，本窗口
+    /// 以空心（默认关闭）起步——不弹窗也不抢控制权，点开才申请接管。
+    /// 点按切换：打开 = **申请**接管（另一存活窗口持有时先弹确认框，确认后才
+    /// 切；无活实例则立即接管），关闭 = 释放。状态机见 `mcp_serve::McpServe::tick`。
     /// config 关闭 MCP 功能时 `self.mcp` 为 None，整项不渲染。
     fn render_mcp_switch(&mut self, ui: &mut egui::Ui) {
         let Some((active, disabled, port)) = self
@@ -2543,10 +2544,10 @@ impl PReferZApp {
         }
     }
 
-    /// MCP 接管确认弹窗：**任何从存活实例手里夺控制权的路径都不静默**——
-    /// 新窗口启动时发现另一实例持有握手文件、或用户在待命/关闭态点徽标申请
-    /// 接管，都走这里；点「接管本窗口」才写文件（原 Active 下一秒 tick 让位，
-    /// 其已建立的 agent 连接不受影响）。「保持待命」= 什么都不动。
+    /// MCP 接管确认弹窗：**从存活实例手里夺控制权不静默**——只有「用户在
+    /// 待命/关闭态点徽标开启」这一条入口会走到这里（启动撞上他人活跃时本窗口
+    /// 默认关闭、不弹窗）。点「接管本窗口」才写文件（原 Active 下一秒 tick
+    /// 让位，其已建立的 agent 连接不受影响）。「保持待命」= 什么都不动。
     fn render_mcp_takeover_prompt(&mut self, ctx: &egui::Context) {
         let Some(req) = self.mcp.as_ref().and_then(|m| m.takeover_prompt()) else {
             return;
@@ -3664,6 +3665,53 @@ mod tests {
 
         run_ui_frame(&mut app, &ctx, vec![pointer_button(p2, false)], t);
         assert!(app.editing_text.is_some(), "拖拽释放后编辑框应仍存活");
+    }
+
+    /// 用户报告的场景：Enter 编辑形状内**已有**的绑定文字时，编辑框应默认
+    /// 全选，直接输入即整段替换（不必手动 Ctrl+A / 逐字删）。
+    #[test]
+    fn ui_level_bound_text_edit_selects_all_on_open() {
+        use preferz_core::item::Item;
+        use preferz_core::shape::{ShapeType, StrokeStyle};
+
+        let mut app = PReferZApp::new();
+        let ctx = egui::Context::default();
+        ctx.set_fonts(crate::app_font_definitions());
+
+        let shape = Item::new_shape(
+            ShapeType::Rectangle,
+            (200.0, 100.0),
+            0.0,
+            0.0,
+            StrokeStyle::default(),
+            None,
+        );
+        let shape_id = shape.id;
+        app.session.scene.add_item(shape);
+        app.session.scene.add_item(Item::new_text_in(
+            "旧文字".to_string(),
+            0.0,
+            0.0,
+            18.0,
+            [255; 4],
+            shape_id,
+        ));
+        app.session.scene.select(shape_id);
+        // 与 Enter 快捷键相同的入口（见 `handle_shortcuts` 的 Action::EditText）
+        assert!(app.start_text_edit(shape_id), "矩形应可编辑绑定文字");
+        assert_eq!(app.editing_text.as_ref().unwrap().buffer, "旧文字");
+
+        // 首帧无指针事件 → 焦点延迟条件立即满足，request_focus + 全选同帧落下。
+        run_ui_frame(&mut app, &ctx, vec![], 0.0);
+
+        let focus_id = ctx.memory(|m| m.focused()).expect("编辑框应获得焦点");
+        let state = egui::TextEdit::load_state(&ctx, focus_id).expect("TextEdit state");
+        let range = state.cursor.char_range().expect("应预置选区");
+        assert_eq!(
+            range,
+            egui::text::CCursorRange::select_all_str("旧文字"),
+            "已有绑定文字应整段选中"
+        );
     }
 
     // ───────── 多边形工具（Phase I） ─────────

@@ -9,14 +9,15 @@
 //! - **多实例三态**（每窗口侧栏有 MCP 徽标可见可切换）：
 //!   `Active`（持有握手文件，`--mcp` 连这里）/ `Standby`（监听在跑但不持有
 //!   文件，文件空出时 1s 内自动认领）/ `Disabled`（用户手动关闭，不自动认领）。
-//!   任意时刻至多一个 Active。启动时文件空闲/陈旧则认领、他人活跃则待命
-//!   （新窗口不再抢占既有控制权）。
-//! - **抢占一律先问**（2026-11-07）：从**存活**实例手里夺控制权只有两条路
-//!   （启动时发现他人活跃 / 用户在待命窗口点徽标），两条都只登记
-//!   [`TakeoverRequest`] 并弹确认框，用户点「接管本窗口」才写握手文件——
-//!   不再有「新窗口一开，正被 agent 操作的老窗口就静默失去控制」的隐式切换。
-//!   「文件空出（老控制方已退出）后自动认领」保留：那不是从活实例手里抢，
-//!   且会 flash 提示，不再是无声状态跳变。
+//!   任意时刻至多一个 Active。启动时文件空闲/陈旧则认领；**他人活跃则本窗口
+//!   默认关闭（Disabled）**——不弹窗、不抢控制权，旧窗口退出也不自动接管，
+//!   直到用户手动点徽标开启。
+//! - **抢占一律先问，且只由用户开启动作触发**（2026-11-12）：从**存活**实例
+//!   手里夺控制权只有一条入口——用户在关闭/待命窗口点徽标「打开」。该路径
+//!   登记 [`TakeoverRequest`] 并弹确认框，点「接管本窗口」才写握手文件。
+//!   启动撞上他人活跃**不再弹窗**：旧行为是「新窗口一开就问要不要接管」，
+//!   既打断用户，又暗示该抢控制权。文件空出（老控制方已退出）后的自动认领
+//!   只对 Standby 保留；启动时默认关闭的窗口保持关闭，尊重用户未开启的状态。
 //! - 连接线程先收一行 `{"token":"..."}`，校验通过回 `ok` 才进入转发循环；
 //!   每个请求经 mpsc 投递 UI 线程，`ui()` 每帧轮询处理（复用 dispatch 语义，
 //!   所有变更走同一条 undo 通道），回复经 per-request 通道回连接线程。
@@ -165,7 +166,8 @@ fn read_endpoint_state(path: &Path, my_token: &str) -> EndpointState {
 
 /// 一个等待用户确认的接管目标：另一个**存活**实例正持有握手文件。
 ///
-/// 只承载提示所需的展示信息（端口）。未经确认绝不写握手文件——这是
+/// 只由用户主动点徽标「打开」产生（启动撞上活跃实例不再生成）。只承载
+/// 提示所需的展示信息（端口）。未经确认绝不写握手文件——这是
 /// 「不静默切换控制权」的唯一执行点。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct TakeoverRequest {
@@ -194,24 +196,40 @@ fn claim_file(path: &Path, port: u16, token: &str) -> bool {
         .is_ok()
 }
 
-/// 启动归属决策（`start()` 与单测共用），返回 `(是否持有握手文件, 待确认接管)`：
+/// 启动归属决策的结果（`start()` 与单测共用）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct StartupDecision {
+    /// 是否持有握手文件（Active 态）。
+    active: bool,
+    /// 是否以「用户关闭」态启动：他人活跃时为真，抑制自动认领，
+    /// 也不生成接管确认框（等用户手动点徽标开启）。
+    user_disabled: bool,
+}
+
+/// 启动归属决策（`start()` 与单测共用）：
 ///
 /// - 无文件 / 坏 JSON → 直接认领（没人在，谈不上切换）；
 /// - 文件是自己的（新 token 下不可能，防御性收敛）→ 认领；
-/// - 他人**存活或存亡不明** → 不写文件，只登记待确认接管（**不再静默抢夺**）；
+/// - 他人**存活或存亡不明** → 不写文件、**本窗口 MCP 默认关闭**（不弹窗、
+///   不自动认领）；用户之后手动点徽标开启才走 `request_takeover` 弹确认框；
 /// - 他人已死 → 清陈旧 + 认领（崩溃残留自愈，无活实例可打扰）。
-fn decide_startup(path: &Path, port: u16, token: &str) -> (bool, Option<TakeoverRequest>) {
+fn decide_startup(path: &Path, port: u16, token: &str) -> StartupDecision {
+    let claimed = |active| StartupDecision {
+        active,
+        user_disabled: false,
+    };
     match read_endpoint(path) {
-        None => (claim_file(path, port, token), None),
-        Some(info) if info.token == token => (true, None),
+        None => claimed(claim_file(path, port, token)),
+        Some(info) if info.token == token => claimed(true),
         Some(info) => match probe_owner(&info) {
             OwnerProbe::Dead => {
                 let _ = std::fs::remove_file(path);
-                (claim_file(path, port, token), None)
+                claimed(claim_file(path, port, token))
             }
-            OwnerProbe::Alive | OwnerProbe::Unknown => {
-                (false, Some(TakeoverRequest { port: info.port }))
-            }
+            OwnerProbe::Alive | OwnerProbe::Unknown => StartupDecision {
+                active: false,
+                user_disabled: true,
+            },
         },
     }
 }
@@ -244,8 +262,8 @@ pub(crate) struct McpServe {
     /// 用户手动关闭：文件空出也不自动认领（Standby 与 Disabled 的分界）。
     user_disabled: bool,
     /// 待用户确认的接管请求。非空 → 弹确认框（`render_mcp_takeover_prompt`），
-    /// 确认才写握手文件。只有「启动时发现他人活跃」与「用户点徽标申请接管」
-    /// 两个入口会置位；tick 不会自己造一个出来（否则每秒打断用户）。
+    /// 确认才写握手文件。只有「用户点徽标申请接管」一个入口会置位；启动
+    /// 不再生成，tick 也不会自己造一个出来（否则每秒打断用户）。
     takeover_prompt: Option<TakeoverRequest>,
     /// 待上报的一次性状态事件（flash），`poll_mcp` 每帧取走。
     notice: Option<McpNotice>,
@@ -257,7 +275,7 @@ pub(crate) struct McpServe {
 const ENDPOINT_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 impl McpServe {
-    /// 启动监听并按握手文件现状决定初始态（Active 认领 / Standby 待命）。
+    /// 启动监听并按握手文件现状决定初始态（Active 认领 / Disabled 默认关闭）。
     /// 失败返回 `None`（端口/文件系统问题，记日志即可，不影响 GUI 其余功能）。
     pub(crate) fn start() -> Option<McpServe> {
         let endpoint_path = endpoint_file_path()?;
@@ -266,9 +284,9 @@ impl McpServe {
         // token：uuid v4 简单格式 = 32 hex 字符（无 rand 依赖，core 已带 uuid）。
         let token = ItemId::new_v4().simple().to_string();
 
-        // 启动归属决策：文件空闲/陈旧 → 认领；他人活跃（或存亡不明）→ 待命 +
-        // 登记接管请求（**不静默切换**，等用户确认）。见 `decide_startup`。
-        let (active, takeover_prompt) = decide_startup(&endpoint_path, port, &token);
+        // 启动归属决策：文件空闲/陈旧 → 认领；他人活跃（或存亡不明）→ 本窗口
+        // 默认关闭（不弹窗、不抢控制权），用户手动点徽标开启才申请接管。
+        let startup = decide_startup(&endpoint_path, port, &token);
 
         let (tx, rx) = mpsc::channel::<McpRequest>();
         let ctx_slot: Arc<OnceLock<Context>> = Arc::new(OnceLock::new());
@@ -297,9 +315,9 @@ impl McpServe {
             endpoint_path,
             token,
             port,
-            active,
-            user_disabled: false,
-            takeover_prompt,
+            active: startup.active,
+            user_disabled: startup.user_disabled,
+            takeover_prompt: None,
             notice: None,
             last_tick: Instant::now(),
         })
@@ -378,14 +396,18 @@ impl McpServe {
         }
     }
 
-    /// 徽标点击「打开」语义：**先问再切**。
+    /// 徽标点击「打开」语义（**唯一的接管确认入口**）：**先问再切**。
     ///
     /// 有存活（或存亡不明）的他人持有 → 只登记接管请求，等确认框；
     /// 文件空闲/陈旧/已是本实例 → 立即认领（没有活实例可打扰）。
+    /// 点击本身代表用户明确要开启 MCP，故先清掉「启动默认关闭」标记：
+    /// 若确认框挂着期间对方退出，Standby 语义会自动完成认领并收起弹窗，
+    /// 不会留下一个仍说「另一窗口正被控制」的陈旧提示。
     pub(crate) fn request_takeover(&mut self) {
         if self.active {
             return;
         }
+        self.user_disabled = false;
         // 他人持有且不是「有证据证明已死」→ 拦下来问用户。
         let blocked = read_endpoint(&self.endpoint_path)
             .filter(|info| info.token != self.token && probe_owner(info) != OwnerProbe::Dead);
@@ -1259,36 +1281,110 @@ mod tests {
         // 没有活实例可打扰 → 直接认领（不弹窗）。
         let (dir, path) = temp_endpoint_dir("startup-claim");
         let token = "0123456789abcdef0123456789abcdef";
-        let (active, prompt) = decide_startup(&path, 40000, token);
-        assert!(active, "missing file -> claim");
-        assert!(prompt.is_none());
+        let decision = decide_startup(&path, 40000, token);
+        assert!(decision.active, "missing file -> claim");
+        assert!(!decision.user_disabled, "no other owner -> bridge stays on");
         assert_eq!(read_endpoint(&path).unwrap().token, token);
 
         // 崩溃残留（端口已死）→ 清陈旧 + 认领。
         std::fs::remove_file(&path).unwrap();
         write_endpoint_file(&path, dead_port(), "ffffffffffffffffffffffffffffffff").unwrap();
-        let (active, prompt) = decide_startup(&path, 40000, token);
-        assert!(active, "stale file -> claim");
-        assert!(prompt.is_none());
+        let decision = decide_startup(&path, 40000, token);
+        assert!(decision.active, "stale file -> claim");
+        assert!(!decision.user_disabled);
         assert_eq!(read_endpoint(&path).unwrap().token, token);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn startup_asks_before_stealing_from_live_instance() {
-        // 旧窗口正被 agent 操作 → 只登记接管请求，**不写握手文件**。
+    fn startup_defaults_to_disabled_when_other_instance_is_live() {
+        // 旧窗口正被 agent 操作 → 新窗口**默认关闭 MCP**：不弹窗、不写握手文件，
+        // 等用户手动点徽标开启时才申请接管（见 `manual_enable_then_confirm_takes_over`）。
         let (dir, path) = temp_endpoint_dir("startup-conflict");
         let other_port = spawn_stub_instance();
         write_endpoint_file(&path, other_port, "ffffffffffffffffffffffffffffffff").unwrap();
-        let (active, prompt) = decide_startup(&path, 40000, "0123456789abcdef0123456789abcdef");
-        assert!(!active, "must not steal silently");
-        assert_eq!(prompt, Some(TakeoverRequest { port: other_port }));
+        let decision = decide_startup(&path, 40000, "0123456789abcdef0123456789abcdef");
+        assert!(!decision.active, "must not steal silently");
+        assert!(decision.user_disabled, "new window starts with MCP off");
         // 文件仍是旧窗口的：agent 的 --mcp 依旧连它
         assert_eq!(
             read_endpoint(&path).unwrap().token,
             "ffffffffffffffffffffffffffffffff"
         );
         assert_eq!(read_endpoint(&path).unwrap().port, other_port);
+
+        // 把启动决策灌进状态机：必须是「无弹窗的 Disabled」。
+        let mut s = test_serve(path.clone());
+        s.active = decision.active;
+        s.user_disabled = decision.user_disabled;
+        assert!(s.takeover_prompt().is_none(), "startup must not prompt");
+        assert!(s.is_disabled());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn startup_disabled_window_stays_off_when_owner_leaves() {
+        // 默认关闭是持久的：旧窗口退出、握手文件空出，也不自动接管。
+        let (dir, path) = temp_endpoint_dir("startup-stays-off");
+        let mut s = test_serve(path.clone());
+        s.user_disabled = true;
+        s.apply_state(EndpointState::Other);
+        assert!(!s.active);
+        s.apply_state(EndpointState::Free);
+        assert!(
+            !s.active && s.is_disabled(),
+            "still off until user enables it"
+        );
+        assert!(!path.exists(), "must not write the endpoint file");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn manual_enable_then_confirm_takes_over() {
+        // 用户手动开启新窗口 → 才弹确认；确认后才切走控制权。
+        let (dir, path) = temp_endpoint_dir("manual-enable");
+        let other_port = spawn_stub_instance();
+        write_endpoint_file(&path, other_port, "ffffffffffffffffffffffffffffffff").unwrap();
+        let mut s = test_serve(path.clone());
+        s.user_disabled = true; // 启动默认关闭
+        assert!(s.takeover_prompt().is_none(), "no prompt at startup");
+
+        s.request_takeover();
+        assert!(!s.active, "deferred until the user confirms");
+        assert!(!s.is_disabled(), "clicking the badge re-enables the bridge");
+        assert_eq!(
+            s.takeover_prompt(),
+            Some(TakeoverRequest { port: other_port })
+        );
+        assert_eq!(
+            read_endpoint(&path).unwrap().port,
+            other_port,
+            "old owner keeps control while the prompt is up"
+        );
+
+        s.confirm_takeover();
+        assert!(s.active && s.takeover_prompt().is_none());
+        assert_eq!(s.take_notice(), Some(McpNotice::TookOver));
+        assert_eq!(read_endpoint(&path).unwrap().token, s.token);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pending_takeover_prompt_completes_when_owner_leaves() {
+        // 用户已点开徽标、确认框还挂着时旧窗口退出 → 自动完成开启并收起陈旧弹窗。
+        let (dir, path) = temp_endpoint_dir("prompt-owner-gone");
+        let other_port = spawn_stub_instance();
+        write_endpoint_file(&path, other_port, "ffffffffffffffffffffffffffffffff").unwrap();
+        let mut s = test_serve(path.clone());
+        s.user_disabled = true;
+        s.request_takeover();
+        assert!(s.takeover_prompt().is_some());
+
+        std::fs::remove_file(&path).unwrap(); // 对方退出（Drop 删文件）
+        s.apply_state(EndpointState::Free);
+        assert!(s.active, "user already asked to enable -> finish it");
+        assert!(s.takeover_prompt().is_none(), "no stale prompt");
+        assert_eq!(s.take_notice(), Some(McpNotice::AutoClaimed));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

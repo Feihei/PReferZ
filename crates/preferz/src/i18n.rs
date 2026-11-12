@@ -743,7 +743,7 @@ fn translate_en(key: T) -> &'static str {
             "Another PReferZ window (port {0}) is under agent control. Switch control to this window?"
         }
         T::McpTakeoverNote => {
-            "The other window drops to standby. Agent calls it is running right now may be interrupted."
+            "Taking over disconnects the other window's MCP control (it drops to standby); agent calls it is running right now may be interrupted."
         }
         T::McpTakeoverConfirm => "Take over here",
         T::McpTakeoverDecline => "Stay on standby",
@@ -1076,7 +1076,9 @@ fn translate_zh(key: T) -> &'static str {
         T::McpTakeoverPrompt => {
             "另一个 PReferZ 窗口（端口 {0}）正被 agent 控制。要把控制权切到本窗口吗？"
         }
-        T::McpTakeoverNote => "接管后原窗口转为待命；它正在执行的 agent 调用可能中断。",
+        T::McpTakeoverNote => {
+            "接管会断开原窗口的 MCP 控制（转为待命）；它正在执行的 agent 调用可能中断。"
+        }
         T::McpTakeoverConfirm => "接管本窗口",
         T::McpTakeoverDecline => "保持待命",
         T::FlashMcpAutoClaimed => "原 MCP 控制窗口已退出，本窗口已接管",
