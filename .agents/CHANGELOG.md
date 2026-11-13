@@ -1985,6 +1985,91 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 
 ---
 
+## 端点吸附 / elbow 路由修复批次（2026-11-11 ~ 11-12）
+
+> 用户反馈集中在「复制后吸附丢失」「elbow 跳变、水平连接出现 180° 回折与多余线段」。
+> 四组独立修复，按 `core` / `ui` 拆 4 个 commit：`7553a43` / `dd279d8` /
+> `b85f6a3` / `6702bd4`（均未 push）。
+
+- **复制时重映射端点吸附（`Scene::duplicate_items`）**：原只重映射
+  `Text.container_id` / `group_id`，副本线仍指向原件 uuid —— 原件移动会把副本
+  端点一起拽走、删原件还会把副本绑定判 dead 清空。现按同一 `id_map` 重映射
+  `Shape.start_binding/end_binding.target`：目标在复制集内 → 改绑副本（`anchor`
+  是目标局部坐标、副本尺寸不变，原样保留）；不在集内 → 置 `None` 退化为自由端点
+  （与 `container_id` 同语义）。Ctrl+D / Ctrl+C+V / Ctrl+拖动复制共用这一函数，
+  一处全覆盖。
+- **elbow 自适应 padding 根治路由跳变（`routing.rs`）**：`ELBOW_PADDING = 40`
+  固定，两端形状间隙 < 80px 时虚拟节点 `ev` 落进对方膨胀 AABB → A\* 必败，
+  回退 `join_chain_deterministic` 又静默丢掉插座腿；这是 gap 跨 80px 时拓扑突变
+  与 180° 掉头的主因。新增 `effective_padding()`（从已膨胀 AABB 反推 sep，
+  `clamp((sep - 2)/2, 0, 40)`；`ELBOW_GAP_CLEARANCE = 1.0` 恒留 2px 通道）与
+  `reinflate_obstacles()`（padding=40 时恒等返回，常规/旧档逐点不变）；所有 A\*
+  失败/退化分支统一回退 `join_chain_with_sockets`。连带补零 heading 主方向兜底
+  与 `Station::Anchor` 的 `anchor_arrival` 约束（B 让 A\* 从「常失败」变「恒有解」
+  后，这两处原先被回退掩盖的隐患会直接暴露）。`ElbowRouteInput` 只改注释，
+  调用方零改动。细扫验证 gap≥20 全区间零跳变、gap≥160 与改动前逐点一致。
+- **线类不可作为端点吸附目标 + 历史存档自愈**：用户样本里脏线的
+  `start_binding.target` 指向另一条 elbow（elbow 的 `points` 存两点**对角线**，
+  鼠标稍偏就比矩形边缘更近），`resolve_elbow_axis` 按线类 base_size + 越界
+  `anchor` 推出朝下首段 → U 形回折。依据 `.ref/excalidraw/.../typeChecks.ts`
+  的 `isBindableElement` 白名单（不含 line/arrow/freedraw），`snap.rs` 新增
+  `is_bindable()`；`scene.rs` 的 `find_snap_target` 排除线类、新增私有
+  `binding_target()` 统一收口 `resolve_bindings` / `resolve_elbow_axis` /
+  `elbow_route_local::resolve_bound`（脏绑定 ≡ 自由端），
+  `sanitize_invalid_bindings()` 在 `prz.rs::load_scene` 末尾调用，覆盖全部加载
+  入口并对受影响 elbow `refresh_elbow_axis()`。未做「自动改绑」，避免擅改既有
+  存档语义。
+- **整体移动含绑定目标时不再误判解绑（`drag.rs::update_drag_preview`）**：
+  `MoveItems` 分支的 `line_snaps` 用 `.filter(|(bid,..)| !moved.contains(bid))`
+  排除移动组自身 → 线与其绑定目标一起拖（Ctrl+D 后拖副本集 / 组移动 /
+  Shift 轴约束）时目标必然「未命中」，`snap_active` 下 `*binding = None`
+  静默解绑。这是「复制后吸附还是丢」的**真实根因**（只看复制函数的单测抓不到，
+  需复现完整动作序列）。现 `orig.target ∈ moved` 时恢复快照绑定与基准端点、
+  跳过该端预览，交给下方 `resolve_bindings(&ids)` 按 anchor 重算；`end_drag`
+  的 `EditShapePoints::with_binding_change(orig, orig)` 恒等，undo 一致。
+  反向不变量测试保留「单独拖线仍解绑」。
+- 质量门：fmt / `clippy --workspace --all-targets -D warnings` /
+  `test --workspace` 分批全绿（末次 453 项：preferz 154+4+8 / core 268 / fileio 13）。
+
+**仍未做（A 组 / C 方案未拍板）**：`scene.rs` 的 `fixed_segments` 局部坐标未转
+画布空间（拖过中间段必错）；`routing.rs` / `item.rs` 的 `1e-3` 共线硬阈值
+（水平连接多出 0.001px 近零竖段 + 2 拐角）；C 连续性 tie-break 需缓存，
+违背 DP-6「每帧纯函数重算」。另 `snap::outline_segments` 对 Elbow/Polyline 仍用
+存储对角线而非渲染路由，禁止线类吸附后本 bug 路径不再触发，其它调用方理论仍
+可能用到，另立一项。
+
+---
+
+## MCP 启动默认关闭 + 编辑已有文字默认全选（2026-11-12）
+
+> 两项交互修正，`51831d7`（`fix(ui)`，4 个代码文件）与 `bd1ce36`（`docs`，
+> 仅 AGENTS.md）拆两个 commit。
+
+- **新实例启动默认关闭 MCP**：上一节「先问再切」把「启动撞上他人活跃」也做成
+  弹确认框，实际体验是新窗口一打开就被打断。现 `decide_startup()` 返回
+  `StartupDecision { active, user_disabled }`，他人存活或 `probe_owner` 存亡不明
+  （读超时）→ `(false, true)`：以 `Disabled` 起步，不弹窗、不写握手文件，
+  旧窗口退出也**不**自动认领（默认关闭是持久态，需用户手动开）。接管确认框现在
+  **唯一入口**是点侧栏徽标「打开」→ `request_takeover()`；该入口先清
+  `user_disabled`，因此确认框还挂着时对方退出会由既有 `apply_state(Free)` 自动
+  完成认领并收起陈旧弹窗（复用 Standby 语义，未新增分支）。
+  `McpTakeoverNote` 中英文案改为明确「接管会断开原窗口的 MCP 控制」；
+  AGENTS.md 的 MCP 架构段落同步为「启动默认 Disabled + 手动开启才申请接管」。
+- **回车修改已有文字默认全选**：`render_text_editor` 两条分支（形状内绑定文字
+  multiline / 自由文本·Text item singleline）在首帧 `request_focus()` 的**同帧**
+  调用新增 helper `select_all_on_focus`，直接输入即整段替换；仅非空 buffer 生效，
+  新建空文字不受影响。egui 0.37 无 `select_all_on_focus` builder，走
+  `TextEdit::load_state/store_state` + `TextCursorState::set_char_range` +
+  `egui::text::CCursorRange::select_all_str`；同帧写入比等 `gained_focus()` 少空一帧。
+- 测试：`mcp_serve.rs` 4 个新/改状态机用例（启动禁用、旧主退出仍关闭、手动
+  开启→确认、确认框挂着时对方退出自动完成）、`text_edit.rs` 2 个 helper 单测
+  （含 CJK、空 buffer 不预置）、`mod.rs` 1 个 UI 级用例（复用 `run_ui_frame`
+  构造矩形 + 绑定文字 → `start_text_edit` → 检查焦点 widget 的 `TextEditState`
+  选区）。**坑**：egui 0.37 `Id::new` 已废弃，测试 id 一律用 `Id::unique(...)`。
+  质量门：fmt / `clippy -D warnings` / `test --workspace` = 453 通过、0 失败。
+
+---
+
 ## 决策点归档（D1–D6 / I1–I4 / L 系列）
 
 > 原列于 plan.md，G/I/H/K 交付后蒸馏归档于此，使 CHANGELOG 自包含、plan.md 仅保留前瞻内容。
