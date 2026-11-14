@@ -2070,6 +2070,47 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 
 ---
 
+## 依赖升级：rusqlite 0.42 + rfd 0.18（2026-11-14）
+
+> 拆两批：`4c1fa5e`（仅 Cargo.lock，semver 兼容更新）与 `28af2ee`（rusqlite / rfd 跨
+> 小版本 + 两处文档同步）。前置评估结论：核心 GUI 栈（egui/eframe 0.37、image 0.25.10、
+> euclid 0.22.14、env_logger 0.11.11）已是最新，本次无 GUI 栈改动、**不改用户可见功能**。
+
+- **锁文件批（`4c1fa5e`）**：`cargo update` 覆盖 140 个包；直接依赖侧
+  arboard 3.6.1→3.7.0、uuid 1.26.1→1.29.2、serde 1.0.228→1.0.229、
+  serde_json 1.0.150→1.0.154、log 0.4.34→0.4.35、flate2 1.1.10→1.1.11、
+  embed-resource 3.0.11→3.0.12。lock 里新出现的 `tokio` / `wgpu` / `naga` 条目经
+  `cargo tree -i` 核实为**未启用的可选 feature**，不在编译图内，构建时间不受影响。
+- **rusqlite 0.40.2 → 0.42.0**：`libsqlite3-sys` 0.38.2 → 0.40.0，bundled SQLite
+  3.53.2 → **3.54.1**；MSRV 1.89（本机 1.99.1 / CI stable，无风险）。0.41 唯一的 API
+  破坏点是 `Statement::column_names` / `columns` / `columns_with_metadata` 改返回
+  `Iterator`，本项目**零使用**——实际调用面只有 `execute` / `execute_batch` /
+  `query_row` / `prepare` / `transaction` / `deserialize_read_exact` / `params!`，
+  故升级**零代码改动**。连升的净收益：0.41 修 `Connection::serialize`、0.42 修
+  `deserialize_read_exact` 错误路径上的内存泄漏，后者正是 `PrzFile::from_bytes`
+  内嵌帮助文档的直载路径。0.41 新增的「pragma_list 校验 PRAGMA 合法性」只约束
+  `Connection::pragma`，本项目用的 `pragma_table_info(...)` 表值函数写法不受影响。
+- **rfd 0.14.1 → 0.18.0**：MSRV 1.92，低于 egui 已要求的 1.95，不构成新门槛。
+  0.15~0.18 的破坏点（`set_parent` 要求 `HasWindowHandle + HasDisplayHandle`、
+  移除 `tokio` / `async-std` feature、新增 GTK4 后端、ashpd → libdbus 迁移）**全部
+  不涉及本项目调用面**（7 处仅用 `FileDialog::new` / `add_filter` / `set_file_name` /
+  `set_title` / `pick_file` / `pick_folder` / `save_file`）。0.18 默认 features 为
+  `xdg-portal` + `wayland`（纯 Rust），Linux CI 无需新增系统库，`ci.yml` 未改。
+  旧 `zbus` 4.4 / `zvariant` 4.2 / `xdg-home` / `windows-sys` 0.48 等传递依赖随之消失。
+- **文档同步**：`prz.rs` 注释里的「rusqlite 0.40」改为 0.42；AGENTS.md 的 MSRV 段落改为
+  「1.95 由 egui/eframe 0.37 决定，直接依赖里 rfd 0.18 要 1.92、rusqlite 0.42 要 1.89，
+  均低于它」。
+- **质量门**：`cargo fmt --all --check` 通过、`clippy --workspace --all-targets -D warnings`
+  零告警、`cargo test --workspace` **453 项全绿**（两批各跑一次）。
+- **额外端到端冒烟**（headless CLI，覆盖单测碰不到的二进制链接与真实文件 I/O）：
+  `cargo build -p preferz` MSVC 链接通过 → `new` / `add_shape` / `add_text` / `save`
+  建盘成功 → 另起进程重开 `items:2`、CJK 文本完好；再用升级后的二进制打开历史存档
+  `assets/help.prz` 与 `assets/help-en.prz`（10-29 / 11-06 由旧 SQLite 写入），各 61 项正常载入。
+- **待人工复验**（GUI 侧，仅交互可验证）：文件对话框（打开 / 保存 / 选目录 / 图片导入）
+  在 Windows 原生对话框下正常返回；导出 PNG/SVG 面板路径；拖放与剪贴板粘贴图片。
+
+---
+
 ## 决策点归档（D1–D6 / I1–I4 / L 系列）
 
 > 原列于 plan.md，G/I/H/K 交付后蒸馏归档于此，使 CHANGELOG 自包含、plan.md 仅保留前瞻内容。
