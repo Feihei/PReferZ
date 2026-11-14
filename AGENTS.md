@@ -2,7 +2,7 @@
 
 ## Stack
 
-- **Rust** (stable, >= 1.95), edition 2021 — 1.88 起才稳定的 `slice::as_chunks` / `as_chunks_mut` 已在代码中使用；egui/eframe 0.37 的 MSRV 即 1.95
+- **Rust** (stable, >= 1.95), edition 2021 — 1.95 的门槛由 egui/eframe 0.37 决定；直接依赖里 rfd 0.18 要 1.92、rusqlite 0.42 要 1.89，均低于它。1.88 起才稳定的 `slice::as_chunks` / `as_chunks_mut` 已在代码中使用
 - **GUI**: `egui` + `eframe` 0.37 (glow backend，显式关默认 features 绕开 wgpu；`clipboard` / `system_fonts` 两个 feature 需**显式**开启；`egui/monochrome_emoji_fonts` 也需显式开，否则 0.37 不再内嵌单色 emoji 字体，图标 emoji 会回落到系统彩色字体)
 - **2D geometry**: `euclid` (parameterized `CanvasSpace` / `ScreenSpace`)
 - **Undo**: 全手写——`preferz-core::commands::Command` trait + `preferz_core::session::UndoStack`（GUI 与 CLI 模式共用）；不依赖任何第三方 undo crate

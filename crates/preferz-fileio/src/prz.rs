@@ -51,7 +51,7 @@ impl PrzFile {
 
     /// 打开内存中的 `.prz` 字节（plan #25：内嵌帮助文档）。
     ///
-    /// 经 `sqlite3_deserialize` 把字节装入内存库（rusqlite 0.40 的
+    /// 经 `sqlite3_deserialize` 把字节装入内存库（rusqlite 0.42 的
     /// `deserialize_read_exact`：在空内存连接的 main 库上原位装载，数据由
     /// SQLite 接管），随后走与 [`Self::open`] 完全相同的格式校验与就地迁移。
     /// `path` 字段为空路径（无磁盘文件对应，对嵌入内容本就不应回存）。

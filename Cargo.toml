@@ -64,14 +64,14 @@ eframe = { version = "0.37", default-features = false, features = [
 egui = { version = "0.37", features = ["monochrome_emoji_fonts"] }
 
 # File I/O
-rusqlite = { version = "0.40", features = ["bundled"] }
+rusqlite = { version = "0.42", features = ["bundled"] }
 image = "0.25"
 
 # Utilities
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 log = "0.4"
-rfd = "0.14"
+rfd = "0.18"
 arboard = "3"
 # 字体压缩（build.rs deflate + 运行时解压）。用 rust_backend 走 miniz_oxide，
 # 显式关掉默认特性以免引入 zlib C 依赖；依赖树里 image/rusqlite 已在用同一后端。
