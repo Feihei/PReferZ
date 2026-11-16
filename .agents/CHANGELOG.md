@@ -1931,7 +1931,7 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
   一致 → keymap 的 `Ctrl+C/X/V` 走 `on_release` 释放沿的硬约束继续成立。
 - **质量门**：`cargo fmt --all --check` 通过、`clippy --workspace --all-targets -D warnings`
   零告警、`cargo test --workspace` 422 项全绿（preferz 146 / core 253 / 其余 23）。
-- **待人工复验**（GUI 侧行为，headless 测试覆盖不到）：GUI 启动与首屏渲染、
+- **已人工复验**（2026-11-16，Feihei `cargo run` 逐项确认）：GUI 启动与首屏渲染、
   思源黑体 + 手写体字形显示、TextEdit 复制粘贴、MCP `screenshot` 工具实测回图。
 
 ---
@@ -2106,7 +2106,7 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
   `cargo build -p preferz` MSVC 链接通过 → `new` / `add_shape` / `add_text` / `save`
   建盘成功 → 另起进程重开 `items:2`、CJK 文本完好；再用升级后的二进制打开历史存档
   `assets/help.prz` 与 `assets/help-en.prz`（10-29 / 11-06 由旧 SQLite 写入），各 61 项正常载入。
-- **待人工复验**（GUI 侧，仅交互可验证）：文件对话框（打开 / 保存 / 选目录 / 图片导入）
+- **已人工复验**（2026-11-16，Feihei `cargo run` 确认）：文件对话框（打开 / 保存 / 选目录 / 图片导入）
   在 Windows 原生对话框下正常返回；导出 PNG/SVG 面板路径；拖放与剪贴板粘贴图片。
 
 ---
