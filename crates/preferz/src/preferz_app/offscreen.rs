@@ -65,6 +65,13 @@ impl PReferZApp {
         for theme in [egui::Theme::Light, egui::Theme::Dark] {
             ctx.set_style_of(theme, main_ctx.style_of(theme));
         }
+        // 导出跟随当前主题：图表轴线/标签等主题相关色与元素滤镜都读
+        // `ui.visuals().dark_mode`，离屏上下文必须显式选到同一套主题。
+        ctx.set_theme(if self.theme.is_dark(main_ctx) {
+            egui::Theme::Dark
+        } else {
+            egui::Theme::Light
+        });
         ctx.set_pixels_per_point(1.0);
         // begin_pass 初始化字体（virgin Context 的 fonts_mut/tessellate 都要求
         // 已开一帧）；screen_rect 覆盖目标矩形，避免预览区域被裁剪
@@ -226,7 +233,8 @@ pub(crate) fn premultiply_rgba(rgba: &mut [u8]) {
 /// 软件光栅化：把 tessellate 产出的三角网格逐像素合成到 RGBA 缓冲。
 ///
 /// - 输出为**直通 alpha** 的 RGBA8（可直接编码 PNG / 写剪贴板）；
-/// - `opaque_white_background` = true 时先铺白底（JPEG 式观感），false 保持透明；
+/// - `background = Some(rgb)` 时先铺该不透明底色（导出跟随当前主题画布底色），
+///   `None` 保持透明；
 /// - 混合：预乘 over（`out = src + dst·(1−a_src)`）；
 /// - 共享边用近似 top-left 规则避免双重混合。
 pub(crate) fn rasterize_primitives(
@@ -234,7 +242,7 @@ pub(crate) fn rasterize_primitives(
     textures: &TexturePixels,
     out_w: usize,
     out_h: usize,
-    opaque_white_background: bool,
+    background: Option<[u8; 3]>,
 ) -> Result<Vec<u8>, String> {
     const MAX_PIXELS: usize = 16_000_000;
     if out_w.saturating_mul(out_h) > MAX_PIXELS {
@@ -246,11 +254,11 @@ pub(crate) fn rasterize_primitives(
 
     // 预乘 RGBA 缓冲（u8 已够用：alpha 合成是乘加，u8 舍入误差不可见）
     let mut buf = vec![0u8; out_w * out_h * 4];
-    if opaque_white_background {
+    if let Some([r, g, b]) = background {
         for px in buf.as_chunks_mut::<4>().0 {
-            px[0] = 255;
-            px[1] = 255;
-            px[2] = 255;
+            px[0] = r;
+            px[1] = g;
+            px[2] = b;
             px[3] = 255;
         }
     }
@@ -429,7 +437,7 @@ mod tests {
         let mut textures = TexturePixels::new();
         textures.insert(egui::TextureId::Managed(7), (vec![255; 4], 1, 1));
 
-        let out = rasterize_primitives(&prims, &textures, 20, 20, false).expect("rasterize");
+        let out = rasterize_primitives(&prims, &textures, 20, 20, None).expect("rasterize");
         assert_eq!(out.len(), 20 * 20 * 4);
         let center = (10 * 20 + 6) * 4;
         assert_eq!(
@@ -446,14 +454,15 @@ mod tests {
         assert_eq!(out[outside + 3], 0);
     }
 
-    /// 透明背景下不铺白底；opaque 时背景为白。
+    /// 透明背景下不铺底色；Some 时铺指定主题底色。
     #[test]
     fn background_modes() {
         let prims: Vec<egui::epaint::ClippedPrimitive> = Vec::new();
         let textures = TexturePixels::new();
-        let transparent = rasterize_primitives(&prims, &textures, 4, 4, false).expect("ok");
+        let transparent = rasterize_primitives(&prims, &textures, 4, 4, None).expect("ok");
         assert!(transparent.iter().all(|&b| b == 0));
-        let white = rasterize_primitives(&prims, &textures, 4, 4, true).expect("ok");
+        let white =
+            rasterize_primitives(&prims, &textures, 4, 4, Some([255, 255, 255])).expect("ok");
         assert!(white
             .as_chunks::<4>()
             .0
@@ -481,7 +490,7 @@ mod tests {
         ];
         let mut textures = TexturePixels::new();
         textures.insert(egui::TextureId::Managed(1), (vec![255; 4], 1, 1));
-        let out = rasterize_primitives(&prims, &textures, 4, 4, false).expect("ok");
+        let out = rasterize_primitives(&prims, &textures, 4, 4, None).expect("ok");
         // 白底 + 50% 黑 = 灰 ≈ 127（逆预乘后）
         let v = out[0];
         assert!((110..=145).contains(&v), "预期灰色，实际 {v}");
@@ -541,7 +550,8 @@ mod tests {
         let mut textures = TexturePixels::new();
         textures.insert(egui::TextureId::default(), (atlas_px, aw, ah));
 
-        let out = rasterize_primitives(&prims, &textures, 60, 40, true).expect("rasterize");
+        let out = rasterize_primitives(&prims, &textures, 60, 40, Some([255, 255, 255]))
+            .expect("rasterize");
         // 矩形内部应为红
         let red = (10 * 60 + 10) * 4;
         assert!(
@@ -588,5 +598,48 @@ mod tests {
         ]);
         mesh.indices.extend([i, i + 1, i + 2, i, i + 2, i + 3]);
         mesh
+    }
+
+    /// 端到端主题自适应：同一个基色形状，在浅色/深色主题下离屏导出的内部像素
+    /// 分别接近基色（近黑）与滤镜色（近白）——锁定「存基色 + 导出时按当前主题变换」。
+    #[test]
+    fn theme_filter_applies_to_exported_items() {
+        let mut app = PReferZApp::new();
+        let item = preferz_core::Item::new_shape(
+            preferz_core::ShapeType::Rectangle,
+            (40.0, 40.0),
+            0.0,
+            0.0,
+            preferz_core::StrokeStyle::default(),
+            Some([17, 17, 17, 255]),
+        );
+        let id = item.id;
+        app.session.scene.add_item(item);
+        let region = preferz_core::spaces::CanvasRect::new(
+            preferz_core::spaces::CanvasPoint::new(-10.0, -10.0),
+            preferz_core::CanvasSize::new(60.0, 60.0),
+        );
+        let main_ctx = egui::Context::default();
+        main_ctx.set_pixels_per_point(1.0);
+
+        let sample_center = |app: &mut PReferZApp, dark: bool| -> u8 {
+            app.theme = if dark {
+                crate::theme::ThemeMode::Dark
+            } else {
+                crate::theme::ThemeMode::Light
+            };
+            let mut off = app.collect_offscreen_scene(&main_ctx, &[id], region, 1.0);
+            PReferZApp::attach_font_atlas(&mut off);
+            let prims = off.ctx.tessellate(off.flat_shapes(), 1.0);
+            let w = off.rect.width() as usize;
+            let h = off.rect.height() as usize;
+            let px = rasterize_primitives(&prims, &off.textures, w, h, None).expect("rasterize");
+            px[(h / 2 * w + w / 2) * 4]
+        };
+
+        let light = sample_center(&mut app, false);
+        let dark = sample_center(&mut app, true);
+        assert!(light < 60, "浅色主题下应接近基色近黑，实际 {light}");
+        assert!(dark > 150, "深色主题下应被滤镜提亮，实际 {dark}");
     }
 }

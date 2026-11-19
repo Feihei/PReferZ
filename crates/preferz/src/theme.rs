@@ -2,7 +2,9 @@
 //!
 //! - [`ThemeMode`]：用户可选项 `Light` / `Dark` / `Auto`（`Auto` 跟随系统，
 //!   第一版仅作为可选值持久化，运行时解析为具体模式）。
-//! - 画布底色与新建元素默认前景色随主题翻转（D1/D2 拍板）。
+//! - 画布底色随主题翻转；元素颜色统一存基色（浅色空间），暗色主题在绘制/
+//!   导出时套滤镜（`preferz_core::color_space`），因此新建元素默认色不再随
+//!   主题翻转（旧 D2「默认色跟主题走」已由渲染期变换取代）。
 //! - egui chrome（Visuals）随主题切换；`bg_alpha` 透明度仍施加在 panel/window/faint
 //!   上，保证无边框 + 置顶的悬浮看图效果在明暗两套主题下都不受影响。
 
@@ -51,25 +53,6 @@ impl ThemeMode {
             [45, 45, 48]
         } else {
             [250, 250, 250]
-        }
-    }
-
-    /// 新建元素默认描边色（RGBA），随主题翻转（D2 拍板「跟主题走」）。
-    /// 仅在切换主题时应用到 `default_stroke`，用户仍可手动改色。
-    pub fn default_stroke_color(self, ctx: &Context) -> [u8; 4] {
-        if self.is_dark(ctx) {
-            [240, 240, 240, 255]
-        } else {
-            [17, 17, 17, 255]
-        }
-    }
-
-    /// 无 `ctx` 时的默认描边色（`Auto` 按 `Dark` 处理）；用于 `PReferZApp::new()`
-    /// 启动初始化——此时还拿不到系统主题，仅作合理兜底。
-    pub fn default_stroke_color_static(self) -> [u8; 4] {
-        match self {
-            ThemeMode::Light => [17, 17, 17, 255],
-            ThemeMode::Dark | ThemeMode::Auto => [240, 240, 240, 255],
         }
     }
 

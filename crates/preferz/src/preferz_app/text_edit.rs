@@ -266,6 +266,10 @@ impl PReferZApp {
         }
         area.show(ctx, |ui| {
             // 弹层背景跟随主题（D2）：去掉硬编码暗色 fill，用 Frame::popup 的主题默认。
+            // 文本色存基色，编辑框内按当前主题变换后显示（与画布终稿一致）。
+            let [er, eg, eb, ea] =
+                preferz_core::color_space::themed_rgba(edit.color, ui.visuals().dark_mode);
+            let edit_text_color = egui::Color32::from_rgba_premultiplied(er, eg, eb, ea);
             let frame = egui::Frame::popup(ui.style()).stroke(egui::Stroke::new(
                 1.0_f32,
                 egui::Color32::from_rgb(100, 200, 255),
@@ -280,12 +284,7 @@ impl PReferZApp {
                             .desired_width(w)
                             .hint_text("输入文本...")
                             .font(font_id.clone())
-                            .text_color(egui::Color32::from_rgba_premultiplied(
-                                edit.color[0],
-                                edit.color[1],
-                                edit.color[2],
-                                edit.color[3],
-                            )),
+                            .text_color(edit_text_color),
                     );
                     if edit.first_frame {
                         // 焦点延迟请求：文字工具在按下沿起编辑框，同一击的释放沿会被
@@ -315,12 +314,7 @@ impl PReferZApp {
                             .desired_width(160.0)
                             .hint_text("输入文本...")
                             .font(font_id)
-                            .text_color(egui::Color32::from_rgba_premultiplied(
-                                edit.color[0],
-                                edit.color[1],
-                                edit.color[2],
-                                edit.color[3],
-                            )),
+                            .text_color(edit_text_color),
                     );
                     if edit.first_frame {
                         // 同上：焦点延迟请求，躲开同一次点击释放沿的 surrender_focus

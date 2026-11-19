@@ -195,7 +195,8 @@ pub struct StrokeStyle {
 impl Default for StrokeStyle {
     fn default() -> Self {
         Self {
-            color: [255, 255, 255, 255],
+            // 元素颜色统一存基色空间，默认墨 = 基色近黑（暗色由绘制层滤镜转亮）。
+            color: crate::color_space::DEFAULT_INK_RGBA,
             // 4.0 = 画笔粗细 5 档 [2,4,8,16,32] 的默认档（第 2 档）。
             width: 4.0,
             dash: DashStyle::Solid,

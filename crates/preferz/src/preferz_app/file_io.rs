@@ -518,8 +518,11 @@ impl PReferZApp {
             path.display()
         ));
         let ctx2 = ctx.clone();
+        // 导出跟随当前主题（元素滤镜 + 不透明底色）
+        let dark = self.theme.is_dark(ctx);
+        let bg = self.theme.canvas_bg(ctx);
         std::thread::spawn(move || {
-            let result = export_scene_to_file(&items_snapshot, &pixmaps, &path, format)
+            let result = export_scene_to_file(&items_snapshot, &pixmaps, &path, format, dark, bg)
                 .map(|_| String::new());
             let _ = tx.send(ExportOutcome { path, result });
             ctx2.request_repaint();

@@ -240,6 +240,9 @@ impl PrzFile {
             insert_metadata_query(),
             params!["next_z", scene.next_z.to_string()],
         )?;
+        // 颜色语义标记：v0.6 起元素颜色统一存"基色空间"（渲染时才套暗色滤镜）。
+        // 旧文件缺此键 → 加载时做一次性颜色迁移（见 load_scene）。
+        tx.execute(insert_metadata_query(), params!["color_space", "base"])?;
 
         tx.commit()?;
 
@@ -344,7 +347,25 @@ impl PrzFile {
         // elbow 的取向，合法绑定与存档格式均不变。
         scene.sanitize_invalid_bindings();
 
+        // 5) 旧档颜色迁移（v0.6 及以前存"创作时主题下的显示色"）：缺 color_space
+        // 标记即视为旧档，按整档投票判回基色空间；新档标记 base 直接跳过。
+        if !matches!(self.load_color_space()?.as_deref(), Some("base")) {
+            preferz_core::color_space::migrate_legacy_scene(&mut scene);
+        }
+
         Ok((scene, images, viewport))
+    }
+
+    /// 读取颜色语义标记（`metadata.color_space`）。旧档不存在该键 → `None`。
+    fn load_color_space(&self) -> Result<Option<String>, Box<dyn std::error::Error>> {
+        let mut stmt = self
+            .connection
+            .prepare("SELECT value FROM metadata WHERE key = 'color_space'")?;
+        let mut rows = stmt.query([])?;
+        match rows.next()? {
+            Some(row) => Ok(Some(row.get(0)?)),
+            None => Ok(None),
+        }
     }
 
     fn load_viewport_meta(&self) -> Result<ViewportMeta, Box<dyn std::error::Error>> {
@@ -1189,6 +1210,97 @@ mod tests {
                 );
             }
             _ => panic!("expected Shape"),
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// 旧档（无 color_space 标记）里深色主题创作的颜色在加载时转回基色空间。
+    #[test]
+    fn legacy_dark_colors_migrate_to_base_on_load() {
+        let path = tmp_path("legacy_colors.prz");
+        let dark_red = preferz_core::color_space::apply_dark_mode_filter(
+            preferz_core::color_space::color_from_hex("#e03131"),
+        );
+        let mut scene = Scene::new();
+        scene.add_item(Item::new_text(
+            "红".to_string(),
+            0.0,
+            0.0,
+            24.0,
+            [dark_red[0], dark_red[1], dark_red[2], 255],
+        ));
+        scene.add_item(Item::new_text(
+            "旧默认墨".to_string(),
+            0.0,
+            50.0,
+            24.0,
+            [240, 240, 240, 255],
+        ));
+        {
+            let mut prz = PrzFile::create(&path).unwrap();
+            prz.save_scene(&scene, &HashMap::new(), ViewportMeta::default())
+                .unwrap();
+        }
+
+        // 抹掉 color_space 标记，模拟 v0.6 及以前的文件。
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute("DELETE FROM metadata WHERE key = 'color_space'", [])
+                .unwrap();
+        }
+
+        let prz = PrzFile::open(&path).unwrap();
+        let (loaded, _, _) = prz.load_scene().unwrap();
+        let colors: Vec<[u8; 4]> = loaded
+            .items
+            .iter()
+            .map(|it| match &it.kind {
+                ItemKind::Text { color, .. } => *color,
+                _ => panic!("expected Text"),
+            })
+            .collect();
+        assert_eq!(colors[0], [0xe0, 0x31, 0x31, 255], "色板红应还原基色");
+        assert_eq!(
+            colors[1],
+            preferz_core::color_space::DEFAULT_INK_RGBA,
+            "旧深色默认墨应还原基色墨"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// 新档保存后带 color_space=base，重载不再迁移（基色原样往返）。
+    #[test]
+    fn saved_files_mark_color_space_and_skip_migration() {
+        let path = tmp_path("color_space_flag.prz");
+        let mut scene = Scene::new();
+        scene.add_item(Item::new_text(
+            "红".to_string(),
+            0.0,
+            0.0,
+            24.0,
+            [0xe0, 0x31, 0x31, 255],
+        ));
+        {
+            let mut prz = PrzFile::create(&path).unwrap();
+            prz.save_scene(&scene, &HashMap::new(), ViewportMeta::default())
+                .unwrap();
+        }
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        let flag: String = conn
+            .query_row(
+                "SELECT value FROM metadata WHERE key = 'color_space'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(flag, "base");
+        drop(conn);
+
+        let prz = PrzFile::open(&path).unwrap();
+        let (loaded, _, _) = prz.load_scene().unwrap();
+        match &loaded.items[0].kind {
+            ItemKind::Text { color, .. } => assert_eq!(*color, [0xe0, 0x31, 0x31, 255]),
+            _ => panic!("expected Text"),
         }
         let _ = std::fs::remove_file(&path);
     }

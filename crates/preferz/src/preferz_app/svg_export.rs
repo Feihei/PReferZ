@@ -12,13 +12,14 @@ use super::*;
 
 /// 把离屏收集的逐 item 形状组装成 SVG 文档。
 ///
-/// `region`：选区画布包围盒（SVG viewBox 与之 1:1 对应）；`transparent` = false
-/// 时铺白底；`image_bytes`：texture_id → 原始图片字节（image_data_cache）。
+/// `region`：选区画布包围盒（SVG viewBox 与之 1:1 对应）；`background = Some(rgb)`
+/// 时铺不透明底色（当前主题画布底色），`None` 保持透明；`image_bytes`：
+/// texture_id → 原始图片字节（image_data_cache）。
 pub(crate) fn build_selection_svg(
     scene: &OffscreenScene,
     items: &[Item],
     region: CanvasRect,
-    transparent: bool,
+    background: Option<[u8; 3]>,
     image_bytes: &HashMap<u64, Vec<u8>>,
 ) -> String {
     let vw = region.width().ceil();
@@ -35,9 +36,9 @@ pub(crate) fn build_selection_svg(
     let mut gray_ids: HashMap<u64, String> = HashMap::new();
     let mut clip_ids: HashMap<u64, String> = HashMap::new();
 
-    if !transparent {
+    if let Some([r, g, b]) = background {
         out.push_str(&format!(
-            "<rect width=\"{vw}\" height=\"{vh}\" fill=\"#ffffff\"/>\n"
+            "<rect width=\"{vw}\" height=\"{vh}\" fill=\"#{r:02x}{g:02x}{b:02x}\"/>\n"
         ));
     }
 

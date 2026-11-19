@@ -389,8 +389,7 @@ impl PReferZApp {
         }
         if theme_changed {
             self.theme = theme;
-            // 切换主题时把新建元素默认色翻到该主题（D2）；用户仍可手动改色。
-            self.default_stroke.color = theme.default_stroke_color(ctx);
+            // 元素颜色存基色、渲染时才套滤镜，默认墨色不再随主题翻转。
             self.persist_config();
         }
         if frame_ratio_changed {

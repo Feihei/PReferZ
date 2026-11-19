@@ -43,7 +43,9 @@ cargo clippy --workspace --all-targets -- -D warnings   # 把警告当错误，�
 ```
 preferz (single binary, eframe::App + headless CLI modes)
   ├── preferz-core        Item, Transform, Scene, Commands, Session(Scene+ViewportState+UndoStack),
-  │                       Arrange, ViewportState, snap, freedraw, chart, mermaid, rpc(JSONL/MCP 协议核心)
+  │                       Arrange, ViewportState, snap, freedraw, chart, mermaid,
+  │                       color_space(基色存储 + 暗色滤镜 + 旧档颜色迁移),
+  │                       rpc(JSONL/MCP 协议核心)
   └── preferz-fileio      PrzFile, ImageLoader, Exporter, schema
 ```
 

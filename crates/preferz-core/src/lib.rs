@@ -1,5 +1,6 @@
 pub mod arrange;
 pub mod chart;
+pub mod color_space;
 pub mod commands;
 pub mod flowchart;
 pub mod freedraw;

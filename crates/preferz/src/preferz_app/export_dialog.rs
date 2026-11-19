@@ -142,7 +142,10 @@ impl PReferZApp {
                 if transparent {
                     self.draw_checkerboard(ui, rect);
                 } else {
-                    ui.painter().rect_filled(rect, 0.0, egui::Color32::WHITE);
+                    // 导出跟随当前主题：不透明底用当前主题画布底色（与元素滤镜同源）。
+                    let [r, g, b] = self.theme.canvas_bg(ctx);
+                    ui.painter()
+                        .rect_filled(rect, 0.0, egui::Color32::from_rgb(r, g, b));
                 }
                 self.draw_preview_items(ctx, ui, rect, &items, region, fit);
 
@@ -304,6 +307,11 @@ impl PReferZApp {
             return;
         };
         let transparent = self.export_dialog.transparent;
+        let export_bg = if transparent {
+            None
+        } else {
+            Some(self.theme.canvas_bg(ctx))
+        };
         let ids = self.export_dialog.item_ids.clone();
         let mut scene = self.collect_offscreen_scene(ctx, &ids, region, EXPORT_SCALE);
         Self::attach_font_atlas(&mut scene);
@@ -325,13 +333,10 @@ impl PReferZApp {
                 ));
                 let ctx2 = ctx.clone();
                 std::thread::spawn(move || {
-                    let result =
-                        rasterize_primitives(&prims, &textures, out_w, out_h, !transparent)
-                            .and_then(|rgba| encode_png(&rgba, out_w, out_h))
-                            .and_then(|bytes| {
-                                std::fs::write(&path, bytes).map_err(|e| e.to_string())
-                            })
-                            .map(|_| String::new());
+                    let result = rasterize_primitives(&prims, &textures, out_w, out_h, export_bg)
+                        .and_then(|rgba| encode_png(&rgba, out_w, out_h))
+                        .and_then(|bytes| std::fs::write(&path, bytes).map_err(|e| e.to_string()))
+                        .map(|_| String::new());
                     let _ = tx.send(ExportOutcome { path, result });
                     ctx2.request_repaint();
                 });
@@ -343,9 +348,8 @@ impl PReferZApp {
                 self.bg_ops.msg = Some(t(lang, T::FlashProcessing).to_string());
                 let ctx2 = ctx.clone();
                 std::thread::spawn(move || {
-                    let result =
-                        rasterize_primitives(&prims, &textures, out_w, out_h, !transparent)
-                            .map(|rgba| (rgba, out_w as u32, out_h as u32));
+                    let result = rasterize_primitives(&prims, &textures, out_w, out_h, export_bg)
+                        .map(|rgba| (rgba, out_w as u32, out_h as u32));
                     let _ = tx.send(ClipboardImageOutcome { result });
                     ctx2.request_repaint();
                 });
@@ -370,14 +374,13 @@ impl PReferZApp {
                 }
             }
         }
-        let transparent = self.export_dialog.transparent;
-        let svg = svg_export::build_selection_svg(
-            &scene,
-            &scene.items,
-            region,
-            transparent,
-            &image_bytes,
-        );
+        let background = if self.export_dialog.transparent {
+            None
+        } else {
+            Some(self.theme.canvas_bg(ctx))
+        };
+        let svg =
+            svg_export::build_selection_svg(&scene, &scene.items, region, background, &image_bytes);
         match std::fs::write(&path, svg) {
             Ok(()) => self.flash(fill(
                 t(self.lang, T::FlashExportedTo),

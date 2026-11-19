@@ -1,71 +1,23 @@
 //! Excalidraw 式预设调色板控件（替代连续取色器）。
 //!
-//! 颜色数据与暗色变换移植自 `.ref/excalidraw` 的
-//! `packages/common/src/colors.ts`：
-//! - 色板取 open-color 五档（权重 50/200/400/600/800）；
-//! - 暗色主题套用 Excalidraw 同款滤镜 `invert(93%) hue-rotate(180deg)`
-//!   （纯数学变换，见 [`apply_dark_mode_filter`]），保证暗色下观感一致。
+//! 颜色数据与暗色变换移植自 `.ref/excalidraw` 的 `packages/common/src/colors.ts`：
+//! - 色板取 open-color 五档（权重 50/200/400/600/800），数据在
+//!   [`preferz_core::color_space`]；
+//! - 暗色主题下**只对预览**套 Excalidraw 同款滤镜 `invert(93%) hue-rotate(180deg)`；
+//!   选中写回的永远是**基色**（浅色空间），暗色渲染由绘制层统一变换
+//!   （见 `preferz_core::color_space::themed_rgba`）。
 
 use eframe::egui;
+use preferz_core::color_space::{
+    apply_dark_mode_filter, color_from_hex, themed_rgba, PALETTE_ROWS, PICKS,
+};
 use preferz_core::shape::FillStyle;
 
 use crate::i18n::{t, Lang, T};
 use crate::ui::chrome;
 
-/// 单色系五档（明 → 暗），对应 Excalidraw `COLOR_PALETTE` 的 shade 元组。
-pub type ColorTuple = [&'static str; 5];
-
-/// 色板行：每行一个色系五档。顺序即展示顺序（Excalidraw common shades 同序）。
-pub const PALETTE_ROWS: [(&str, ColorTuple); 11] = [
-    (
-        "gray",
-        ["#f8f9fa", "#e9ecef", "#ced4da", "#868e96", "#343a40"],
-    ),
-    (
-        "red",
-        ["#fff5f5", "#ffc9c9", "#ff8787", "#fa5252", "#e03131"],
-    ),
-    (
-        "pink",
-        ["#fff0f6", "#fcc2d7", "#f783ac", "#e64980", "#c2255c"],
-    ),
-    (
-        "grape",
-        ["#f8f0fc", "#eebefa", "#da77f2", "#be4bdb", "#9c36b5"],
-    ),
-    (
-        "violet",
-        ["#f3f0ff", "#d0bfff", "#9775fa", "#7950f2", "#6741d9"],
-    ),
-    (
-        "blue",
-        ["#e7f5ff", "#a5d8ff", "#4dabf7", "#228be6", "#1971c2"],
-    ),
-    (
-        "cyan",
-        ["#e3fafc", "#99e9f2", "#3bc9db", "#15aabf", "#0c8599"],
-    ),
-    (
-        "teal",
-        ["#e6fcf5", "#96f2d7", "#38d9a9", "#12b886", "#099268"],
-    ),
-    (
-        "green",
-        ["#ebfbee", "#b2f2bb", "#69db7c", "#40c057", "#2f9e44"],
-    ),
-    (
-        "yellow",
-        ["#fff9db", "#ffec99", "#ffd43b", "#fab005", "#f08c00"],
-    ),
-    (
-        "orange",
-        ["#fff4e6", "#ffd8a8", "#ffa94d", "#fd7e14", "#e8590c"],
-    ),
-];
-
-/// 描边 top picks（Excalidraw `DEFAULT_ELEMENT_STROKE_PICKS`）：
-/// 黑 + 各色系第 5 档（600/800 权重档）。
-const STROKE_PICKS: [&str; 5] = ["#1e1e1e", "#e03131", "#2f9e44", "#1971c2", "#f08c00"];
+/// 描边 top picks（Excalidraw `DEFAULT_ELEMENT_STROKE_PICKS`）。
+const STROKE_PICKS: [&str; 5] = PICKS;
 
 /// 填充默认不透明度（plan #2 拍板 2026-09-10）：50%。
 /// 从色板格子选中填充色时应用（自定义取色保留用户 alpha；滑块可显式覆盖）。
@@ -75,67 +27,26 @@ pub const FILL_DEFAULT_ALPHA: u8 = 128;
 /// 视觉上靠 `FILL_DEFAULT_ALPHA` 半透明呈现，不再用浅色 200 档模拟。
 const FILL_PICKS: [&str; 5] = STROKE_PICKS;
 
-/// `#rrggbb` → `[u8; 3]`。非 hex 输入返回黑色（数据为编译期常量，不会发生）。
-fn hex_to_rgb(hex: &str) -> [u8; 3] {
-    let h = hex.trim_start_matches('#');
-    [
-        u8::from_str_radix(&h[0..2], 16).unwrap_or(0),
-        u8::from_str_radix(&h[2..4], 16).unwrap_or(0),
-        u8::from_str_radix(&h[4..6], 16).unwrap_or(0),
-    ]
-}
-
-/// Excalidraw 暗色模式颜色滤镜：`invert(93%) hue-rotate(180deg)`。
-///
-/// 从 `.ref/excalidraw` colors.ts 的 `cssInvert` + `cssHueRotate` 逐式移植，
-/// 输入输出均为不透明 RGB。
-pub fn apply_dark_mode_filter(rgb: [u8; 3]) -> [u8; 3] {
-    const INVERT_PERCENT: f32 = 93.0;
-    const HUE_ROTATE_DEG: f32 = 180.0;
-
-    let p = INVERT_PERCENT / 100.0;
-    let invert = |c: u8| -> f32 {
-        let c = c as f32;
-        (c * (1.0 - p) + (255.0 - c) * p).clamp(0.0, 255.0)
-    };
-    let r = invert(rgb[0]) / 255.0;
-    let g = invert(rgb[1]) / 255.0;
-    let b = invert(rgb[2]) / 255.0;
-
-    let a = HUE_ROTATE_DEG.to_radians();
-    let (s, c) = a.sin_cos();
-    // hue-rotate 变换矩阵（CSS filter 规范同款）
-    let m = [
-        0.213 + c * 0.787 - s * 0.213,
-        0.715 - c * 0.715 - s * 0.715,
-        0.072 - c * 0.072 + s * 0.928,
-        0.213 - c * 0.213 + s * 0.143,
-        0.715 + c * 0.285 + s * 0.14,
-        0.072 - c * 0.072 - s * 0.283,
-        0.213 - c * 0.213 - s * 0.787,
-        0.715 - c * 0.715 + s * 0.715,
-        0.072 + c * 0.928 + s * 0.072,
-    ];
-    // 矩阵行点乘（修复：此前误把 m[4]/m[8] 当颜色分量传入，导致 dark 滤镜
-    // 输出错乱、色板与主题不符）。CSS 规范：newG 用第 2 行、newB 用第 3 行。
-    let apply_row = |r: f32, g: f32, b: f32, row: usize| -> u8 {
-        ((r * m[row] + g * m[row + 1] + b * m[row + 2]).clamp(0.0, 1.0) * 255.0).round() as u8
-    };
-    [
-        apply_row(r, g, b, 0),
-        apply_row(r, g, b, 3),
-        apply_row(r, g, b, 6),
-    ]
-}
-
-/// 主题化 hex → Color32：暗色主题套 Excalidraw 滤镜。
+/// 色板格子展示色：基色 hex → 暗色主题套 Excalidraw 滤镜。
 fn themed_color(hex: &str, dark: bool) -> egui::Color32 {
     let [r, g, b] = if dark {
-        apply_dark_mode_filter(hex_to_rgb(hex))
+        apply_dark_mode_filter(color_from_hex(hex))
     } else {
-        hex_to_rgb(hex)
+        color_from_hex(hex)
     };
     egui::Color32::from_rgb(r, g, b)
+}
+
+/// 基色 hex → Color32（不套滤镜；选择判定与写回都用它）。
+fn base_color(hex: &str) -> egui::Color32 {
+    let [r, g, b] = color_from_hex(hex);
+    egui::Color32::from_rgb(r, g, b)
+}
+
+/// 渲染用展示色：元素存的是基色，预览按当前主题变换。
+fn display_color(c: egui::Color32, dark: bool) -> egui::Color32 {
+    let [r, g, b, a] = themed_rgba([c.r(), c.g(), c.b(), c.a()], dark);
+    egui::Color32::from_rgba_unmultiplied(r, g, b, a)
 }
 
 /// 单个色板格子（小方块，选中描白框；hover 显示统一底色高亮）。
@@ -215,14 +126,15 @@ fn dist2(a: egui::Color32, b: egui::Color32) -> u32 {
     d(a.r(), b.r()) + d(a.g(), b.g()) + d(a.b(), b.b())
 }
 
-/// 当前色属于哪个色系：先精确命中色板 5 档；不在色板内（近黑 `#1e1e1e`、自定义 hex 等）
-/// 则取 RGB 最近的一档所属色系——使「Shades」段恒显示（对齐 Excalidraw 按最近色系给
-/// 明暗档的行为）。`PALETTE_ROWS` 非空，故恒返回 `Some`。
-fn family_of_current(current: egui::Color32, dark: bool) -> Option<usize> {
+/// 当前色（基色空间）属于哪个色系：先精确命中色板 5 档；不在色板内
+/// （近黑 `#1e1e1e`、自定义 hex 等）则取 RGB 最近的一档所属色系——使「Shades」
+/// 段恒显示（对齐 Excalidraw 按最近色系给明暗档的行为）。`PALETTE_ROWS` 非空，
+/// 故恒返回 `Some`。
+fn family_of_current(current: egui::Color32) -> Option<usize> {
     // 精确命中优先。
     if let Some(i) = PALETTE_ROWS.iter().enumerate().find_map(|(i, (_n, row))| {
         row.iter()
-            .any(|hex| rgb_eq(themed_color(hex, dark), current))
+            .any(|hex| rgb_eq(base_color(hex), current))
             .then_some(i)
     }) {
         return Some(i);
@@ -234,7 +146,7 @@ fn family_of_current(current: egui::Color32, dark: bool) -> Option<usize> {
         .map(|(i, (_n, row))| {
             let d = row
                 .iter()
-                .map(|hex| dist2(themed_color(hex, dark), current))
+                .map(|hex| dist2(base_color(hex), current))
                 .min()
                 .unwrap_or(u32::MAX);
             (i, d)
@@ -261,15 +173,16 @@ fn palette_popup(
 
     // ── Colors：11 色系代表色（每色系第 5 档），每行 6 格自动换行 ──
     section(ui, t(lang, T::PaletteColors));
-    let reps: Vec<egui::Color32> = PALETTE_ROWS
+    let reps: Vec<&str> = PALETTE_ROWS
         .iter()
-        .map(|(_n, row)| themed_color(row[FAMILY_REPRESENTATIVE], dark))
+        .map(|(_n, row)| row[FAMILY_REPRESENTATIVE])
         .collect();
     for chunk in reps.chunks(6) {
         ui.horizontal(|ui| {
-            for c in chunk {
-                if swatch(ui, *c, rgb_eq(*c, current), sw) {
-                    picked = Some((*c, true));
+            for hex in chunk {
+                let base = base_color(hex);
+                if swatch(ui, themed_color(hex, dark), rgb_eq(base, current), sw) {
+                    picked = Some((base, true));
                 }
             }
         });
@@ -277,13 +190,13 @@ fn palette_popup(
     ui.separator();
 
     // ── Shades：当前色系的五档明暗（仅当 current 命中某色系时）──
-    if let Some(fi) = family_of_current(current, dark) {
+    if let Some(fi) = family_of_current(current) {
         section(ui, t(lang, T::PaletteShades));
         ui.horizontal(|ui| {
             for hex in PALETTE_ROWS[fi].1 {
-                let c = themed_color(hex, dark);
-                if swatch(ui, c, rgb_eq(c, current), sw) {
-                    picked = Some((c, true));
+                let base = base_color(hex);
+                if swatch(ui, themed_color(hex, dark), rgb_eq(base, current), sw) {
+                    picked = Some((base, true));
                 }
             }
         });
@@ -390,17 +303,19 @@ fn draw_link_icon(painter: &egui::Painter, rect: egui::Rect, fg: egui::Color32) 
     painter.circle_stroke(c + egui::vec2(2.4, -2.4), r, s);
 }
 
-/// 「跟随形状」格子：底色=形状边框色，叠一个链环图标，跟随时描选中环。返回是否被点击。
+/// 「跟随形状」格子：底色=形状边框色（基色，展示时按主题变换），叠一个链环图标，
+/// 跟随时描选中环。返回是否被点击。
 fn follow_swatch(ui: &mut egui::Ui, border: egui::Color32, active: bool, lang: Lang) -> bool {
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::click());
     let clicked = resp.clicked();
     let painter = ui.painter();
+    let shown = display_color(border, ui.visuals().dark_mode);
     if resp.hovered() {
         painter.rect_filled(rect.expand(3.0), 5.0, chrome::hover_tint(ui));
     }
-    painter.rect_filled(rect.expand(1.0), 3.0, border);
+    painter.rect_filled(rect.expand(1.0), 3.0, shown);
     // 图标前景按底色亮度取黑/白，保证任意边框色下都看得见
-    let lum = (border.r() as u32 * 299 + border.g() as u32 * 587 + border.b() as u32 * 114) / 1000;
+    let lum = (shown.r() as u32 * 299 + shown.g() as u32 * 587 + shown.b() as u32 * 114) / 1000;
     let fg = if lum > 140 {
         egui::Color32::BLACK
     } else {
@@ -457,12 +372,18 @@ fn palette_button_inner(
             }
         }
         // 内联 top picks：跟随时不高亮（当前色=边框，避免与某个 pick 混淆）。
+        // 展示走主题滤镜，选中判定与写回都用品色值。
         let pick_sel_active = follow.map(|f| !f.on).unwrap_or(true);
         let mut click_color: Option<[u8; 4]> = None;
         for hex in picks {
-            let c = themed_color(hex, dark);
-            if swatch(ui, c, pick_sel_active && rgb_eq(c, shown), 22.0) {
-                let mut rgba = [c.r(), c.g(), c.b(), c.a()];
+            let base = base_color(hex);
+            if swatch(
+                ui,
+                themed_color(hex, dark),
+                pick_sel_active && rgb_eq(base, shown),
+                22.0,
+            ) {
+                let mut rgba = [base.r(), base.g(), base.b(), base.a()];
                 if let Some(a) = swatch_alpha {
                     rgba[3] = a;
                 }
@@ -673,33 +594,13 @@ fn draw_fill_icon(
 mod tests {
     use super::*;
 
-    /// 黑 → 亮灰（Excalidraw dark 下黑色元素显示为近白，非滤镜错乱后的中间色）。
+    /// 选色写回的恒为基色：暗色主题只让格子预览变亮，不改变存储值。
     #[test]
-    fn dark_filter_lightens_black() {
-        let [r, g, b] = apply_dark_mode_filter([0x1e, 0x1e, 0x1e]);
-        assert!(r > 200 && g > 200 && b > 200, "got ({r},{g},{b})");
-    }
-
-    /// 白 → 暗灰（滤镜互逆方向）。
-    #[test]
-    fn dark_filter_darkens_white() {
-        let [r, g, b] = apply_dark_mode_filter([255, 255, 255]);
-        assert!(r < 60 && g < 60 && b < 60, "got ({r},{g},{b})");
-    }
-
-    /// 灰度色 hue-rotate 后仍是灰度（R=G=B）——此前矩阵行错位时该性质被破坏。
-    #[test]
-    fn dark_filter_preserves_grayscale() {
-        let [r, g, b] = apply_dark_mode_filter([100, 100, 100]);
-        assert_eq!(r, g);
-        assert_eq!(g, b);
-    }
-
-    /// 纯红变亮红（用户反馈：dark picks 应为"白红绿蓝橙，比 light 亮一点"）。
-    #[test]
-    fn dark_filter_keeps_hue_and_lightens_red() {
-        let [r, g, b] = apply_dark_mode_filter([0xe0, 0x31, 0x31]);
-        assert!(r > g && r > b, "hue lost: got ({r},{g},{b})");
-        assert!(r > 0xe0, "not lightened: got ({r},{g},{b})");
+    fn picks_store_base_colors_not_themed_previews() {
+        let base = base_color("#e03131");
+        assert_eq!([base.r(), base.g(), base.b()], [0xe0, 0x31, 0x31]);
+        let shown = themed_color("#e03131", true);
+        assert!(shown.r() > base.r(), "暗色预览应被滤镜提亮");
+        assert_eq!(base_color("#e03131").to_array()[..3], [0xe0, 0x31, 0x31]);
     }
 }

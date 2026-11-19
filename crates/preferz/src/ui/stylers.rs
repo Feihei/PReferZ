@@ -1388,11 +1388,13 @@ impl ShapeStyler for RoughStyler {
 /// 依据 Shape 的 `sloppiness` 档位选择风格器，构建 egui 形状列表。
 ///
 /// `render_scene` 与 Present 模式共用，避免两处各组装一遍 `ShapeData`。
+/// `dark` = 当前主题是否暗色：元素颜色存基色空间，描边/填充在此统一套暗色滤镜。
 pub fn build_shape_visuals(
     kind: &ItemKind,
     elbow_route: &[(f32, f32)],
     to_screen: &LocalToScreen,
     zoom: f32,
+    dark: bool,
 ) -> Vec<Shape> {
     let ItemKind::Shape {
         shape_type,
@@ -1439,12 +1441,17 @@ pub fn build_shape_visuals(
         seed: *seed,
         sloppiness: *sloppiness,
     };
-    let fill_color = fill.map(color_from);
+    // 基色 → 当前主题绘制色（暗色套 Excalidraw 滤镜）。
+    let stroke = StrokeStyle {
+        color: preferz_core::color_space::themed_rgba(stroke.color, dark),
+        ..*stroke
+    };
+    let fill_color = (*fill).map(|c| color_from(preferz_core::color_space::themed_rgba(c, dark)));
 
     if *sloppiness != Sloppiness::Off {
-        RoughStyler.build_shapes(&data, stroke, fill_color, *fill_style, to_screen, zoom)
+        RoughStyler.build_shapes(&data, &stroke, fill_color, *fill_style, to_screen, zoom)
     } else {
-        CleanStyler.build_shapes(&data, stroke, fill_color, *fill_style, to_screen, zoom)
+        CleanStyler.build_shapes(&data, &stroke, fill_color, *fill_style, to_screen, zoom)
     }
 }
 
@@ -1570,8 +1577,12 @@ pub fn freedraw_stroke_shapes(
 
 /// 墨迹（plan #10）终稿渲染：局部中心线点 + 逐点相对笔宽（pressures）+ 基准笔宽
 /// （画布单位）→ 变换到屏幕，绝对笔宽 = `stroke_width × pressure × scale`（scale 含
-/// item scale + 视口 zoom）→ 逐段描边。
-pub fn build_freedraw_visuals(kind: &ItemKind, to_screen: &LocalToScreen) -> Vec<Shape> {
+/// item scale + 视口 zoom）→ 逐段描边。`dark` 下颜色套暗色滤镜（图片之外统一规则）。
+pub fn build_freedraw_visuals(
+    kind: &ItemKind,
+    to_screen: &LocalToScreen,
+    dark: bool,
+) -> Vec<Shape> {
     let ItemKind::Freedraw {
         points,
         pressures,
@@ -1590,7 +1601,8 @@ pub fn build_freedraw_visuals(kind: &ItemKind, to_screen: &LocalToScreen) -> Vec
     let screen_pts = to_screen_points(points, to_screen);
     let base = stroke_width * scale;
     let screen_widths: Vec<f32> = pressures.iter().map(|pr| base * pr).collect();
-    freedraw_stroke_shapes(&screen_pts, &screen_widths, color_from(*color))
+    let color = preferz_core::color_space::themed_rgba(*color, dark);
+    freedraw_stroke_shapes(&screen_pts, &screen_widths, color_from(color))
 }
 
 /// 便捷入口：Item 局部 → 屏幕 的变换（供 render_scene 使用）。
@@ -2717,18 +2729,18 @@ mod tests {
             StrokeStyle::default(),
             None,
         );
-        let clean = build_shape_visuals(&base.kind, &[], &identity(), 1.0);
+        let clean = build_shape_visuals(&base.kind, &[], &identity(), 1.0, false);
         assert_eq!(clean.len(), 1, "未开启手绘 → CleanStyler 单多边形");
 
         let rough = base.with_sloppiness(Sloppiness::Artist);
-        let sketched = build_shape_visuals(&rough.kind, &[], &identity(), 1.0);
+        let sketched = build_shape_visuals(&rough.kind, &[], &identity(), 1.0, false);
         assert_eq!(sketched.len(), 8, "开启手绘 → RoughStyler 抖动边");
     }
 
     #[test]
     fn build_shape_visuals_returns_empty_for_non_shape() {
         let txt = Item::new_text("x".to_string(), 0.0, 0.0, 16.0, [255; 4]);
-        assert!(build_shape_visuals(&txt.kind, &[], &identity(), 1.0).is_empty());
+        assert!(build_shape_visuals(&txt.kind, &[], &identity(), 1.0, false).is_empty());
     }
 
     #[test]
@@ -2741,7 +2753,7 @@ mod tests {
             4.0,
             [10, 10, 10, 255],
         );
-        let shapes = build_freedraw_visuals(&item.kind, &identity());
+        let shapes = build_freedraw_visuals(&item.kind, &identity(), false);
         let n = 4;
         assert_eq!(shapes.len(), 2 * n - 1, "应产出 (n-1) 段描边线 + n 个圆帽");
         let segs = shapes
@@ -2765,10 +2777,10 @@ mod tests {
     #[test]
     fn freedraw_visuals_empty_for_non_freedraw_or_degenerate() {
         let txt = Item::new_text("x".to_string(), 0.0, 0.0, 16.0, [255; 4]);
-        assert!(build_freedraw_visuals(&txt.kind, &identity()).is_empty());
+        assert!(build_freedraw_visuals(&txt.kind, &identity(), false).is_empty());
         // 单点墨迹（<2）→ 空。
         let dot = Item::new_freedraw(&[(5.0, 5.0)], &[1.0], 3.0, [0, 0, 0, 255]);
-        assert!(build_freedraw_visuals(&dot.kind, &identity()).is_empty());
+        assert!(build_freedraw_visuals(&dot.kind, &identity(), false).is_empty());
     }
 
     // ── plan #20：RoughStyler 对齐 rough.js / Excalidraw 公式 ──

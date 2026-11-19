@@ -391,8 +391,8 @@ fn add_item_raw(doc: &mut impl RpcDoc, req: &Value) -> Result<ItemId, String> {
 /// mermaid 流程图 → 分层布局元素批（节点+绑定文字+Elbow 连接器），
 /// 整批一条 `AddItems` undo。锚点：`x`/`y`（缺省 0,0）为生成内容包围盒左上角。
 /// 可选 `stroke`/`stroke_width`：连接线、节点描边与标签文字共用（标签色 =
-/// 描边色）。缺省 `StrokeStyle::default()`——GUI 侧会注入主题默认色，
-/// headless 侧保持固定深色（文件底色未知，不猜测主题）。
+/// 描边色）。缺省 `StrokeStyle::default()`（基色墨）——GUI 侧会注入当前默认色，
+/// headless 侧按基色落盘，渲染时再按主题套滤镜（文件不绑定主题）。
 fn add_mermaid(doc: &mut impl RpcDoc, req: &Value) -> Result<Value, String> {
     let src = req_str(req, "mermaid")?;
     let fc = crate::mermaid::parse_mermaid_flowchart(src)?;

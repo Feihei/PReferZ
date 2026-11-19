@@ -702,12 +702,12 @@ impl RpcDoc for GuiDoc<'_> {
 
 // ─────────────────────────── 主题默认色注入 ───────────────────────────
 
-/// 把主题当前默认色注入 `tools/call` 请求——仅当调用方**未显式给色**时：
-/// MCP 画的东西观感与手绘新元素一致（`default_stroke` 随主题切换，暗色主题
-/// 浅描边、亮色主题深描边），显式颜色一律不覆盖。纯函数，单测直接驱动。
+/// 把当前默认色注入 `tools/call` 请求——仅当调用方**未显式给色**时：
+/// MCP 画的东西观感与手绘新元素一致（`default_stroke` 是基色墨，渲染时才按
+/// 主题套滤镜），显式颜色一律不覆盖。纯函数，单测直接驱动。
 ///
 /// 覆盖：`add_shape`/`add_mermaid` 注入 `stroke`+`stroke_width`，
-/// `add_text` 注入 `color`。headless 降级模式不经过这里（协议层固定深色）。
+/// `add_text` 注入 `color`。headless 降级模式不经过这里（协议层固定基色默认）。
 pub(crate) fn inject_theme_defaults(line: &str, default_stroke: &StrokeStyle) -> String {
     let Ok(mut req) = serde_json::from_str::<Value>(line) else {
         return line.to_string(); // 坏帧原样透传，handle_message 负责报 parse error

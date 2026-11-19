@@ -925,9 +925,10 @@ impl PReferZApp {
             transform_handles: TransformHandles::new(),
             tool: Tool::Select,
             default_stroke: {
-                // 新建元素默认色随主题翻转（D2）；启动时尚无 ctx，Auto 按 Dark 兜底。
+                // 元素颜色存基色空间，暗色渲染时才套滤镜（color_space）；
+                // 因此默认墨色不随主题翻转。
                 StrokeStyle {
-                    color: cfg.theme.default_stroke_color_static(),
+                    color: preferz_core::color_space::DEFAULT_INK_RGBA,
                     ..Default::default()
                 }
             },
@@ -1742,7 +1743,10 @@ impl eframe::App for PReferZApp {
                         .collect();
                     let sw = self.default_stroke.width * self.session.viewport.zoom;
                     let screen_widths: Vec<f32> = pressures.iter().map(|pr| sw * pr).collect();
-                    let c = self.default_stroke.color;
+                    let c = preferz_core::color_space::themed_rgba(
+                        self.default_stroke.color,
+                        ui.visuals().dark_mode,
+                    );
                     let color = egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]);
                     ui.painter()
                         .extend(freedraw_stroke_shapes(&screen_pts, &screen_widths, color));
@@ -2440,7 +2444,6 @@ impl PReferZApp {
             } else {
                 ThemeMode::Dark
             };
-            self.default_stroke.color = self.theme.default_stroke_color(ctx);
             self.persist_config();
         }
     }

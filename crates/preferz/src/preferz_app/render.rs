@@ -49,8 +49,10 @@ impl PReferZApp {
             return;
         }
 
-        let text_color =
-            egui::Color32::from_rgba_premultiplied(color[0], color[1], color[2], color[3]);
+        // 元素颜色存基色空间，绘制时按当前主题套滤镜（图片不套）。
+        let dark = ui.visuals().dark_mode;
+        let [tr, tg, tb, ta] = preferz_core::color_space::themed_rgba(*color, dark);
+        let text_color = egui::Color32::from_rgba_premultiplied(tr, tg, tb, ta);
         let zoom = self.session.viewport.zoom;
         // 字体族：Handwriting → 内嵌 851远星夜行手写体；Normal → Proportional（思源黑体）
         // 字号先量化再排版：缩放中相邻帧尽量复用同一字号，见 `quantized_font_size`。
@@ -130,10 +132,11 @@ impl PReferZApp {
 
         if let Some(bg) = background {
             let pad = 4.0 * zoom;
+            let [br, bgc, bb, ba] = preferz_core::color_space::themed_rgba(*bg, dark);
             ui.painter().rect_filled(
                 content_rect.expand(pad),
                 egui::CornerRadius::same(2),
-                egui::Color32::from_rgba_unmultiplied(bg[0], bg[1], bg[2], bg[3]),
+                egui::Color32::from_rgba_unmultiplied(br, bgc, bb, ba),
             );
         }
         for (galley, pos) in pieces {
@@ -223,15 +226,20 @@ impl PReferZApp {
                 let to_screen = item_local_to_screen(item, &self.session.viewport);
                 // elbow 路由由 Scene 派生（阶段 C 同源；非 elbow 返回空）。
                 let route = self.session.scene.elbow_route_local(item);
-                let shapes =
-                    build_shape_visuals(&item.kind, &route, &to_screen, self.session.viewport.zoom);
+                let shapes = build_shape_visuals(
+                    &item.kind,
+                    &route,
+                    &to_screen,
+                    self.session.viewport.zoom,
+                    ui.visuals().dark_mode,
+                );
                 ui.painter().extend(shapes);
                 self.draw_edge_label(ui, item);
             }
             // 墨迹（plan #10）：速度锥形 ribbon 填充轮廓。
             ItemKind::Freedraw { .. } => {
                 let to_screen = item_local_to_screen(item, &self.session.viewport);
-                let shapes = build_freedraw_visuals(&item.kind, &to_screen);
+                let shapes = build_freedraw_visuals(&item.kind, &to_screen, ui.visuals().dark_mode);
                 ui.painter().extend(shapes);
             }
             ItemKind::Frame { .. } => {
@@ -296,9 +304,9 @@ impl PReferZApp {
         } else {
             egui::Color32::from_rgb(0x44, 0x44, 0x44)
         };
-        let series = egui::Color32::from_rgba_unmultiplied(color[0], color[1], color[2], color[3]);
-        // 暗色主题下把过暗的系列色提亮一档（旧数据/显式黑色系列的可见性兜底）
-        let series = lighten_series_for_dark(series, dark);
+        // 系列色存基色，暗色主题按 Excalidraw 滤镜提亮（与其它元素同源）。
+        let [sr, sg, sb, sa] = preferz_core::color_space::themed_rgba(*color, dark);
+        let series = egui::Color32::from_rgba_unmultiplied(sr, sg, sb, sa);
         let rough = *sloppiness != Sloppiness::Off;
         let amp = sloppiness.amp_scale();
         // 抖动幅度公式里的 zoom 取 item 局部→屏幕 scale（含 item scale + 视口 zoom）
@@ -643,6 +651,7 @@ impl PReferZApp {
                         &route,
                         &to_screen,
                         self.session.viewport.zoom,
+                        ui.visuals().dark_mode,
                     );
                     ui.painter().extend(shapes);
                     self.draw_edge_label(ui, item);
@@ -650,7 +659,8 @@ impl PReferZApp {
                 // 墨迹（plan #10）：速度锥形 ribbon 填充轮廓。
                 ItemKind::Freedraw { .. } => {
                     let to_screen = item_local_to_screen(item, &self.session.viewport);
-                    let shapes = build_freedraw_visuals(&item.kind, &to_screen);
+                    let shapes =
+                        build_freedraw_visuals(&item.kind, &to_screen, ui.visuals().dark_mode);
                     ui.painter().extend(shapes);
                 }
                 // 图表（plan #8）：矢量逐段绘制（坐标轴 + 柱/折线 + 文字标签）
@@ -1023,55 +1033,24 @@ impl PReferZApp {
     }
 }
 
-/// 暗色主题下把过暗的系列色往白色提亮一档：旧存档/显式黑色的柱线在暗底上
-/// 不可见的兜底。亮色主题原样返回；亮度 ≥ 0.35（含默认蓝 #1971c2）不动，
-/// 不改变正常数据的观感。提亮系数 0.5：纯黑 → 中灰（双主题均可见）。
-fn lighten_series_for_dark(c: egui::Color32, dark: bool) -> egui::Color32 {
-    if !dark {
-        return c;
-    }
-    let [r, g, b, a] = c.to_array();
-    let lum = (0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32) / 255.0;
-    if lum >= 0.35 {
-        return c;
-    }
-    let lift = |v: u8| (v as f32 + (255.0 - v as f32) * 0.5).round() as u8;
-    egui::Color32::from_rgba_unmultiplied(lift(r), lift(g), lift(b), a)
-}
-
 #[cfg(test)]
 mod chart_render_tests {
     use super::*;
 
     #[test]
-    fn lighten_series_keeps_normal_colors_in_light_theme() {
-        let blue = egui::Color32::from_rgb(0x11, 0x22, 0x33);
-        assert_eq!(lighten_series_for_dark(blue, false), blue);
+    fn chart_series_color_unchanged_in_light_theme() {
+        let c = [0x19, 0x71, 0xc2, 255];
+        assert_eq!(preferz_core::color_space::themed_rgba(c, false), c);
     }
 
     #[test]
-    fn lighten_series_keeps_mid_luminance_in_dark_theme() {
-        // 默认蓝 #1971c2 亮度 ≈ 0.37 ≥ 0.35，暗色下不应被改动
-        let blue = egui::Color32::from_rgb(0x19, 0x71, 0xc2);
-        assert_eq!(lighten_series_for_dark(blue, true), blue);
-    }
-
-    #[test]
-    fn lighten_series_lifts_black_in_dark_theme() {
-        let lifted =
-            lighten_series_for_dark(egui::Color32::from_rgba_unmultiplied(0, 0, 0, 255), true);
-        let [r, g, b, _] = lifted.to_array();
+    fn chart_series_black_lifts_in_dark_theme() {
+        let [r, g, b, a] = preferz_core::color_space::themed_rgba([0, 0, 0, 255], true);
         assert!(
-            (0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32) / 255.0 >= 0.35,
-            "提亮后亮度应过阈值: {lifted:?}"
+            r > 200 && g > 200 && b > 200,
+            "暗色下纯黑系列应被滤镜提亮: {r},{g},{b}"
         );
-    }
-
-    #[test]
-    fn lighten_series_preserves_alpha() {
-        let lifted =
-            lighten_series_for_dark(egui::Color32::from_rgba_unmultiplied(0, 0, 0, 128), true);
-        assert_eq!(lifted.to_array()[3], 128);
+        assert_eq!(a, 255);
     }
 
     #[test]

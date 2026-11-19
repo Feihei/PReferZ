@@ -41,12 +41,15 @@ impl ExportFormat {
 
 /// 导出场景到文件（后台线程调用）。
 /// 逐像素反向采样：对每个输出像素，画布坐标 → 遍历 Z 序倒序 → 命中 Pixmap 则采样。
-/// 文本便签渲染为纯色矩形（MVP 简化）。
+/// 文本便签渲染为纯色矩形（MVP 简化）。`dark`/`bg`：导出跟随当前主题——元素色
+/// 按主题滤镜变换，不透明底用该主题画布底色。
 pub(crate) fn export_scene_to_file(
     items: &[Item],
     pixmaps: &[(u64, Vec<u8>, u32, u32)],
     path: &Path,
     format: ExportFormat,
+    dark: bool,
+    bg: [u8; 3],
 ) -> Result<(), String> {
     use euclid::Point2D;
     use preferz_core::spaces::CanvasSpace;
@@ -98,11 +101,11 @@ pub(crate) fn export_scene_to_file(
 
     // 逐像素合成
     let mut out_rgba: Vec<u8> = vec![0u8; (canvas_w as usize) * (canvas_h as usize) * 4];
-    // 背景填充为白色（JPG 不支持透明，PNG 也用白底更实用）
+    // 背景填当前主题画布底色（JPEG 不支持透明，PNG 也用不透明底更实用）
     for px in out_rgba.as_chunks_mut::<4>().0 {
-        px[0] = 255;
-        px[1] = 255;
-        px[2] = 255;
+        px[0] = bg[0];
+        px[1] = bg[1];
+        px[2] = bg[2];
         px[3] = 255;
     }
 
@@ -119,14 +122,14 @@ pub(crate) fn export_scene_to_file(
                     continue;
                 }
                 // 命中：采样颜色
-                let pixel = sample_item_pixel(item, &pixmap_map, canvas_pos);
+                let pixel = sample_item_pixel(item, &pixmap_map, canvas_pos, dark);
                 if let Some((r, g, b, a)) = pixel {
                     let idx = ((y as usize) * (canvas_w as usize) + x as usize) * 4;
-                    // alpha 混合到白底
+                    // alpha 混合到主题底色
                     let alpha = a as f32 / 255.0;
-                    out_rgba[idx] = (r as f32 * alpha + 255.0 * (1.0 - alpha)) as u8;
-                    out_rgba[idx + 1] = (g as f32 * alpha + 255.0 * (1.0 - alpha)) as u8;
-                    out_rgba[idx + 2] = (b as f32 * alpha + 255.0 * (1.0 - alpha)) as u8;
+                    out_rgba[idx] = (r as f32 * alpha + bg[0] as f32 * (1.0 - alpha)) as u8;
+                    out_rgba[idx + 1] = (g as f32 * alpha + bg[1] as f32 * (1.0 - alpha)) as u8;
+                    out_rgba[idx + 2] = (b as f32 * alpha + bg[2] as f32 * (1.0 - alpha)) as u8;
                     // PNG 保留原 alpha；JPG 后续会丢弃
                     out_rgba[idx + 3] = 255;
                 }
@@ -216,12 +219,13 @@ pub(crate) fn export_pixmaps_to_dir(
 }
 
 /// 采样 item 在画布坐标处的像素颜色。
-/// Pixmap：逆变换到局部坐标 → 应用 crop → 采样 RGBA（含 opacity、grayscale）。
-/// Text：返回纯色（背景灰 + 文字色混合的简化表示）。
+/// Pixmap：逆变换到局部坐标 → 应用 crop → 采样 RGBA（含 opacity、grayscale），
+/// 图片不套主题滤镜；Text / Chart：返回纯色（按当前主题变换后）。
 pub(crate) fn sample_item_pixel(
     item: &Item,
     pixmap_map: &std::collections::HashMap<u64, (&Vec<u8>, u32, u32)>,
     canvas_pos: preferz_core::spaces::CanvasPoint,
+    dark: bool,
 ) -> Option<(u8, u8, u8, u8)> {
     let inv = item.local_to_canvas().inverse()?;
     let local = inv.transform_point(canvas_pos);
@@ -287,7 +291,8 @@ pub(crate) fn sample_item_pixel(
             // 简化：整个文本区域用文字色填充（MVP）
             // 仅当 local 在 [0, base.x] × [0, base.y] 内（contains_canvas_point 已保证）
             let _ = (local, base);
-            Some((color[0], color[1], color[2], color[3]))
+            let [r, g, b, a] = preferz_core::color_space::themed_rgba(*color, dark);
+            Some((r, g, b, a))
         }
         // A1 数据模型先行，取色采样在 Phase A6 后补充
         ItemKind::Shape { .. } => None,
@@ -298,7 +303,8 @@ pub(crate) fn sample_item_pixel(
         // 图表（plan #8）：与 Text 同款简化采样——命中区域返回系列颜色
         ItemKind::Chart { color, .. } => {
             let _ = (local, base);
-            Some((color[0], color[1], color[2], color[3]))
+            let [r, g, b, a] = preferz_core::color_space::themed_rgba(*color, dark);
+            Some((r, g, b, a))
         }
     }
 }
