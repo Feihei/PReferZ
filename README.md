@@ -11,7 +11,7 @@ For design / architecture details (crate layout, data models, phases), see [`.ag
 
 ### Install
 
-The easiest way: grab a prebuilt binary from [GitHub Releases](https://github.com/Feihei/PReferZ/releases) and run it — no dependencies, no install steps.
+The easiest way: grab a prebuilt binary from [GitHub Releases](https://github.com/Feihei/PReferZ/releases) and run it — no dependencies, no install steps. (macOS: the download is `PReferZ.app` inside a tar.gz — double-click to extract; first launch needs a one-time approval via System Settings → Privacy & Security → "Open Anyway", see each release page for details.)
 
 Or build from source (Rust stable >= 1.88):
 
@@ -105,7 +105,7 @@ Picture Reference Z - 一个用 Rust 编写的极简参考图聚合桌面应用�
 
 ### 安装
 
-最简单的方式：从 [GitHub Releases](https://github.com/Feihei/PReferZ/releases) 直接下载对应平台的二进制运行即可——无依赖、无需安装步骤。
+最简单的方式：从 [GitHub Releases](https://github.com/Feihei/PReferZ/releases) 直接下载对应平台的二进制运行即可——无依赖、无需安装步骤。（macOS：下载的是 tar.gz，双击解压出 PReferZ.app；首次启动需在 系统设置 → 隐私与安全性 点「仍要打开」放行一次，详见各版本 Release 页说明。）
 
 也可以从源码构建（Rust stable >= 1.88）：
 
