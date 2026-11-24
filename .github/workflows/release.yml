@@ -101,7 +101,7 @@ jobs:
           name: linux-aarch64
           path: preferz-*.tar.gz
 
-  # ──────────────────────── macOS universal binary ───────────────────
+  # ──────────────────────── macOS universal .app bundle ───────────────────
   build-macos:
     runs-on: macos-latest
     steps:
@@ -120,14 +120,24 @@ jobs:
         run: |
           VER=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
           echo "VERSION=${VER}" >> "${GITHUB_ENV}"
-      - name: Create universal binary
-        # lipo 合并 Intel + Apple Silicon 成单一二进制
+      - name: Create universal .app bundle
+        # lipo 合并 Intel + Apple Silicon 成单一二进制，装入 .app bundle
+        # （最小 Info.plist 见 .github/macos/Info.plist，版本号经 PlistBuddy 注入），
+        # ad-hoc 签名（无证书，仅满足 arm64 强制签名要求；未公证，用户首次打开
+        # 仍需在 系统设置 → 隐私与安全性 里点"仍要打开"，指引见 release notes 模板）
         run: |
-          mkdir -p dist
-          lipo -create -output dist/preferz \
+          APP=dist/PReferZ.app
+          mkdir -p "$APP/Contents/MacOS"
+          lipo -create -output "$APP/Contents/MacOS/preferz" \
             target/x86_64-apple-darwin/release/preferz \
             target/aarch64-apple-darwin/release/preferz
-          tar -czf preferz-${{ env.VERSION }}-macos-universal.tar.gz -C dist preferz
+          cp .github/macos/Info.plist "$APP/Contents/Info.plist"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${{ env.VERSION }}" \
+            "$APP/Contents/Info.plist"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${{ env.VERSION }}" \
+            "$APP/Contents/Info.plist"
+          codesign --force --sign - "$APP"
+          tar -czf preferz-${{ env.VERSION }}-macos-universal.tar.gz -C dist PReferZ.app
       - uses: actions/upload-artifact@v4
         with:
           name: macos-universal
