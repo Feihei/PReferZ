@@ -74,6 +74,10 @@ mod render;
 mod settings;
 mod svg_export;
 mod text_edit;
+
+/// 画布压力测试（手动 `--ignored` 运行，只测 CPU 两段：run_ui + tessellate）。
+#[cfg(test)]
+mod perf_stress;
 pub(crate) use export_dialog::{ClipboardImageOutcome, ExportDialogState};
 pub(crate) use offscreen::{rasterize_primitives, OffscreenScene};
 
