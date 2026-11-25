@@ -306,9 +306,14 @@ impl BindKey {
 }
 
 /// 一个完整绑定：按键 + 修饰键 + 触发沿。
+///
+/// `ctrl` 表达的是**平台主键修饰**（Windows/Linux 的 Ctrl、macOS 的 ⌘），而非字面
+/// Ctrl 键：egui-winit 在 Win/Linux 令 `command = ctrl`，在 macOS 令 `command = mac_cmd`，
+/// 匹配统一走 [`egui::Modifiers::command`]。序列化字段名保持 `ctrl` 以兼容旧配置。
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct KeyBind {
     pub key: BindKey,
+    /// 平台主键修饰（Win/Linux=Ctrl，macOS=⌘）。
     pub ctrl: bool,
     pub shift: bool,
     pub alt: bool,
@@ -540,7 +545,8 @@ impl Action {
             // 复制/剪切同 Paste：egui-winit 拦截 is_copy_command，按下沿触发不了
             Copy => vec![KeyBind::new(C).ctrl().on_release()],
             Cut => vec![KeyBind::new(X).ctrl().on_release()],
-            DeleteSelected => vec![KeyBind::new(Delete)],
+            // macOS 键盘的主删除键是 Backspace(⌫)，Forward Delete 要 Fn+⌫；两者都绑。
+            DeleteSelected => vec![KeyBind::new(Delete), KeyBind::new(Backspace)],
             // 全选（Excalidraw 同款 Ctrl+A）。裸 A 是箭头工具，严格修饰匹配不冲突
             SelectAll => vec![KeyBind::new(A).ctrl()],
             // 取消全选：Ctrl+Shift+A（用户习惯；与解组 Ctrl+Shift+G 同型不冲突）
@@ -700,9 +706,14 @@ impl Keymap {
                 .iter()
                 .find(|b| {
                     edge_hit(b)
-                        && i.modifiers.ctrl == b.ctrl
-                        && i.modifiers.shift == b.shift
-                        && i.modifiers.alt == b.alt
+                        // 用 `command` 而非字面 `ctrl`：Win/Linux 上 command==ctrl，
+                        // macOS 上 command==⌘。matches_exact 同时严格匹配 alt/shift。
+                        && i.modifiers.matches_exact(egui::Modifiers {
+                            alt: b.alt,
+                            shift: b.shift,
+                            command: b.ctrl,
+                            ..egui::Modifiers::NONE
+                        })
                 })
                 .copied()
         })
@@ -762,7 +773,8 @@ impl Keymap {
             index,
             KeyBind {
                 key,
-                ctrl: m.ctrl,
+                // 同 pressed_bind：Win/Linux 取 Ctrl，macOS 取 ⌘。
+                ctrl: m.command,
                 shift: m.shift,
                 alt: m.alt,
                 on_release,
@@ -948,7 +960,7 @@ mod tests {
             0,
             BindKey::V,
             egui::Modifiers {
-                ctrl: true,
+                command: true,
                 ..egui::Modifiers::NONE
             },
         );
@@ -962,7 +974,7 @@ mod tests {
     fn captured_rebind_does_not_force_release_edge() {
         // 普通动作（按下沿）改绑后不应被污染成释放沿
         let mut km = Keymap::new();
-        km.rebind_captured(Action::Save, 0, BindKey::G, egui::Modifiers::CTRL);
+        km.rebind_captured(Action::Save, 0, BindKey::G, egui::Modifiers::COMMAND);
         assert!(!km.bindings(Action::Save)[0].on_release);
     }
 
@@ -1010,6 +1022,104 @@ mod tests {
                 "{action:?} 往返不一致"
             );
         }
+    }
+
+    /// 模拟 macOS 的 ⌘ 组合：mac_cmd + command 置位、字面 ctrl 不置位。
+    fn press_mac_key(ctx: &egui::Context, key: egui::Key, shift: bool) {
+        let modifiers = egui::Modifiers {
+            mac_cmd: true,
+            command: true,
+            shift,
+            ..Default::default()
+        };
+        ctx.input_mut(|i| {
+            i.modifiers = modifiers;
+            i.events.push(egui::Event::Key {
+                key,
+                physical_key: Some(key),
+                pressed: true,
+                repeat: false,
+                modifiers,
+            });
+        });
+    }
+
+    #[test]
+    fn mac_command_triggers_ctrl_bindings() {
+        // macOS 上 ⌘ 只置 command/mac_cmd，不置 ctrl——修前所有 Ctrl+* 绑定全失效。
+        let km = Keymap::new();
+        let ctx = egui::Context::default();
+
+        press_mac_key(&ctx, egui::Key::Z, false);
+        assert!(km.pressed(Action::Undo, &ctx), "⌘Z 应触发撤销");
+        assert!(!km.pressed(Action::Redo, &ctx), "⌘Z 不应误触重做");
+        ctx.input_mut(|i| i.events.clear());
+
+        press_mac_key(&ctx, egui::Key::Z, true);
+        assert!(km.pressed(Action::Redo, &ctx), "⌘⇧Z 应触发重做");
+        assert!(!km.pressed(Action::Undo, &ctx), "⌘⇧Z 不应误触撤销");
+        ctx.input_mut(|i| i.events.clear());
+
+        press_mac_key(&ctx, egui::Key::S, false);
+        assert!(km.pressed(Action::Save, &ctx), "⌘S 应触发保存");
+        ctx.input_mut(|i| i.events.clear());
+    }
+
+    #[test]
+    fn windows_ctrl_still_triggers_bindings() {
+        // Win/Linux 上 egui-winit 令 command == ctrl，回归保护不能破坏原行为。
+        let km = Keymap::new();
+        let ctx = egui::Context::default();
+        let modifiers = egui::Modifiers {
+            ctrl: true,
+            command: true,
+            ..Default::default()
+        };
+        ctx.input_mut(|i| {
+            i.modifiers = modifiers;
+            i.events.push(egui::Event::Key {
+                key: egui::Key::Z,
+                physical_key: Some(egui::Key::Z),
+                pressed: true,
+                repeat: false,
+                modifiers,
+            });
+        });
+        assert!(km.pressed(Action::Undo, &ctx), "Ctrl+Z 仍应触发撤销");
+        ctx.input_mut(|i| i.events.clear());
+    }
+
+    #[test]
+    fn bare_binding_ignored_while_command_held() {
+        // 修饰键严格匹配：⌘D 只应触发 DuplicateInPlace，不能顺带切菱形工具。
+        let km = Keymap::new();
+        let ctx = egui::Context::default();
+        press_mac_key(&ctx, egui::Key::D, false);
+        assert!(km.pressed(Action::DuplicateInPlace, &ctx));
+        assert!(
+            !km.pressed(Action::ToolDiamond, &ctx),
+            "⌘D 不应触发裸 D 的菱形工具"
+        );
+        ctx.input_mut(|i| i.events.clear());
+    }
+
+    #[test]
+    fn backspace_deletes_selection() {
+        // macOS 主删除键是 Backspace(⌫)，不能只绑 Forward Delete。
+        let km = Keymap::new();
+        let ctx = egui::Context::default();
+        ctx.input_mut(|i| {
+            i.modifiers = egui::Modifiers::NONE;
+            i.events.push(egui::Event::Key {
+                key: egui::Key::Backspace,
+                physical_key: Some(egui::Key::Backspace),
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            });
+        });
+        assert!(km.pressed(Action::DeleteSelected, &ctx));
+        ctx.input_mut(|i| i.events.clear());
     }
 
     /// egui 0.36 把 `Event::Key.key` 改为「逻辑键」：按 Shift+数字时逻辑键被解析成

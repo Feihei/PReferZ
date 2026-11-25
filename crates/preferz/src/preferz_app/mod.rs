@@ -3002,6 +3002,16 @@ fn apply_rotate_drag(
 // ─────────────────────────── 操作 ───────────────────────────
 
 impl PReferZApp {
+    /// 任意 [`egui::TextEdit`] 持焦时为 `true`。
+    ///
+    /// egui 0.37 的 TextEdit 用 `filtered_events` 读按键、不把事件从 `InputState` 移除，
+    /// 因此全局派发必须自己避让：弹窗输入框里按 Backspace / 字母键时，否则会同时
+    /// 删除画布选区 / 切换工具。覆盖 mermaid、画框编号、调色板 Hex 等无独立状态字段的输入框。
+    fn text_edit_focused(ctx: &egui::Context) -> bool {
+        ctx.memory(|m| m.focused())
+            .is_some_and(|id| egui::TextEdit::load_state(ctx, id).is_some())
+    }
+
     /// 全局键盘派发。所有组合一律走 [`Keymap`] 查表，不再硬编码 `egui::Key`。
     ///
     /// 派发顺序即优先级：演示切换 → 工具切换 → 模式内（绘制/裁剪）→ 场景操作。
@@ -3013,7 +3023,12 @@ impl PReferZApp {
         // 文本编辑中不派发场景快捷键（Esc/Enter 由 render_text_editor 自行处理）
         // HUD 缩放输入框持焦时同理：回车用于提交缩放，不能被 EditText/Confirm 抢占。
         // 链接输入框持焦时同理（plan #6）：字母键不能切工具、Enter 用于提交链接。
-        if self.editing_text.is_some() || self.zoom_hud_focused || self.link_input_focused {
+        // 通用 TextEdit 检测补上 mermaid / 画框编号 / 调色板 Hex 等弹窗输入框。
+        if self.editing_text.is_some()
+            || self.zoom_hud_focused
+            || self.link_input_focused
+            || Self::text_edit_focused(ctx)
+        {
             return;
         }
 
