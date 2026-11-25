@@ -353,9 +353,35 @@ impl KeyBind {
         self
     }
 
-    /// `"Ctrl+Shift+S"` 这样的展示串。顺序固定为 Ctrl → Alt → Shift → 键。
+    /// `"Ctrl+Shift+S"` 这样的展示串。非 macOS 顺序固定为 Ctrl → Alt → Shift → 键。
+    ///
+    /// 平台差异走 [`Self::display_on`]：macOS 上用系统符号写（`⌘⇧S`），
+    /// 其余平台用 `+` 连接的英文名，避免 Mac 用户看到 `Ctrl` 找不到键。
     pub fn display(&self) -> String {
+        self.display_on(cfg!(target_os = "macos"))
+    }
+
+    /// 指定平台语义的展示串，供单测锁定两种写法（不依赖编译目标平台）。
+    ///
+    /// macOS 写法只用内嵌字体里**确有字形**的符号：`⌘`(U+2318) 与 `⇧`(U+21E7)
+    /// 在思源黑体中存在；`⌥`(U+2325) 与 `⌫`(U+232B) 在内嵌的全部字体
+    /// （思源黑体 / 851 手写体 / egui 默认的 Ubuntu、Hack、NotoEmoji、
+    /// emoji-icon-font）里都没有字形，写出来是豆腐块，故 Option 仍写 `Alt`。
+    fn display_on(&self, macos: bool) -> String {
         let mut s = String::new();
+        if macos {
+            if self.alt {
+                s.push_str("Alt+");
+            }
+            if self.ctrl {
+                s.push('\u{2318}');
+            }
+            if self.shift {
+                s.push('\u{21E7}');
+            }
+            s.push_str(self.key.display());
+            return s;
+        }
         if self.ctrl {
             s.push_str("Ctrl+");
         }
@@ -1034,13 +1060,32 @@ mod tests {
 
     #[test]
     fn display_includes_modifiers_in_fixed_order() {
+        // 用 display_on(false) 锁定 Windows/Linux 写法，避免测试随编译平台漂移
         let bind = KeyBind::new(BindKey::S).ctrl().shift();
-        assert_eq!(bind.display(), "Ctrl+Shift+S");
+        assert_eq!(bind.display_on(false), "Ctrl+Shift+S");
         let bind2 = KeyBind {
             alt: true,
             ..KeyBind::new(BindKey::End)
         };
-        assert_eq!(bind2.display(), "Alt+End");
+        assert_eq!(bind2.display_on(false), "Alt+End");
+    }
+
+    #[test]
+    fn display_on_macos_uses_system_symbols() {
+        // macOS 写法：⌘/⇧ 连写不加 `+`。Option 仍写 Alt——`⌥`(U+2325) 在
+        // 内嵌字体里没有字形，写出来是豆腐块（见 display_on 文档）。
+        let save_as = KeyBind::new(BindKey::S).ctrl().shift();
+        assert_eq!(save_as.display_on(true), "\u{2318}\u{21E7}S");
+        assert_eq!(save_as.display_on(false), "Ctrl+Shift+S");
+
+        let undo = KeyBind::new(BindKey::Z).ctrl();
+        assert_eq!(undo.display_on(true), "\u{2318}Z");
+
+        let nav = KeyBind::new(BindKey::ArrowUp).alt();
+        assert_eq!(nav.display_on(true), "Alt+\u{2191}");
+
+        // 裸键两个平台一致
+        assert_eq!(KeyBind::new(BindKey::Tab).display_on(true), "Tab");
     }
 
     #[test]
