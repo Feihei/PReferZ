@@ -128,12 +128,20 @@ impl ViewportState {
     /// （修 W4 的量纲错误。）
     pub fn zoom_at(&mut self, delta: f32, screen_pos: ScreenPoint) {
         // delta 钳制防止 NaN/爆炸；基数 1.05 每单位 delta 缩放 5%（原 1.02 太慢）。
+        // 注意：这个 ±2 的钳制只针对「滚轮刻度」——捏合手势的单帧倍率可以远大于
+        // 1.05^2，必须走 [`Self::zoom_by_at`] 而不是被这里削平。
         let normalized_delta = delta.clamp(-2.0, 2.0);
-        let zoom_factor = 1.05_f32.powf(normalized_delta);
-        // min/max 只约束常规交互式缩放；fit 视图（fit_to_content）可合法落在
-        // 范围之外（内容过大时 < min_zoom，内容过小时 > max_zoom）。越界状态下
-        // 不做硬钳制——朝范围内滚渐进回归、朝范围外滚继续放行，避免从 4% 一滚
-        // 直接跳回 10% 的突兀跳变。
+        self.apply_zoom_factor(1.05_f32.powf(normalized_delta), screen_pos);
+    }
+
+    /// 以 `screen_pos` 为锚点把 `zoom` 乘以 `zoom_factor`，并套用 min/max 守卫。
+    ///
+    /// `zoom_factor` 由调用方决定量纲（滚轮刻度换算、或手势倍率），本函数只负责
+    /// 边界与锚点计算。min/max 只约束常规交互式缩放；fit 视图（`fit_to_content`）
+    /// 可合法落在范围之外（内容过大时 < min_zoom，内容过小时 > max_zoom）。越界
+    /// 状态下不做硬钳制——朝范围内滚渐进回归、朝范围外滚继续放行，避免从 4% 一滚
+    /// 直接跳回 10% 的突兀跳变。
+    fn apply_zoom_factor(&mut self, zoom_factor: f32, screen_pos: ScreenPoint) {
         let raw = self.zoom * zoom_factor;
         let new_zoom = if self.zoom < self.min_zoom {
             raw.min(self.min_zoom)
@@ -158,16 +166,26 @@ impl ViewportState {
     }
 
     /// HUD「+ / −」按钮：以视口中心为锚点，把缩放整体乘以 `factor`（>1 放大，
-    /// <1 缩小）。复用 [`zoom_at`] 的越界守卫，因此从 fit 视图的越界值点击会
-    /// 渐进回归交互范围，而不是一步跳回边界。`factor` 非法则忽略。
+    /// <1 缩小）。与 [`Self::zoom_at`] 共用越界守卫，因此从 fit 视图的越界值
+    /// 点击会渐进回归交互范围，而不是一步跳回边界。`factor` 非法则忽略。
     pub fn zoom_center_by(&mut self, factor: f32) {
         if !factor.is_finite() || factor <= 0.0 || (factor - 1.0).abs() < 1e-6 {
             return;
         }
-        // zoom_at 以 1.05^delta 计算缩放因子，反解 delta 以复用其钳制逻辑。
-        let delta = factor.ln() / 1.05_f32.ln();
         let center = self.screen_center();
-        self.zoom_at(delta, center);
+        self.apply_zoom_factor(factor, center);
+    }
+
+    /// 以 `screen_pos` 为锚点按乘法倍率缩放（触控板捏合 / ⌘+滚轮）。
+    ///
+    /// egui 的 `zoom_delta()` 给的是倍率（1 = 不变），量纲与滚轮刻度无关，故直接
+    /// 走 [`Self::apply_zoom_factor`]，不受 `zoom_at` 的 ±2 刻度钳制。`factor`
+    /// 非法或近似空操作则忽略。
+    pub fn zoom_by_at(&mut self, factor: f32, screen_pos: ScreenPoint) {
+        if !factor.is_finite() || factor <= 0.0 || (factor - 1.0).abs() < 1e-6 {
+            return;
+        }
+        self.apply_zoom_factor(factor, screen_pos);
     }
 
     /// HUD 数字输入：设定绝对缩放，视口中心保持不变（`pan` 不动）。钳制到
@@ -278,6 +296,42 @@ mod tests {
         vp.zoom_center_by(0.0);
         vp.zoom_center_by(f32::NAN);
         vp.zoom_center_by(1.0);
+        assert!((vp.zoom - z).abs() < 1e-6);
+    }
+
+    /// 捏合缩放：锚点画布点屏幕坐标不变，zoom 按倍率变化；非法倍率忽略。
+    ///
+    /// 触控板捏合走 `zoom_by_at`（倍率语义），必须与滚轮缩放共用同一套
+    /// min/max 守卫——否则捏合能绕过 10%–1000% 的钳制。
+    #[test]
+    fn zoom_by_at_keeps_anchor_and_scales() {
+        let mut vp = ViewportState::default();
+        vp.set_screen_rect(ScreenRect::new(
+            ScreenPoint::new(0.0, 0.0),
+            euclid::Size2D::new(1000.0, 800.0),
+        ));
+        // 非中心锚点：放大后该点下方的画布坐标应保持不动
+        let anchor = ScreenPoint::new(300.0, 200.0);
+        let w_before = vp.screen_to_canvas(anchor);
+        let z_before = vp.zoom;
+
+        vp.zoom_by_at(1.5, anchor);
+        assert!(
+            (vp.zoom - z_before * 1.5).abs() < 1e-4,
+            "zoom 应按倍率相乘: {} vs {}",
+            vp.zoom,
+            z_before * 1.5
+        );
+        let w_after = vp.screen_to_canvas(anchor);
+        assert!((w_after.x - w_before.x).abs() < 1e-2);
+        assert!((w_after.y - w_before.y).abs() < 1e-2);
+
+        // 非法倍率（0 / 负数 / NaN / 1.0 空操作）不改变视图
+        let z = vp.zoom;
+        vp.zoom_by_at(0.0, anchor);
+        vp.zoom_by_at(-2.0, anchor);
+        vp.zoom_by_at(f32::NAN, anchor);
+        vp.zoom_by_at(1.0, anchor);
         assert!((vp.zoom - z).abs() < 1e-6);
     }
 

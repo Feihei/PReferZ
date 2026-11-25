@@ -1760,18 +1760,42 @@ impl eframe::App for PReferZApp {
                     .pan_by_screen_egui(response.drag_delta());
             }
 
-            // 滚轮缩放（以鼠标位置为锚点）。SCROLL_ZOOM_SENSITIVITY：换 glow 后端后
-            // smooth_scroll_delta 每格增量比原后端大，乘系数放慢，手感对齐旧后端。
+            // 触控板捏合 / ⌘+滚轮 缩放，触控板双指滚动平移，鼠标滚轮缩放。
+            // egui 把捏合与 ⌘+滚轮统一成 `zoom_delta`（乘法倍率），其余滚动落在
+            // `smooth_scroll_delta`；两者互斥，同帧不会都非零。
+            // SCROLL_ZOOM_SENSITIVITY：换 glow 后端后 smooth_scroll_delta 每格增量
+            // 比原后端大，乘系数放慢，手感对齐旧后端。
             // pointer_on_canvas 守卫：指针在悬浮工具栏/侧栏上时滚轮不透传到视口
             //（response.hovered() 经 egui hit_test 自动排除被上层 Area 覆盖的区域）。
             const SCROLL_ZOOM_SENSITIVITY: f32 = 0.5;
             let pointer_on_canvas = response.hovered();
-            let scroll = ctx.input(|i| i.smooth_scroll_delta);
-            if scroll.y != 0.0 && pointer_on_canvas {
-                if let Some(pos) = ctx.input(|i| i.pointer.latest_pos()) {
-                    self.session
-                        .viewport
-                        .zoom_at_egui(scroll.y * SCROLL_ZOOM_SENSITIVITY, pos);
+            let (zoom_factor, scroll, scroll_intent, pointer) = ctx.input(|i| {
+                (
+                    i.zoom_delta(),
+                    i.smooth_scroll_delta,
+                    crate::scroll::scroll_intent(&i.events),
+                    i.pointer.latest_pos(),
+                )
+            });
+            if pointer_on_canvas {
+                if let Some(pos) = pointer {
+                    if (zoom_factor - 1.0).abs() > 1e-4 {
+                        self.session
+                            .viewport
+                            .zoom_by_factor_at_egui(zoom_factor, pos);
+                    } else if scroll != egui::Vec2::ZERO {
+                        match scroll_intent {
+                            // 双指滑动：内容跟着手指走，与中键拖拽同向
+                            crate::scroll::ScrollIntent::Pan => {
+                                self.session.viewport.pan_by_screen_egui(scroll);
+                            }
+                            crate::scroll::ScrollIntent::Zoom => {
+                                self.session
+                                    .viewport
+                                    .zoom_at_egui(scroll.y * SCROLL_ZOOM_SENSITIVITY, pos);
+                            }
+                        }
+                    }
                 }
             }
 

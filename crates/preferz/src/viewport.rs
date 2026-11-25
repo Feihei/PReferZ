@@ -31,6 +31,10 @@ pub trait ViewportEgui {
     fn pan_by_screen_egui(&mut self, d: egui::Vec2);
     /// 以 `egui::Pos2` 锚点缩放。
     fn zoom_at_egui(&mut self, delta: f32, p: egui::Pos2);
+    /// 以 `egui::Pos2` 为锚点按乘法倍率缩放（触控板捏合、⌘/Ctrl+滚轮）。
+    /// egui 的 `zoom_delta()` 是倍率语义（1 = 不变），不要与 `zoom_at` 的
+    /// 「滚轮刻度」混用。
+    fn zoom_by_factor_at_egui(&mut self, factor: f32, p: egui::Pos2);
 }
 
 impl ViewportEgui for ViewportState {
@@ -64,5 +68,9 @@ impl ViewportEgui for ViewportState {
 
     fn zoom_at_egui(&mut self, delta: f32, p: egui::Pos2) {
         self.zoom_at(delta, ScreenPoint::new(p.x, p.y));
+    }
+
+    fn zoom_by_factor_at_egui(&mut self, factor: f32, p: egui::Pos2) {
+        self.zoom_by_at(factor, ScreenPoint::new(p.x, p.y));
     }
 }

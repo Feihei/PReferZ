@@ -4,6 +4,7 @@ pub mod interaction;
 pub mod keymap;
 pub(crate) mod paths;
 pub mod preferz_app;
+pub(crate) mod scroll;
 pub mod theme;
 pub mod ui;
 pub mod viewport;
