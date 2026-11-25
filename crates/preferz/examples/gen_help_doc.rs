@@ -2,8 +2,9 @@
 //!
 //! 运行：`cargo run -p preferz --example gen_help_doc`
 //!
-//! 帮助页是一张「纸」：浅色底版矩形保证任意主题下文字可读（画布文本为固定
-//! 颜色，不随明暗主题翻转），上面排版警示横幅 + 六张功能卡片。画布文本为
+//! 帮助页按基色空间设计：元素颜色存亮色基值，暗色主题由绘制期
+//! `apply_dark_mode_filter` 整体翻转（文本/形状一致），无需垫纸张底版。
+//! 上面排版警示横幅 + 六张功能卡片。画布文本为
 //! 单行 Text item，逐行摆放。正式维护可直接在 PReferZ 里绘制后「另存为」
 //! 覆盖本文件，重编译即嵌入（build.rs 对该文件声明了 rerun-if-changed）。
 
@@ -15,15 +16,13 @@ use preferz_fileio::{PrzFile, ViewportMeta};
 use std::collections::HashMap;
 use std::path::Path;
 
-/// 主题无关的固定配色（以浅色纸张为前提设计）。
+/// 主题无关的基色配色（暗色主题由绘制期滤镜统一翻转）。
 const INK: [u8; 4] = [50, 48, 44, 255];
 const FAINT: [u8; 4] = [128, 124, 116, 255];
 const ACCENT: [u8; 4] = [40, 92, 170, 255];
 const WARN_TEXT: [u8; 4] = [172, 42, 34, 255];
 const WARN_STROKE: [u8; 4] = [206, 74, 62, 255];
 const WARN_FILL: [u8; 4] = [252, 236, 232, 255];
-const PAPER_FILL: [u8; 4] = [250, 248, 242, 255];
-const PAPER_STROKE: [u8; 4] = [219, 213, 199, 255];
 const CARD_STROKE: [u8; 4] = [191, 186, 176, 255];
 const CARD_FILL: [u8; 4] = [255, 255, 255, 255];
 
@@ -131,20 +130,6 @@ impl Card {
 
 fn main() {
     let mut scene = Scene::new();
-
-    // —— 纸张底版（最先加入 = z 最底；精确几何，不抖动）——
-    add_rect(
-        &mut scene,
-        0.0,
-        0.0,
-        960.0,
-        1560.0,
-        PAPER_STROKE,
-        1.0,
-        PAPER_FILL,
-        0.0,
-        Sloppiness::Off,
-    );
 
     // —— 标题区 ——
     add_text(
