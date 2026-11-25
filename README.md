@@ -13,7 +13,7 @@ For design / architecture details (crate layout, data models, phases), see [`.ag
 
 The easiest way: grab a prebuilt binary from [GitHub Releases](https://github.com/Feihei/PReferZ/releases) and run it — no dependencies, no install steps. (macOS: the download is `PReferZ.app` inside a tar.gz — double-click to extract; first launch needs a one-time approval via System Settings → Privacy & Security → "Open Anyway", see each release page for details.)
 
-Or build from source (Rust stable >= 1.88):
+Or build from source (Rust stable >= 1.95):
 
 ```bash
 cargo run -p preferz             # run the app
@@ -36,8 +36,8 @@ You never need the association to open a project: drag the file onto the window,
 
 ### Tech Stack
 
-- **Rust** (stable, >= 1.88)
-- **GUI**: `egui` + `eframe` 0.36 (glow backend)
+- **Rust** (stable, >= 1.95)
+- **GUI**: `egui` + `eframe` 0.37 (glow backend)
 - **2D geometry**: `euclid`
 - **File I/O**: `rusqlite` (`.prz` = SQLite + sqlar), `image`
 - **Utilities**: `rfd` (file dialogs), `arboard` (clipboard), `serde_json`
@@ -117,7 +117,7 @@ Picture Reference Z - 一个用 Rust 编写的极简参考图聚合桌面应用�
 
 最简单的方式：从 [GitHub Releases](https://github.com/Feihei/PReferZ/releases) 直接下载对应平台的二进制运行即可——无依赖、无需安装步骤。（macOS：下载的是 tar.gz，双击解压出 PReferZ.app；首次启动需在 系统设置 → 隐私与安全性 点「仍要打开」放行一次，详见各版本 Release 页说明。）
 
-也可以从源码构建（Rust stable >= 1.88）：
+也可以从源码构建（Rust stable >= 1.95）：
 
 ```bash
 cargo run -p preferz             # 运行应用
@@ -140,8 +140,8 @@ PReferZ 不写注册表、也不注册 LaunchServices，所以 `.prz` **不会**
 
 ### 技术栈
 
-- **Rust** (stable, >= 1.88)
-- **GUI**: `egui` + `eframe` 0.36 (glow 后端)
+- **Rust** (stable, >= 1.95)
+- **GUI**: `egui` + `eframe` 0.37 (glow 后端)
 - **2D geometry**: `euclid`
 - **File I/O**: `rusqlite` (`.prz` = SQLite + sqlar), `image`
 - **工具库**: `rfd`（文件对话框）, `arboard`（剪贴板）, `serde_json`
