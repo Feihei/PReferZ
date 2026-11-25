@@ -95,8 +95,8 @@ fn open_url_in_browser(url: &str) -> bool {
 }
 
 /// spawn 新窗口打开本地 `.prz`（H2）：运行自身 exe + 路径位置参数，
-/// 与 `spawn_help_instance`（plan #25）同一机制。spawn 异步，新窗口稍后弹出。
+/// 与 `spawn_help_instance`（plan #25）同一机制（macOS 走 `open -n --args`,
+/// 见 [`spawn_self`]）。spawn 异步，新窗口稍后弹出。
 fn spawn_project_window(path: &Path) -> std::io::Result<std::process::Child> {
-    let exe = std::env::current_exe()?;
-    std::process::Command::new(exe).arg(path).spawn()
+    super::spawn_self(&[path.as_os_str()])
 }

@@ -1058,11 +1058,7 @@ impl PReferZApp {
     /// 帮助实例里再次点击照常递归（同 PureData 帮助补丁——帮助文件即
     /// 原生格式，理应能再开帮助）。spawn 是异步的，新窗口稍后弹出。
     fn spawn_help_instance(&mut self) {
-        let result = (|| -> std::io::Result<()> {
-            let exe = std::env::current_exe()?;
-            std::process::Command::new(exe).arg("--help-doc").spawn()?;
-            Ok(())
-        })();
+        let result = spawn_self(&[std::ffi::OsStr::new("--help-doc")]).map(|_| ());
         if let Err(e) = result {
             self.flash(fill(
                 t(self.lang, T::FlashHelpSpawnFailed),
@@ -2865,6 +2861,44 @@ fn is_project_file(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// 以子进程方式启动自身的一个新实例（「在新窗口打开 .prz」、打开帮助文档）。
+///
+/// macOS 上如果自身位于 `X.app/Contents/MacOS/`，直接 exec 可执行文件会绕开
+/// LaunchServices：新进程不算「由系统启动的 App」——Dock 里可能不出现独立图标、
+/// 抢不到前台、也拿不到 bundle 的 Info.plist（图标/文件关联都失效）。此时改用
+/// `open -n -a X.app --args …`，由系统按正常 App 启动路径拉起。
+/// 开发态（`target/debug/preferz`）没有 bundle，直接 exec 即可。
+fn spawn_self(args: &[&std::ffi::OsStr]) -> std::io::Result<std::process::Child> {
+    let exe = std::env::current_exe()?;
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(bundle) = macos_bundle_root(&exe) {
+            let mut cmd = std::process::Command::new("open");
+            cmd.arg("-n").arg("-a").arg(bundle).arg("--args");
+            return cmd.args(args).spawn();
+        }
+    }
+    std::process::Command::new(exe).args(args).spawn()
+}
+
+/// 若 `exe` 位于 `X.app/Contents/MacOS/` 内，返回 `X.app` 的路径。
+///
+/// 只做纯路径判断（不含任何 macOS API），因此任意平台都能跑单测。
+/// 三层结构固定：`…/X.app/Contents/MacOS/<binary>`，故校验 `Contents` 与 `.app`
+/// 两级，避免把 `…/Contents/MacOS/…` 这种不含 bundle 的目录误判成 App。
+#[cfg(any(target_os = "macos", test))]
+fn macos_bundle_root(exe: &Path) -> Option<&Path> {
+    let contents = exe.ancestors().nth(2)?;
+    if contents.file_name() != Some(std::ffi::OsStr::new("Contents")) {
+        return None;
+    }
+    let bundle = exe.ancestors().nth(3)?;
+    let is_app = bundle
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("app"));
+    is_app.then_some(bundle)
+}
+
 /// 把模板里的 `{0}`/`{1}`… 依次替换为 `parts`。
 ///
 /// i18n 文案中内嵌了快捷键占位（如 `"Present slides ({0})"`）——快捷键可改绑后
@@ -3381,6 +3415,41 @@ mod tests {
         );
         // 占位多于参数时保留原样，便于开发期发现漏填
         assert_eq!(fill("a {0} b {1}", &["X".to_string()]), "a X b {1}");
+    }
+
+    /// macOS bundle 识别：只有 `…/X.app/Contents/MacOS/bin` 才算在 App 内，
+    /// 否则 `spawn_self` 会错误地改用 `open`（开发态的 target/debug 就该直接 exec）。
+    #[test]
+    fn macos_bundle_root_only_matches_app_contents_layout() {
+        let bundled = Path::new("/Applications/PReferZ.app/Contents/MacOS/preferz");
+        assert_eq!(
+            macos_bundle_root(bundled),
+            Some(Path::new("/Applications/PReferZ.app"))
+        );
+
+        // 开发态：没有 bundle
+        assert_eq!(
+            macos_bundle_root(Path::new("/src/target/debug/preferz")),
+            None
+        );
+        // 有 Contents/MacOS 但不叫 .app（例如手动解包到普通目录）
+        assert_eq!(
+            macos_bundle_root(Path::new("/tmp/PReferZ/Contents/MacOS/preferz")),
+            None
+        );
+        // 层级不足
+        assert_eq!(macos_bundle_root(Path::new("preferz")), None);
+        assert_eq!(
+            macos_bundle_root(Path::new("/X.app/Contents/preferz")),
+            None
+        );
+        // 大小写不敏感（macOS 文件系统本身如此）
+        assert_eq!(
+            macos_bundle_root(Path::new(
+                "/Applications/PReferZ.APP/Contents/MacOS/preferz"
+            )),
+            Some(Path::new("/Applications/PReferZ.APP"))
+        );
     }
 
     /// 回归「Ctrl+D 复制形状 + 吸附 elbow 后吸附丢失」：走完整 App 层链路
