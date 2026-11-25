@@ -2,6 +2,17 @@
 //! `use super::*;` 取 mod.rs 的模块级词汇与私有项（子模块可访问父模块私有）。
 use super::*;
 
+/// 路径的扩展名是否已经是 `ext`（ASCII 大小写不敏感）。
+///
+/// macOS / Windows 的文件系统本身不区分大小写：`Board.PRZ` 已经是一个合法的
+/// prz 文件。用 `!= Some(ext)` 精确比较会把它「修正」成 `Board.prz`（Linux 上
+/// 还会因此找不到原文件），或者反过来说，让大小写不同的路径绕过「补后缀」逻辑。
+fn has_extension(path: &Path, ext: &str) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case(ext))
+}
+
 impl PReferZApp {
     pub(crate) fn finish_import(&mut self, ctx: &egui::Context, outcome: ImportOutcome) {
         if let Some(e) = outcome.error {
@@ -189,7 +200,14 @@ impl PReferZApp {
             .add_filter("PReferZ 项目", &["prz"])
             .set_file_name("untitled.prz")
             .save_file();
-        if let Some(path) = picked {
+        if let Some(mut path) = picked {
+            // 统一补 `.prz`：部分平台的保存面板不会按过滤器追加后缀，用户直接
+            // 输 `Board` 就会存出一个无后缀文件，下次打开时 `is_project_file`
+            // 认不出（只能靠拖放或对话框手动选）。已有 `.prz`/`.PRZ` 原样保留；
+            // 其它后缀（如 `Board.txt`）统一改成 `.prz`——文件内容本就是 prz 格式。
+            if !has_extension(&path, "prz") {
+                path.set_extension("prz");
+            }
             self.start_save(ctx, path);
         }
     }
@@ -660,11 +678,35 @@ impl PReferZApp {
             .set_file_name(format!("{}.{}", default_name, ext))
             .save_file();
         if let Some(mut path) = picked {
-            // 确保扩展名正确
-            if path.extension().and_then(|e| e.to_str()) != Some(ext) {
+            // 大小写不敏感比较：`scene.PNG` 不该被改写成 `scene.png`
+            if !has_extension(&path, ext) {
                 path.set_extension(ext);
             }
             self.start_export(ctx, path, format, selection_only);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::has_extension;
+    use std::path::PathBuf;
+
+    #[test]
+    fn has_extension_is_ascii_case_insensitive() {
+        // 大小写不敏感的 macOS / Windows 上 `Board.PRZ` 就是 prz 文件，
+        // 不应被再补一次后缀（`Board.PRZ.prz`）。
+        assert!(has_extension(&PathBuf::from("Board.prz"), "prz"));
+        assert!(has_extension(&PathBuf::from("Board.PRZ"), "prz"));
+        assert!(has_extension(&PathBuf::from("Board.Prz"), "prz"));
+        assert!(has_extension(&PathBuf::from("scene.PNG"), "png"));
+    }
+
+    #[test]
+    fn has_extension_rejects_other_or_missing() {
+        assert!(!has_extension(&PathBuf::from("Board"), "prz"));
+        assert!(!has_extension(&PathBuf::from("Board.txt"), "prz"));
+        // 前缀相同但后缀不同，不能被当成命中
+        assert!(!has_extension(&PathBuf::from("Board.przx"), "prz"));
     }
 }
