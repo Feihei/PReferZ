@@ -24,6 +24,16 @@ cargo build --release -p preferz # release binary
 
 The binary is multi-mode (Blender-style): no args / a `.prz` path opens the GUI; `--mcp` / `--exec` / `--headless` run headless.
 
+### Opening `.prz` files
+
+PReferZ writes no registry keys or LaunchServices entries, so `.prz` files are **not** associated with it automatically. To make double-clicking a project open the app, associate the extension once by hand:
+
+- **macOS** — put `PReferZ.app` somewhere permanent first (e.g. `/Applications`). Then right-click any `.prz` → **Get Info** → **Open with** → pick PReferZ → **Change All…**. macOS remembers the app's *path*, so redo this after moving the app or switching to a new download.
+- **Windows** — right-click a `.prz` → **Open with** → **Choose another app** → select `preferz.exe` → tick **Always use this app**.
+- **Linux** — in a desktop entry under `~/.local/share/applications/`, set `Exec=/path/to/preferz %f` and `MimeType=application/x-preferz;`, then run `xdg-mime default <your>.desktop application/x-preferz`.
+
+You never need the association to open a project: drag the file onto the window, use **Open** (`Ctrl+O` / `⌘O`), or run `preferz board.prz` from a shell.
+
 ### Tech Stack
 
 - **Rust** (stable, >= 1.88)
@@ -35,7 +45,7 @@ The binary is multi-mode (Blender-style): no args / a `.prz` path opens the GUI;
 
 ### Features
 
-- Infinite canvas: pan (middle-drag), zoom at cursor (10%–1000%), box-select
+- Infinite canvas: pan (middle-drag, or two-finger scroll on a trackpad), zoom at cursor with the wheel or a pinch (10%–1000%), box-select
 - Images: import (drag & drop / file dialog / paste), crop, rotate & scale handles, opacity, grayscale, eyedropper
 - Hand-drawn-style shapes: rectangle / ellipse / diamond / line / arrow / polygon / frame, hachure & semi-transparent fills, sloppiness levels, line endpoints snap to shape edges
 - Freehand ink with velocity-tapered strokes (Catmull-Rom smoothing)
@@ -52,7 +62,7 @@ The binary is multi-mode (Blender-style): no args / a `.prz` path opens the GUI;
 
 ### Basic Usage
 
-Pan with middle-drag, zoom with the scroll wheel, double-click empty canvas for a text note, right-click for the full context menu.
+Pan with middle-drag (or two-finger scroll on a trackpad), zoom with the scroll wheel or a pinch gesture, double-click empty canvas for a text note, right-click for the full context menu.
 
 For the complete list of mouse interactions and keyboard shortcuts, click the **`?`** button at the bottom-left of the canvas — it opens the built-in help document, a live canvas where every shortcut is listed (and which you can freely scribble on; changes are not saved).
 
@@ -118,6 +128,16 @@ cargo build --release -p preferz # 构建发布版本
 
 二进制为单文件多模式（Blender 式）：无参数或跟 `.prz` 路径打开 GUI；`--mcp` / `--exec` / `--headless` 进入无头模式。
 
+### 让 `.prz` 双击打开
+
+PReferZ 不写注册表、也不注册 LaunchServices，所以 `.prz` **不会**自动与它关联。想双击工程文件直接打开，手动关联一次即可：
+
+- **macOS** —— 先把 `PReferZ.app` 放到固定位置（如 `/Applications`）。然后右键任一 `.prz` → **显示简介** → **打开方式** 选 PReferZ → 点 **全部更改…**。系统记住的是 App 的*路径*，换版本、挪目录后要再做一次。
+- **Windows** —— 右键任一 `.prz` → **打开方式** → **选择其他应用** → 选 `preferz.exe` → 勾选 **始终使用此应用**。
+- **Linux** —— 在 `~/.local/share/applications/` 的 desktop 文件里写 `Exec=/path/to/preferz %f` 与 `MimeType=application/x-preferz;`，再执行 `xdg-mime default <你的>.desktop application/x-preferz`。
+
+没有关联也不影响使用：把文件拖进窗口、用 **打开**（`Ctrl+O` / `⌘O`），或在终端跑 `preferz board.prz` 都能打开。
+
 ### 技术栈
 
 - **Rust** (stable, >= 1.88)
@@ -129,7 +149,7 @@ cargo build --release -p preferz # 构建发布版本
 
 ### 功能特性
 
-- 无限画布：中键平移、光标处缩放（10%–1000%）、框选
+- 无限画布：中键拖拽（或触控板双指滑动）平移、光标处滚轮 / 捏合缩放（10%–1000%）、框选
 - 图片：导入（拖放 / 对话框 / 粘贴）、裁剪、旋转与缩放手柄、不透明度、灰度、取色器
 - 手绘风图形：矩形 / 椭圆 / 菱形 / 直线 / 箭头 / 多边形 / 画框，斜线填充与半透明填充，手绘档位，线段端点吸附图形边缘
 - 徒手笔迹：按运笔速度锥形变宽（Catmull-Rom 平滑）
@@ -146,7 +166,7 @@ cargo build --release -p preferz # 构建发布版本
 
 ### 基本用法
 
-中键拖拽平移、滚轮缩放、双击空白处新建文本便签、右键打开完整上下文菜单。
+中键拖拽平移（触控板双指滑动同样平移）、滚轮或捏合缩放、双击空白处新建文本便签、右键打开完整上下文菜单。
 
 完整的鼠标交互与键盘快捷键列表，请点击画布左下角的 **`?`** 按钮打开内置帮助文档——它本身就是一张画布，所有快捷键都列在上面，还可以随意涂改试用（改动不会被保存）。
 
