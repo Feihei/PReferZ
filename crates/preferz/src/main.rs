@@ -32,6 +32,10 @@ fn main() -> eframe::Result<()> {
         return Ok(());
     }
 
+    // 日志后端：不设时写 ~/.preferz/preferz.log（release GUI 的 stderr 不可见），
+    // 设了 RUST_LOG 就留在 stderr 方便开发。放在 -h/-V 之后，避免只查版本也建目录。
+    preferz::logging::init();
+
     // CLI 模式判定：任一显式 CLI flag 出现即走无头分支，eframe 不启动。
     let cli_mode = args
         .iter()
