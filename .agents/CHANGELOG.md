@@ -476,8 +476,9 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 
 ## 依赖大版本升级：egui/eframe 0.29 → 0.36 + rusqlite 0.31 → 0.40（2026-09-17~20）
 
-> 两项都是"单次 bump、不留兼容写法"的直推升级，**不改用户可见功能**。计划文档见
-> [`plans/`](plans/)（`egui-029-to-036-upgrade.md` / `rusqlite-031-to-040-upgrade.md`）。
+> 两项都是"单次 bump、不留兼容写法"的直推升级，**不改用户可见功能**。两份计划文档
+> （`egui-029-to-036-upgrade.md` / `rusqlite-031-to-040-upgrade.md`）已随结项归档删除
+> （2026-11-25），要点全部收录于本节。
 
 - **egui/eframe 0.29.1 → 0.36.2**（`54a9f07` + `dcf4d9a` + `c67779e`，2026-09-17）：单次 bump
   0.29 → 0.36（跨 7 个 minor，0.30–0.36 的 deprecated API 已全部移除，中间版本只是徒增工作），
@@ -1127,7 +1128,7 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
   默认风格总开关。
 - **依赖升级手测**：egui 0.29 → 0.36 的 GUI 全功能回归（字体渲染、`Shift+数字`、滚轮手感、
   侧栏动画）与 rusqlite 0.40 的真实 `.prz` 往返（旧档打开 / 存后重开 / 附件 `sqlar`）均通过，
-  `plans/` 下两份升级计划随之结项。
+  `plans/` 下两份升级计划随之结项（文档已于 2026-11-25 归档删除，要点见 §依赖大版本升级）。
 - **更早已通过、本次一并清账**（#5 端点吸附 09-08、#14 整线绑定 09-10、#6 对齐分布 09-07、
   #10 freedraw 09-20、#11/#12 09-03、#16/#20/#21/#22/#23 09-28）。
 - 观感类结论（抖动幅度 / 档位 / 圆角观感）已固化在 §手绘风验收反馈批次实施，**不再挂待验收**。
@@ -2206,8 +2207,8 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
   `clippy --workspace --all-targets -- -D warnings` 通过。
 - **额外冒烟**（headless CLI）：`add_shape`/`add_text` 默认色落基色
   （`[17,17,17]` / `[30,30,30]`）→ `save` → 元数据 `color_space=base` 已确认。
-- **待人工复验**：切主题观察旧档（深色/浅色各一份）颜色自适应与观感；导出
-  PNG/SVG 在明暗两套主题下的底色与元素色。
+- **已人工复验**（2026-11-25，Feihei）：切主题观察旧档（深色/浅色各一份）颜色自适应
+  与观感正常；导出 PNG/SVG 在明暗两套主题下的底色与元素色符合预期。
 
 ### T 系列（主题色空间，2026-11-18 拍板）
 
@@ -2218,3 +2219,128 @@ Excalidraw 打磨批次快赢项 #11，三处协同改动：
 | T3 | 图片 | **不参与滤镜**（用户拍板） |
 | T4 | 导出主题 | **跟随当前主题**，不透明底色也用当前主题画布底色 |
 | T5 | 旧档处理 | 加载时**一次性智能迁移**（metadata 缺标记 → 投票判色空间 → 转基色），废止 D2 的默认色随主题翻转 |
+
+---
+
+## macOS 跨平台补齐（2026-11-16 ~ 11-25，v0.6.0 之后）
+
+> 一批 7 个 commit，把 macOS 上的快捷键语义、多实例启动、Dock 图标、发布产物形态
+> 逐项对齐 Windows / Linux。核心认知：macOS 的「主修饰键」是 ⌘ 而非 Ctrl，
+> 且 `.app` bundle 决定了图标、聚焦与 Info.plist 是否生效。
+
+- **快捷键主键语义改为平台主键**（`c9b4e8c`）：`KeyBind.ctrl` 从「Ctrl 字面」改为
+  「平台主键」（Win/Linux = Ctrl，macOS = ⌘），匹配走 `egui::Modifiers::command`——
+  此前 `⌘Z` / `⌘S` / `⌘C` 等**全部**失效。`DeleteSelected` 补绑 `Backspace`
+  （macOS 主删除键，Forward Delete 需 Fn+⌫）。任意 `TextEdit` 持焦时跳过场景快捷键
+  派发，避免在弹窗输入框里按 Backspace 误删画布选区。
+- **新增 `Quit` / `CloseWindow` 动作**（`a861089`）：`⌘Q` / `⌘W`（Win/Linux `Ctrl+Q` /
+  `Ctrl+W`，此前两个组合均未占用）。派发置于 TextEdit 守卫之前，打字时也能退出；
+  走 `ViewportCommand::Close` 复用既有「脏文档 → 保存提示」流程，且保存提示已挂起时
+  跳过自身，不会绕过提示丢改动。
+- **快捷键提示按平台渲染**（`6935d26`）：`KeyBind::display()` 硬编码 `"Ctrl+"`，macOS
+  上每条 flash 提示与右键菜单都在教用户按一个无效组合；改为 `display_on(macos)` 分支，
+  macOS 输出 `⌘⇧S` 系统符号，其余平台保持 `Ctrl+Shift+S`。`Option` 刻意仍拼作 `Alt`——
+  U+2325 在内嵌字体（思源黑体 / 851 / egui 的 Ubuntu、Hack、NotoEmoji、emoji-icon-font）
+  里均无字形，会渲染成豆腐块。
+- **home 目录解析统一**（`d83715b`）：新增 `paths::preferz_dir()` 单一入口（Windows 优先
+  `USERPROFILE`，Unix 优先 `HOME`），`config` / `mcp_serve` / `cli::mcp` 全部改走它。
+  修 Git Bash on Windows 下 `HOME=/c/Users/x` 被解析成 `\c\Users\x` 的错盘问题，
+  以及两处调用点优先级不一致。
+- **子进程启动走 LaunchServices**（`4b562dd`）：`spawn_project_window` /
+  `spawn_help_instance` 此前直接 exec `current_exe()`，macOS 上绕过 LaunchServices，
+  第二个实例可能没有 Dock 图标、不置前、忽略 bundle 的 Info.plist。新增 `spawn_self()`：
+  检测到 `Foo.app/Contents/MacOS/` 就改跑 `open -n -a Foo.app --args …`；
+  `target/debug` 下无 bundle 保持直连 exec。`macos_bundle_root()` 为纯路径逻辑，
+  布局规则在各平台单测覆盖。
+- **`.app` 图标**（`8927592`）：`assets/icon.icns` 由 `assets/icon.svg` 生成（Big Sur
+  栅格：1024 画布 / 824 主体 / r=185，`#1a1a1a` 底板上放白色图钉，浅色 Dock 下仍可见）；
+  `Info.plist` 声明 `CFBundleIconFile`，`release.yml` 拷入 `Contents/Resources`。
+  winit 的 macOS `set_window_icon` 是 no-op，bundle 图标是唯一生效路径。
+- **发布产物改为 universal `.app`**（`df69685`）：`lipo` 合并到
+  `PReferZ.app/Contents/MacOS/preferz` + 最小 `Info.plist`
+  （`.github/macos/Info.plist`，版本号经 PlistBuddy 注入）+ ad-hoc 签名
+  （无证书，首次启动仍需 Gatekeeper「仍要打开」）。
+- 文档：README 补手工关联 `.prz` 的三平台做法（`789f3b0`）；release notes 模板加入
+  中英双语 Gatekeeper 指引与「一个要点一个物理行」规则（`b3b0038`），v0.6.0 note
+  按该规则重排（`e975ccd`）。
+
+---
+
+## 触控板手势：捏合缩放 + 双指平移（2026-11-25，`39b2057`）
+
+> 此前只读 `smooth_scroll_delta`，于是捏合完全没反应、双指滚动却在缩放——与所有
+> 白板工具的手感相反。
+
+- egui 已把捏合与 `⌘/Ctrl+滚轮` 统一成 `zoom_delta`（乘法倍率），与
+  `smooth_scroll_delta` 互斥（同帧不会都非零）。`zoom_delta` 走新增的 core
+  `ViewportState::zoom_by_at(factor, screen_pos)`（指针锚定缩放）；触控板滚动改为平移。
+- **由设备源决定、不由平台决定**（新增 `scroll.rs` 的 `ScrollIntent` / `scroll_intent()`）：
+  `MouseWheelSource::Trackpad` / `Momentum` 平移，`Wheel` / `Unknown` 保持滚轮缩放——
+  macOS 接鼠标的用户不受影响，非 macOS 平台行为与之前完全一致。
+- `zoom_by_at` 绕过 `zoom_at` 的 ±2 滚轮格钳制（手势倍率远大于 `1.05^2`），
+  但共享 min/max 与越界守卫。
+
+---
+
+## 手绘风屏幕空间 LOD + 画布压测骨架（2026-11-25，`73530f5` + `64093a7`）
+
+> 先落压测骨架拿数据，再据数据优化——同时回答「是否该换渲染框架」和「瓶颈在哪」。
+
+- **压测骨架**（`73530f5`，`#[ignore]` 手动跑）：分段计时 `Context::run_ui`（重建 Shape +
+  布局 + 剔除）与 `Context::tessellate`（epaint 三角化）。1600×900、全部元素在视口内
+  （最坏情况）、10 帧平均。基线（release、本机）：1000 / 5000 / 10000 个手绘风图形
+  21.4 / 83.7 / 157.0 ms 每帧，同数量规整风 5.6 / 28.7 / 61.4 ms；三角化占 75–85%，
+  `ClippedPrimitive` 恒为 3（**批次不是瓶颈**），手绘风每图形约 346 顶点、规整风 174——
+  双笔描边使几何量恰好翻倍。`perf_stress_write_files` 另把场景落成 `target/perf/*.prz`
+  供真机手试。
+- **LOD**（`64093a7`）：`Sloppiness::for_screen_extent()` 为纯决策（core L1、无 egui 依赖、
+  可无头测试），阈值 `ROUGH_LOD_MIN_SCREEN_PX = 24.0`；`build_shape_visuals` 用 `to_screen`
+  量真实屏幕尺寸（已含 item scale/rotation 与视口 zoom），低于阈值直接退 `Sloppiness::Off`
+  走 `CleanStyler`。`render_scene` 与 Present 两条渲染路径自动同享，无需各自传参。
+  复测：2000 元素 41.2 → 9.7 ms（4.2×）、5000 元素 83.7 → 28.7 ms（2.9×）、
+  10000 元素 157.0 → 61.8 ms（2.5×），1000 及以下不变（图形仍在 32px 以上，不触发）。
+  测试 +3：core 阈值边界（含 `Off` 恒 `Off`）、10% 缩放下与规整风逐字节一致、
+  100% 缩放下手绘风未被误伤。
+- **与 plan.md 远期项区分**：这是**渲染退化 LOD**；plan.md 的「LOD 缩略图（Phase 5+）」
+  是缩略图缓存，仍未评估，两者不是同一件事。
+
+---
+
+## 日志真正落盘（2026-11-25，`3988093`）
+
+- `env_logger` 一直是声明了却从未 `init()` 的依赖——所有 `log::warn!` / `log::error!`
+  （图标解码失败、MCP 握手失败、内置帮助加载失败）全部丢弃，用户报障时手上什么都没有。
+- 新增 `logging::init()`，在 `-h/-V` 处理后立即调用：默认 `warn` 过滤、可用 `RUST_LOG`
+  覆盖。`RUST_LOG` 未设时输出到 `~/.preferz/preferz.log`（release GUI 没有可见 stderr——
+  Windows 是 `windows_subsystem = "windows"`，macOS 走 LaunchServices）；设了就保持
+  stderr，开发输出仍留在终端。启动时超过 1 MiB 轮转为 `preferz.log.1`。
+
+---
+
+## 内置帮助：英文页同源生成 + 去掉纸张底版（2026-11-25，`4631b46` + `ed0a7a5` + `61a342e`）
+
+- **英文页不再手工维护**（`61a342e`）：生成器此前只产中文页，`assets/help-en.prz` 靠在
+  App 里手工重画，已经与中文页漂移。现拆成 `SLOTS`（七张卡片位置，只写一次）+ `ZH` / `EN`
+  （文案），`main()` 用同一个 `build_scene()` 同时写两份——加卡片或挪位置一次改两语言。
+  中文页输出与上一 commit **逐项一致**（55 个 text item，逐条比对零差异）；英文页实际变化：
+  新增 macOS 修饰键说明、触控板手势、退出/关闭三行 + Delete/Backspace，并缩短 MCP 开关
+  文案以免越出色块边界。
+- **快捷键清单重新生成**（`ed0a7a5`）：帮助页由 `examples/gen_help_doc.rs` 生成而非手绘，
+  清单已与 keymap 漂移。补齐「macOS 上 Ctrl 即 Cmd、Alt 即 Option」说明（页面全平台共用
+  一份、烘进二进制，无法直接写符号）、双指平移 / 捏合缩放、Backspace 亦可删除、
+  Quit / CloseWindow。`assets/help.prz` 为重新生成的产物（item id 来自 `Uuid::new_v4`，
+  所以即使只加三行，二进制差异也覆盖整个文件）。
+- **去掉纸张底版**（`4631b46`）：帮助页原本垫一块浅色「纸」矩形，保证任意主题下文字可读
+  （文本是固定色、不随主题翻转）。主题色空间落地后（§元素颜色改为基色存储 + 渲染期主题
+  滤镜）暗色由绘制期滤镜统一翻转，纸底版成为多余——删除 `PAPER_FILL` / `PAPER_STROKE`
+  常量与底版矩形，两份 `help*.prz` 重新生成。
+
+---
+
+## 其它修复（2026-11-25）
+
+- **扩展名大小写不敏感**（`2879a54`）：macOS / Windows 文件系统大小写不敏感，`Board.PRZ`
+  本就是合法 `.prz`。精确比较要么把它改写成 `Board.prz`（在 Linux 上弄坏路径），要么让
+  不同大小写的名字整个跳过后缀逻辑、产出 `Board.PRZ.prz`。导出后缀同修。
+- **`repository` 继承到各 crate**（`d585cb8`）：三个子 crate 补 `repository.workspace = true`，
+  消除 workspace 未使用键警告。
