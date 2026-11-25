@@ -10,6 +10,11 @@
 	<string>com.feihei.PReferZ</string>
 	<key>CFBundleExecutable</key>
 	<string>preferz</string>
+	<!-- Dock / Finder / 切换器图标：Contents/Resources/icon.icns（release.yml 拷入）。
+	     没有这一项时 macOS 显示系统通用可执行文件图标——窗口图标与 .ico 都已内嵌，
+	     但 .icns 是 bundle 级资源，必须由 plist 指路。 -->
+	<key>CFBundleIconFile</key>
+	<string>icon</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleInfoDictionaryVersion</key>

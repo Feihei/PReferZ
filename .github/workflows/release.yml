@@ -125,13 +125,18 @@ jobs:
         # （最小 Info.plist 见 .github/macos/Info.plist，版本号经 PlistBuddy 注入），
         # ad-hoc 签名（无证书，仅满足 arm64 强制签名要求；未公证，用户首次打开
         # 仍需在 系统设置 → 隐私与安全性 里点"仍要打开"，指引见 release notes 模板）
+        #
+        # 图标：assets/icon.icns 由 assets/icon.svg 渲染（1024 网格、824 主体、
+        # 圆角 185 的深色底板 + 白色图钉，等价 iconutil 输出）。winit 在 macOS 上
+        # 的 set_window_icon 是空实现，bundle 里没有 .icns 就只能显示系统默认图标。
         run: |
           APP=dist/PReferZ.app
-          mkdir -p "$APP/Contents/MacOS"
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
           lipo -create -output "$APP/Contents/MacOS/preferz" \
             target/x86_64-apple-darwin/release/preferz \
             target/aarch64-apple-darwin/release/preferz
           cp .github/macos/Info.plist "$APP/Contents/Info.plist"
+          cp assets/icon.icns "$APP/Contents/Resources/icon.icns"
           /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${{ env.VERSION }}" \
             "$APP/Contents/Info.plist"
           /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${{ env.VERSION }}" \
