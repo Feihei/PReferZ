@@ -30,9 +30,7 @@ fn endpoint_path() -> Option<PathBuf> {
     if let Ok(p) = std::env::var("PREFERZ_MCP_ENDPOINT") {
         return Some(PathBuf::from(p));
     }
-    let home = std::env::var_os("USERPROFILE")
-        .or_else(|| std::env::var_os("HOME"))
-        .map(PathBuf::from)?;
+    let home = crate::paths::home_dir()?;
     Some(home.join(".preferz").join("mcp-endpoint.json"))
 }
 

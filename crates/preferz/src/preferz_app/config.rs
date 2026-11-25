@@ -5,14 +5,12 @@ use std::path::PathBuf;
 
 /// 最近文件列表的持久化路径：`~/.preferz/recent.json`。
 pub(crate) fn recent_files_path() -> Option<PathBuf> {
-    let home = dirs_or_home()?;
-    Some(home.join(".preferz").join("recent.json"))
+    Some(crate::paths::preferz_dir()?.join("recent.json"))
 }
 
 /// 用户配置的持久化路径：`~/.preferz/config.json`。
 pub(crate) fn config_path() -> Option<PathBuf> {
-    let home = dirs_or_home()?;
-    Some(home.join(".preferz").join("config.json"))
+    Some(crate::paths::preferz_dir()?.join("config.json"))
 }
 
 /// 自动保存默认开关（plan #5）。
@@ -102,18 +100,6 @@ pub(crate) fn save_config(cfg: &UserConfig) {
     if let Ok(json) = serde_json::to_string_pretty(cfg) {
         let _ = std::fs::write(path, json);
     }
-}
-
-/// 获取用户 home 目录（跨平台）。
-pub(crate) fn dirs_or_home() -> Option<PathBuf> {
-    // 优先用 std::env，回退到常见环境变量
-    if let Some(home) = std::env::var_os("HOME") {
-        return Some(PathBuf::from(home));
-    }
-    if let Some(userprofile) = std::env::var_os("USERPROFILE") {
-        return Some(PathBuf::from(userprofile));
-    }
-    None
 }
 
 /// 从 `~/.preferz/recent.json` 加载最近文件列表。

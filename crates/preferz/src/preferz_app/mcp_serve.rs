@@ -52,8 +52,7 @@ fn endpoint_file_path() -> Option<PathBuf> {
     if let Ok(p) = std::env::var("PREFERZ_MCP_ENDPOINT") {
         return Some(PathBuf::from(p));
     }
-    let home = super::config::dirs_or_home()?;
-    Some(home.join(".preferz").join("mcp-endpoint.json"))
+    Some(crate::paths::preferz_dir()?.join("mcp-endpoint.json"))
 }
 
 /// 写握手文件（父目录不存在则创建）。原子性要求不高：内容一行 JSON。
