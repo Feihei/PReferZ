@@ -173,6 +173,17 @@ fn main() {
         INK,
         FontFamily::Normal,
     );
+    // 帮助文档是编译期烘进二进制的，全平台共用同一份文本，所以主键修饰不写成
+    // ⌘（Windows 用户会看不懂），只用一行说明换算关系。
+    add_text(
+        &mut scene,
+        "macOS 用户：文中 Ctrl 即 ⌘，Alt 即 Option；触控板双指平移、捏合缩放。",
+        48.0,
+        236.0,
+        17.0,
+        FAINT,
+        FontFamily::Normal,
+    );
 
     // —— 功能卡片（2 列 × 3 行 + 1 张全宽 CLI·MCP 卡）——
     let cards = [
@@ -184,6 +195,7 @@ fn main() {
             title: "视图",
             lines: &[
                 "滚轮 缩放 · 中键拖拽 平移",
+                "触控板 双指平移 · 捏合缩放",
                 "Shift+1 适应画布内容",
                 "Shift+2 缩放到选中 · Shift+3 缩放 100%",
                 "F5 演示模式 · 方向键翻页",
@@ -213,7 +225,7 @@ fn main() {
             lines: &[
                 "Ctrl+A 全选 · Ctrl+Shift+A 取消全选",
                 "Ctrl+C / X / V 复制 · 剪切 · 粘贴",
-                "Ctrl+D 原位复制 · Delete 删除",
+                "Ctrl+D 原位复制 · Delete/Backspace 删除",
                 "Enter 编辑文字 · Esc 取消",
                 "Ctrl+G 编组 · Ctrl+Shift+G 解组",
                 "Ctrl+K 编辑超链接（网页 / .prz）",
@@ -230,6 +242,7 @@ fn main() {
                 "Ctrl+I 导入图片 · Ctrl+S 保存",
                 "Ctrl+Shift+S 另存为",
                 "Ctrl+Shift+E 导出选区",
+                "Ctrl+Q 退出 · Ctrl+W 关闭窗口",
                 "拖放图片文件到画布即可导入",
             ],
         },
