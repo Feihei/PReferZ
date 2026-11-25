@@ -3020,6 +3020,18 @@ impl PReferZApp {
     ///   把某个动作绑到字母键就会导致该字母打不进文本。
     /// - `Cancel` 走 [`Self::cancel_pressed`]（查表 + `Esc` 硬兜底），见 D1-a。
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
+        // 退出 / 关闭窗口（macOS 约定 ⌘Q / ⌘W）：放在「文本编辑避让」之前——
+        // 正在输入文字时也必须能退出。不直接结束进程，而是发 Close 命令，由
+        // `update` 顶部的 close_requested 检测统一走「dirty → 保存提示」流程。
+        // 已有保存提示在等用户选择时不重复发，否则会绕过提示直接关窗丢改动。
+        if self.pending_save_prompt.is_none()
+            && (self.keymap.pressed(Action::Quit, ctx)
+                || self.keymap.pressed(Action::CloseWindow, ctx))
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            return;
+        }
+
         // 文本编辑中不派发场景快捷键（Esc/Enter 由 render_text_editor 自行处理）
         // HUD 缩放输入框持焦时同理：回车用于提交缩放，不能被 EditText/Confirm 抢占。
         // 链接输入框持焦时同理（plan #6）：字母键不能切工具、Enter 用于提交链接。

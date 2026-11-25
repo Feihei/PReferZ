@@ -379,6 +379,12 @@ pub enum Action {
     LoadImage,
     Save,
     SaveAs,
+    /// 退出应用（macOS ⌘Q；Windows/Linux Ctrl+Q）。不直接退进程——
+    /// 发 `ViewportCommand::Close`，复用「dirty → 保存提示」的既有流程。
+    Quit,
+    /// 关闭当前窗口（macOS ⌘W；Windows/Linux Ctrl+W）。单窗口应用下与 `Quit`
+    /// 等效，但语义分开：将来做多窗口时两者行为不同，不必再改配置键名。
+    CloseWindow,
     /// 导出选中区域（Excalidraw 同款 `Ctrl+Shift+E`）：弹出导出对话框
     /// （实时预览 + 透明背景开关 + PNG / SVG / 复制到剪贴板）。无选中时忽略。
     ExportSelection,
@@ -478,6 +484,8 @@ impl Action {
         Action::LoadImage,
         Action::Save,
         Action::SaveAs,
+        Action::Quit,
+        Action::CloseWindow,
         Action::ExportSelection,
         Action::Undo,
         Action::Redo,
@@ -535,6 +543,10 @@ impl Action {
             LoadImage => vec![KeyBind::new(I).ctrl()],
             Save => vec![KeyBind::new(S).ctrl()],
             SaveAs => vec![KeyBind::new(S).ctrl().shift()],
+            // 退出 / 关窗：macOS 上 ctrl 字段即 ⌘，故默认就是 ⌘Q / ⌘W；
+            // Windows/Linux 为 Ctrl+Q / Ctrl+W（两者此前均未占用）。
+            Quit => vec![KeyBind::new(Q).ctrl()],
+            CloseWindow => vec![KeyBind::new(W).ctrl()],
             // 导出选区（Excalidraw 同款 Ctrl+Shift+E）
             ExportSelection => vec![KeyBind::new(E).ctrl().shift()],
             Undo => vec![KeyBind::new(Z).ctrl()],
@@ -896,6 +908,28 @@ mod tests {
             "→/Space/PgDn 都翻下一页"
         );
         assert_eq!(km.bindings(Action::PresentPrev).len(), 2);
+    }
+
+    #[test]
+    fn quit_and_close_window_defaults() {
+        // macOS 上 `ctrl` 字段即 ⌘，故这两条默认就是 ⌘Q / ⌘W；
+        // Windows/Linux 是 Ctrl+Q / Ctrl+W。都必须是按下沿（不能是释放沿）。
+        let km = Keymap::new();
+        let quit = km.bindings(Action::Quit);
+        assert_eq!(quit.len(), 1, "退出应只有一条默认绑定");
+        assert_eq!(quit[0].key, BindKey::Q);
+        assert!(
+            quit[0].ctrl && !quit[0].shift && !quit[0].alt && !quit[0].on_release,
+            "退出 = 主键修饰 + Q，按下沿"
+        );
+
+        let close = km.bindings(Action::CloseWindow);
+        assert_eq!(close.len(), 1, "关窗应只有一条默认绑定");
+        assert_eq!(close[0].key, BindKey::W);
+        assert!(
+            close[0].ctrl && !close[0].shift && !close[0].alt && !close[0].on_release,
+            "关窗 = 主键修饰 + W，按下沿"
+        );
     }
 
     #[test]
