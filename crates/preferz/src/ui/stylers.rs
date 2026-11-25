@@ -1426,6 +1426,26 @@ pub fn build_shape_visuals(
         pts.pop();
     }
 
+    // 屏幕空间 LOD（2026-11-25 压测结论）：手绘风双笔描边使顶点数翻倍，而缩到
+    // 20 余像素时抖动已不可辨，故低于阈值直接走规整风。`to_screen` 已含 item
+    // 自身的 scale/flip/rotation 与视口 zoom，故这里量到的就是真实屏幕尺寸。
+    let screen_extent = {
+        let w = to_screen
+            .transform_vector(euclid::Vector2D::<f32, ItemLocalSpace>::new(
+                base_size.0,
+                0.0,
+            ))
+            .length();
+        let h = to_screen
+            .transform_vector(euclid::Vector2D::<f32, ItemLocalSpace>::new(
+                0.0,
+                base_size.1,
+            ))
+            .length();
+        w.max(h)
+    };
+    let sloppiness = sloppiness.for_screen_extent(screen_extent);
+
     let data = ShapeData {
         shape_type: *shape_type,
         base_size: *base_size,
@@ -1439,7 +1459,7 @@ pub fn build_shape_visuals(
         elbow_route: elbow_route.to_vec(),
         roundness: *roundness,
         seed: *seed,
-        sloppiness: *sloppiness,
+        sloppiness,
     };
     // 基色 → 当前主题绘制色（暗色套 Excalidraw 滤镜）。
     let stroke = StrokeStyle {
@@ -1448,7 +1468,7 @@ pub fn build_shape_visuals(
     };
     let fill_color = (*fill).map(|c| color_from(preferz_core::color_space::themed_rgba(c, dark)));
 
-    if *sloppiness != Sloppiness::Off {
+    if sloppiness != Sloppiness::Off {
         RoughStyler.build_shapes(&data, &stroke, fill_color, *fill_style, to_screen, zoom)
     } else {
         CleanStyler.build_shapes(&data, &stroke, fill_color, *fill_style, to_screen, zoom)
@@ -3173,6 +3193,67 @@ mod tests {
         assert!(
             rough_polygon_hachure_fill(7, &pts[..2], 2.0, Color32::BLACK, 1.0, 1.0).is_empty(),
             "少于 3 点应返回空"
+        );
+    }
+
+    /// 手绘风矩形（120×80，seed 固定），供 LOD 用例复用。
+    fn artist_rect(sloppiness: Sloppiness) -> Item {
+        let mut item = Item::new_shape(
+            ShapeType::Rectangle,
+            (120.0, 80.0),
+            0.0,
+            0.0,
+            StrokeStyle::default(),
+            None,
+        );
+        if let ItemKind::Shape {
+            sloppiness: s,
+            seed,
+            ..
+        } = &mut item.kind
+        {
+            *s = sloppiness;
+            *seed = 7;
+        }
+        item
+    }
+
+    #[test]
+    fn rough_lod_degrades_to_clean_when_tiny_on_screen() {
+        // 视口缩到 10%：120×80 的图形屏上只剩 12×8px，低于 LOD 阈值
+        let tiny = euclid::Transform2D::scale(0.1, 0.1);
+        let rough = build_shape_visuals(
+            &artist_rect(Sloppiness::Artist).kind,
+            &[],
+            &tiny,
+            0.1,
+            false,
+        );
+        let clean = build_shape_visuals(&artist_rect(Sloppiness::Off).kind, &[], &tiny, 0.1, false);
+        assert!(!clean.is_empty(), "规整风应产出形状");
+        assert_eq!(
+            debug(&rough),
+            debug(&clean),
+            "屏上过小时手绘风应完全退化为规整风（顶点数减半）"
+        );
+    }
+
+    #[test]
+    fn rough_lod_keeps_rough_at_normal_size() {
+        // 100% 缩放：120×80 → 屏上 120×80px，远高于阈值
+        let full = euclid::Transform2D::identity();
+        let rough = build_shape_visuals(
+            &artist_rect(Sloppiness::Artist).kind,
+            &[],
+            &full,
+            1.0,
+            false,
+        );
+        let clean = build_shape_visuals(&artist_rect(Sloppiness::Off).kind, &[], &full, 1.0, false);
+        assert_ne!(
+            debug(&rough),
+            debug(&clean),
+            "正常尺寸下手绘风必须保留，不能被 LOD 误伤"
         );
     }
 }

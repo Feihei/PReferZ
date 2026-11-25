@@ -131,6 +131,29 @@ impl Sloppiness {
             Sloppiness::Cartoonist => 3.6,
         }
     }
+
+    /// 手绘风屏幕空间 LOD 阈值（屏幕像素）：最长边小于该值的图形按规整风渲染。
+    ///
+    /// 依据（2026-11-25 压测，1600×900、5000 个形状、10 帧平均）：手绘风每图形
+    /// 约 346 个顶点、规整风约 174 个——双笔描边使几何量恰好翻倍，三角化成本
+    /// 同步翻倍（占每帧 CPU 的 80%）。而图形在屏幕上缩到 20 余像素时，2px 级的
+    /// 抖动在成片上已不可辨。
+    ///
+    /// 因此低于阈值直接退化为 [`Sloppiness::Off`]：把「缩到全景看几百上千个
+    /// 元素」的每帧成本拉回规整风水平，同时不影响正常缩放下的观感。
+    pub const ROUGH_LOD_MIN_SCREEN_PX: f32 = 24.0;
+
+    /// 按图形在屏幕上的最长边解析实际生效的档位（屏幕空间 LOD）。
+    ///
+    /// `screen_extent` = 图形局部包围盒经 item 变换 + 视口缩放后屏幕上的较长边。
+    /// `Off` 恒为 `Off`；达到阈值时保持原档位，低于阈值退化为 `Off`。
+    pub fn for_screen_extent(self, screen_extent: f32) -> Self {
+        if self == Self::Off || screen_extent >= Self::ROUGH_LOD_MIN_SCREEN_PX {
+            self
+        } else {
+            Self::Off
+        }
+    }
 }
 
 /// `Sloppiness` 字段的兼容反序列化（plan #3）。
@@ -425,5 +448,36 @@ mod tests {
         }
         // 旧存档缺 fill_style 字段时按 Solid 加载（历史 fill=Some 即纯色填充）
         assert_eq!(FillStyle::default(), FillStyle::Solid);
+    }
+
+    #[test]
+    fn sloppiness_lod_degrades_below_threshold_only() {
+        let t = Sloppiness::ROUGH_LOD_MIN_SCREEN_PX;
+        // 低于阈值 → 退化为 Off（省掉双笔描边的一半顶点）
+        assert_eq!(
+            Sloppiness::Artist.for_screen_extent(t - 0.1),
+            Sloppiness::Off
+        );
+        assert_eq!(
+            Sloppiness::Architect.for_screen_extent(0.0),
+            Sloppiness::Off
+        );
+        assert_eq!(
+            Sloppiness::Cartoonist.for_screen_extent(t - 10.0),
+            Sloppiness::Off
+        );
+        // 达到阈值 → 保持原档位
+        assert_eq!(
+            Sloppiness::Artist.for_screen_extent(t),
+            Sloppiness::Artist,
+            "阈值本身保持手绘风"
+        );
+        assert_eq!(
+            Sloppiness::Cartoonist.for_screen_extent(500.0),
+            Sloppiness::Cartoonist
+        );
+        // Off 恒为 Off
+        assert_eq!(Sloppiness::Off.for_screen_extent(0.0), Sloppiness::Off);
+        assert_eq!(Sloppiness::Off.for_screen_extent(1e6), Sloppiness::Off);
     }
 }
